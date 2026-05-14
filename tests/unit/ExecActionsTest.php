@@ -16,6 +16,7 @@ namespace ComposeManager\Tests;
 
 use PluginTests\TestCase;
 use PluginTests\Mocks\FunctionMocks;
+use PluginTests\Mocks\DockerUtilMock;
 
 
 require_once '/usr/local/emhttp/plugins/compose.manager/include/Util.php';
@@ -111,6 +112,36 @@ class ExecActionsTest extends TestCase
         }
         
         return $stackPath;
+    }
+
+    /**
+     * Build a minimal Docker inspect-style container array suitable for
+     * DockerUtilMock and dockerContainerToComposeService().
+     */
+    private function makeContainer(string $id, string $name, string $image, array $extra = []): array
+    {
+        return array_replace_recursive([
+            'Id' => $id,
+            'Name' => '/' . $name,
+            'Image' => $image,
+            'Manager' => 'dockerman',
+            'Running' => true,
+            'Status' => 'Up 2 hours',
+            'Config' => [
+                'Image' => $image,
+                'Env' => [],
+                'Labels' => [],
+                'ExposedPorts' => [],
+            ],
+            'HostConfig' => [
+                'PortBindings' => [],
+                'Binds' => [],
+                'RestartPolicy' => ['Name' => ''],
+                'NetworkMode' => 'bridge',
+            ],
+            'Mounts' => [],
+            'NetworkSettings' => ['Networks' => []],
+        ], $extra);
     }
 
     // ===========================================
@@ -749,5 +780,205 @@ class ExecActionsTest extends TestCase
         $result = json_decode($output, true);
         $this->assertEquals('success', $result['result']);
         $this->assertFalse($result['locked']);
+    }
+
+    // ===========================================
+    // performImportTransfer Action Tests
+    // ===========================================
+
+    public function testPerformImportTransferMissingStackName(): void
+    {
+        $output = $this->executeAction('performImportTransfer', [
+            'stackName' => '',
+            'composeYml' => "services:\n  web:\n    image: nginx\n",
+        ]);
+
+        $result = json_decode($output, true);
+        $this->assertEquals('error', $result['result']);
+        $this->assertStringContainsString('Stack name is required', $result['message']);
+    }
+
+    public function testPerformImportTransferEmptyCompose(): void
+    {
+        $output = $this->executeAction('performImportTransfer', [
+            'stackName' => 'import-test',
+            'composeYml' => '',
+        ]);
+
+        $result = json_decode($output, true);
+        $this->assertEquals('error', $result['result']);
+        $this->assertStringContainsString('Compose content is required', $result['message']);
+
+        // Stack folder should NOT have been created
+        $this->assertDirectoryDoesNotExist($this->testComposeRoot . '/import-test');
+    }
+
+    public function testPerformImportTransferSuccess(): void
+    {
+        $yaml = "services:\n  web:\n    image: nginx\n";
+
+        $output = $this->executeAction('performImportTransfer', [
+            'stackName' => 'import-ok',
+            'stackDesc' => 'My import',
+            'composeYml' => $yaml,
+        ]);
+
+        $result = json_decode($output, true);
+        $this->assertEquals('success', $result['result']);
+        $this->assertStringContainsString('import-ok', $result['projectPath']);
+
+        // compose file written (trim() in handler strips trailing newline)
+        $composePath = $result['projectPath'] . '/compose.yaml';
+        $this->assertFileExists($composePath);
+        $this->assertEquals(trim($yaml), file_get_contents($composePath));
+    }
+
+    public function testPerformImportTransferWritesEnvAndOverride(): void
+    {
+        $yaml = "services:\n  web:\n    image: nginx\n";
+        $env = "FOO=bar\n";
+        $override = "services:\n  web:\n    labels:\n      - test=1\n";
+
+        $output = $this->executeAction('performImportTransfer', [
+            'stackName' => 'import-extras',
+            'composeYml' => $yaml,
+            'env' => $env,
+            'override' => $override,
+        ]);
+
+        $result = json_decode($output, true);
+        $this->assertEquals('success', $result['result']);
+
+        $basePath = $result['projectPath'];
+        $this->assertEquals(trim($env), file_get_contents($basePath . '/.env'));
+        $this->assertEquals(trim($override), file_get_contents($basePath . '/compose.override.yaml'));
+    }
+
+    // ===========================================
+    // getDockerContainersForImport Action Tests
+    // ===========================================
+
+    public function testGetDockerContainersForImportReturnsDockerManOnly(): void
+    {
+        DockerUtilMock::setContainers([
+            'nginx' => $this->makeContainer('abc123', 'nginx', 'nginx:latest'),
+            'compose-svc' => $this->makeContainer('def456', 'compose-svc', 'redis:7', [
+                'Manager' => 'compose',
+            ]),
+        ]);
+
+        $output = $this->executeAction('getDockerContainersForImport');
+        $result = json_decode($output, true);
+
+        $this->assertEquals('success', $result['result']);
+        $this->assertCount(1, $result['containers']);
+        $this->assertEquals('abc123', $result['containers'][0]['Id']);
+    }
+
+    public function testGetDockerContainersForImportEmptyWhenNoCandidates(): void
+    {
+        DockerUtilMock::setContainers([]);
+
+        $output = $this->executeAction('getDockerContainersForImport');
+        $result = json_decode($output, true);
+
+        $this->assertEquals('success', $result['result']);
+        $this->assertEmpty($result['containers']);
+    }
+
+    // ===========================================
+    // generateImportData Action Tests
+    // ===========================================
+
+    public function testGenerateImportDataErrorWhenNoContainers(): void
+    {
+        $output = $this->executeAction('generateImportData', [
+            'containerIds' => json_encode([]),
+        ]);
+        $result = json_decode($output, true);
+        $this->assertEquals('error', $result['result']);
+    }
+
+    public function testGenerateImportDataReturnsServiceMeta(): void
+    {
+        DockerUtilMock::setContainers([
+            'web' => $this->makeContainer('aaa111', 'web', 'nginx:latest', [
+                'Config' => [
+                    'Image' => 'nginx:latest',
+                    'Env' => ['MY_VAR=hello'],
+                    'Labels' => [
+                        'net.unraid.docker.icon' => 'https://example.com/icon.png',
+                    ],
+                    'ExposedPorts' => ['80/tcp' => (object) []],
+                ],
+                'HostConfig' => [
+                    'PortBindings' => [
+                        '80/tcp' => [['HostIp' => '', 'HostPort' => '8080']],
+                    ],
+                    'Binds' => [],
+                    'RestartPolicy' => ['Name' => 'unless-stopped'],
+                    'NetworkMode' => 'bridge',
+                ],
+            ]),
+        ]);
+
+        $output = $this->executeAction('generateImportData', [
+            'containerIds' => json_encode(['aaa111']),
+        ]);
+        $result = json_decode($output, true);
+
+        $this->assertEquals('success', $result['result']);
+        $this->assertArrayHasKey('services', $result);
+        $this->assertArrayHasKey('portConflicts', $result);
+        $this->assertArrayHasKey('networks', $result);
+
+        // Should have exactly one service
+        $this->assertCount(1, $result['services']);
+        $svc = reset($result['services']);
+        $this->assertEquals('nginx:latest', $svc['image']);
+        $this->assertEquals('https://example.com/icon.png', $svc['icon']);
+    }
+
+    // ===========================================
+    // finalizeImportCompose Action Tests
+    // ===========================================
+
+    public function testFinalizeImportComposeErrorWhenNoContainers(): void
+    {
+        $output = $this->executeAction('finalizeImportCompose', [
+            'containerIds' => json_encode([]),
+        ]);
+        $result = json_decode($output, true);
+        $this->assertEquals('error', $result['result']);
+    }
+
+    public function testFinalizeImportComposeReturnsYaml(): void
+    {
+        DockerUtilMock::setContainers([
+            'redis' => $this->makeContainer('bbb222', 'redis', 'redis:7', [
+                'Config' => [
+                    'Image' => 'redis:7',
+                    'Env' => [],
+                    'Labels' => [],
+                    'ExposedPorts' => [],
+                ],
+                'HostConfig' => [
+                    'PortBindings' => [],
+                    'Binds' => [],
+                    'RestartPolicy' => ['Name' => ''],
+                    'NetworkMode' => 'bridge',
+                ],
+            ]),
+        ]);
+
+        $output = $this->executeAction('finalizeImportCompose', [
+            'containerIds' => json_encode(['bbb222']),
+        ]);
+        $result = json_decode($output, true);
+
+        $this->assertEquals('success', $result['result']);
+        $this->assertArrayHasKey('composeYml', $result);
+        $this->assertStringContainsString('redis:7', $result['composeYml']);
+        $this->assertArrayHasKey('validation', $result);
     }
 }

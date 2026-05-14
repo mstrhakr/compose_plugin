@@ -71,6 +71,7 @@ The built-in editor provides multiple tabs for managing your compose stack:
 
 - **Docker Compose Integration** - Installs the Docker Compose CLI plugin (v5 by default) and manages stacks on your unRAID server.
 - **Web UI Management** - Create, edit, and manage Compose stacks directly from the unRAID dashboard.
+- **Import Wizard** - Convert existing Docker Manager containers into a Compose stack using a guided flow.
 - **Stack Operations** - Start, stop, restart, update, pull/build, and remove stacks with one click (supports profiles and override files).
 - **Context Menu** - Rich context menu on every stack icon with state-aware actions (see [Context Menu](#context-menu) below).
 - **Container Context Menu** - Right-click individual containers to open a WebUI, console, or logs; start, stop, pause, resume, or restart individual containers without touching the whole stack.
@@ -276,6 +277,7 @@ For detailed guides, see the [docs](docs/) folder:
 
 - [Getting Started](docs/getting-started.md)
 - [User Guide](docs/user-guide.md)
+- [Import Wizard](docs/import-wizard.md)
 - [Configuration](docs/configuration.md)
 - [Profiles](docs/profiles.md)
 

@@ -446,6 +446,921 @@ function detectWebuiUrl(string $composeRoot, string $project): ?array
         'source' => "port {$c['port']} on service '{$c['service']}'"
     ];
 }
+/**
+ * Import helper for Docker Manager containers.
+ */
+function getDockerManagerImportCandidates(): array
+{
+    require_once "/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php";
+
+    $dockerClient = new DockerClient();
+    $containers = $dockerClient->getDockerContainers();
+    $candidates = [];
+
+    foreach ($containers as $ct) {
+        if (!is_array($ct)) {
+            continue;
+        }
+        $manager = $ct['Manager'] ?? '';
+        if ($manager !== 'dockerman') {
+            continue;
+        }
+        $candidates[] = [
+            'Id' => $ct['Id'] ?? '',
+            'Name' => $ct['Name'] ?? '',
+            'Image' => $ct['Image'] ?? '',
+            'Status' => $ct['Status'] ?? '',
+            'Running' => $ct['Running'] ?? false,
+            'Icon' => $ct['Icon'] ?? '',
+            'Url' => $ct['Url'] ?? '',
+            'TSUrl' => $ct['TSUrl'] ?? '',
+            'Labels' => $ct['Labels'] ?? [],
+        ];
+    }
+
+    return $candidates;
+}
+
+function getDockerManagerContainerInfo(string $id): array
+{
+    require_once "/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php";
+
+    $dockerClient = new DockerClient();
+    $info = $dockerClient->getContainerDetails($id);
+    if (!is_array($info)) {
+        return [];
+    }
+    return $info;
+}
+
+/**
+ * Known port → healthcheck command map.
+ * Keys are "port/proto", values are healthcheck test commands.
+ */
+function getKnownPortHealthchecks(): array
+{
+    return [
+        '80/tcp'    => 'curl -f http://localhost:80/ || exit 1',
+        '443/tcp'   => 'curl -fk https://localhost:443/ || exit 1',
+        '8080/tcp'  => 'curl -f http://localhost:8080/ || exit 1',
+        '8443/tcp'  => 'curl -fk https://localhost:8443/ || exit 1',
+        '3000/tcp'  => 'curl -f http://localhost:3000/ || exit 1',
+        '9090/tcp'  => 'curl -f http://localhost:9090/ || exit 1',
+        '3306/tcp'  => 'mysqladmin ping -h localhost || exit 1',
+        '5432/tcp'  => 'pg_isready -U postgres || exit 1',
+        '6379/tcp'  => 'redis-cli ping || exit 1',
+        '27017/tcp' => 'mongosh --eval "db.runCommand(\"ping\")" --quiet || exit 1',
+        '9200/tcp'  => 'curl -f http://localhost:9200/_cluster/health || exit 1',
+        '5672/tcp'  => 'rabbitmq-diagnostics -q ping || exit 1',
+        '15672/tcp' => 'curl -f http://localhost:15672/ || exit 1',
+        '1883/tcp'  => 'mosquitto_sub -t "\$SYS/#" -C 1 -W 3 || exit 1',
+        '8086/tcp'  => 'curl -f http://localhost:8086/ping || exit 1',
+        '9000/tcp'  => 'curl -f http://localhost:9000/ || exit 1',
+    ];
+}
+
+/**
+ * Known image name patterns → healthcheck commands (checked when port alone is ambiguous).
+ * Pattern is matched case-insensitively against the image name (without tag).
+ */
+function getImageHealthcheckPatterns(): array
+{
+    return [
+        'mysql'       => ['test' => ['CMD-SHELL', 'mysqladmin ping -h localhost || exit 1']],
+        'mariadb'     => ['test' => ['CMD-SHELL', 'mysqladmin ping -h localhost || exit 1']],
+        'postgres'    => ['test' => ['CMD-SHELL', 'pg_isready -U postgres || exit 1']],
+        'redis'       => ['test' => ['CMD-SHELL', 'redis-cli ping || exit 1']],
+        'mongo'       => ['test' => ['CMD-SHELL', 'mongosh --eval "db.runCommand(\"ping\")" --quiet || exit 1']],
+        'nginx'       => ['test' => ['CMD-SHELL', 'curl -f http://localhost/ || exit 1']],
+        'httpd'       => ['test' => ['CMD-SHELL', 'curl -f http://localhost/ || exit 1']],
+        'apache'      => ['test' => ['CMD-SHELL', 'curl -f http://localhost/ || exit 1']],
+        'traefik'     => ['test' => ['CMD-SHELL', 'traefik healthcheck --ping || exit 1']],
+        'rabbitmq'    => ['test' => ['CMD-SHELL', 'rabbitmq-diagnostics -q ping || exit 1']],
+        'mosquitto'   => ['test' => ['CMD-SHELL', 'mosquitto_sub -t "\\$SYS/#" -C 1 -W 3 || exit 1']],
+        'influxdb'    => ['test' => ['CMD-SHELL', 'curl -f http://localhost:8086/ping || exit 1']],
+        'elasticsearch' => ['test' => ['CMD-SHELL', 'curl -f http://localhost:9200/_cluster/health || exit 1']],
+        'memcached'   => ['test' => ['CMD-SHELL', 'echo stats | nc localhost 11211 || exit 1']],
+    ];
+}
+
+/**
+ * Guess a healthcheck for a service based on its image name and exposed ports.
+ *
+ * @param string $image Full image string (e.g. "nginx:latest", "linuxserver/mariadb:10")
+ * @param array $exposedPorts Exposed ports from Config.ExposedPorts (e.g. {"80/tcp": {}, "443/tcp": {}})
+ * @param array|null $existingHealthcheck Existing healthcheck from Config.Healthcheck (docker inspect)
+ * @return array|null Compose-format healthcheck array, or null if no guess possible
+ */
+function guessHealthcheck(string $image, array $exposedPorts, ?array $existingHealthcheck = null): ?array
+{
+    // If the container already has a healthcheck defined in its image, convert it to compose format
+    if (!empty($existingHealthcheck) && !empty($existingHealthcheck['Test'])) {
+        $test = $existingHealthcheck['Test'];
+        $hc = ['test' => $test];
+        if (!empty($existingHealthcheck['Interval'])) {
+            // Docker stores intervals in nanoseconds; convert to compose duration string
+            $ns = $existingHealthcheck['Interval'];
+            $hc['interval'] = nanosToComposeDuration($ns);
+        }
+        if (!empty($existingHealthcheck['Timeout'])) {
+            $hc['timeout'] = nanosToComposeDuration($existingHealthcheck['Timeout']);
+        }
+        if (isset($existingHealthcheck['Retries'])) {
+            $hc['retries'] = (int)$existingHealthcheck['Retries'];
+        }
+        if (!empty($existingHealthcheck['StartPeriod'])) {
+            $hc['start_period'] = nanosToComposeDuration($existingHealthcheck['StartPeriod']);
+        }
+        return $hc;
+    }
+
+    $defaults = ['interval' => '30s', 'timeout' => '10s', 'retries' => 3, 'start_period' => '10s'];
+
+    // Try to match by exposed port first (most specific)
+    $portMap = getKnownPortHealthchecks();
+    foreach ($exposedPorts as $portProto => $_) {
+        if (isset($portMap[$portProto])) {
+            return array_merge($defaults, [
+                'test' => ['CMD-SHELL', $portMap[$portProto]],
+            ]);
+        }
+    }
+
+    // Fall back to image name pattern matching
+    $imageName = strtolower($image);
+    // Strip tag
+    if (($pos = strpos($imageName, ':')) !== false) {
+        $imageName = substr($imageName, 0, $pos);
+    }
+    // Strip registry prefix (e.g. "linuxserver/mariadb" → check against "mariadb")
+    $parts = explode('/', $imageName);
+    $shortName = end($parts);
+
+    $patterns = getImageHealthcheckPatterns();
+    foreach ($patterns as $pattern => $hc) {
+        if (str_contains($shortName, $pattern)) {
+            return array_merge($defaults, $hc);
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Convert Docker nanoseconds to compose duration string (e.g. "30s", "1m30s").
+ */
+function nanosToComposeDuration(int $ns): string
+{
+    $seconds = (int)($ns / 1_000_000_000);
+    if ($seconds <= 0) {
+        return '0s';
+    }
+    if ($seconds >= 60 && $seconds % 60 === 0) {
+        return ($seconds / 60) . 'm';
+    }
+    if ($seconds >= 60) {
+        $m = intdiv($seconds, 60);
+        $s = $seconds % 60;
+        return "{$m}m{$s}s";
+    }
+    return "{$seconds}s";
+}
+
+/**
+ * Parse a port mapping string into structured data.
+ *
+ * @param string $portStr Port string like "8080:80/tcp", "192.168.1.1:8080:80/tcp", "80/tcp"
+ * @return array{hostIp: string, hostPort: string, containerPort: string, protocol: string}
+ */
+function parsePortMapping(string $portStr): array
+{
+    $protocol = 'tcp';
+    if (($slashPos = strrpos($portStr, '/')) !== false) {
+        $protocol = substr($portStr, $slashPos + 1);
+        $portStr = substr($portStr, 0, $slashPos);
+    }
+
+    // Handle bracketed IPv6 host IP: [::1]:8080:80
+    if (str_starts_with($portStr, '[')) {
+        $bracketEnd = strpos($portStr, ']');
+        if ($bracketEnd !== false) {
+            $hostIp = substr($portStr, 1, $bracketEnd - 1);
+            $rest = substr($portStr, $bracketEnd + 1); // e.g. ":8080:80"
+            $rest = ltrim($rest, ':');
+            $parts = explode(':', $rest);
+            if (count($parts) === 2) {
+                return ['hostIp' => $hostIp, 'hostPort' => $parts[0], 'containerPort' => $parts[1], 'protocol' => $protocol];
+            }
+            if (count($parts) === 1 && $parts[0] !== '') {
+                return ['hostIp' => $hostIp, 'hostPort' => '', 'containerPort' => $parts[0], 'protocol' => $protocol];
+            }
+        }
+    }
+
+    $parts = explode(':', $portStr);
+    $count = count($parts);
+
+    if ($count === 3) {
+        return ['hostIp' => $parts[0], 'hostPort' => $parts[1], 'containerPort' => $parts[2], 'protocol' => $protocol];
+    }
+    if ($count === 2) {
+        return ['hostIp' => '', 'hostPort' => $parts[0], 'containerPort' => $parts[1], 'protocol' => $protocol];
+    }
+    // Expose-only (no host binding)
+    return ['hostIp' => '', 'hostPort' => '', 'containerPort' => $parts[0], 'protocol' => $protocol];
+}
+
+/**
+ * Detect host port conflicts across a set of services.
+ *
+ * @param array $services Associative array of serviceName => service definition (with 'ports' key)
+ * @return array Array of conflicts: [{hostPort, protocol, hostIp, services: [name1, name2, ...]}]
+ */
+function detectPortConflicts(array $services): array
+{
+    // Maps grouping key => ['ip' => ..., 'port' => ..., 'proto' => ..., 'services' => [...]]
+    $portMap = [];
+
+    foreach ($services as $serviceName => $service) {
+        if (empty($service['ports']) || !is_array($service['ports'])) {
+            continue;
+        }
+        foreach ($service['ports'] as $portStr) {
+            $parsed = parsePortMapping($portStr);
+            if ($parsed['hostPort'] === '') {
+                continue; // expose-only, no host binding
+            }
+            // Normalize: treat empty and 0.0.0.0 as equivalent
+            $ip = ($parsed['hostIp'] === '' || $parsed['hostIp'] === '0.0.0.0') ? '0.0.0.0' : $parsed['hostIp'];
+            $key = "{$ip}:{$parsed['hostPort']}/{$parsed['protocol']}";
+            if (!isset($portMap[$key])) {
+                $portMap[$key] = [
+                    'hostIp' => $ip,
+                    'hostPort' => $parsed['hostPort'],
+                    'protocol' => $parsed['protocol'],
+                    'services' => [],
+                ];
+            }
+            $portMap[$key]['services'][] = $serviceName;
+        }
+    }
+
+    $conflicts = [];
+    foreach ($portMap as $entry) {
+        if (count($entry['services']) > 1) {
+            $conflicts[] = [
+                'hostIp' => $entry['hostIp'],
+                'hostPort' => $entry['hostPort'],
+                'protocol' => $entry['protocol'],
+                'services' => array_values(array_unique($entry['services'])),
+            ];
+        }
+    }
+    return $conflicts;
+}
+
+/**
+ * Get available Docker networks from the host.
+ *
+ * @return array Array of ['name' => string, 'driver' => string]
+ */
+function getDockerNetworks(): array
+{
+    $networks = [];
+    exec("docker network ls --format '{{.Name}}\t{{.Driver}}' 2>/dev/null", $outputLines, $exitCode);
+    if ($exitCode !== 0) {
+        composeLogger('Failed to list Docker networks (exit code ' . $exitCode . ')', null, 'daemon', 'warning');
+        return [];
+    }
+    foreach ($outputLines as $line) {
+        $parts = explode("\t", $line);
+        if (count($parts) === 2) {
+            $networks[] = ['name' => $parts[0], 'driver' => $parts[1]];
+        }
+    }
+    return $networks;
+}
+
+function dockerContainerToComposeService(array $info): array
+{
+    $service = [];
+    $originalName = ltrim(trim($info['Name'] ?? $info['Id'] ?? ''), '/');
+    $serviceName = preg_replace('/[^a-zA-Z0-9_.-]/', '_', $originalName);
+    if ($serviceName === '') {
+        $serviceName = 'container_' . substr($info['Id'] ?? 'unknown', 0, 12);
+    }
+
+    // Store container_name explicitly so each container gets a deterministic name
+    $service['container_name'] = $serviceName;
+
+    $config = $info['Config'] ?? [];
+    $hostConfig = $info['HostConfig'] ?? [];
+
+    $service['image'] = $config['Image'] ?? '';
+
+    // Do not include explicit command/entrypoint by default in generated compose
+    // because Compose can use defaults from the image; this avoids embedding Unraid startup semantics.
+
+    if (!empty($config['Env']) && is_array($config['Env'])) {
+        $env = [];
+        $blacklist = ['TERM', 'LANG', 'HOME', 'PATH', 'HOST_OS', 'HOST_HOSTNAME', 'HOST_CONTAINERNAME'];
+        foreach ($config['Env'] as $entry) {
+            if (!str_contains($entry, '=')) {
+                continue;
+            }
+            [$key, $value] = explode('=', $entry, 2);
+            if (in_array($key, $blacklist, true)) {
+                continue;
+            }
+            $env[$key] = $value;
+        }
+        if (!empty($env)) {
+            // Replace values with env variable expansion in compose file, values go in .env file.
+            $service['environment'] = array_map(function ($key) {
+                return sprintf('%s=${%s}', $key, $key);
+            }, array_keys($env));
+            // We store the resolved env set as a reserved field to generate .env file later.
+            $service['__resolved_env'] = $env;
+        }
+    }
+
+    if (!empty($hostConfig['RestartPolicy']['Name'])) {
+        $policy = $hostConfig['RestartPolicy']['Name'];
+        if ($policy !== 'no') {
+            $service['restart'] = $policy;
+        }
+    }
+
+    $ports = [];
+    if (!empty($hostConfig['PortBindings']) && is_array($hostConfig['PortBindings'])) {
+        foreach ($hostConfig['PortBindings'] as $port => $bindings) {
+            [$privatePort, $proto] = array_pad(explode('/', $port), 2, 'tcp');
+            foreach ((array)$bindings as $bind) {
+                if (!is_array($bind)) continue;
+                $hostIp = $bind['HostIp'] ?? '';
+                $hostPort = $bind['HostPort'] ?? '';
+                if ($hostIp !== '' && $hostIp !== '0.0.0.0') {
+                    // Bracket IPv6 addresses for valid Compose port syntax
+                    $formattedIp = str_contains($hostIp, ':') ? "[{$hostIp}]" : $hostIp;
+                    $ports[] = "{$formattedIp}:{$hostPort}:{$privatePort}/{$proto}";
+                } elseif ($hostPort !== '') {
+                    $ports[] = "{$hostPort}:{$privatePort}/{$proto}";
+                } else {
+                    $ports[] = "{$privatePort}/{$proto}";
+                }
+            }
+        }
+    }
+    if (!empty($ports)) {
+        $service['ports'] = $ports;
+    }
+
+    $volumes = [];
+    if (!empty($info['Mounts']) && is_array($info['Mounts'])) {
+        foreach ($info['Mounts'] as $mount) {
+            $source = $mount['Source'] ?? '';
+            $target = $mount['Destination'] ?? '';
+            if ($source !== '' && $target !== '') {
+                $mode = '';
+                if (array_key_exists('RW', $mount) && $mount['RW'] === false) {
+                    $mode = ':ro';
+                }
+                $volumes[] = "{$source}:{$target}{$mode}";
+            }
+        }
+    }
+    if (!empty($volumes)) {
+        $service['volumes'] = $volumes;
+    }
+
+    $labels = [];
+    if (!empty($config['Labels']) && is_array($config['Labels'])) {
+        foreach ($config['Labels'] as $key => $val) {
+            // Skip internal Compose Manager markers and helper labels
+            if (in_array($key, ['net.unraid.docker.managed', 'net.unraid.docker.icon', 'net.unraid.docker.webui'], true)) {
+                continue;
+            }
+
+            // Skip uncaught LinuxServer/OCI metadata that is not needed in compose services
+            if ($key === 'build_version' || $key === 'maintainer') {
+                continue;
+            }
+            $excludePrefixes = [
+                'org.opencontainers.image.',
+                'org.label-schema.',
+                'com.docker.compose.',
+            ];
+            $skip = false;
+            foreach ($excludePrefixes as $prefix) {
+                if (str_starts_with($key, $prefix)) {
+                    $skip = true;
+                    break;
+                }
+            }
+            if ($skip) {
+                continue;
+            }
+
+            $labels[$key] = $val;
+        }
+    }
+    if (!empty($labels)) {
+        $service['labels'] = $labels;
+    }
+
+    if (!empty($hostConfig['NetworkMode'])) {
+        $networkMode = $hostConfig['NetworkMode'];
+        if ($networkMode !== 'default') {
+            if (in_array($networkMode, ['host', 'bridge', 'none'])) {
+                $service['network_mode'] = $networkMode;
+            } elseif (str_starts_with($networkMode, 'container:')) {
+                $service['network_mode'] = $networkMode;
+            }
+        }
+    }
+
+    // Extract named networks from NetworkSettings (including static IPs)
+    $networks = $info['NetworkSettings']['Networks'] ?? [];
+    if (is_array($networks) && !isset($service['network_mode'])) {
+        $namedNetworks = [];
+        $networkIPs = [];
+        foreach ($networks as $netName => $netInfo) {
+            if (!in_array($netName, ['bridge', 'host', 'none'], true)) {
+                $namedNetworks[] = $netName;
+                // Preserve static IP from IPAMConfig (user-assigned, not DHCP)
+                $staticIP = $netInfo['IPAMConfig']['IPv4Address'] ?? '';
+                if ($staticIP !== '') {
+                    $networkIPs[$netName] = $staticIP;
+                }
+            }
+        }
+        if (!empty($namedNetworks)) {
+            $service['networks'] = $namedNetworks;
+        }
+        if (!empty($networkIPs)) {
+            $service['__network_ips'] = $networkIPs;
+        }
+    }
+
+    // Extract exposed ports (for healthcheck guessing)
+    $exposedPorts = $config['ExposedPorts'] ?? [];
+    if (is_array($exposedPorts)) {
+        $service['__exposed_ports'] = $exposedPorts;
+    }
+
+    // Extract existing healthcheck from image, or guess one
+    $existingHC = $config['Healthcheck'] ?? null;
+    $guessed = guessHealthcheck($service['image'], $exposedPorts, $existingHC);
+    if ($existingHC && !empty($existingHC['Test'])) {
+        // Use the image-defined healthcheck (already converted by guessHealthcheck)
+        if ($guessed) {
+            $service['healthcheck'] = $guessed;
+            $service['__healthcheck_source'] = 'image';
+        }
+    } elseif ($guessed) {
+        // Store as a guess that the user can accept or reject
+        $service['__guessed_healthcheck'] = $guessed;
+        $service['__healthcheck_source'] = 'auto';
+    }
+
+    return ['name' => $serviceName, 'originalName' => $originalName, 'service' => $service];
+}
+
+/**
+ * Fetch, convert, and deduplicate Docker Manager containers into compose services.
+ *
+ * Shared by generateImportData and finalizeImportCompose to avoid duplicating
+ * the container-fetch → convert → label-extract → dedup loop.
+ *
+ * @param string[] $containerIds Docker container IDs to process
+ * @return array{services: array, inspectData: array} services keyed by deduped name,
+ *         inspectData keyed by same name → raw docker inspect array
+ */
+function buildImportServicesFromIds(array $containerIds): array
+{
+    $services = [];
+    $inspectData = [];
+    foreach ($containerIds as $id) {
+        $id = trim($id);
+        if ($id === '') {
+            continue;
+        }
+        $info = getDockerManagerContainerInfo($id);
+        if (empty($info)) {
+            continue;
+        }
+        $converted = dockerContainerToComposeService($info);
+        $name = $converted['name'];
+        $service = $converted['service'];
+
+        $serviceIcon = $info['Config']['Labels']['net.unraid.docker.icon'] ?? '';
+        $serviceWebui = $info['Config']['Labels']['net.unraid.docker.webui'] ?? '';
+        if ($serviceIcon) {
+            $service['icon'] = $serviceIcon;
+        }
+        if ($serviceWebui) {
+            $service['webui'] = $serviceWebui;
+        }
+
+        // Deduplicate service keys
+        $baseName = $name;
+        $append = 1;
+        while (isset($services[$name])) {
+            $name = $baseName . '_' . $append;
+            $append++;
+        }
+        $services[$name] = $service;
+        $inspectData[$name] = $info;
+    }
+    return ['services' => $services, 'inspectData' => $inspectData];
+}
+
+/**
+ * Quote a YAML scalar value if it contains special characters.
+ *
+ * Preserves native int/float types so that fields like healthcheck.retries
+ * are emitted as bare numbers (3) rather than quoted strings ("3").
+ */
+function yamlQuoteValue($value): string
+{
+    if (is_bool($value)) {
+        return $value ? 'true' : 'false';
+    }
+    // Preserve actual numeric types as bare YAML scalars
+    if (is_int($value) || is_float($value)) {
+        return (string)$value;
+    }
+    $str = (string)$value;
+    if ($str === '') {
+        return '""';
+    }
+    // Quote if value contains YAML-special characters or could be misinterpreted
+    if (preg_match('/[:\#{}\[\],&*?|>!\'"%@`]/', $str)
+        || preg_match('/^[\s-]/', $str)
+        || preg_match('/\s$/', $str)
+        || in_array(strtolower($str), ['true', 'false', 'null', 'yes', 'no', 'on', 'off'], true)
+        || is_numeric($str)
+    ) {
+        return '"' . str_replace(['\\', '"', "\n", "\t"], ['\\\\', '\\"', '\\n', '\\t'], $str) . '"';
+    }
+    return $str;
+}
+
+function dockerServicesToComposeYml(array $services, array $wizardConfig = []): string
+{
+    $yaml = "services:\n";
+    $allNetworks = [];
+    $externalNetworks = []; // networks declared as external: true
+    $stackNetworks = [];    // networks created by the stack (driver: bridge)
+
+    $containerNames = $wizardConfig['containerNames'] ?? [];
+    $netCfg = $wizardConfig['networkConfig'] ?? [];
+    $healthchecks = $wizardConfig['healthchecks'] ?? [];
+    $dependencies = $wizardConfig['dependencies'] ?? [];
+
+    $stackNetEnabled = !empty($netCfg['stackNetwork']['enabled']);
+    $stackNetName = $netCfg['stackNetwork']['name'] ?? '';
+    $externalNetList = $netCfg['externalNetworks'] ?? [];
+    $perServiceNet = $netCfg['perService'] ?? [];
+
+    // If wizard config provides a stack network, track it
+    if ($stackNetEnabled && $stackNetName !== '') {
+        $stackNetworks[$stackNetName] = true;
+    }
+    // Track external networks from wizard
+    foreach ($externalNetList as $extNet) {
+        if (is_string($extNet) && $extNet !== '') {
+            $externalNetworks[$extNet] = true;
+        }
+    }
+
+    // Internal fields to skip when emitting YAML
+    $internalKeys = [
+        '__resolved_env', '__exposed_ports', '__guessed_healthcheck',
+        '__healthcheck_source', '__network_ips', 'icon', 'webui',
+    ];
+
+    foreach ($services as $name => $service) {
+        $yaml .= "  " . $name . ":\n";
+
+        // Apply container name override from wizard
+        if (isset($containerNames[$name]) && $containerNames[$name] !== '') {
+            $service['container_name'] = $containerNames[$name];
+        }
+
+        // Apply network configuration from wizard (if provided)
+        if (!empty($wizardConfig) && !empty($perServiceNet)) {
+            $svcNetCfg = $perServiceNet[$name] ?? [];
+            $svcNetMode = $svcNetCfg['networkMode'] ?? null;
+
+            if ($svcNetMode && $svcNetMode !== 'default') {
+                // Explicit network_mode overrides any networks setting
+                $service['network_mode'] = $svcNetMode;
+                unset($service['networks']);
+            } else {
+                // Remove any pre-existing network_mode if wizard says "default"
+                unset($service['network_mode']);
+
+                $serviceNetworks = [];
+                $svcIPv4 = $svcNetCfg['ipv4Addresses'] ?? [];
+                // Attach to stack network if enabled
+                if ($stackNetEnabled && $stackNetName !== '' && !empty($svcNetCfg['attachStackNet'])) {
+                    $serviceNetworks[] = $stackNetName;
+                }
+                // Attach to selected external networks
+                $svcExternalNets = $svcNetCfg['externalNets'] ?? [];
+                foreach ($svcExternalNets as $extNet) {
+                    if (is_string($extNet) && $extNet !== '' && !in_array($extNet, $serviceNetworks, true)) {
+                        $serviceNetworks[] = $extNet;
+                        $externalNetworks[$extNet] = true;
+                    }
+                }
+                if (!empty($serviceNetworks)) {
+                    // Use mapping format if any network has a static IP
+                    $hasIPs = false;
+                    foreach ($serviceNetworks as $netName) {
+                        if (!empty($svcIPv4[$netName])) {
+                            $hasIPs = true;
+                            break;
+                        }
+                    }
+                    if ($hasIPs) {
+                        $netMap = [];
+                        foreach ($serviceNetworks as $netName) {
+                            $ip = $svcIPv4[$netName] ?? '';
+                            $netMap[$netName] = $ip !== '' ? ['ipv4_address' => $ip] : null;
+                        }
+                        $service['networks'] = $netMap;
+                    } else {
+                        $service['networks'] = $serviceNetworks;
+                    }
+                } else {
+                    unset($service['networks']);
+                }
+            }
+        }
+
+        // Apply healthcheck from wizard
+        if (!empty($wizardConfig) && array_key_exists($name, $healthchecks)) {
+            $hc = $healthchecks[$name];
+            if ($hc === null || $hc === false) {
+                // User explicitly removed the healthcheck
+                unset($service['healthcheck']);
+                unset($service['__guessed_healthcheck']);
+            } else {
+                $service['healthcheck'] = $hc;
+                unset($service['__guessed_healthcheck']);
+            }
+        } elseif (empty($wizardConfig)) {
+            // No wizard config (legacy path) — don't auto-apply guessed healthchecks
+            unset($service['__guessed_healthcheck']);
+        }
+
+        // Apply depends_on from wizard
+        if (!empty($dependencies[$name]) && is_array($dependencies[$name])) {
+            $dependsOn = [];
+            foreach ($dependencies[$name] as $dep) {
+                $depService = $dep['service'] ?? '';
+                $depCondition = $dep['condition'] ?? 'service_started';
+                if ($depService !== '' && isset($services[$depService])) {
+                    $dependsOn[$depService] = ['condition' => $depCondition];
+                }
+            }
+            if (!empty($dependsOn)) {
+                $service['depends_on'] = $dependsOn;
+            }
+        }
+
+        // Collect all referenced networks for the top-level block
+        if (!empty($service['networks']) && is_array($service['networks'])) {
+            if (array_is_list($service['networks'])) {
+                foreach ($service['networks'] as $networkName) {
+                    if (!in_array($networkName, $allNetworks, true)) {
+                        $allNetworks[] = $networkName;
+                    }
+                }
+            } else {
+                // Mapping format (network => config or null)
+                foreach (array_keys($service['networks']) as $networkName) {
+                    if (!in_array($networkName, $allNetworks, true)) {
+                        $allNetworks[] = $networkName;
+                    }
+                }
+            }
+        }
+
+        // Emit service fields
+        foreach ($service as $key => $value) {
+            if (in_array($key, $internalKeys, true)) {
+                continue;
+            }
+            if ($key === 'depends_on' && is_array($value) && !array_is_list($value)) {
+                // depends_on with conditions: nested map format
+                $yaml .= "    depends_on:\n";
+                foreach ($value as $depName => $depConfig) {
+                    $yaml .= "      " . $depName . ":\n";
+                    if (is_array($depConfig)) {
+                        foreach ($depConfig as $dk => $dv) {
+                            $yaml .= "        " . $dk . ": " . yamlQuoteValue($dv) . "\n";
+                        }
+                    }
+                }
+                continue;
+            }
+            if ($key === 'healthcheck' && is_array($value)) {
+                $yaml .= "    healthcheck:\n";
+                foreach ($value as $hcKey => $hcVal) {
+                    // Skip private metadata keys (e.g. __originalTestType)
+                    if (is_string($hcKey) && str_starts_with($hcKey, '__')) {
+                        continue;
+                    }
+                    if ($hcKey === 'test' && is_array($hcVal)) {
+                        $yaml .= "      test:\n";
+                        foreach ($hcVal as $testItem) {
+                            $yaml .= "        - " . yamlQuoteValue($testItem) . "\n";
+                        }
+                    } elseif (is_string($hcVal) || is_numeric($hcVal)) {
+                        $yaml .= "      $hcKey: " . yamlQuoteValue($hcVal) . "\n";
+                    }
+                }
+                continue;
+            }
+            if ($key === 'networks' && is_array($value) && !array_is_list($value)) {
+                // Networks mapping format with per-network config (e.g. ipv4_address)
+                $yaml .= "    networks:\n";
+                foreach ($value as $netName => $netConfig) {
+                    if (is_array($netConfig) && !empty($netConfig)) {
+                        $yaml .= "      " . $netName . ":\n";
+                        foreach ($netConfig as $nk => $nv) {
+                            $yaml .= "        " . $nk . ": " . yamlQuoteValue($nv) . "\n";
+                        }
+                    } else {
+                        // No config for this network — emit as simple entry
+                        $yaml .= "      " . $netName . ":\n";
+                    }
+                }
+                continue;
+            }
+            if (is_string($value) || is_numeric($value) || is_bool($value)) {
+                $yaml .= "    $key: " . yamlQuoteValue($value) . "\n";
+            } elseif (is_array($value)) {
+                $yaml .= "    $key:\n";
+                if (array_is_list($value)) {
+                    foreach ($value as $item) {
+                        $yaml .= "      - " . yamlQuoteValue($item) . "\n";
+                    }
+                } else {
+                    foreach ($value as $subKey => $subVal) {
+                        $yaml .= "      " . $subKey . ": " . yamlQuoteValue($subVal) . "\n";
+                    }
+                }
+            }
+        }
+    }
+
+    // Emit top-level networks block
+    $hasNetworks = !empty($allNetworks) || !empty($stackNetworks) || !empty($externalNetworks);
+    if ($hasNetworks) {
+        $yaml .= "\nnetworks:\n";
+        // Stack-created networks (bridge driver)
+        foreach ($stackNetworks as $netName => $_) {
+            $yaml .= "  " . $netName . ":\n";
+            $yaml .= "    driver: bridge\n";
+        }
+        // External networks
+        foreach ($allNetworks as $networkName) {
+            if (isset($stackNetworks[$networkName])) {
+                continue; // Already emitted as stack network
+            }
+            $yaml .= "  " . $networkName . ":\n";
+            $yaml .= "    external: true\n";
+        }
+        // Any external networks from wizard not yet emitted
+        foreach ($externalNetworks as $netName => $_) {
+            if (isset($stackNetworks[$netName]) || in_array($netName, $allNetworks, true)) {
+                continue;
+            }
+            $yaml .= "  " . $netName . ":\n";
+            $yaml .= "    external: true\n";
+        }
+    }
+
+    return $yaml;
+}
+
+function dockerResolveEnvAndCompose(array &$services): string
+{
+    $globalEnv = [];
+
+    // Track environment values by canonical variable to avoid duplicates for same values across multiple services
+    $valueKeyMap = [];
+
+    foreach ($services as $serviceName => &$service) {
+        $serviceEnvItems = [];
+
+        if (!empty($service['__resolved_env']) && is_array($service['__resolved_env'])) {
+            foreach ($service['__resolved_env'] as $k => $v) {
+                if ($k === '') {
+                    continue;
+                }
+
+                // If single value reused exactly, reuse same variable name (dedupe name and value)
+                if (isset($valueKeyMap[$k][$v])) {
+                    $resolvedKey = $valueKeyMap[$k][$v];
+                } else {
+                    if (!array_key_exists($k, $globalEnv)) {
+                        $globalEnv[$k] = $v;
+                        $resolvedKey = $k;
+                    } elseif ($globalEnv[$k] === $v) {
+                        $resolvedKey = $k;
+                    } else {
+                        $suffix = 1;
+                        $resolvedKey = $k . '_' . $suffix;
+                        while (array_key_exists($resolvedKey, $globalEnv)) {
+                            if ($globalEnv[$resolvedKey] === $v) {
+                                break;
+                            }
+                            $suffix++;
+                            $resolvedKey = $k . '_' . $suffix;
+                        }
+                        if (!array_key_exists($resolvedKey, $globalEnv)) {
+                            $globalEnv[$resolvedKey] = $v;
+                        }
+                    }
+                    $valueKeyMap[$k][$v] = $resolvedKey;
+                }
+
+                $serviceEnvItems[] = sprintf('%s=${%s}', $k, $resolvedKey);
+            }
+        }
+
+        if (!empty($serviceEnvItems)) {
+            $service['environment'] = $serviceEnvItems;
+        }
+
+        // Cleanup internal field before rendering
+        unset($service['__resolved_env']);
+    }
+    unset($service);
+
+    // Build per-service lookup: envKey → [serviceName, ...]
+    $keyServices = [];
+    foreach ($services as $svcName => $svc) {
+        if (!empty($svc['environment']) && is_array($svc['environment'])) {
+            foreach ($svc['environment'] as $entry) {
+                if (preg_match('/^[^=]+=\$\{(.+)\}$/', $entry, $m)) {
+                    $keyServices[$m[1]][] = $svcName;
+                }
+            }
+        }
+    }
+
+    $lines = [];
+    $lastServices = null;
+    foreach ($globalEnv as $k => $v) {
+        // Add service-group comment when the owning service(s) change
+        $owners = $keyServices[$k] ?? [];
+        sort($owners);
+        if ($owners !== $lastServices) {
+            if (!empty($lines)) {
+                $lines[] = '';
+            }
+            $lines[] = '# ' . implode(', ', $owners);
+            $lastServices = $owners;
+        }
+        // Quote values that contain special characters to prevent .env parsing issues
+        if (preg_match('/[\s#$"\\\n]/', $v) || $v === '') {
+            $escaped = str_replace(['\\', '"', '$', "\n"], ['\\\\', '\\"', '\\$', '\\n'], $v);
+            $lines[] = "$k=\"$escaped\"";
+        } else {
+            $lines[] = "$k=$v";
+        }
+    }
+    return implode("\n", $lines) . (empty($lines) ? '' : "\n");
+}
+
+function dockerAddOverrideIcons(array $importedServices): string
+{
+    $yaml = "services:\n";
+    foreach ($importedServices as $serviceName => $service) {
+        $labels = ['net.unraid.docker.managed' => 'composeman'];
+        $icon = $service['icon'] ?? null;
+        $webui = $service['webui'] ?? null;
+        if ($icon) {
+            $labels['net.unraid.docker.icon'] = $icon;
+        }
+        if ($webui) {
+            $labels['net.unraid.docker.webui'] = $webui;
+        }
+
+        $yaml .= "  " . $serviceName . ":\n";
+        $yaml .= "    labels:\n";
+        foreach ($labels as $key => $val) {
+            $yaml .= "      " . $key . ": " . yamlQuoteValue($val) . "\n";
+        }
+    }
+    return $yaml;
+}
 
 function pruneOverrideContentServices(string $overrideContent, array $validServices): array
 {

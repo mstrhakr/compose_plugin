@@ -78,6 +78,398 @@ switch ($_POST['action']) {
         composeLogger("Created stack: $stackName", null, 'user', 'info', 'stack');
         echo json_encode(['result' => 'success', 'message' => '', 'project' => $stack->projectFolder, 'projectName' => $stack->getName()]);
         break;
+    case 'getDockerContainersForImport':
+        $candidates = getDockerManagerImportCandidates();
+        echo json_encode(['result' => 'success', 'containers' => $candidates]);
+        break;
+
+    case 'generateImportData':
+        // Rich import data for the 5-stage wizard — returns per-service metadata, port conflicts, networks
+        $containerIds = [];
+        if (!empty($_POST['containerIds'])) {
+            $data = json_decode($_POST['containerIds'], true);
+            if (is_array($data)) {
+                $containerIds = $data;
+            }
+        }
+        if (empty($containerIds)) {
+            echo json_encode(['result' => 'error', 'message' => 'No containers selected']);
+            break;
+        }
+
+        $importResult = buildImportServicesFromIds($containerIds);
+        $services = $importResult['services'];
+        $inspectData = $importResult['inspectData'];
+
+        if ($services === []) {
+            echo json_encode(['result' => 'error', 'message' => 'No valid Docker Manager containers found for import']);
+            break;
+        }
+
+        // Build per-service metadata for the wizard from inspect data
+        $servicesMeta = [];
+        foreach ($services as $name => $service) {
+            $info = $inspectData[$name];
+            $converted = dockerContainerToComposeService($info);
+            $origName = $converted['originalName'] ?? $name;
+
+            $serviceIcon = $info['Config']['Labels']['net.unraid.docker.icon'] ?? '';
+            $serviceWebui = $info['Config']['Labels']['net.unraid.docker.webui'] ?? '';
+
+            // Parse ports into structured data for the frontend
+            $parsedPorts = [];
+            if (!empty($service['ports'])) {
+                foreach ($service['ports'] as $portStr) {
+                    $parsedPorts[] = parsePortMapping($portStr);
+                }
+            }
+
+            $meta = [
+                'originalName' => $origName,
+                'containerName' => $service['container_name'] ?? $name,
+                'image' => $service['image'] ?? '',
+                'ports' => $parsedPorts,
+                'exposedPorts' => array_keys($service['__exposed_ports'] ?? []),
+                'icon' => $serviceIcon,
+                'webui' => $serviceWebui,
+                'networkMode' => $service['network_mode'] ?? null,
+                'networks' => $service['networks'] ?? [],
+                'networkIPs' => $service['__network_ips'] ?? [],
+            ];
+
+            // Healthcheck info
+            if (!empty($service['healthcheck'])) {
+                $meta['healthcheck'] = $service['healthcheck'];
+                $meta['healthcheckSource'] = $service['__healthcheck_source'] ?? 'image';
+            } elseif (!empty($service['__guessed_healthcheck'])) {
+                $meta['guessedHealthcheck'] = $service['__guessed_healthcheck'];
+                $meta['healthcheckSource'] = 'auto';
+            } else {
+                $meta['healthcheckSource'] = 'none';
+            }
+
+            $servicesMeta[$name] = $meta;
+        }
+
+        // Detect port conflicts across all services
+        $portConflicts = detectPortConflicts($services);
+
+        // Get available Docker networks
+        $dockerNetworks = getDockerNetworks();
+
+        echo json_encode([
+            'result' => 'success',
+            'services' => $servicesMeta,
+            'portConflicts' => $portConflicts,
+            'networks' => $dockerNetworks,
+        ]);
+        break;
+
+    case 'finalizeImportCompose':
+        // Accept full wizard config and generate final compose YAML with validation
+        $containerIds = [];
+        if (!empty($_POST['containerIds'])) {
+            $data = json_decode($_POST['containerIds'], true);
+            if (is_array($data)) {
+                $containerIds = $data;
+            }
+        }
+        if (empty($containerIds)) {
+            echo json_encode(['result' => 'error', 'message' => 'No containers selected']);
+            break;
+        }
+
+        // Decode wizard configuration
+        $containerNames = [];
+        if (!empty($_POST['containerNames'])) {
+            $data = json_decode($_POST['containerNames'], true);
+            if (is_array($data)) {
+                $containerNames = $data;
+            }
+        }
+        $networkConfig = [];
+        if (!empty($_POST['networkConfig'])) {
+            $data = json_decode($_POST['networkConfig'], true);
+            if (is_array($data)) {
+                $networkConfig = $data;
+            }
+        }
+        $healthchecks = [];
+        if (!empty($_POST['healthchecks'])) {
+            $data = json_decode($_POST['healthchecks'], true);
+            if (is_array($data)) {
+                $healthchecks = $data;
+            }
+        }
+        $dependencies = [];
+        if (!empty($_POST['dependencies'])) {
+            $data = json_decode($_POST['dependencies'], true);
+            if (is_array($data)) {
+                $dependencies = $data;
+            }
+        }
+
+        // Re-fetch and convert containers using shared helper
+        $importResult = buildImportServicesFromIds($containerIds);
+        $services = $importResult['services'];
+
+        if (empty($services)) {
+            echo json_encode(['result' => 'error', 'message' => 'No valid containers found']);
+            break;
+        }
+
+        // Apply wizard configuration to services
+        $wizardConfig = [
+            'containerNames' => $containerNames,
+            'networkConfig' => $networkConfig,
+            'healthchecks' => $healthchecks,
+            'dependencies' => $dependencies,
+        ];
+
+        $env = dockerResolveEnvAndCompose($services);
+        $composeYml = dockerServicesToComposeYml($services, $wizardConfig);
+        $override = dockerAddOverrideIcons($services);
+
+        // Validate the generated YAML
+        $validation = ['valid' => true, 'errors' => []];
+        try {
+            if (function_exists('yaml_parse')) {
+                $parsed = yaml_parse($composeYml);
+                if ($parsed === false) {
+                    $validation['valid'] = false;
+                    $validation['errors'][] = 'Generated YAML is not valid';
+                }
+            }
+        } catch (\Throwable $e) {
+            $validation['valid'] = false;
+            $validation['errors'][] = 'YAML parse error: ' . $e->getMessage();
+        }
+
+        echo json_encode([
+            'result' => 'success',
+            'composeYml' => $composeYml,
+            'env' => $env,
+            'override' => $override,
+            'validation' => $validation,
+        ]);
+        break;
+
+    case 'performImportTransfer':
+        $stackName = trim($_POST['stackName'] ?? '');
+        $stackDesc = trim($_POST['stackDesc'] ?? '');
+        $stopContainers = (!empty($_POST['stopContainers']) && $_POST['stopContainers'] === '1');
+        $removeContainers = (!empty($_POST['removeContainers']) && $_POST['removeContainers'] === '1');
+        $startStack = (!empty($_POST['startStack']) && $_POST['startStack'] === '1');
+        $composeYml = trim($_POST['composeYml'] ?? '');
+        $env = trim($_POST['env'] ?? '');
+        $override = trim($_POST['override'] ?? '');
+
+        if ($stackName === '') {
+            echo json_encode(['result' => 'error', 'message' => 'Stack name is required']);
+            break;
+        }
+
+        if ($composeYml === '') {
+            echo json_encode(['result' => 'error', 'message' => 'Compose content is required']);
+            break;
+        }
+
+        if ($removeContainers && !$stopContainers) {
+            // Enforce logical dependency (remove implies stop)
+            $stopContainers = true;
+        }
+
+        if ($startStack && !$removeContainers) {
+            echo json_encode(['result' => 'error', 'message' => 'Cannot start imported stack without removing original containers — container names would conflict']);
+            break;
+        }
+
+        try {
+            $stackInfo = StackInfo::createNew($compose_root, $stackName, $stackDesc);
+        } catch (\RuntimeException $e) {
+            composeLogger('[stack] Failed to create import stack: ' . $e->getMessage(), null, 'daemon', 'error');
+            $userMessage = match (true) {
+                str_contains($e->getMessage(), 'cannot be empty') => 'Stack name cannot be empty.',
+                str_contains($e->getMessage(), 'empty folder name') => 'Invalid stack name.',
+                str_contains($e->getMessage(), 'unique folder name') => 'Could not create a unique folder for this stack.',
+                str_contains($e->getMessage(), 'escape compose root') => 'Invalid stack name.',
+                str_contains($e->getMessage(), 'Invalid compose root') => 'Server configuration error.',
+                default => 'Failed to create stack. Check server logs for details.',
+            };
+            echo json_encode(['result' => 'error', 'message' => $userMessage]);
+            break;
+        }
+
+        // Helper to clean up the newly created stack folder on failure
+        $cleanupStack = function () use ($stackInfo) {
+            if (is_dir($stackInfo->path)) {
+                exec('rm -rf ' . escapeshellarg($stackInfo->path));
+                \StackInfo::clearCache();
+            }
+        };
+
+        $composePath = $stackInfo->composeFilePath;
+        $envPath = $stackInfo->getEnvFilePath() ?? $stackInfo->composeSource . '/.env';
+        $overridePath = $stackInfo->getOverridePath();
+
+        // Validate that the compose content is parseable YAML before writing
+        try {
+            if (function_exists('yaml_parse')) {
+                $parsed = yaml_parse($composeYml);
+                if ($parsed === false) {
+                    throw new \Exception('Invalid YAML');
+                }
+            }
+        } catch (\Throwable $e) {
+            $cleanupStack();
+            echo json_encode(['result' => 'error', 'message' => 'Generated compose YAML is invalid']);
+            break;
+        }
+
+        if (file_put_contents($composePath, $composeYml) === false) {
+            $cleanupStack();
+            echo json_encode(['result' => 'error', 'message' => 'Failed to write compose file']);
+            break;
+        }
+        if ($env !== '') {
+            if (file_put_contents($envPath, $env) === false) {
+                $cleanupStack();
+                echo json_encode(['result' => 'error', 'message' => 'Failed to write .env file']);
+                break;
+            }
+        }
+        if ($override !== '') {
+            if (file_put_contents($overridePath, $override) === false) {
+                $cleanupStack();
+                echo json_encode(['result' => 'error', 'message' => 'Failed to write override file']);
+                break;
+            }
+        }
+
+        $containerIds = [];
+        if (!empty($_POST['containerIds'])) {
+            $data = json_decode($_POST['containerIds'], true);
+            if (is_array($data)) {
+                $containerIds = $data;
+            }
+        }
+
+        // ── Two-phase atomic container operations with full rollback ──
+        if (($stopContainers || $removeContainers) && !empty($containerIds)) {
+            require_once('/usr/local/emhttp/plugins/dynamix.docker.manager/include/Helpers.php');
+            $dockerClient = new \DockerClient();
+            $dockerTemplates = new \DockerTemplates();
+
+            // Pre-snapshot: record each container's state and XML template for rollback
+            $containerSnapshots = [];
+            foreach ($containerIds as $id) {
+                $id = trim($id);
+                if ($id === '') {
+                    continue;
+                }
+                $details = $dockerClient->getContainerDetails($id);
+                if (!is_array($details)) {
+                    continue;
+                }
+                $containerName = ltrim(trim($details['Name'] ?? ''), '/');
+                $state = strtolower($details['State']['Status'] ?? 'unknown');
+                $xmlTemplate = $containerName !== '' ? $dockerTemplates->getUserTemplate($containerName) : false;
+                $containerSnapshots[] = [
+                    'id' => $id,
+                    'name' => $containerName,
+                    'state' => $state,          // running, paused, exited, etc.
+                    'xmlTemplate' => $xmlTemplate, // path or false
+                ];
+            }
+
+            // Rollback helper: restart containers that were stopped
+            $rollbackStopped = function (array $stoppedIds) {
+                foreach (array_reverse($stoppedIds) as $sid) {
+                    exec('docker start ' . escapeshellarg($sid) . ' 2>&1');
+                }
+            };
+
+            // Rollback helper: recreate containers that were removed from XML templates
+            $rollbackRemoved = function (array $removedSnapshots) {
+                foreach (array_reverse($removedSnapshots) as $snap) {
+                    if (empty($snap['xmlTemplate'])) {
+                        composeLogger('Cannot restore container ' . $snap['name'] . ': no XML template found', null, 'daemon', 'error', 'import');
+                        continue;
+                    }
+                    $cmdResult = xmlToCommand($snap['xmlTemplate']);
+                    if (!is_array($cmdResult) || empty($cmdResult[0])) {
+                        composeLogger('Failed to generate recreate command for ' . $snap['name'], null, 'daemon', 'error', 'import');
+                        continue;
+                    }
+                    $cmd = $cmdResult[0];
+                    if ($snap['state'] === 'running') {
+                        $cmd = str_replace('/docker create ', '/docker run -d ', $cmd);
+                    }
+                    exec($cmd . ' 2>&1', $cmdOutput, $exitCode);
+                    if ($exitCode !== 0) {
+                        composeLogger('Failed to recreate container ' . $snap['name'] . ': exit ' . $exitCode, null, 'daemon', 'error', 'import');
+                    }
+                }
+            };
+
+            // Phase 1: STOP all running/paused containers
+            $stoppedIds = [];
+            $stopFailed = false;
+            $failedName = '';
+            foreach ($containerSnapshots as $snap) {
+                if ($snap['state'] !== 'running' && $snap['state'] !== 'paused') {
+                    continue; // Already stopped
+                }
+                exec('docker stop ' . escapeshellarg($snap['id']) . ' 2>&1', $stopOutput, $exitCode);
+                if ($exitCode !== 0) {
+                    $stopFailed = true;
+                    $failedName = $snap['name'];
+                    break;
+                }
+                $stoppedIds[] = $snap['id'];
+            }
+
+            if ($stopFailed) {
+                $rollbackStopped($stoppedIds);
+                $cleanupStack();
+                echo json_encode(['result' => 'error', 'message' => 'Failed to stop container "' . $failedName . '". Import rolled back — no containers were changed.']);
+                break;
+            }
+
+            // Phase 2: REMOVE all containers (if requested)
+            if ($removeContainers) {
+                $removedSnapshots = [];
+                $rmFailed = false;
+                $failedName = '';
+                foreach ($containerSnapshots as $snap) {
+                    exec('docker rm -f ' . escapeshellarg($snap['id']) . ' 2>&1', $rmOutput, $exitCode);
+                    if ($exitCode !== 0) {
+                        $rmFailed = true;
+                        $failedName = $snap['name'];
+                        break;
+                    }
+                    $removedSnapshots[] = $snap;
+                }
+
+                if ($rmFailed) {
+                    $rollbackRemoved($removedSnapshots);
+                    $cleanupStack();
+                    echo json_encode(['result' => 'error', 'message' => 'Failed to remove container "' . $failedName . '". Import rolled back — containers restored from Docker Manager templates.']);
+                    break;
+                }
+            }
+        }
+
+        echo json_encode([
+            'result' => 'success',
+            'message' => 'Stack imported successfully',
+            'project' => $stackInfo->projectFolder,
+            'projectName' => $stackInfo->getName(),
+            'projectPath' => $stackInfo->path,
+            'startStack' => $startStack ? 1 : 0
+        ]);
+
+        break;
     case 'deleteStack':
         $stackName = isset($_POST['stackName']) ? basename(trim($_POST['stackName'])) : "";
         if (!$stackName) {

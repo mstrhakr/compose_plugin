@@ -5,6 +5,7 @@ parameters:
     - page
   paths:
     - source/compose.manager/include
+    - source/compose.manager/
   excludePaths:
     - */vendor/*
   ignoreErrors:
@@ -12,6 +13,10 @@ parameters:
     - messages:
         - "#/usr/local/emhttp/plugins/.*.php#"
       identifier: requireOnce.fileNotFound
+    # Platform-specific paths (Unraid emhttp)
+    - messages:
+        - "#/usr/local/emhttp/plugins/.*.php#"
+      identifier: include.fileNotFound
     # Platform helper functions
     - messages:
         - "#autov#"
@@ -23,9 +28,14 @@ parameters:
     # Platform classes (Docker management)
     - messages:
         - "#DockerClient#"
+        - "#DockerTemplates#"
         - "#DockerUpdate#"
         - "#DockerUtil#"
       identifier: class.notFound
+    # Platform functions (Docker management)
+    - messages:
+        - "#xmlToCommand#"
+      identifier: function.notFound
     # Global variables from platform/defines.php
     - message: "#Variable \\$\\w+ might not be defined#"
       identifier: variable.undefined

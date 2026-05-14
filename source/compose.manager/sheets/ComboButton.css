@@ -45,6 +45,7 @@
     max-width: 90vw;
     width: 100%;
     max-height: 80vh;
+    min-height: 0;
     padding: 0;
     overflow: hidden;
     font-family: inherit;
@@ -69,10 +70,16 @@
     padding: 24px;
     overflow-y: auto;
     max-height: 60vh;
-    min-height: 40px;
+    min-height: 0;
     /* If body has a list, let it scroll inside */
     display: flex;
     flex-direction: column;
+    flex: 1 1 auto;
+  }
+
+  .compose-modal-body > * {
+    flex-shrink: 0;
+    min-height: 0;
   }
   /* Helper: scrollable container list inside modal body */
   .compose-modal-list {
@@ -327,6 +334,603 @@
   .compose-ct-table .ct-col-net {
     width: 8%;
   }
+
+  /* ============================================
+     Import Wizard — 5-Stage Stepper (Basic / Advanced)
+     ============================================ */
+
+  .import-wizard-stepper {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px 24px;
+    gap: 0;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--alt-background-color);
+    flex-wrap: wrap;
+  }
+
+  .import-wizard-step {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.85rem;
+    color: var(--alt-text-color);
+    white-space: nowrap;
+    opacity: 0.5;
+    transition: opacity 0.2s ease, color 0.2s ease;
+  }
+
+  .import-wizard-step.active {
+    opacity: 1;
+    color: var(--brand-orange);
+    font-weight: 600;
+  }
+
+  .import-wizard-step.completed {
+    opacity: 0.8;
+    color: var(--status-success);
+  }
+
+  .import-wizard-step-number {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 2px solid currentColor;
+    font-size: 0.75rem;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  .import-wizard-step.completed .import-wizard-step-number {
+    background: var(--status-success);
+    color: var(--button-text-color, #fff);
+    border-color: var(--status-success);
+  }
+
+  .import-wizard-step.active .import-wizard-step-number {
+    background: var(--brand-orange);
+    color: var(--button-text-color, #fff);
+    border-color: var(--brand-orange);
+  }
+
+  .import-wizard-step-connector {
+    width: 24px;
+    height: 2px;
+    background: var(--border-color);
+    margin: 0 6px;
+    flex-shrink: 0;
+  }
+
+  .import-wizard-step.completed + .import-wizard-step-connector {
+    background: var(--status-success);
+  }
+
+  /* ============================================
+     Import Wizard — Service Configuration Cards
+     ============================================ */
+
+  .import-service-card {
+    background-color: var(--dynamix-tablesorter-tbody-row-alt-bg-color);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    margin-bottom: 16px;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+
+  .import-service-card-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 18px;
+    background: var(--alt-background-color);
+    border-bottom: 1px solid var(--border-color);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .import-service-card-header:hover {
+    background: var(--dynamix-tablesorter-tbody-row-alt-bg-color);
+  }
+
+  .import-service-card-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 4px;
+    object-fit: contain;
+    background: var(--background-color);
+    padding: 2px;
+    flex-shrink: 0;
+  }
+
+  .import-service-card-title {
+    font-weight: 600;
+    font-size: 1.05rem;
+    color: var(--text-color);
+    flex: 1;
+  }
+
+  .import-service-card-image {
+    font-size: 0.85rem;
+    color: var(--alt-text-color);
+    font-family: var(--font-bitstream);
+  }
+
+  .import-service-card-toggle {
+    color: var(--alt-text-color);
+    font-size: 0.85rem;
+    transition: transform 0.2s ease;
+  }
+
+  .import-service-card.expanded .import-service-card-toggle {
+    transform: rotate(90deg);
+  }
+
+  .import-service-card-body {
+    padding: 18px;
+    display: none;
+    min-height: 0;
+  }
+
+  .import-service-card.expanded .import-service-card-body {
+    display: block;
+  }
+
+  .import-field-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+  }
+
+  .import-field-row:last-child {
+    margin-bottom: 0;
+  }
+
+  .import-field {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 180px;
+  }
+
+  .import-field label {
+    font-size: 0.9rem;
+    color: var(--alt-text-color);
+    margin-bottom: 6px;
+    font-weight: 500;
+  }
+
+  .import-field input[type="text"],
+  .import-field select {
+    padding: 8px 12px;
+    background-color: var(--input-background-color);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-color);
+    font-size: 0.95rem;
+    transition: border-color 0.2s ease;
+  }
+
+  .import-field input:focus,
+  .import-field select:focus {
+    outline: none;
+    border-color: var(--brand-orange);
+    box-shadow: 0 0 0 2px rgba(227, 120, 33, 0.15);
+  }
+
+  .import-field input.import-name-error {
+    border-color: var(--status-error);
+    box-shadow: 0 0 0 2px rgba(244, 67, 54, 0.15);
+  }
+
+  .import-field .import-field-error {
+    color: var(--status-error);
+    font-size: 0.8rem;
+    margin-top: 4px;
+  }
+
+  /* Port conflict badge */
+  .import-conflict-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    background: rgba(255, 152, 0, 0.15);
+    color: var(--status-warning, #ff9800);
+    border-radius: 4px;
+    font-size: 0.8rem;
+    font-weight: 500;
+  }
+
+  .import-conflict-banner {
+    padding: 10px 16px;
+    margin-bottom: 16px;
+    background: rgba(255, 152, 0, 0.1);
+    border: 1px solid rgba(255, 152, 0, 0.3);
+    border-radius: 6px;
+    color: var(--status-warning, #ff9800);
+    font-size: 0.9rem;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .import-conflict-banner i {
+    margin-top: 2px;
+    flex-shrink: 0;
+  }
+
+  /* Healthcheck collapsible section */
+  .import-healthcheck-section {
+    margin-top: 12px;
+    padding: 12px;
+    background: var(--background-color);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+  }
+
+  .import-healthcheck-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .import-healthcheck-header span {
+    font-weight: 500;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .import-healthcheck-source {
+    font-size: 0.75rem;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+
+  .import-healthcheck-source.from-image {
+    background: rgba(76, 175, 80, 0.15);
+    color: var(--status-success);
+  }
+
+  .import-healthcheck-source.auto-detected {
+    background: rgba(33, 150, 243, 0.15);
+    color: var(--status-info, #2196f3);
+  }
+
+  .import-healthcheck-source.none {
+    background: var(--dynamix-tablesorter-tbody-row-alt-bg-color);
+    color: var(--alt-text-color);
+  }
+
+  .import-healthcheck-fields {
+    display: none;
+    margin-top: 10px;
+    gap: 10px;
+  }
+
+  .import-healthcheck-section.expanded .import-healthcheck-fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  }
+
+  .import-healthcheck-fields .import-field {
+    min-width: 120px;
+  }
+
+  .import-healthcheck-fields .import-field.full-width {
+    grid-column: 1 / -1;
+    min-width: 100%;
+  }
+
+  /* Network attachment checkboxes */
+  .import-net-checks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 4px;
+  }
+
+  .import-net-checks label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.85rem;
+    color: var(--text-color);
+    cursor: pointer;
+  }
+
+  .import-net-checks input[type="checkbox"] {
+    margin: 0;
+  }
+
+  .import-net-checks label.disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  /* Ports read-only list */
+  .import-port-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 4px;
+  }
+
+  .import-port-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    background: var(--background-color);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-size: 0.82rem;
+    font-family: var(--font-bitstream);
+  }
+
+  .import-port-tag.conflict {
+    border-color: var(--status-warning, #ff9800);
+    background: rgba(255, 152, 0, 0.08);
+  }
+
+  /* ============================================
+     Import Wizard — Dependencies Stage
+     ============================================ */
+
+  .import-deps-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+  }
+
+  .import-deps-table th {
+    text-align: left;
+    padding: 8px 12px;
+    background: var(--alt-background-color);
+    border-bottom: 2px solid var(--border-color);
+    font-weight: 600;
+    color: var(--alt-text-color);
+    font-size: 0.85rem;
+  }
+
+  .import-deps-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border-color);
+    vertical-align: top;
+  }
+
+  .import-dep-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+
+  .import-dep-row:last-child {
+    margin-bottom: 0;
+  }
+
+  .import-dep-row select {
+    padding: 6px 10px;
+    background-color: var(--input-background-color);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-color);
+    font-size: 0.85rem;
+  }
+
+  .import-dep-row select:focus {
+    outline: none;
+    border-color: var(--brand-orange);
+  }
+
+  .import-dep-add {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    font-size: 0.8rem;
+    color: var(--brand-orange);
+    background: none;
+    border: 1px dashed var(--brand-orange);
+    border-radius: 4px;
+    cursor: pointer;
+    margin-top: 4px;
+  }
+
+  .import-dep-add:hover {
+    background: rgba(227, 120, 33, 0.1);
+  }
+
+  .import-dep-remove {
+    background: none;
+    border: none;
+    color: var(--status-error);
+    cursor: pointer;
+    padding: 4px;
+    font-size: 0.9rem;
+  }
+
+  .import-dep-remove:hover {
+    color: var(--status-error-hover, #f44336);
+  }
+
+  .import-dep-cycle-error {
+    padding: 10px 16px;
+    margin-bottom: 12px;
+    background: rgba(244, 67, 54, 0.1);
+    border: 1px solid rgba(244, 67, 54, 0.3);
+    border-radius: 6px;
+    color: var(--status-error);
+    font-size: 0.9rem;
+  }
+
+  .import-startup-order {
+    padding: 10px 16px;
+    margin-top: 12px;
+    background: rgba(76, 175, 80, 0.08);
+    border: 1px solid rgba(76, 175, 80, 0.2);
+    border-radius: 6px;
+    color: var(--status-success);
+    font-size: 0.88rem;
+  }
+
+  .import-startup-order span {
+    font-weight: 600;
+  }
+
+  /* ============================================
+     Import Wizard — Validation Stage
+     ============================================ */
+
+  .import-validation-bar {
+    padding: 12px 18px;
+    margin-bottom: 16px;
+    border-radius: 6px;
+    font-size: 0.95rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 500;
+  }
+
+  .import-validation-bar.valid {
+    background: rgba(76, 175, 80, 0.1);
+    border: 1px solid rgba(76, 175, 80, 0.3);
+    color: var(--status-success);
+  }
+
+  .import-validation-bar.error {
+    background: rgba(244, 67, 54, 0.1);
+    border: 1px solid rgba(244, 67, 54, 0.3);
+    color: var(--status-error);
+  }
+
+  .import-preview-section {
+    margin-bottom: 16px;
+  }
+
+  .import-preview-section-title {
+    font-weight: 600;
+    font-size: 0.95rem;
+    margin-bottom: 8px;
+    color: var(--text-color);
+  }
+
+  .import-preview-pre {
+    max-height: 300px;
+    overflow: auto;
+    background: var(--editor-background-color, var(--background-color));
+    color: var(--editor-text-color, var(--text-color));
+    padding: 12px 16px;
+    border-radius: 6px;
+    font-size: 0.88rem;
+    font-family: var(--font-bitstream);
+    line-height: 1.5;
+    white-space: pre;
+    border: 1px solid var(--border-color);
+  }
+
+  .import-summary-panel {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .import-summary-item {
+    padding: 10px 14px;
+    background: var(--dynamix-tablesorter-tbody-row-alt-bg-color);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    font-size: 0.88rem;
+  }
+
+  .import-summary-item strong {
+    color: var(--brand-orange);
+    display: block;
+    font-size: 0.8rem;
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+
+  /* Generating spinner */
+  .import-generating {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 60px 20px;
+    gap: 16px;
+    color: var(--alt-text-color);
+    font-size: 1.1rem;
+  }
+
+  .import-generating .fa-spinner {
+    font-size: 2.5rem;
+    color: var(--brand-orange);
+  }
+
+  /* External network add custom */
+  .import-ext-net-add {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  .import-ext-net-add input {
+    padding: 6px 10px;
+    background-color: var(--input-background-color);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-color);
+    font-size: 0.88rem;
+    flex: 1;
+    max-width: 250px;
+  }
+
+  .import-ext-net-add button {
+    padding: 6px 12px;
+    background: var(--brand-orange);
+    color: var(--button-text-color, #fff);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+
+  .import-ext-net-add button:hover {
+    opacity: 0.85;
+  }
+
+  /* Wizard modal sizing override */
+  .compose-modal.import-wizard-modal {
+    max-width: 880px;
+    width: 95%;
+    max-height: calc(100vh - 120px);
+  }
+
+  .compose-modal.import-wizard-modal .compose-modal-body {
+    max-height: calc(100vh - 260px);
+    min-height: 0;
+    overflow-y: auto;
+  }
+
 
   .compose-ct-table .ct-col-ip {
     width: 8%;

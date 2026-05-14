@@ -18,6 +18,7 @@ $ui_patch_help_class = $option_patch_ui ? "hidden" : "inline_help"; // hide help
 
 $projects_exist = intval(shell_exec("ls -l " . $compose_root . " | grep ^d | wc -l")) != 0;
 
+// @phpstan-ignore-next-line
 $pluginVersion = get_plugin_attr('version', '/var/log/plugins/compose.manager.plg') ?: 'unknown';
 $composeCliVersion = trim(shell_exec('docker compose version --short 2>/dev/null') ?? '');
 

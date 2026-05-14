@@ -12,6 +12,7 @@ declare(strict_types=1);
 namespace ComposeManager\Tests;
 
 use OverrideInfo;
+use StackInfo;
 use PluginTests\TestCase;
 use PluginTests\Mocks\FunctionMocks;
 
@@ -95,7 +96,7 @@ class ComposeUtilTest extends TestCase
      */
     public function testEchoComposeCommandNchanFormat(): void
     {
-        global $compose_root, $plugin_root;
+        global $compose_root;
         $tempDir = $this->createTempDir();
         $compose_root = $tempDir;
         
@@ -271,7 +272,8 @@ class ComposeUtilTest extends TestCase
         mkdir($stackDir, 0755, true);
         file_put_contents("$stackDir/" . COMPOSE_FILE_NAMES[0], "services:\n  web:\n    image: nginx\n");
         
-        $overrideInfo = OverrideInfo::fromStack($tempDir, $stackName);
+        $stackInfo = \StackInfo::fromProject($tempDir, $stackName);
+        $overrideInfo = \OverrideInfo::fromStackInfo($stackInfo);
         file_put_contents($overrideInfo->getOverridePath(), "services:\n  web:\n    ports:\n      - 80:80\n");
                 
         $sanitizedStackName = \StackInfo::sanitizeProjectString($stackName);
