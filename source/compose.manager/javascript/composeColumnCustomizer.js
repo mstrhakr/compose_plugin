@@ -5,62 +5,23 @@
 (function() {
     'use strict';
 
-    var STACK_COLS = {
-        update: 'Update',
-        containers: 'Containers',
-        uptime: 'Uptime',
-        health: 'Health',
-        cpu: 'CPU %',
-        memory: 'Memory',
-        net_io: 'Network I/O',
-        block_io: 'Disk I/O',
-        description: 'Description',
-        path: 'Path'
-    };
+    var composeBootstrap = window.composeManagerBootstrap || {};
+    var columnModel = composeBootstrap.columnModel || {};
 
-    var SERVICE_COLS = {
-        update: 'Update',
-        health: 'Health',
-        cpu: 'CPU %',
-        memory: 'Memory',
-        net_io: 'Network I/O',
-        block_io: 'Disk I/O',
-        source: 'Source',
-        tag: 'Tag',
-        net: 'Network',
-        ip: 'IP',
-        cport: 'Container Port',
-        lport: 'LAN IP:Port'
-    };
+    var STACK_COLS = $.extend({}, columnModel.stackCols || {});
+    var SERVICE_COLS = $.extend({}, columnModel.serviceCols || {});
 
     var defaults = {
-        stack: {
-            update: true,
-            containers: true,
-            uptime: true,
-            health: true,
-            cpu: true,
-            memory: true,
-            net_io: false,
-            block_io: false,
-            description: true,
-            path: true
-        },
-        service: {
-            update: true,
-            health: true,
-            cpu: true,
-            memory: true,
-            net_io: false,
-            block_io: false,
-            source: true,
-            tag: true,
-            net: true,
-            ip: true,
-            cport: true,
-            lport: true
-        }
+        stack: $.extend({}, (columnModel.defaults || {}).stack || {}),
+        service: $.extend({}, (columnModel.defaults || {}).service || {})
     };
+
+    if (!Object.keys(defaults.stack).length || !Object.keys(defaults.service).length) {
+        if (typeof composeLogger === 'function') {
+            composeLogger('Column model bootstrap missing; customizer disabled for this page load', null, 'user', 'warning', 'column-layout');
+        }
+        return;
+    }
 
     var prefs = {
         stack: $.extend({}, defaults.stack),
@@ -69,25 +30,26 @@
         serviceOrder: Object.keys(defaults.service).filter(function(key) { return defaults.service[key]; })
     };
 
-    var STACK_WIDTH_WEIGHTS = {
-        name: 23,
-        update: 16,
-        containers: 8,
-        uptime: 9,
-        health: 9,
-        cpu: 10,
-        memory: 13,
-        net_io: 10,
-        block_io: 10,
-        description: 14,
-        path: 12,
-        autostart: 8
-    };
+    // Seed from the server-provided layout synchronously so the very first
+    // reapply()/reorder pass uses the saved order — the table is already
+    // server-rendered in this order, so reapply is a no-op (no visible snap).
+    // The async fetchPrefs() below simply refreshes the same values.
+    try {
+        var bootstrapLayout = composeBootstrap.columnLayout;
+        if (bootstrapLayout) {
+            prefs = normalizePrefs(bootstrapLayout);
+            if (typeof composeLogger === 'function') {
+                composeLogger('Applied bootstrap column layout', {
+                    stackVisible: (prefs.stackOrder || []).length,
+                    serviceVisible: (prefs.serviceOrder || []).length
+                }, 'user', 'debug', 'column-layout');
+            }
+        }
+    } catch (e) { /* fall back to defaults */ }
 
-    var STACK_DEFAULT_VISIBLE = {
-        name: true,
-        autostart: true
-    };
+    var STACK_WIDTH_WEIGHTS = $.extend({}, columnModel.stackWidthWeights || {});
+
+    var STACK_DEFAULT_VISIBLE = $.extend({}, columnModel.stackAlwaysVisible || {});
 
     var STACK_CELL_CLASS_MAP = {
         update: 'col-update',
@@ -132,6 +94,17 @@
         lport: 'ct-col-lport-cell'
     };
 
+    function toBooleanLike(value, fallback) {
+        if (value === true || value === false) return value;
+        if (value === 1 || value === 0) return value === 1;
+        if (typeof value === 'string') {
+            var normalized = value.trim().toLowerCase();
+            if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') return true;
+            if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off' || normalized === '') return false;
+        }
+        return !!fallback;
+    }
+
     function normalizePrefs(incoming) {
         var out = {
             stack: $.extend({}, defaults.stack),
@@ -145,7 +118,7 @@
             if (!incoming[scope] || typeof incoming[scope] !== 'object') return;
             Object.keys(out[scope]).forEach(function(key) {
                 if (Object.prototype.hasOwnProperty.call(incoming[scope], key)) {
-                    out[scope][key] = !!incoming[scope][key];
+                    out[scope][key] = toBooleanLike(incoming[scope][key], out[scope][key]);
                 }
             });
         });
@@ -535,12 +508,26 @@
             }
             if (parsed && parsed.result === 'success' && parsed.visibility) {
                 prefs = normalizePrefs(parsed.visibility);
+                if (typeof composeLogger === 'function') {
+                    composeLogger('Fetched column visibility preferences', {
+                        stackVisible: (prefs.stackOrder || []).length,
+                        serviceVisible: (prefs.serviceOrder || []).length
+                    }, 'user', 'debug', 'column-layout');
+                }
             } else {
                 prefs = normalizePrefs(null);
+                if (typeof composeLogger === 'function') {
+                    composeLogger('Column visibility fetch returned fallback payload; using defaults', {
+                        result: parsed && parsed.result ? parsed.result : 'invalid'
+                    }, 'user', 'debug', 'column-layout');
+                }
             }
             if (typeof cb === 'function') cb();
         }).fail(function() {
             prefs = normalizePrefs(null);
+            if (typeof composeLogger === 'function') {
+                composeLogger('Column visibility fetch failed; using defaults', null, 'user', 'warning', 'column-layout');
+            }
             if (typeof cb === 'function') cb();
         });
     }
@@ -560,9 +547,22 @@
             }
             if (parsed && parsed.result === 'success' && parsed.visibility) {
                 prefs = normalizePrefs(parsed.visibility);
+                if (typeof composeLogger === 'function') {
+                    composeLogger('Saved column visibility preferences', {
+                        stackVisible: (prefs.stackOrder || []).length,
+                        serviceVisible: (prefs.serviceOrder || []).length
+                    }, 'user', 'debug', 'column-layout');
+                }
+            } else if (typeof composeLogger === 'function') {
+                composeLogger('Column visibility save returned non-success payload', {
+                    result: parsed && parsed.result ? parsed.result : 'invalid'
+                }, 'user', 'warning', 'column-layout');
             }
             if (typeof cb === 'function') cb();
         }).fail(function() {
+            if (typeof composeLogger === 'function') {
+                composeLogger('Column visibility save request failed', null, 'user', 'warning', 'column-layout');
+            }
             if (typeof cb === 'function') cb();
         });
     }
@@ -662,5 +662,10 @@
 
     $(function() {
         window.composeColCustomizer.init();
+        $(document).on('composeListRefreshed.composeColumnCustomizer', function() {
+            if (window.composeColCustomizer && typeof window.composeColCustomizer.reapply === 'function') {
+                window.composeColCustomizer.reapply();
+            }
+        });
     });
 })();

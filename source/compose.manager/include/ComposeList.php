@@ -7,8 +7,14 @@
 
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Defines.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Util.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/ColumnLayout.php");
 
 $cfg = parse_plugin_cfg($sName);
+
+// Resolve saved column order so rows render in the user's chosen order on first
+// paint. Hidden columns are still emitted (hide-col-* on the table controls
+// visibility); the client customizer's reapply() becomes a no-op on load.
+$stackColumnOrder = compose_stack_render_order(compose_read_column_layout());
 
 $mode = isset($_GET['mode']) ? trim((string)$_GET['mode']) : 'html';
 if ($mode === 'list') {
@@ -235,53 +241,69 @@ foreach ($stackInfos as $stackInfo) {
     $o .= "</span>";
     $o .= "</td>";
 
+    // Toggleable columns are built into a keyed map and emitted below in the
+    // user's saved order, so rows render correctly on first paint.
+    $stackCells = [];
+
     // Update column (like Docker tab) - default to "not checked" until update check runs
-    $o .= "<td class='col-update compose-updatecolumn'>";
+    $updateCell = "<td class='col-update compose-updatecolumn'>";
     if ($isrunning) {
-        $o .= "<span class='grey-text' style='white-space:nowrap;cursor:default;' title='Click Check for Updates to check'><i class='fa fa-question-circle fa-fw'></i> not checked</span>";
+        $updateCell .= "<span class='grey-text' style='white-space:nowrap;cursor:default;' title='Click Check for Updates to check'><i class='fa fa-question-circle fa-fw'></i> not checked</span>";
     } else {
-        $o .= "<span class='grey-text' style='white-space:nowrap;'><i class='fa fa-stop fa-fw'></i> stopped</span>";
+        $updateCell .= "<span class='grey-text' style='white-space:nowrap;'><i class='fa fa-stop fa-fw'></i> stopped</span>";
     }
-    $o .= "</td>";
+    $updateCell .= "</td>";
+    $stackCells['update'] = $updateCell;
 
     // Containers column (shows running/total)
     $containersDisplay = $isrunning ? "$runningCount / $containerCount" : "0 / $containerCount";
     $containersClass = ($runningCount == $containerCount && $runningCount > 0) ? 'green-text' : ($runningCount > 0 ? 'orange-text' : 'grey-text');
-    $o .= "<td class='col-containers'><span class='$containersClass'>$containersDisplay</span></td>";
+    $stackCells['containers'] = "<td class='col-containers'><span class='$containersClass'>$containersDisplay</span></td>";
 
     // Uptime column (both basic and advanced views)
     $uptimeDisplay = $stackUptime;
     $uptimeClass = $isrunning ? 'green-text' : 'grey-text';
-    $o .= "<td class='col-uptime'><span class='$uptimeClass'>$uptimeDisplay</span></td>";
+    $stackCells['uptime'] = "<td class='col-uptime'><span class='$uptimeClass'>$uptimeDisplay</span></td>";
 
     // Health column (updated from detailed inspect data by frontend; initial fallback here)
     $healthDisplay = $isrunning ? 'n/a' : 'stopped';
     $healthClass = $isrunning ? 'compose-text-muted' : 'grey-text';
-    $o .= "<td class='col-health'><span class='$healthClass'>$healthDisplay</span></td>";
+    $stackCells['health'] = "<td class='col-health'><span class='$healthClass'>$healthDisplay</span></td>";
 
     // Metric columns (advanced only)
-    $o .= "<td class='cm-advanced col-cpu compose-load-cell'>";
-    $o .= "<span class='compose-stack-cpu-$id compose-text-muted'>-</span>";
-    $o .= "<div class='usage-disk mm'><span id='compose-stack-cpu-bar-$id' style='width:0'></span><span></span></div>";
-    $o .= "</td>";
+    $cpuCell = "<td class='cm-advanced col-cpu compose-load-cell'>";
+    $cpuCell .= "<span class='compose-stack-cpu-$id compose-text-muted'>-</span>";
+    $cpuCell .= "<div class='usage-disk mm'><span id='compose-stack-cpu-bar-$id' style='width:0'></span><span></span></div>";
+    $cpuCell .= "</td>";
+    $stackCells['cpu'] = $cpuCell;
 
-    $o .= "<td class='cm-advanced col-memory compose-load-cell'>";
-    $o .= "<span class='compose-stack-mem-$id compose-text-muted'>-</span>";
-    $o .= "<div class='usage-disk mm'><span id='compose-stack-mem-bar-$id' style='width:0'></span><span></span></div>";
-    $o .= "</td>";
+    $memCell = "<td class='cm-advanced col-memory compose-load-cell'>";
+    $memCell .= "<span class='compose-stack-mem-$id compose-text-muted'>-</span>";
+    $memCell .= "<div class='usage-disk mm'><span id='compose-stack-mem-bar-$id' style='width:0'></span><span></span></div>";
+    $memCell .= "</td>";
+    $stackCells['memory'] = $memCell;
 
-    $o .= "<td class='cm-advanced col-net_io'><span class='compose-stack-netio-$id compose-text-muted'>-</span></td>";
-    $o .= "<td class='cm-advanced col-block_io'><span class='compose-stack-blockio-$id compose-text-muted'>-</span></td>";
+    $stackCells['net_io'] = "<td class='cm-advanced col-net_io'><span class='compose-stack-netio-$id compose-text-muted'>-</span></td>";
+    $stackCells['block_io'] = "<td class='cm-advanced col-block_io'><span class='compose-stack-blockio-$id compose-text-muted'>-</span></td>";
 
     // Description column (advanced only)
-    $o .= "<td class='cm-advanced col-description' style='overflow-wrap:break-word;word-wrap:break-word;'>";
+    $descriptionCell = "<td class='cm-advanced col-description' style='overflow-wrap:break-word;word-wrap:break-word;'>";
     if ($hasInvalidIndirect) {
-        $o .= "<div class='orange-text' style='margin-bottom:4px;font-size:0.85em;'><i class='fa fa-warning'></i> External compose path unavailable, using local stack path.</div>";
+        $descriptionCell .= "<div class='orange-text' style='margin-bottom:4px;font-size:0.85em;'><i class='fa fa-warning'></i> External compose path unavailable, using local stack path.</div>";
     }
-    $o .= "<span class='docker_readmore'>$descriptionHtml</span></td>";
+    $descriptionCell .= "<span class='docker_readmore'>$descriptionHtml</span></td>";
+    $stackCells['description'] = $descriptionCell;
 
     // Path column (advanced only)
-    $o .= "<td class='cm-advanced col-path compose-text-muted' style='font-size:12px;'>$pathHtml</td>";
+    $stackCells['path'] = "<td class='cm-advanced col-path compose-text-muted' style='font-size:12px;'>$pathHtml</td>";
+
+    // Emit toggleable columns in the saved order (hidden columns still render;
+    // hide-col-* classes on the table control their visibility).
+    foreach ($stackColumnOrder as $stackCol) {
+        if (isset($stackCells[$stackCol])) {
+            $o .= $stackCells[$stackCol];
+        }
+    }
 
     // Auto Start toggle
     $o .= "<td class='nine col-autostart'>";

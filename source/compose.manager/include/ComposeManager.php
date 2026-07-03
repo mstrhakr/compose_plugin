@@ -7,9 +7,29 @@
 
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Defines.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Util.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/ColumnLayout.php");
 
 // Load plugin config
 $cfg = parse_plugin_cfg($sName);
+
+// Resolve the saved column layout so the stack table renders in the user's
+// chosen order/visibility/widths on first paint (no client-side reorder snap).
+$columnLayout = compose_read_column_layout();
+$columnModel = compose_column_client_model();
+$stackColumnOrder = compose_stack_render_order($columnLayout);
+$stackColumnMeta = compose_stack_column_meta();
+$stackHiddenColumns = compose_stack_hidden_columns($columnLayout);
+$stackWidthFractions = compose_stack_width_fractions($columnLayout);
+composeLogger('Prepared column model bootstrap', [
+    'stackCols' => count($columnModel['stackCols'] ?? []),
+    'serviceCols' => count($columnModel['serviceCols'] ?? []),
+    'stackVisible' => count($columnLayout['stackOrder'] ?? []),
+    'serviceVisible' => count($columnLayout['serviceOrder'] ?? []),
+], 'user', 'debug', 'column-layout');
+$stackHideClass = '';
+foreach ($stackHiddenColumns as $hiddenCol) {
+    $stackHideClass .= ' hide-col-' . $hiddenCol;
+}
 $autoCheckUpdates = ($cfg['AUTO_CHECK_UPDATES'] ?? 'false') === 'true';
 $autoCheckDays = floatval($cfg['AUTO_CHECK_UPDATES_DAYS'] ?? '1');
 $showComposeOnTop = ($cfg['SHOW_COMPOSE_ON_TOP'] ?? 'false') === 'true';
@@ -78,18 +98,9 @@ if ($cpuCount <= 0) {
         --cm-col-arrow-px: 24px;
         --cm-col-icon-px: 48px;
         --cm-col-fixed-px: calc(var(--cm-col-arrow-px) + var(--cm-col-icon-px));
-        --cm-col-name-frac: 0.188524590;
-        --cm-col-update-frac: 0.131147541;
-        --cm-col-containers-frac: 0.065573770;
-        --cm-col-uptime-frac: 0.073770492;
-        --cm-col-health-frac: 0.073770492;
-        --cm-col-cpu-frac: 0.081967213;
-        --cm-col-memory-frac: 0.106557377;
-        --cm-col-net-io-frac: 0.000000000;
-        --cm-col-block-io-frac: 0.000000000;
-        --cm-col-description-frac: 0.114754098;
-        --cm-col-path-frac: 0.098360656;
-        --cm-col-autostart-frac: 0.065573770;
+<?php foreach ($stackWidthFractions as $fracCol => $fracVal): ?>
+        --cm-col-<?php echo str_replace('_', '-', $fracCol); ?>-frac: <?php echo number_format($fracVal, 9, '.', ''); ?>;
+<?php endforeach; ?>
     }
 
     /* Stabilize header row height across basic/advanced toggle transitions */
@@ -356,7 +367,9 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         composeSystemMemBytes: <?php echo json_encode($composeSystemMemBytes); ?>,
         composeCpuCount: <?php echo json_encode($cpuCount); ?>,
         comboButtonCss: "<?php autov('/plugins/compose.manager/sheets/ComboButton.css'); ?>",
-        editorModalCss: "<?php autov('/plugins/compose.manager/sheets/EditorModal.css'); ?>"
+        editorModalCss: "<?php autov('/plugins/compose.manager/sheets/EditorModal.css'); ?>",
+        columnModel: <?php echo json_encode($columnModel); ?>,
+        columnLayout: <?php echo json_encode($columnLayout); ?>
     };
 
     var composeBootstrap = window.composeManagerBootstrap || {};
@@ -399,7 +412,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
     <span class='tipsterallowed' hidden></span>
     <div class="TableContainer">
-        <table id="compose_stacks" class="tablesorter shift" style="table-layout:fixed;width:100%">
+        <table id="compose_stacks" class="tablesorter shift<?php echo $stackHideClass; ?>" style="table-layout:fixed;width:100%">
             <thead>
                 <tr>
                     <th class="col-arrow">
@@ -409,16 +422,10 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                     </th>
                     <th class="col-icon"></th>
                     <th class="col-name">Stack</th>
-                    <th class="col-update">Update</th>
-                    <th class="col-containers">Containers</th>
-                    <th class="col-uptime">Uptime</th>
-                    <th class="col-health">Health</th>
-                    <th class="cm-advanced col-cpu">CPU</th>
-                    <th class="cm-advanced col-memory">Memory</th>
-                    <th class="cm-advanced col-net_io">Net I/O</th>
-                    <th class="cm-advanced col-block_io">Disk I/O</th>
-                    <th class="cm-advanced col-description">Description</th>
-                    <th class="cm-advanced col-path">Path</th>
+<?php foreach ($stackColumnOrder as $stackCol): ?>
+<?php if (!isset($stackColumnMeta[$stackCol])) continue; ?>
+                    <th class="<?php echo $stackColumnMeta[$stackCol]['thClass']; ?>"><?php echo htmlspecialchars($stackColumnMeta[$stackCol]['label'], ENT_QUOTES, 'UTF-8'); ?></th>
+<?php endforeach; ?>
                     <th class="nine col-autostart">Autostart</th>
                 </tr>
             </thead>

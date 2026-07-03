@@ -2,6 +2,7 @@
 
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Defines.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Util.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/ColumnLayout.php");
 require_once("/usr/local/emhttp/plugins/dynamix/include/Wrappers.php");
 require_once('/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php');
 
@@ -160,165 +161,60 @@ switch ($_POST['action']) {
         echo json_encode(['result' => 'success', 'config' => $cfg]);
         break;
     case 'getColumnVisibility':
-        $prefFile = '/boot/config/plugins/compose.manager/column_visibility.json';
-        $defaults = [
-            'stack' => [
-                'update' => true,
-                'containers' => true,
-                'uptime' => true,
-                'health' => true,
-                'cpu' => true,
-                'memory' => true,
-                'net_io' => false,
-                'block_io' => false,
-                'description' => true,
-                'path' => true,
-            ],
-            'service' => [
-                'update' => true,
-                'health' => true,
-                'cpu' => true,
-                'memory' => true,
-                'net_io' => false,
-                'block_io' => false,
-                'source' => true,
-                'tag' => true,
-                'net' => true,
-                'ip' => true,
-                'cport' => true,
-                'lport' => true,
-            ],
-        ];
-        $defaultOrder = [
-            'stackOrder' => array_keys(array_filter($defaults['stack'])),
-            'serviceOrder' => array_keys(array_filter($defaults['service'])),
-        ];
-
-        $visibility = array_merge($defaults, $defaultOrder);
-        if (is_file($prefFile)) {
-            $raw = @file_get_contents($prefFile);
-            $saved = json_decode((string)$raw, true);
-            if (is_array($saved)) {
-                foreach (['stack', 'service'] as $scope) {
-                    if (!isset($saved[$scope]) || !is_array($saved[$scope])) continue;
-                    foreach ($defaults[$scope] as $key => $defaultVal) {
-                        if (array_key_exists($key, $saved[$scope])) {
-                            $visibility[$scope][$key] = (bool)$saved[$scope][$key];
-                        }
-                    }
-                }
-
-                foreach (['stackOrder', 'serviceOrder'] as $orderKey) {
-                    if (!isset($saved[$orderKey]) || !is_array($saved[$orderKey])) continue;
-
-                    $scope = $orderKey === 'stackOrder' ? 'stack' : 'service';
-                    $allowed = array_keys($defaults[$scope]);
-                    $normalizedOrder = [];
-
-                    foreach ($saved[$orderKey] as $col) {
-                        if (in_array($col, $allowed, true) && $visibility[$scope][$col] && !in_array($col, $normalizedOrder, true)) {
-                            $normalizedOrder[] = $col;
-                        }
-                    }
-
-                    foreach ($allowed as $col) {
-                        if ($visibility[$scope][$col] && !in_array($col, $normalizedOrder, true)) {
-                            $normalizedOrder[] = $col;
-                        }
-                    }
-
-                    $visibility[$orderKey] = $normalizedOrder;
-                }
-            }
-        }
+        $visibility = compose_read_column_layout();
+        composeLogger('Loaded column visibility layout', [
+            'stackVisible' => count($visibility['stackOrder'] ?? []),
+            'serviceVisible' => count($visibility['serviceOrder'] ?? []),
+        ], 'user', 'debug', 'column-layout');
         echo json_encode(['result' => 'success', 'visibility' => $visibility]);
         break;
     case 'saveColumnVisibility':
-        $prefFile = '/boot/config/plugins/compose.manager/column_visibility.json';
+        $prefFile = COMPOSE_COLUMN_PREF_FILE;
         $prefDir = dirname($prefFile);
-        $defaults = [
-            'stack' => [
-                'update' => true,
-                'containers' => true,
-                'uptime' => true,
-                'health' => true,
-                'cpu' => true,
-                'memory' => true,
-                'net_io' => false,
-                'block_io' => false,
-                'description' => true,
-                'path' => true,
-            ],
-            'service' => [
-                'update' => true,
-                'health' => true,
-                'cpu' => true,
-                'memory' => true,
-                'net_io' => false,
-                'block_io' => false,
-                'source' => true,
-                'tag' => true,
-                'net' => true,
-                'ip' => true,
-                'cport' => true,
-                'lport' => true,
-            ],
-        ];
-        $defaultOrder = [
-            'stackOrder' => array_keys(array_filter($defaults['stack'])),
-            'serviceOrder' => array_keys(array_filter($defaults['service'])),
-        ];
 
         $raw = $_POST['visibility'] ?? '';
         $parsed = json_decode((string)$raw, true);
         if (!is_array($parsed)) {
+            composeLogger('Rejected invalid column visibility payload', [
+                'jsonError' => json_last_error_msg(),
+                'payloadLength' => strlen((string)$raw),
+            ], 'user', 'warning', 'column-layout');
             echo json_encode(['result' => 'error', 'message' => 'Invalid visibility payload.']);
             break;
         }
 
-        $normalized = array_merge($defaults, $defaultOrder);
-        foreach (['stack', 'service'] as $scope) {
-            if (!isset($parsed[$scope]) || !is_array($parsed[$scope])) continue;
-            foreach ($defaults[$scope] as $key => $defaultVal) {
-                if (array_key_exists($key, $parsed[$scope])) {
-                    $normalized[$scope][$key] = (bool)$parsed[$scope][$key];
-                }
-            }
-        }
-
-        foreach (['stackOrder', 'serviceOrder'] as $orderKey) {
-            $scope = $orderKey === 'stackOrder' ? 'stack' : 'service';
-            $allowed = array_keys($defaults[$scope]);
-            $savedOrder = isset($parsed[$orderKey]) && is_array($parsed[$orderKey]) ? $parsed[$orderKey] : [];
-            $normalizedOrder = [];
-
-            foreach ($savedOrder as $col) {
-                if (in_array($col, $allowed, true) && $normalized[$scope][$col] && !in_array($col, $normalizedOrder, true)) {
-                    $normalizedOrder[] = $col;
-                }
-            }
-
-            foreach ($allowed as $col) {
-                if ($normalized[$scope][$col] && !in_array($col, $normalizedOrder, true)) {
-                    $normalizedOrder[] = $col;
-                }
-            }
-
-            $normalized[$orderKey] = $normalizedOrder;
-        }
+        $normalized = compose_normalize_column_visibility($parsed);
 
         if (!is_dir($prefDir)) {
-            @mkdir($prefDir, 0777, true);
+            if (!@mkdir($prefDir, 0777, true) && !is_dir($prefDir)) {
+                composeLogger('Failed to create column layout preference directory', [
+                    'dir' => $prefDir,
+                ], 'user', 'error', 'column-layout');
+                echo json_encode(['result' => 'error', 'message' => 'Failed to persist column visibility.']);
+                break;
+            }
         }
 
         $tmp = $prefFile . '.tmp';
         $ok = @file_put_contents($tmp, json_encode($normalized, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-        if ($ok === false || !@rename($tmp, $prefFile)) {
+        $renameOk = ($ok !== false) ? @rename($tmp, $prefFile) : false;
+        if ($ok === false || !$renameOk) {
+            composeLogger('Failed to persist column visibility', [
+                'prefFile' => $prefFile,
+                'tmpFile' => $tmp,
+                'writeOk' => ($ok !== false),
+                'renameOk' => $renameOk,
+            ], 'user', 'error', 'column-layout');
             @unlink($tmp);
             echo json_encode(['result' => 'error', 'message' => 'Failed to persist column visibility.']);
             break;
         }
 
+        composeLogger('Saved column visibility layout', [
+            'stackVisible' => count($normalized['stackOrder'] ?? []),
+            'serviceVisible' => count($normalized['serviceOrder'] ?? []),
+            'prefFile' => $prefFile,
+        ], 'user', 'debug', 'column-layout');
         echo json_encode(['result' => 'success', 'visibility' => $normalized]);
         break;
     case 'getPersistentContainerCache':
