@@ -96,12 +96,12 @@ if (!function_exists('compose_stack_column_meta')) {
             'containers' => ['label' => 'Containers', 'thClass' => 'col-containers'],
             'uptime' => ['label' => 'Uptime', 'thClass' => 'col-uptime'],
             'health' => ['label' => 'Health', 'thClass' => 'col-health'],
-            'cpu' => ['label' => 'CPU', 'thClass' => 'cm-advanced col-cpu'],
-            'memory' => ['label' => 'Memory', 'thClass' => 'cm-advanced col-memory'],
-            'net_io' => ['label' => 'Net I/O', 'thClass' => 'cm-advanced col-net_io'],
-            'block_io' => ['label' => 'Disk I/O', 'thClass' => 'cm-advanced col-block_io'],
-            'description' => ['label' => 'Description', 'thClass' => 'cm-advanced col-description'],
-            'path' => ['label' => 'Path', 'thClass' => 'cm-advanced col-path'],
+            'cpu' => ['label' => 'CPU', 'thClass' => 'col-cpu'],
+            'memory' => ['label' => 'Memory', 'thClass' => 'col-memory'],
+            'net_io' => ['label' => 'Net I/O', 'thClass' => 'col-net_io'],
+            'block_io' => ['label' => 'Disk I/O', 'thClass' => 'col-block_io'],
+            'description' => ['label' => 'Description', 'thClass' => 'col-description'],
+            'path' => ['label' => 'Path', 'thClass' => 'col-path'],
         ];
     }
 }

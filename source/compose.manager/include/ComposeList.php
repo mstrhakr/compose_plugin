@@ -235,7 +235,7 @@ foreach ($stackInfos as $stackInfo) {
         ], 'user', 'debug', 'stack-list');
         $o .= " <i class='fa fa-warning orange-text' title='External compose path is invalid or unavailable: $invalidIndirectPathHtml'></i>";
     }
-    $o .= "<div class='cm-advanced compose-text-muted' style='margin-top:4px;font-size:0.85em;'>";
+    $o .= "<div class='compose-text-muted' style='margin-top:4px;font-size:0.85em;'>";
     $o .= "Project: $projectHtml";
     $o .= "</div>";
     $o .= "</span>";
@@ -260,7 +260,7 @@ foreach ($stackInfos as $stackInfo) {
     $containersClass = ($runningCount == $containerCount && $runningCount > 0) ? 'green-text' : ($runningCount > 0 ? 'orange-text' : 'grey-text');
     $stackCells['containers'] = "<td class='col-containers'><span class='$containersClass'>$containersDisplay</span></td>";
 
-    // Uptime column (both basic and advanced views)
+    // Uptime column (always visible)
     $uptimeDisplay = $stackUptime;
     $uptimeClass = $isrunning ? 'green-text' : 'grey-text';
     $stackCells['uptime'] = "<td class='col-uptime'><span class='$uptimeClass'>$uptimeDisplay</span></td>";
@@ -270,32 +270,32 @@ foreach ($stackInfos as $stackInfo) {
     $healthClass = $isrunning ? 'compose-text-muted' : 'grey-text';
     $stackCells['health'] = "<td class='col-health'><span class='$healthClass'>$healthDisplay</span></td>";
 
-    // Metric columns (advanced only)
-    $cpuCell = "<td class='cm-advanced col-cpu compose-load-cell'>";
+    // Metric columns (toggleable via column customizer)
+    $cpuCell = "<td class='col-cpu compose-load-cell'>";
     $cpuCell .= "<span class='compose-stack-cpu-$id compose-text-muted'>-</span>";
     $cpuCell .= "<div class='usage-disk mm'><span id='compose-stack-cpu-bar-$id' style='width:0'></span><span></span></div>";
     $cpuCell .= "</td>";
     $stackCells['cpu'] = $cpuCell;
 
-    $memCell = "<td class='cm-advanced col-memory compose-load-cell'>";
+    $memCell = "<td class='col-memory compose-load-cell'>";
     $memCell .= "<span class='compose-stack-mem-$id compose-text-muted'>-</span>";
     $memCell .= "<div class='usage-disk mm'><span id='compose-stack-mem-bar-$id' style='width:0'></span><span></span></div>";
     $memCell .= "</td>";
     $stackCells['memory'] = $memCell;
 
-    $stackCells['net_io'] = "<td class='cm-advanced col-net_io'><span class='compose-stack-netio-$id compose-text-muted'>-</span></td>";
-    $stackCells['block_io'] = "<td class='cm-advanced col-block_io'><span class='compose-stack-blockio-$id compose-text-muted'>-</span></td>";
+    $stackCells['net_io'] = "<td class='col-net_io'><span class='compose-stack-netio-$id compose-text-muted'>-</span></td>";
+    $stackCells['block_io'] = "<td class='col-block_io'><span class='compose-stack-blockio-$id compose-text-muted'>-</span></td>";
 
-    // Description column (advanced only)
-    $descriptionCell = "<td class='cm-advanced col-description' style='overflow-wrap:break-word;word-wrap:break-word;'>";
+    // Description column (toggleable via column customizer)
+    $descriptionCell = "<td class='col-description' style='overflow-wrap:break-word;word-wrap:break-word;'>";
     if ($hasInvalidIndirect) {
         $descriptionCell .= "<div class='orange-text' style='margin-bottom:4px;font-size:0.85em;'><i class='fa fa-warning'></i> External compose path unavailable, using local stack path.</div>";
     }
     $descriptionCell .= "<span class='docker_readmore'>$descriptionHtml</span></td>";
     $stackCells['description'] = $descriptionCell;
 
-    // Path column (advanced only)
-    $stackCells['path'] = "<td class='cm-advanced col-path compose-text-muted' style='font-size:12px;'>$pathHtml</td>";
+    // Path column (toggleable via column customizer)
+    $stackCells['path'] = "<td class='col-path compose-text-muted' style='font-size:12px;'>$pathHtml</td>";
 
     // Emit toggleable columns in the saved order (hidden columns still render;
     // hide-col-* classes on the table control their visibility).

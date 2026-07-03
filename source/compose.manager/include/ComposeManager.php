@@ -85,16 +85,16 @@ if ($cpuCount <= 0) {
 // This improves page load time by deferring expensive docker commands
 ?>
 
-<?php /* ── Critical inline CSS ──────────────────────────────────────────────
-   Guarantees table-layout, column widths, and advanced/basic visibility
-   are applied synchronously BEFORE any HTML renders — prevents FOUC.
+<?php /* Critical inline CSS
+    Guarantees table-layout, column widths, and column visibility rules
+    are applied synchronously BEFORE any HTML renders to prevent FOUC.
    Non-critical styles remain in comboButton.css loaded via <link>. */ ?>
 <style>
     /* Table structure — always fixed layout */
     #compose_stacks {
         width: 100%;
         table-layout: fixed;
-        /* Single source of truth for stack-table column widths. */
+        /* Rendered width vars from ColumnLayout.php; keep runtime math here in sync with that model. */
         --cm-col-arrow-px: 24px;
         --cm-col-icon-px: 48px;
         --cm-col-fixed-px: calc(var(--cm-col-arrow-px) + var(--cm-col-icon-px));
@@ -103,7 +103,7 @@ if ($cpuCount <= 0) {
 <?php endforeach; ?>
     }
 
-    /* Stabilize header row height across basic/advanced toggle transitions */
+    /* Stabilize header row height across column visibility changes */
     #compose_stacks thead tr th {
         font-weight: normal;
         font-size: 1.1rem;
@@ -127,8 +127,8 @@ if ($cpuCount <= 0) {
         text-overflow: ellipsis
     }
 
-    /* Basic-view column widths (7 visible columns)
-   Arrow + Icon are fixed px (small fixed content); rest are % of table. */
+    /* Stack-table column widths.
+   Arrow + Icon are fixed px (small fixed content); remaining columns use CSS vars. */
     #compose_stacks thead th.col-arrow {
         width: var(--cm-col-arrow-px);
         padding: 0;

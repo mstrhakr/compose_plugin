@@ -86,7 +86,7 @@ The built-in editor provides multiple tabs for managing your compose stack:
 - **External Paths** - Compose files and env files can live outside the default projects folder (external compose path and env path per stack).
 - **Override File Management** - Centralized management of override files (`compose.override.yaml`, `compose.override.yml`, `docker-compose.override.yaml`, `docker-compose.override.yml`) with service rename handling.
 - **Stack Editor** - Full-screen modal editor with four tabs: Compose (YAML with live validation), ENV, Web UI Labels (icon/WebUI/shell per service via override file), and Settings (name, description, icon URL, WebUI URL, default profile, external paths). Ctrl+S to save, Esc to close.
-- **Basic / Advanced View Toggle** - Toggle between a compact view and an advanced view exposing additional columns (SHA diffs, force-update links) — scoped to the Compose tab to avoid affecting the Docker tab.
+- **Column Customizer & Layout** - Choose which stack and service columns are visible and in what order; extra detail fields (for example SHA snippets and force-update links) follow your saved layout in the Compose tab.
 - **Compose File Discovery** - Automatically detects all four standard compose file names (`compose.yaml`, `docker-compose.yaml`, `compose.yml`, `docker-compose.yml`).
 - **Filename Preservation** - Existing compose and override filenames are preserved; upgrades do not auto-rename your stack files.
 - **Build Stack Support** - Stacks with a `build:` section in the compose file are detected automatically; context menu and update labels adapt ("Build", "Build & Up", "Update & Rebuild").

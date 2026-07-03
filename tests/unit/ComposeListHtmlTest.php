@@ -99,17 +99,18 @@ class ComposeListHtmlTest extends TestCase
     }
 
     // ===========================================
-    // Advanced View Column Tests
+    // Toggleable Column Markup Tests
     // ===========================================
 
-    public function testAdvancedColumnsUseCmAdvancedClass(): void
+    public function testToggleableColumnsUseColumnClasses(): void
     {
         $source = $this->getPageSource();
-        // Advanced-only columns should include 'cm-advanced' (not bare 'advanced')
-        $this->assertMatchesRegularExpression("/class='[^']*\\bcm-advanced\\b[^']*'/", $source);
+        // Toggleable columns should use concrete column classes.
+        $this->assertMatchesRegularExpression("/class='[^']*\\bcol-description\\b[^']*'/", $source);
+        $this->assertMatchesRegularExpression("/class='[^']*\\bcol-path\\b[^']*'/", $source);
     }
 
-    public function testAdvancedMetricColumnsMarkupExists(): void
+    public function testToggleableMetricColumnsMarkupExists(): void
     {
         $source = $this->getPageSource();
         $this->assertStringContainsString("col-cpu compose-load-cell", $source);

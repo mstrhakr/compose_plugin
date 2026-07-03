@@ -837,8 +837,8 @@ function initStackListUI() {
         lessLink: "<a href='#' style='text-align:center'><i class='fa fa-chevron-up'></i></a>"
     });
 
-    // Apply current view mode (advanced/basic) with centralized logic
-    applyListView(false);
+    // Apply list enhancements driven by current column visibility.
+    applyListEnhancements(false);
 
             // Recompute stack-row striping after all stack rows are present so
             // hidden detail rows do not skew alternating backgrounds.
@@ -896,7 +896,7 @@ function initializeProgressiveLoadedRows($rowChunk) {
         });
     });
 
-    // Skip full-table applyListView here; new rows already get row-local
+    // Skip full-table helper refresh here; new rows already get row-local
     // readmore/context/toggle setup above, and global apply runs at finalize.
 
     // Apply cached update status immediately for new rows when available.
@@ -1954,7 +1954,7 @@ function updateStackUpdateUI(stackName, stackInfo) {
                 updateHtml += '</div>';
             } else if (updatesWithSha.length > 1) {
                 // Multiple updates - show expand hint
-                updateHtml += '<div class="cm-advanced compose-text-muted" style="font-size:0.8em;margin-top:2px;">Expand for details</div>';
+                updateHtml += '<div class="compose-text-muted" style="font-size:0.8em;margin-top:2px;">Expand for details</div>';
             }
         }
 
@@ -1972,15 +1972,14 @@ function updateStackUpdateUI(stackName, stackInfo) {
         } else if (pinnedCount > 0) {
             // Some containers pinned, rest up-to-date
             var html = '<span class="green-text" style="white-space:nowrap;"><i class="fa fa-check fa-fw"></i> up-to-date</span>';
-            html += '<div class="cm-advanced compose-status-info" style="font-size:0.8em;margin-top:2px;"><i class="fa fa-thumb-tack fa-fw"></i> ' + pinnedCount + ' pinned</div>';
-            html += '<div class="cm-advanced"><a class="exec" style="cursor:pointer;" onclick="showUpdateWarning(\'' + composeEscapeAttr(stackName) + '\', \'' + composeEscapeAttr(stackId) + '\', \'forceUpdate\');"><span style="white-space:nowrap;"><i class="fa fa-cloud-download fa-fw"></i> force update</span></a></div>';
+            html += '<div class="compose-status-info" style="font-size:0.8em;margin-top:2px;"><i class="fa fa-thumb-tack fa-fw"></i> ' + pinnedCount + ' pinned</div>';
+            html += '<div><a class="exec" style="cursor:pointer;" onclick="showUpdateWarning(\'' + composeEscapeAttr(stackName) + '\', \'' + composeEscapeAttr(stackId) + '\', \'forceUpdate\');"><span style="white-space:nowrap;"><i class="fa fa-cloud-download fa-fw"></i> force update</span></a></div>';
             $updateCell.html(html);
         } else {
             // No updates, no pinned - green "up-to-date" style (like Docker tab)
-            // Basic view: just shows up-to-date
-            // Advanced view: shows force update link
+            // Additional row details are conditionally shown by column layout CSS.
             var html = '<span class="green-text" style="white-space:nowrap;"><i class="fa fa-check fa-fw"></i> up-to-date</span>';
-            html += '<div class="cm-advanced"><a class="exec" style="cursor:pointer;" onclick="showUpdateWarning(\'' + composeEscapeAttr(stackName) + '\', \'' + composeEscapeAttr(stackId) + '\', \'forceUpdate\');"><span style="white-space:nowrap;"><i class="fa fa-cloud-download fa-fw"></i> force update</span></a></div>';
+            html += '<div><a class="exec" style="cursor:pointer;" onclick="showUpdateWarning(\'' + composeEscapeAttr(stackName) + '\', \'' + composeEscapeAttr(stackId) + '\', \'forceUpdate\');"><span style="white-space:nowrap;"><i class="fa fa-cloud-download fa-fw"></i> force update</span></a></div>';
             $updateCell.html(html);
         }
     } else {
@@ -1990,9 +1989,8 @@ function updateStackUpdateUI(stackName, stackInfo) {
         $updateCell.html('<a class="exec" style="cursor:pointer;" onclick="checkStackUpdates(\'' + composeEscapeAttr(stackName) + '\');"><i class="fa fa-cloud-download fa-fw"></i> check for updates</a>');
     }
 
-    // Apply current view mode — cm-advanced elements are controlled by
-    // the .cm-advanced-view class on #compose_stacks (CSS-only, no need to
-    // show/hide individual elements here since CSS handles visibility).
+    // Extra detail elements are controlled by table column visibility classes.
+    // No per-cell show/hide work is needed here.
 
     // Rebuild context menus to reflect update status (only target icon spans with data-stackid, not the row)
     $('[id^="stack-"][data-stackid][data-project="' + stackName + '"]').each(function() {
@@ -2166,10 +2164,6 @@ function processWebUIUrl(url) {
     return url;
 }
 
-function isComposeAdvancedMode() {
-    return true;
-}
-
 function composeHasVisibleLoadColumns() {
     var selector = [
         '#compose_stacks td.col-cpu',
@@ -2191,9 +2185,8 @@ function composeShouldEnableDockerLoad() {
     return composeHasVisibleLoadColumns();
 }
 
-// Legacy compatibility shim. Basic/advanced toggle was removed in favor of
-// column customizer visibility controls.
-function applyListView(animate) {
+// Apply list-level helpers that depend on the current column layout.
+function applyListEnhancements(animate) {
     if (typeof window.composeDockerLoadToggle === 'function') {
         window.composeDockerLoadToggle(composeShouldEnableDockerLoad());
     }
@@ -2246,7 +2239,7 @@ $(function() {
     });
 
     // Refresh per-row UI helpers after initial DOM is ready.
-    applyListView();
+    applyListEnhancements();
 
     // ebox observer removed; pending update checks are now processed from
     // refreshStackRow and processPendingComposeReloads directly.
@@ -2361,7 +2354,7 @@ $(function() {
         })();
 
         // ── CPU & Memory load via dockerload Nchan channel ─────────────
-        // composeDockerLoadToggle(true/false) is called from applyListView()
+        // composeDockerLoadToggle(true/false) is called from applyListEnhancements()
         // and column visibility handlers so the socket follows visible load columns.
         function initComposeDockerLoadSubscriber() {
             if (typeof NchanSubscriber !== 'function') {
@@ -7153,14 +7146,14 @@ function renderContainerDetails(stackId, containers, project) {
     html += '<th class="ct-col-name">Container</th>';
     html += '<th class="ct-col-update">Update</th>';
     html += '<th class="ct-col-health">Health</th>';
-    html += '<th class="cm-advanced ct-col-source">Source</th>';
-    html += '<th class="cm-advanced ct-col-tag">Tag</th>';
-    html += '<th class="cm-advanced ct-col-net">Network</th>';
-    html += '<th class="cm-advanced ct-col-ip">Container IP</th>';
-    html += '<th class="cm-advanced ct-col-cpu">CPU</th>';
-    html += '<th class="cm-advanced ct-col-memory">Memory</th>';
-    html += '<th class="cm-advanced ct-col-net_io">Net I/O</th>';
-    html += '<th class="cm-advanced ct-col-block_io">Disk I/O</th>';
+    html += '<th class="ct-col-source">Source</th>';
+    html += '<th class="ct-col-tag">Tag</th>';
+    html += '<th class="ct-col-net">Network</th>';
+    html += '<th class="ct-col-ip">Container IP</th>';
+    html += '<th class="ct-col-cpu">CPU</th>';
+    html += '<th class="ct-col-memory">Memory</th>';
+    html += '<th class="ct-col-net_io">Net I/O</th>';
+    html += '<th class="ct-col-block_io">Disk I/O</th>';
     html += '<th class="ct-col-cport">Container Port</th>';
     html += '<th class="ct-col-lport">LAN IP:Port</th>';
     html += '</tr></thead>';
@@ -7279,7 +7272,7 @@ function renderContainerDetails(stackId, containers, project) {
             html += '<span class="orange-text" style="white-space:nowrap;"><i class="fa fa-flash fa-fw"></i> update ready</span>';
             html += '</a>';
             if (ctLocalSha && ctRemoteSha) {
-                // Always show SHA diff (not just in advanced view)
+                // Always show SHA diff when available.
                 html += '<div style="font-family:var(--font-bitstream);font-size:0.85em;margin-top:2px;">';
                 html += '<span class="compose-status-warning" title="' + composeEscapeAttr(ctLocalSha) + '">' + composeEscapeHtml(ctLocalSha.substring(0, 8)) + '</span>';
                 html += ' <i class="fa fa-arrow-right compose-status-success" style="margin:0 4px;"></i> ';
@@ -7290,8 +7283,8 @@ function renderContainerDetails(stackId, containers, project) {
             // No update - green "up-to-date" style
             html += '<span class="green-text" style="white-space:nowrap;"><i class="fa fa-check fa-fw"></i> up-to-date</span>';
             if (ctLocalSha) {
-                // Show SHA in advanced view only for up-to-date containers (15 chars)
-                html += '<div class="cm-advanced" style="font-family:var(--font-bitstream);font-size:0.85em;" title="' + composeEscapeAttr(ctLocalSha) + '"><span class="compose-text-muted">' + composeEscapeHtml(ctLocalSha.substring(0, 15)) + '</span></div>';
+                // Show SHA snippet in toggleable detail area for up-to-date containers (15 chars).
+                html += '<div style="font-family:var(--font-bitstream);font-size:0.85em;" title="' + composeEscapeAttr(ctLocalSha) + '"><span class="compose-text-muted">' + composeEscapeHtml(ctLocalSha.substring(0, 15)) + '</span></div>';
             }
         } else {
             // Unknown/not checked
@@ -7303,28 +7296,28 @@ function renderContainerDetails(stackId, containers, project) {
         html += '<td class="ct-col-health">' + composeRenderHealthBadge(container.health || '', state) + '</td>';
 
         // Source (image name without tag)
-        html += '<td class="cm-advanced ct-col-source"><span class="docker_readmore compose-text-muted">' + composeEscapeHtml(imageSource) + '</span></td>';
+        html += '<td class="ct-col-source"><span class="docker_readmore compose-text-muted">' + composeEscapeHtml(imageSource) + '</span></td>';
 
         // Tag (image tag) — truncated with ellipsis via CSS if too long
-        html += '<td class="cm-advanced ct-col-tag ct-col-tag-cell"><span class="ct-tag" title="' + composeEscapeAttr(imageTag) + '">' + composeEscapeHtml(imageTag) + '</span></td>';
+        html += '<td class="ct-col-tag ct-col-tag-cell"><span class="ct-tag" title="' + composeEscapeAttr(imageTag) + '">' + composeEscapeHtml(imageTag) + '</span></td>';
 
         // Network
-        html += '<td class="cm-advanced ct-col-net" style="white-space:nowrap;"><span class="docker_readmore">' + networkNames.map(composeEscapeHtml).join('<br>') + '</span></td>';
+        html += '<td class="ct-col-net" style="white-space:nowrap;"><span class="docker_readmore">' + networkNames.map(composeEscapeHtml).join('<br>') + '</span></td>';
 
         // Container IP
-        html += '<td class="cm-advanced ct-col-ip" style="white-space:nowrap;"><span class="docker_readmore">' + ipAddresses.map(composeEscapeHtml).join('<br>') + '</span></td>';
+        html += '<td class="ct-col-ip" style="white-space:nowrap;"><span class="docker_readmore">' + ipAddresses.map(composeEscapeHtml).join('<br>') + '</span></td>';
 
-        html += '<td class="cm-advanced ct-col-cpu compose-load-cell">';
+        html += '<td class="ct-col-cpu compose-load-cell">';
         var normalizedContainerId = composeNormalizeContainerKey(containerId);
         html += '<span class="compose-cpu-' + normalizedContainerId + ' compose-text-muted">-</span>';
         html += '<div class="usage-disk mm"><span id="compose-cpu-bar-' + normalizedContainerId + '" style="width:0"></span><span></span></div>';
         html += '</td>';
-        html += '<td class="cm-advanced ct-col-memory compose-load-cell">';
+        html += '<td class="ct-col-memory compose-load-cell">';
         html += '<span class="compose-mem-' + normalizedContainerId + ' compose-text-muted">-</span>';
         html += '<div class="usage-disk mm"><span id="compose-mem-bar-' + normalizedContainerId + '" style="width:0"></span><span></span></div>';
         html += '</td>';
-        html += '<td class="cm-advanced ct-col-net_io"><span class="compose-netio-' + normalizedContainerId + ' compose-text-muted">-</span></td>';
-        html += '<td class="cm-advanced ct-col-block_io"><span class="compose-blockio-' + normalizedContainerId + ' compose-text-muted">-</span></td>';
+        html += '<td class="ct-col-net_io"><span class="compose-netio-' + normalizedContainerId + ' compose-text-muted">-</span></td>';
+        html += '<td class="ct-col-block_io"><span class="compose-blockio-' + normalizedContainerId + ' compose-text-muted">-</span></td>';
 
         // Container Port
         html += '<td class="ct-col-cport-cell" style="white-space:nowrap;"><span class="docker_readmore">' + containerPorts.map(composeEscapeHtml).join('<br>') + '</span></td>';
@@ -7555,8 +7548,8 @@ function updateParentStackFromContainers(stackId, project) {
             $healthCell.html(composeRenderHealthBadge(healthStatus, anyRunning ? 'running' : 'exited'));
         } catch (e) {}
 
-        // Re-apply view mode (advanced/basic) to ensure column content visibility
-        applyListView();
+        // Re-apply list helpers after row updates.
+        applyListEnhancements();
     } catch (e) {
         composeLogger('updateParentStackFromContainers error', {
             err: e.toString(),

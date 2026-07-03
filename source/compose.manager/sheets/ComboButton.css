@@ -232,7 +232,7 @@
   }
 
   /* ── Stack table structural rules ──
-   Critical layout rules (table-layout, column widths, advanced/basic
+   Critical layout rules (table-layout, column widths, column
    visibility) are inlined in ComposeManager.php for instant
    availability.  The rules below are supplemental / non-critical. */
 
