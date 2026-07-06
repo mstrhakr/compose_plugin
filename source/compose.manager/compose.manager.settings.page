@@ -132,43 +132,60 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         margin-left: 10px;
     }
 
-    /* Settings action bar stays visible near bottom while scrolling */
-    #compose-tab-settings dl.settings-actions {
+    .settings-actions-hidden {
+        display: none;
+    }
+
+    .compose-global-actions {
         position: fixed;
         bottom: 45px;
-        left: var(--compose-settings-anchor);
+        left: 50%;
         transform: translateX(-50%);
         width: max-content;
-        min-width: 280px;
+        min-width: 340px;
+        max-width: calc(100vw - 24px);
         background: var(--dynamix-jquery-ui-header-background);
         border: 2px solid var(--dynamix-tooltipster-sidetip-box-border-color);
         box-shadow: 0 2px 10px var(--dynamix-box-inner-div-border-color);
-        padding: 15px;
+        padding: 12px 14px;
         z-index: 9999;
         border-radius: 6px;
-        display: block;
     }
 
-    #compose-tab-settings dl.settings-actions dd {
-        display: block;
-        flex-wrap: nowrap;
-        justify-content: center;
-        gap: 8px;
+    .compose-global-actions.hidden {
+        display: none;
+    }
+
+    .compose-global-actions .settings-actions-row {
+        display: flex;
         align-items: center;
-        margin: 0;
+        gap: 10px;
+        flex-wrap: wrap;
+        justify-content: center;
     }
 
-    #compose-tab-settings dl.settings-actions dd input {
-        margin: 5px;
+    .compose-global-actions .settings-actions-meta {
+        font-size: 0.9em;
+        color: var(--dynamix-sb-title-text-color);
+        min-width: 90px;
+        text-align: center;
+    }
+
+    .compose-global-actions .settings-action-btn {
+        margin: 0;
         width: auto;
         min-width: 96px;
         padding: 10px 10px;
         line-height: 1.2;
     }
 
-    #compose-tab-settings form {
-        padding-bottom: 85px;
-        /* keep content from hiding under fixed action bar */
+    .compose-global-actions .settings-action-btn:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+    }
+
+    .compose-tab-content {
+        padding-bottom: 110px;
     }
 
     /* Disabled input styling */
@@ -565,7 +582,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
     }
 
     @media (max-width: 1200px) {
-        #compose-tab-settings dl.settings-actions {
+        .compose-global-actions {
             left: 50%;
         }
 
@@ -897,28 +914,56 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
         // Convert checkbox values to true/false strings before form submission
         function serializeSettingsForm($form) {
+            $form.find('input.compose-generated-hidden').remove();
             $('.compose-toggle').each(function() {
                 var $checkbox = $(this);
-                var name = $checkbox.attr('name');
-                // Remove any existing hidden field for this setting
-                $('input[type="hidden"][name="' + name + '"]').remove();
+                var name = $checkbox.attr('name') || $checkbox.data('compose-original-name');
+                if (!name) return;
+
+                if (!$checkbox.data('compose-original-name')) {
+                    $checkbox.data('compose-original-name', name);
+                }
+
                 var value;
                 if (name === 'OUTPUTSTYLE') {
                     value = $checkbox.is(':checked') ? 'ttyd' : 'basic';
                 } else {
                     value = $checkbox.is(':checked') ? 'true' : 'false';
                 }
-                $checkbox.before('<input type="hidden" name="' + name + '" value="' + value + '">');
+
+                $('<input type="hidden" class="compose-generated-hidden">')
+                    .attr('name', name)
+                    .val(value)
+                    .insertBefore($checkbox);
+
                 $checkbox.removeAttr('name');
             });
+
+            window.setTimeout(function() {
+                $('.compose-toggle').each(function() {
+                    var $checkbox = $(this);
+                    var originalName = $checkbox.data('compose-original-name');
+                    if (originalName && !$checkbox.attr('name')) {
+                        $checkbox.attr('name', originalName);
+                    }
+                });
+                $form.find('input.compose-generated-hidden').remove();
+            }, 300);
         }
+
+        var bypassComposeSettingsSubmitGuard = false;
 
         $('form[name="compose_manager_settings"]').on('submit', function(e) {
             var $form = $(this);
+            if (bypassComposeSettingsSubmitGuard) {
+                bypassComposeSettingsSubmitGuard = false;
+                serializeSettingsForm($form);
+                return;
+            }
+
             var currentDisableActionWarnings = $('#DISABLE_ACTION_WARNINGS').is(':checked');
             var currentRunInBackgroundDefault = $('#RUN_IN_BACKGROUND_DEFAULT').is(':checked');
             var isCrossed = currentDisableActionWarnings && currentRunInBackgroundDefault;
-            var isOrigCrossed = origDisableActionWarnings && origRunInBackgroundDefault;
             var eitherChanged = (currentDisableActionWarnings !== origDisableActionWarnings) || (currentRunInBackgroundDefault !== origRunInBackgroundDefault);
 
             if (isCrossed && eitherChanged) {
@@ -934,15 +979,320 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                         // do nothing; keep user on settings page
                         return;
                     }
-                    serializeSettingsForm($form);
-                    $form.off('submit');
-                    $form.submit();
+                    bypassComposeSettingsSubmitGuard = true;
+                    $form.trigger('submit');
                 });
                 return;
             }
 
             serializeSettingsForm($form);
         });
+
+        var settingsUnifiedState = {
+            activeTab: 'settings',
+            updatesInitialized: false,
+            baseline: {
+                settings: '',
+                updates: '',
+                imageCheck: '',
+                backup: ''
+            },
+            dirty: {
+                settings: false,
+                updates: false,
+                imageCheck: false,
+                backup: false
+            }
+        };
+
+        function safeStringify(value) {
+            return JSON.stringify(value);
+        }
+
+        function captureSettingsSnapshot() {
+            var data = {};
+            $('#compose-tab-settings').find('input, select, textarea').each(function(index) {
+                var $el = $(this);
+                var type = ($el.attr('type') || '').toLowerCase();
+                if (type === 'hidden' || type === 'submit' || type === 'button') return;
+                var key = $el.attr('id') || $el.attr('name') || ('settings_field_' + index);
+                if (type === 'checkbox' || type === 'radio') {
+                    data[key] = $el.is(':checked') ? 'true' : 'false';
+                } else {
+                    data[key] = $el.val();
+                }
+            });
+            return safeStringify(data);
+        }
+
+        function captureBackupSnapshot() {
+            var data = {
+                BACKUP_DESTINATION: $('#BACKUP_DESTINATION').val() || '',
+                BACKUP_RETENTION: $('#BACKUP_RETENTION').val() || '',
+                BACKUP_SCHEDULE_ENABLED: $('#BACKUP_SCHEDULE_ENABLED').is(':checked') ? 'true' : 'false',
+                BACKUP_SCHEDULE_FREQUENCY: $('#BACKUP_SCHEDULE_FREQUENCY').val() || '',
+                BACKUP_SCHEDULE_DAY: $('#BACKUP_SCHEDULE_DAY').val() || '',
+                BACKUP_SCHEDULE_TIME: $('#BACKUP_SCHEDULE_TIME').val() || ''
+            };
+            return safeStringify(data);
+        }
+
+        function captureUpdatesSnapshot() {
+            if (!settingsUnifiedState.updatesInitialized) {
+                return '';
+            }
+
+            var rows = [];
+            $('#updates-tbody tr').each(function() {
+                var $row = $(this);
+                var path = $row.data('path');
+                if (!path) return;
+                rows.push({
+                    path: path,
+                    enabled: $row.find('.au-enabled').is(':checked') ? 'true' : 'false',
+                    schedule: $row.find('.au-schedule').val() || '',
+                    time: $row.find('.au-time').val() || '',
+                    weekday: $row.find('.au-weekday').val() || '',
+                    monthday: $row.find('.au-monthday').val() || ''
+                });
+            });
+
+            rows.sort(function(a, b) {
+                return String(a.path).localeCompare(String(b.path));
+            });
+
+            var data = {
+                AUTOUPDATE_ENABLED: $('#AUTOUPDATE_ENABLED').is(':checked') ? 'true' : 'false',
+                default_schedule: $('#default-schedule').val() || '',
+                default_time: $('#default-time').val() || '',
+                rows: rows
+            };
+
+            return safeStringify(data);
+        }
+
+        function captureImageCheckSnapshot() {
+            return safeStringify({
+                AUTO_CHECK_UPDATES: $('#AUTO_CHECK_UPDATES').is(':checked') ? 'true' : 'false',
+                AUTO_CHECK_UPDATES_DAYS: $('#AUTO_CHECK_UPDATES_DAYS').val() || ''
+            });
+        }
+
+        function getCurrentSettingsTabFromDom() {
+            var tabId = $('.compose-tab.active').data('tab');
+            return tabId || settingsUnifiedState.activeTab || 'settings';
+        }
+
+        function saveImageUpdateCheckSettings() {
+            var deferred = $.Deferred();
+            var $settingsForm = $('form[name="compose_manager_settings"]');
+            var filePath = $settingsForm.find('input[name="#file"]').val();
+            var section = $settingsForm.find('input[name="#section"]').val() || '';
+
+            $.post('/update.php', {
+                '#file': filePath,
+                '#section': section,
+                '#apply': 'Apply',
+                AUTO_CHECK_UPDATES: $('#AUTO_CHECK_UPDATES').is(':checked') ? 'true' : 'false',
+                AUTO_CHECK_UPDATES_DAYS: $('#AUTO_CHECK_UPDATES_DAYS').val() || '1'
+            }).done(function() {
+                if (window.composeSettingsUnifiedState && typeof window.composeSettingsUnifiedState.markImageCheckSaved === 'function') {
+                    window.composeSettingsUnifiedState.markImageCheckSaved();
+                }
+                deferred.resolve(true);
+            }).fail(function() {
+                showUpdatesStatus('Failed to save image update check settings.', 'error');
+                deferred.resolve(false);
+            });
+
+            return deferred.promise();
+        }
+
+        function updateUnifiedActionState() {
+            settingsUnifiedState.activeTab = getCurrentSettingsTabFromDom();
+            settingsUnifiedState.dirty.settings = captureSettingsSnapshot() !== settingsUnifiedState.baseline.settings;
+            settingsUnifiedState.dirty.backup = captureBackupSnapshot() !== settingsUnifiedState.baseline.backup;
+            settingsUnifiedState.dirty.updates = settingsUnifiedState.updatesInitialized && captureUpdatesSnapshot() !== settingsUnifiedState.baseline.updates;
+            settingsUnifiedState.dirty.imageCheck = captureImageCheckSnapshot() !== settingsUnifiedState.baseline.imageCheck;
+
+            var updatesDirty = settingsUnifiedState.dirty.updates || settingsUnifiedState.dirty.imageCheck;
+
+            var changedTabs = 0;
+            if (settingsUnifiedState.dirty.settings) changedTabs++;
+            if (updatesDirty) changedTabs++;
+            if (settingsUnifiedState.dirty.backup) changedTabs++;
+
+            var hasChanges = changedTabs > 0;
+            $('#global-settings-apply').prop('disabled', !hasChanges);
+            $('#global-settings-reset').prop('disabled', !hasChanges);
+            $('#global-settings-default').prop('disabled', settingsUnifiedState.activeTab !== 'settings');
+            $('#global-settings-change-count').text(changedTabs + (changedTabs === 1 ? ' tab changed' : ' tabs changed'));
+
+            if (settingsUnifiedState.activeTab === 'credits' || settingsUnifiedState.activeTab === 'log') {
+                $('#global-settings-actions').addClass('hidden');
+            } else {
+                $('#global-settings-actions').removeClass('hidden');
+            }
+        }
+
+        function setActiveSettingsTab(tabId) {
+            settingsUnifiedState.activeTab = tabId;
+            updateUnifiedActionState();
+        }
+
+        function applySettingsDefault() {
+            var $defaultBtn = $('#settings-submit-default');
+            if (!$defaultBtn.length) return;
+            $defaultBtn.prop('disabled', false).trigger('click');
+            window.setTimeout(function() {
+                settingsUnifiedState.baseline.settings = captureSettingsSnapshot();
+                updateUnifiedActionState();
+            }, 500);
+        }
+
+        function applySettingsChanges() {
+            var $applyBtn = $('#settings-submit-apply');
+            if (!$applyBtn.length) return;
+            $applyBtn.prop('disabled', false).trigger('click');
+            window.setTimeout(function() {
+                settingsUnifiedState.baseline.settings = captureSettingsSnapshot();
+                updateUnifiedActionState();
+            }, 500);
+        }
+
+        function resetSettingsFromBaseline() {
+            var snapshot = settingsUnifiedState.baseline.settings;
+            if (!snapshot) return;
+            var data;
+            try {
+                data = JSON.parse(snapshot);
+            } catch (e) {
+                return;
+            }
+
+            $('#compose-tab-settings').find('input, select, textarea').each(function(index) {
+                var $el = $(this);
+                var type = ($el.attr('type') || '').toLowerCase();
+                if (type === 'hidden' || type === 'submit' || type === 'button') return;
+                var key = $el.attr('id') || $el.attr('name') || ('settings_field_' + index);
+                if (!Object.prototype.hasOwnProperty.call(data, key)) return;
+
+                if (type === 'checkbox' || type === 'radio') {
+                    $el.prop('checked', data[key] === 'true').trigger('change');
+                } else {
+                    $el.val(data[key]).trigger('change');
+                }
+            });
+        }
+
+        function resetBackupFromBaseline() {
+            var snapshot = settingsUnifiedState.baseline.backup;
+            if (!snapshot) return;
+            var data;
+            try {
+                data = JSON.parse(snapshot);
+            } catch (e) {
+                return;
+            }
+
+            $('#BACKUP_DESTINATION').val(data.BACKUP_DESTINATION || '').trigger('change');
+            $('#BACKUP_RETENTION').val(data.BACKUP_RETENTION || '').trigger('change');
+            $('#BACKUP_SCHEDULE_ENABLED').prop('checked', data.BACKUP_SCHEDULE_ENABLED === 'true').trigger('change');
+            $('#BACKUP_SCHEDULE_FREQUENCY').val(data.BACKUP_SCHEDULE_FREQUENCY || 'daily').trigger('change');
+            $('#BACKUP_SCHEDULE_DAY').val(data.BACKUP_SCHEDULE_DAY || '1').trigger('change');
+            $('#BACKUP_SCHEDULE_TIME').val(data.BACKUP_SCHEDULE_TIME || '03:00').trigger('change');
+            toggleBackupSchedule();
+        }
+
+        function resetImageCheckFromBaseline() {
+            var snapshot = settingsUnifiedState.baseline.imageCheck;
+            if (!snapshot) return;
+
+            var data;
+            try {
+                data = JSON.parse(snapshot);
+            } catch (e) {
+                return;
+            }
+
+            $('#AUTO_CHECK_UPDATES').prop('checked', data.AUTO_CHECK_UPDATES === 'true').trigger('change');
+            $('#AUTO_CHECK_UPDATES_DAYS').val(data.AUTO_CHECK_UPDATES_DAYS || '1').trigger('change');
+            toggleAutoCheckInterval();
+        }
+
+        $('#global-settings-default').on('click', function() {
+            if (getCurrentSettingsTabFromDom() !== 'settings') return;
+            applySettingsDefault();
+        });
+
+        $('#global-settings-apply').on('click', function() {
+            if (settingsUnifiedState.dirty.settings) {
+                applySettingsChanges();
+            }
+            if (settingsUnifiedState.dirty.updates) {
+                $('#save-updates').trigger('click');
+            }
+            if (settingsUnifiedState.dirty.imageCheck) {
+                saveImageUpdateCheckSettings();
+            }
+            if (settingsUnifiedState.dirty.backup) {
+                saveBackupSettings();
+            }
+        });
+
+        $('#global-settings-reset').on('click', function() {
+            resetSettingsFromBaseline();
+            resetBackupFromBaseline();
+            resetImageCheckFromBaseline();
+
+            if (settingsUnifiedState.updatesInitialized) {
+                loadUpdatesUI();
+                refreshCronStatus();
+            }
+
+            window.setTimeout(function() {
+                updateUnifiedActionState();
+            }, 200);
+        });
+
+        $('#compose-tab-settings').on('input change', 'input, select, textarea', function() {
+            updateUnifiedActionState();
+        });
+
+        $('#compose-tab-backup').on('input change', '#BACKUP_DESTINATION, #BACKUP_RETENTION, #BACKUP_SCHEDULE_ENABLED, #BACKUP_SCHEDULE_FREQUENCY, #BACKUP_SCHEDULE_DAY, #BACKUP_SCHEDULE_TIME', function() {
+            updateUnifiedActionState();
+        });
+
+        $('#compose-tab-updates').on('input change', '#AUTOUPDATE_ENABLED, #default-schedule, #default-time, #updates-tbody input, #updates-tbody select', function() {
+            settingsUnifiedState.updatesInitialized = true;
+            updateUnifiedActionState();
+        });
+
+        $('#compose-tab-updates').on('input change', '#AUTO_CHECK_UPDATES, #AUTO_CHECK_UPDATES_DAYS', function() {
+            updateUnifiedActionState();
+        });
+
+        window.composeSettingsUnifiedState = {
+            markUpdatesSaved: function() {
+                settingsUnifiedState.updatesInitialized = true;
+                settingsUnifiedState.baseline.updates = captureUpdatesSnapshot();
+                updateUnifiedActionState();
+            },
+            markImageCheckSaved: function() {
+                settingsUnifiedState.baseline.imageCheck = captureImageCheckSnapshot();
+                updateUnifiedActionState();
+            },
+            markBackupSaved: function() {
+                settingsUnifiedState.baseline.backup = captureBackupSnapshot();
+                updateUnifiedActionState();
+            },
+            markUpdatesLoaded: function() {
+                settingsUnifiedState.updatesInitialized = true;
+                settingsUnifiedState.baseline.updates = captureUpdatesSnapshot();
+                settingsUnifiedState.baseline.imageCheck = captureImageCheckSnapshot();
+                updateUnifiedActionState();
+            }
+        };
 
         // Tab switching
         $('.compose-tab').on('click', function() {
@@ -955,6 +1305,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             $(this).addClass('active');
             // Save tab preference
             localStorage.setItem('compose-settings-tab', tabId);
+            setActiveSettingsTab(tabId);
             // Start/stop log refresh based on tab
             if (tabId === 'log') {
                 loadLogs();
@@ -968,8 +1319,10 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             }
             // Always load updates UI when switching to updates tab
             if (tabId === 'updates') {
-                loadUpdatesUI();
-                refreshCronStatus();
+                if (!settingsUnifiedState.dirty.updates) {
+                    loadUpdatesUI();
+                    refreshCronStatus();
+                }
             }
         });
 
@@ -1039,6 +1392,12 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         // Set only the correct tab and content as active
         $('.compose-tab[data-tab="' + savedTab + '"]').addClass('active');
         $('#compose-tab-' + savedTab).addClass('active');
+        setActiveSettingsTab(savedTab);
+
+        settingsUnifiedState.baseline.settings = captureSettingsSnapshot();
+        settingsUnifiedState.baseline.backup = captureBackupSnapshot();
+        settingsUnifiedState.baseline.imageCheck = captureImageCheckSnapshot();
+        updateUnifiedActionState();
 
         // If the default tab is backup, load the backup list immediately
         if (savedTab === 'backup') {
@@ -1471,6 +1830,9 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
             if (result.result === 'success') {
                 showBackupStatus('#backup-create-status', 'Backup settings saved.', 'success');
+                if (window.composeSettingsUnifiedState && typeof window.composeSettingsUnifiedState.markBackupSaved === 'function') {
+                    window.composeSettingsUnifiedState.markBackupSaved();
+                }
             } else {
                 showBackupStatus('#backup-create-status', result.message || 'Failed to save settings', 'error');
             }
@@ -1687,6 +2049,9 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 initUpdatesSortable();
                 // Sync toggle-all state
                 updateToggleAllState();
+                if (window.composeSettingsUnifiedState && typeof window.composeSettingsUnifiedState.markUpdatesLoaded === 'function') {
+                    window.composeSettingsUnifiedState.markUpdatesLoaded();
+                }
             }, 'json').fail(function() {
                 $('#updates-tbody').html('<tr><td colspan="5" class="compose-status-danger" style="text-align:center;padding:12px;">_(Failed to load auto-update settings.)_</td></tr>');
             });
@@ -1847,6 +2212,9 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                     setUpdatesSpinner(false);
                     refreshCronStatus();
                     showUpdatesStatus('Auto-update settings saved.', 'success');
+                    if (window.composeSettingsUnifiedState && typeof window.composeSettingsUnifiedState.markUpdatesSaved === 'function') {
+                        window.composeSettingsUnifiedState.markUpdatesSaved();
+                    }
                 }, 'json').fail(function() {
                     setUpdatesSpinner(false);
                     showUpdatesStatus('Settings saved but scheduler update failed.', 'error');
@@ -2191,8 +2559,11 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dl>
         <?php endif; ?>
 
-        <dl class="settings-actions">
-            <dd><input type="submit" name="#default" value="_(Default)_"><input type="submit" name="#apply" value="_(Apply)_" disabled><input type="button" value="_(Done)_" onclick="done()"></dd>
+        <dl class="settings-actions settings-actions-hidden">
+            <dd>
+                <input type="submit" id="settings-submit-default" name="#default" value="_(Default)_">
+                <input type="submit" id="settings-submit-apply" name="#apply" value="_(Apply)_">
+            </dd>
         </dl>
     </form>
 </div>
@@ -2343,7 +2714,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             <dt>&nbsp;</dt>
             <dd>
                 <div class="backup-actions">
-                    <input type="button" id="save-updates" value="_(Save Settings)_" class="orange-button">
+                    <input type="button" id="save-updates" value="_(Save Settings)_" class="orange-button settings-actions-hidden">
                     <input type="button" id="run-now" value="_(Update Now)_" title="_(Run auto-update now for all enabled stacks)_">
                     <i class="fa fa-spinner fa-spin spinner" id="updates-spinner"></i>
                 </div>
@@ -2497,7 +2868,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             <dt>&nbsp;</dt>
             <dd>
                 <div class="backup-actions">
-                    <input type="button" id="btn-save-backup-settings" value="_(Save Settings)_" onclick="saveBackupSettings()" class="orange-button">
+                    <input type="button" id="btn-save-backup-settings" value="_(Save Settings)_" onclick="saveBackupSettings()" class="orange-button settings-actions-hidden">
                     <input type="button" id="btn-create-backup" value="_(Backup Now)_" onclick="createBackupNow()">
                     <i class="fa fa-spinner fa-spin spinner"></i>
                 </div>
@@ -2561,6 +2932,15 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         </dl>
     </div>
 
+</div>
+
+<div id="global-settings-actions" class="compose-global-actions">
+    <div class="settings-actions-row">
+        <input type="button" id="global-settings-default" class="settings-action-btn" value="_(Default)_">
+        <input type="button" id="global-settings-apply" class="settings-action-btn" value="_(Apply)_" disabled>
+        <input type="button" id="global-settings-reset" class="settings-action-btn" value="_(Reset)_" disabled>
+        <span class="settings-actions-meta" id="global-settings-change-count">0 tabs changed</span>
+    </div>
 </div>
 
 <!-- Log Tab -->
