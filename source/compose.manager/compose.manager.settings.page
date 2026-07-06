@@ -730,11 +730,22 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 try {
                     $cb.switchButton('destroy');
                 } catch (e) {}
-                $cb.switchButton({
+                
+                var options = {
                     labels_placement: 'right',
                     on_label: 'YES',
                     off_label: 'NO'
-                });
+                };
+                
+                // Use custom labels if data attributes are present
+                if ($cb.data('on-label')) {
+                    options.on_label = $cb.data('on-label');
+                }
+                if ($cb.data('off-label')) {
+                    options.off_label = $cb.data('off-label');
+                }
+                
+                $cb.switchButton(options);
             });
         }
 
@@ -1975,23 +1986,23 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Default settings applied automatically when creating new compose stacks.</p>
 
         <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Default Compose File Selection)_:</dt>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Compose File Discovery)_:</dt>
             <dd>
-                <input type="checkbox" name="NEW_STACK_USE_DEFAULT_COMPOSE_FILES" id="NEW_STACK_USE_DEFAULT_COMPOSE_FILES" class="compose-toggle" <?= ($cfg['NEW_STACK_USE_DEFAULT_COMPOSE_FILES'] ?? 'false') == 'true' ? 'checked' : '' ?>>
+                <input type="checkbox" name="NEW_STACK_USE_DEFAULT_COMPOSE_FILES" id="NEW_STACK_USE_DEFAULT_COMPOSE_FILES" class="compose-toggle custom-toggle" data-on-label="Auto" data-off-label="Manual" <?= ($cfg['NEW_STACK_USE_DEFAULT_COMPOSE_FILES'] ?? 'false') == 'true' ? 'checked' : '' ?>>
                 <blockquote class="inline_help">
-                    Default for new stacks: use Docker Compose default file discovery (no explicit <code>-f</code> flags).<br>
-                    Useful for projects that rely on auto-loaded <code>compose.override.*</code> and/or <code>COMPOSE_FILE</code> from <code>.env</code>.
+                    <strong>Auto:</strong> Use Docker Compose default file discovery (no explicit <code>-f</code> flags). Useful for projects that rely on auto-loaded <code>compose.override.*</code> and/or <code>COMPOSE_FILE</code> from <code>.env</code>.<br>
+                    <strong>Manual:</strong> Explicitly specify which compose files to use.
                 </blockquote>
             </dd>
         </dl>
 
         <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Default Override File Management)_:</dt>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Override File Management)_:</dt>
             <dd>
-                <input type="checkbox" name="NEW_STACK_OVERRIDE_MANAGEMENT_AUTOMATIC" id="NEW_STACK_OVERRIDE_MANAGEMENT_AUTOMATIC" class="compose-toggle" <?= ($cfg['NEW_STACK_OVERRIDE_MANAGEMENT_AUTOMATIC'] ?? 'true') == 'true' ? 'checked' : '' ?>>
+                <input type="checkbox" name="NEW_STACK_OVERRIDE_MANAGEMENT_AUTOMATIC" id="NEW_STACK_OVERRIDE_MANAGEMENT_AUTOMATIC" class="compose-toggle custom-toggle" data-on-label="Auto" data-off-label="Manual" <?= ($cfg['NEW_STACK_OVERRIDE_MANAGEMENT_AUTOMATIC'] ?? 'true') == 'true' ? 'checked' : '' ?>>
                 <blockquote class="inline_help">
-                    Default for new stacks: <strong>Automatic</strong> when enabled, <strong>Manual</strong> when disabled.<br>
-                    Automatic lets the plugin manage the project override file; Manual blocks automated edits and uses raw override editing.
+                    <strong>Auto:</strong> Plugin automatically manages the project override file for automated edits.<br>
+                    <strong>Manual:</strong> Blocks automated edits and uses raw override editing mode.
                 </blockquote>
             </dd>
         </dl>
