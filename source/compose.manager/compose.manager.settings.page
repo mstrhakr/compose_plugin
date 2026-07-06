@@ -2133,40 +2133,6 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dd>
         </dl>
 
-        <div class="title"><span class="left"><i class="fa fa-refresh icon"></i>_(Updates & Monitoring)_</span></div>
-        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Control automatic update checking for container images.</p>
-
-        <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Auto Check for Updates)_:</dt>
-            <dd>
-                <input type="checkbox" name="AUTO_CHECK_UPDATES" id="AUTO_CHECK_UPDATES" class="compose-toggle" <?= $cfg['AUTO_CHECK_UPDATES'] == 'true' ? 'checked' : '' ?>>
-                <blockquote class="inline_help">
-                    Automatically check for container image updates when the Compose page loads.
-                </blockquote>
-            </dd>
-        </dl>
-
-        <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Check Interval)_:</dt>
-            <dd>
-                <input type="number" name="AUTO_CHECK_UPDATES_DAYS" id="AUTO_CHECK_UPDATES_DAYS" min="0.04" max="30" step="0.01" value="<?= $cfg['AUTO_CHECK_UPDATES_DAYS'] ?? '1' ?>" style="width:80px;" <?= $cfg['AUTO_CHECK_UPDATES'] != 'true' ? 'disabled' : '' ?>> _(days)_
-                <blockquote class="inline_help">
-                    How often to check for updates. Only used if "Auto Check for Updates" is enabled.<br>
-                    <strong>Examples:</strong> 0.04 (hourly), 1 (daily), 7 (weekly).
-                </blockquote>
-            </dd>
-        </dl>
-
-        <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Clear Update Cache)_:</dt>
-            <dd>
-                <input type="button" value="_(Clear Cache)_" onclick="clearUpdateCache()" class="orange-button">
-                <blockquote class="inline_help">
-                    Clear cached update status. Use if update checks show incorrect results.
-                </blockquote>
-            </dd>
-        </dl>
-
         <div class="title"><span class="left"><i class="fa fa-wrench icon"></i>_(Performance & Debugging)_</span></div>
         <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Advanced settings for troubleshooting and performance tuning.</p>
 
@@ -2373,6 +2339,43 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                     <i class="fa fa-spinner fa-spin spinner" id="updates-spinner"></i>
                 </div>
                 <div id="updates-status" class="backup-status"></div>
+            </dd>
+        </dl>
+    </div>
+
+    <!-- Check for Updates Section -->
+    <div class="backup-section">
+        <div class="title"><span class="left"><i class="fa fa-refresh icon"></i>_(Check for Updates)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Control automatic update checking for container images.</p>
+
+        <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Auto Check for Updates)_:</dt>
+            <dd>
+                <input type="checkbox" name="AUTO_CHECK_UPDATES" id="AUTO_CHECK_UPDATES" class="compose-toggle" <?= $cfg['AUTO_CHECK_UPDATES'] == 'true' ? 'checked' : '' ?>>
+                <blockquote class="inline_help">
+                    Automatically check for container image updates when the Compose page loads.
+                </blockquote>
+            </dd>
+        </dl>
+
+        <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Check Interval)_:</dt>
+            <dd>
+                <input type="number" name="AUTO_CHECK_UPDATES_DAYS" id="AUTO_CHECK_UPDATES_DAYS" min="0.04" max="30" step="0.01" value="<?= $cfg['AUTO_CHECK_UPDATES_DAYS'] ?? '1' ?>" style="width:80px;" <?= $cfg['AUTO_CHECK_UPDATES'] != 'true' ? 'disabled' : '' ?>> _(days)_
+                <blockquote class="inline_help">
+                    How often to check for updates. Only used if "Auto Check for Updates" is enabled.<br>
+                    <strong>Examples:</strong> 0.04 (hourly), 1 (daily), 7 (weekly).
+                </blockquote>
+            </dd>
+        </dl>
+
+        <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Clear Update Cache)_:</dt>
+            <dd>
+                <input type="button" value="_(Clear Cache)_" onclick="clearUpdateCache()" class="orange-button">
+                <blockquote class="inline_help">
+                    Clear cached update status. Use if update checks show incorrect results.
+                </blockquote>
             </dd>
         </dl>
     </div>
