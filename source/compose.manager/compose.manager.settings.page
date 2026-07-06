@@ -751,27 +751,6 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         }
 
 
-        // Handle dashboard tile toggle -> disable/enable hide containers option
-        function toggleHideContainers() {
-            var dashboardTileEnabled = $('#SHOW_DASHBOARD_TILE').is(':checked');
-            var $hide = $('#HIDE_DOCKER_COMPOSE_CONTAINERS');
-            var $wrapper = $hide.closest('dl');
-            if (!dashboardTileEnabled) {
-                if ($hide.is(':checked')) {
-                    $hide.prop('checked', false).change();
-                }
-                $wrapper.css({
-                    opacity: 0.4,
-                    pointerEvents: 'none'
-                });
-            } else {
-                $wrapper.css({
-                    opacity: 1,
-                    pointerEvents: ''
-                });
-            }
-        }
-
         // Patch UI toggle: confirm action and run patch.sh via server (uses existing ajax handlers)
         if (!skipPatchUI) {
             $('.compose-toggle[name="PATCH_UI"]').on('change', function(e) {
@@ -811,10 +790,10 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         // the header menu on then off preserves the user's previous selections.
         function toggleComposeOnTop() {
             var headerMenuEnabled = $('#SHOW_COMPOSE_IN_HEADER_MENU').is(':checked');
-            var $onTop = $('#SHOW_COMPOSE_ON_TOP');
-            var $wrapper = $onTop.closest('dl');
+            var $wrapper = $('#docker-page-integration-wrapper');
             if (headerMenuEnabled) {
                 // Save current state before disabling
+                var $onTop = $('#SHOW_COMPOSE_ON_TOP');
                 if (typeof $onTop.data('saved-state') === 'undefined') {
                     $onTop.data('saved-state', $onTop.is(':checked'));
                 }
@@ -831,6 +810,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                     pointerEvents: ''
                 });
                 // Restore previously saved state
+                var $onTop = $('#SHOW_COMPOSE_ON_TOP');
                 var saved = $onTop.data('saved-state');
                 if (typeof saved !== 'undefined') {
                     $onTop.prop('checked', saved).change();
@@ -844,10 +824,10 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         // Handle header menu toggle -> disable/enable hide compose from docker tab
         function toggleHideFromDocker() {
             var headerMenuEnabled = $('#SHOW_COMPOSE_IN_HEADER_MENU').is(':checked');
-            var $hide = $('#HIDE_COMPOSE_FROM_DOCKER');
-            var $wrapper = $hide.closest('dl');
+            var $wrapper = $('#docker-page-hide-wrapper');
             if (headerMenuEnabled) {
                 // Save current state before disabling
+                var $hide = $('#HIDE_COMPOSE_FROM_DOCKER');
                 if (typeof $hide.data('saved-state') === 'undefined') {
                     $hide.data('saved-state', $hide.is(':checked'));
                 }
@@ -864,6 +844,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                     pointerEvents: ''
                 });
                 // Restore previously saved state
+                var $hide = $('#HIDE_COMPOSE_FROM_DOCKER');
                 var saved = $hide.data('saved-state');
                 if (typeof saved !== 'undefined') {
                     $hide.prop('checked', saved).change();
@@ -873,11 +854,14 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         }
 
         // Handle dashboard tile toggle -> disable/enable hide containers option
-        function toggleExpandByDefault() {
-            var stacksDefaultExpanded = $('#STACKS_DEFAULT_EXPANDED').is(':checked');
-            var $hide = $('#ONLY_EXPAND_RUNNING_STACKS');
-            var $wrapper = $hide.closest('dl');
-            if (!stacksDefaultExpanded) {
+        function toggleHideFromDashboard() {
+            var dashboardTileEnabled = $('#SHOW_DASHBOARD_TILE').is(':checked');
+            var $wrapper = $('#dashboard-hide-wrapper');
+            if (!dashboardTileEnabled) {
+                var $hide = $('#HIDE_DOCKER_COMPOSE_CONTAINERS');
+                if (typeof $hide.data('saved-state') === 'undefined') {
+                    $hide.data('saved-state', $hide.is(':checked'));
+                }
                 if ($hide.is(':checked')) {
                     $hide.prop('checked', false).change();
                 }
@@ -890,6 +874,13 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                     opacity: 1,
                     pointerEvents: ''
                 });
+                // Restore previously saved state
+                var $hide = $('#HIDE_DOCKER_COMPOSE_CONTAINERS');
+                var saved = $hide.data('saved-state');
+                if (typeof saved !== 'undefined') {
+                    $hide.prop('checked', saved).change();
+                    $hide.removeData('saved-state');
+                }
             }
         }
 
@@ -978,9 +969,40 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         $('#DISABLE_ACTION_WARNINGS, #RUN_IN_BACKGROUND_DEFAULT').change(updateAggressiveModeWarning);
         updateAggressiveModeWarning();
 
-        // Apply hide containers on load and on change
-        toggleHideContainers();
-        $('#SHOW_DASHBOARD_TILE').change(toggleHideContainers);
+        // Apply dashboard hide from docker on load and on change
+        toggleHideFromDashboard();
+        $('#SHOW_DASHBOARD_TILE').change(toggleHideFromDashboard);
+
+        // Handle dashboard tile toggle -> disable/enable hide containers option
+        function toggleExpandByDefault() {
+            var stacksDefaultExpanded = $('#STACKS_DEFAULT_EXPANDED').is(':checked');
+            var $wrapper = $('#ONLY_EXPAND_RUNNING_STACKS').closest('dl');
+            if (!stacksDefaultExpanded) {
+                var $expand = $('#ONLY_EXPAND_RUNNING_STACKS');
+                if (typeof $expand.data('saved-state') === 'undefined') {
+                    $expand.data('saved-state', $expand.is(':checked'));
+                }
+                if ($expand.is(':checked')) {
+                    $expand.prop('checked', false).change();
+                }
+                $wrapper.css({
+                    opacity: 0.4,
+                    pointerEvents: 'none'
+                });
+            } else {
+                $wrapper.css({
+                    opacity: 1,
+                    pointerEvents: ''
+                });
+                // Restore previously saved state
+                var $expand = $('#ONLY_EXPAND_RUNNING_STACKS');
+                var saved = $expand.data('saved-state');
+                if (typeof saved !== 'undefined') {
+                    $expand.prop('checked', saved).change();
+                    $expand.removeData('saved-state');
+                }
+            }
+        }
 
         // Apply expand stacks by default on load and on change
         toggleExpandByDefault();
@@ -1900,6 +1922,8 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dd>
         </dl>
 
+        <div class="title"><span class="left"><i class="fa fa-bolt icon"></i>_(Action & Behavior)_</span></div>
+
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Rich Terminal Output)_:</dt>
             <dd>
@@ -1942,6 +1966,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         </div>
 
         <div class="title"><span class="left"><i class="fa fa-plus-square icon"></i>_(New Stack Defaults)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Default settings applied when creating new compose stacks.</p>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Default Compose File Selection)_:</dt>
@@ -1965,6 +1990,8 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dd>
         </dl>
 
+        <div class="title"><span class="left"><i class="fa fa-refresh icon"></i>_(Autostart Behavior)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Settings that control how stacks start when Unraid boots up.</p>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Recreate During Autostart)_:</dt>
@@ -1990,7 +2017,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         </dl>
 
         <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Docker Wait Timeout)_:</dt>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Docker Autostart Wait Timeout)_:</dt>
             <dd>
                 <input type="number" name="AUTOSTART_DOCKER_WAIT_TIMEOUT" min="30" max="600" step="10" value="<?= $cfg['AUTOSTART_DOCKER_WAIT_TIMEOUT'] ?? '120' ?>" style="width:80px;"> _(seconds)_
                 <blockquote class="inline_help">
@@ -2010,38 +2037,52 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 </blockquote>
             </dd>
         </dl>
+        </dl>
 
-        <div class="title"><span class="left"><i class="fa fa-desktop icon"></i>_(Display Options)_</span></div>
+        <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Stack Startup Timeout)_:</dt>
+            <dd>
+                <input type="number" name="AUTOSTART_TIMEOUT" min="60" max="900" step="30" value="<?= $cfg['AUTOSTART_TIMEOUT'] ?? '300' ?>" style="width:80px;"> _(seconds)_
+                <blockquote class="inline_help">
+                    Maximum time to wait for each stack to start during autostart.<br>
+                    If a stack takes longer, it will be logged as a timeout and the next stack will start.
+                </blockquote>
+            </dd>
+        </dl>
+
+        <div class="title"><span class="left"><i class="fa fa-desktop icon"></i>_(Display & UI Integration)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Configure how compose stacks appear in the Unraid webUI and dashboard.</p>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Show Compose in Header Menu)_:</dt>
             <dd>
                 <input type="checkbox" name="SHOW_COMPOSE_IN_HEADER_MENU" id="SHOW_COMPOSE_IN_HEADER_MENU" class="compose-toggle" <?= $cfg['SHOW_COMPOSE_IN_HEADER_MENU'] == 'true' ? 'checked' : '' ?>>
                 <blockquote class="inline_help">
-                    Add a Compose tab to the main Unraid header navigation bar for quick access.
+                    Add a Compose tab to the main Unraid header navigation bar for quick access.<br>
+                    <strong>When disabled:</strong> Compose stacks appear on the Docker page (see options below).
                 </blockquote>
             </dd>
         </dl>
 
-        <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Show Compose Stacks Above Docker)_:</dt>
+        <dl style="opacity:0.7;pointer-events:none;" id="docker-page-integration-wrapper">
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Show Compose Stacks Above Docker Containers)_:</dt>
             <dd>
                 <input type="checkbox" name="SHOW_COMPOSE_ON_TOP" id="SHOW_COMPOSE_ON_TOP" class="compose-toggle" <?= ($cfg['SHOW_COMPOSE_ON_TOP'] ?? 'false') == 'true' ? 'checked' : '' ?>>
                 <blockquote class="inline_help">
                     When the Docker page is displayed without tabs, move the Compose Stacks section above the built-in Docker Containers section.<br>
-                    This option is only available when "Show Compose in Header Menu" is set to No (non-tabbed mode).
+                    <em>Only available when "Show Compose in Header Menu" is disabled (inline mode).</em>
                 </blockquote>
             </dd>
         </dl>
 
-        <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Hide Compose Containers from Docker)_:</dt>
+        <dl style="opacity:0.7;pointer-events:none;" id="docker-page-hide-wrapper">
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Hide Compose Containers from Docker Page)_:</dt>
             <dd>
                 <input type="checkbox" name="HIDE_COMPOSE_FROM_DOCKER" id="HIDE_COMPOSE_FROM_DOCKER" class="compose-toggle" <?= ($cfg['HIDE_COMPOSE_FROM_DOCKER'] ?? 'false') == 'true' ? 'checked' : '' ?>>
                 <blockquote class="inline_help">
-                    When enabled, containers managed by Compose stacks will be hidden from the Docker Containers table on the Docker tab.<br>
-                    This avoids duplicate display when Compose stacks are shown on the same page.<br>
-                    This option is only available when "Show Compose in Header Menu" is set to No (non-tabbed mode).
+                    When enabled, containers managed by Compose stacks will be hidden from the Docker Containers table on the Docker page.<br>
+                    This avoids duplicate display when Compose stacks are shown on the same page (inline mode).<br>
+                    <em>Only available when "Show Compose in Header Menu" is disabled (inline mode).</em>
                 </blockquote>
             </dd>
         </dl>
@@ -2056,17 +2097,20 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dd>
         </dl>
 
-        <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Hide Compose Containers from Docker Tile on Dashboard)_:</dt>
+        <dl style="opacity:0.7;pointer-events:none;" id="dashboard-hide-wrapper">
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Hide Compose Containers from Docker Dashboard Tile)_:</dt>
             <dd>
                 <input type="checkbox" name="HIDE_DOCKER_COMPOSE_CONTAINERS" id="HIDE_DOCKER_COMPOSE_CONTAINERS" class="compose-toggle" <?= ($cfg['HIDE_DOCKER_COMPOSE_CONTAINERS'] ?? 'false') == 'true' ? 'checked' : '' ?>>
                 <blockquote class="inline_help">
                     Hide containers managed by Compose stacks from Unraid's Docker Containers dashboard tile.<br>
                     This avoids duplicate entries when both the Compose Stacks tile and Docker Containers tile are visible on the Dashboard.<br>
-                    This option requires "Show Dashboard Tile" to be enabled.
+                    <em>Only available when "Show Dashboard Tile" is enabled.</em>
                 </blockquote>
             </dd>
         </dl>
+
+        <div class="title"><span class="left"><i class="fa fa-list-ul icon"></i>_(Stack List Display)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Control default appearance of stack listings.</p>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Expand Stacks by Default)_:</dt>
@@ -2083,12 +2127,14 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             <dd>
                 <input type="checkbox" id="ONLY_EXPAND_RUNNING_STACKS" name="ONLY_EXPAND_RUNNING_STACKS" class="compose-toggle" <?= ($cfg['ONLY_EXPAND_RUNNING_STACKS'] ?? 'false') == 'true' ? 'checked' : '' ?>>
                 <blockquote class="inline_help">
-                    When enabled, only running stacks will be expanded by default.
+                    When enabled, only running stacks will be expanded by default. Stopped/paused stacks remain collapsed.<br>
+                    <em>Only applies when "Expand Stacks by Default" is enabled.</em>
                 </blockquote>
             </dd>
         </dl>
 
-        <div class="title"><span class="left"><i class="fa fa-refresh icon"></i>_(Update Checking)_</span></div>
+        <div class="title"><span class="left"><i class="fa fa-refresh icon"></i>_(Updates & Monitoring)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Control automatic update checking for container images.</p>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Auto Check for Updates)_:</dt>
@@ -2101,12 +2147,12 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         </dl>
 
         <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Auto Check Interval (days))_:</dt>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Check Interval)_:</dt>
             <dd>
-                <input type="number" name="AUTO_CHECK_UPDATES_DAYS" id="AUTO_CHECK_UPDATES_DAYS" min="0.04" max="30" step="0.01" value="<?= $cfg['AUTO_CHECK_UPDATES_DAYS'] ?? '1' ?>" style="width:80px;" <?= $cfg['AUTO_CHECK_UPDATES'] != 'true' ? 'disabled' : '' ?>>
+                <input type="number" name="AUTO_CHECK_UPDATES_DAYS" id="AUTO_CHECK_UPDATES_DAYS" min="0.04" max="30" step="0.01" value="<?= $cfg['AUTO_CHECK_UPDATES_DAYS'] ?? '1' ?>" style="width:80px;" <?= $cfg['AUTO_CHECK_UPDATES'] != 'true' ? 'disabled' : '' ?>> _(days)_
                 <blockquote class="inline_help">
-                    How often to check for updates.<br>
-                    Examples: 0.04 (hourly), 1 (daily), 7 (weekly).
+                    How often to check for updates. Only used if "Auto Check for Updates" is enabled.<br>
+                    <strong>Examples:</strong> 0.04 (hourly), 1 (daily), 7 (weekly).
                 </blockquote>
             </dd>
         </dl>
@@ -2121,14 +2167,16 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dd>
         </dl>
 
-        <div class="title"><span class="left"><i class="fa fa-wrench icon"></i>_(Advanced)_</span></div>
+        <div class="title"><span class="left"><i class="fa fa-wrench icon"></i>_(Performance & Debugging)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Advanced settings for troubleshooting and performance tuning.</p>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Debug Logging)_:</dt>
             <dd>
                 <input type="checkbox" name="DEBUG_TO_LOG" id="DEBUG_TO_LOG" class="compose-toggle" <?= $cfg['DEBUG_TO_LOG'] == 'true' ? 'checked' : '' ?>>
                 <blockquote class="inline_help">
-                    Log detailed compose command information to syslog. View logs in the Log tab.
+                    Log detailed compose command information to syslog. View logs in the Log tab.<br>
+                    Useful for troubleshooting and understanding what commands are being executed.
                 </blockquote>
             </dd>
         </dl>
@@ -2150,8 +2198,10 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                     <input type="number" name="COMPOSE_STATS_CUSTOM_INTERVAL_MS" id="COMPOSE_STATS_CUSTOM_INTERVAL_MS" min="100" max="10000" step="50" value="<?= intval($cfg['COMPOSE_STATS_CUSTOM_INTERVAL_MS'] ?? '1000') ?>" style="width:90px;"> _(ms)_
                 </label>
                 <blockquote class="inline_help">
-                    Controls how often Compose live metrics are published.<br>
-                    Live publishes each stream update, Medium uses ~2 seconds, Slow uses ~5 seconds, and Custom uses the interval in milliseconds.
+                    Controls how often Compose live metrics (CPU, memory, etc.) are updated on the UI.<br>
+                    <strong>Live:</strong> Publishes each stream update (most responsive, higher CPU).<br>
+                    <strong>Medium/Slow:</strong> Batches updates (~2s or ~5s intervals, lower CPU).<br>
+                    <strong>Custom:</strong> Use the interval in milliseconds.
                 </blockquote>
             </dd>
         </dl>
