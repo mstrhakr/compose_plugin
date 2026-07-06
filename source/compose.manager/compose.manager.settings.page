@@ -1905,7 +1905,12 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         <input type="hidden" name="#file" value="<?= $sName ?>/<?= $sName ?>.cfg">
         <input type="hidden" name="#section" value="">
 
+        <blockquote class="inline_help" style="margin-bottom:20px;">
+            <strong>Settings Tab</strong> — Configure general plugin behavior including where stacks are stored, how they start at boot, and how they appear in the webUI. Most settings take effect immediately.
+        </blockquote>
+
         <div class="title"><span class="left"><i class="fa fa-cog icon"></i>_(General Settings)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Core plugin configuration and project storage location.</p>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Compose Project Directory)_:</dt>
@@ -1922,7 +1927,8 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dd>
         </dl>
 
-        <div class="title"><span class="left"><i class="fa fa-bolt icon"></i>_(Action & Behavior)_</span></div>
+        <div class="title"><span class="left"><i class="fa fa-bolt icon"></i>_(Stack Actions & Behavior)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Control how stack operations execute and display results.</p>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Rich Terminal Output)_:</dt>
@@ -1965,8 +1971,8 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
         </div>
 
-        <div class="title"><span class="left"><i class="fa fa-plus-square icon"></i>_(New Stack Defaults)_</span></div>
-        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Default settings applied when creating new compose stacks.</p>
+        <div class="title"><span class="left"><i class="fa fa-plus-square icon"></i>_(New Stack Configuration)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Default settings applied automatically when creating new compose stacks.</p>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Default Compose File Selection)_:</dt>
@@ -1990,8 +1996,8 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dd>
         </dl>
 
-        <div class="title"><span class="left"><i class="fa fa-refresh icon"></i>_(Autostart Behavior)_</span></div>
-        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Settings that control how stacks start when Unraid boots up.</p>
+        <div class="title"><span class="left"><i class="fa fa-power-off icon"></i>_(Boot Autostart)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Control how Compose stacks automatically start when Unraid boots up.</p>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Recreate During Autostart)_:</dt>
@@ -2037,21 +2043,9 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 </blockquote>
             </dd>
         </dl>
-        </dl>
 
-        <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Stack Startup Timeout)_:</dt>
-            <dd>
-                <input type="number" name="AUTOSTART_TIMEOUT" min="60" max="900" step="30" value="<?= $cfg['AUTOSTART_TIMEOUT'] ?? '300' ?>" style="width:80px;"> _(seconds)_
-                <blockquote class="inline_help">
-                    Maximum time to wait for each stack to start during autostart.<br>
-                    If a stack takes longer, it will be logged as a timeout and the next stack will start.
-                </blockquote>
-            </dd>
-        </dl>
-
-        <div class="title"><span class="left"><i class="fa fa-desktop icon"></i>_(Display & UI Integration)_</span></div>
-        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Configure how compose stacks appear in the Unraid webUI and dashboard.</p>
+        <div class="title"><span class="left"><i class="fa fa-desktop icon"></i>_(WebUI Display)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Configure where and how Compose stacks appear throughout the Unraid webUI.</p>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Show Compose in Header Menu)_:</dt>
@@ -2109,8 +2103,8 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dd>
         </dl>
 
-        <div class="title"><span class="left"><i class="fa fa-list-ul icon"></i>_(Stack List Display)_</span></div>
-        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Control default appearance of stack listings.</p>
+        <div class="title"><span class="left"><i class="fa fa-eye icon"></i>_(Compose Page Display)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Customize how stack details are displayed on the Compose page.</p>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Expand Stacks by Default)_:</dt>
@@ -2133,8 +2127,8 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dd>
         </dl>
 
-        <div class="title"><span class="left"><i class="fa fa-wrench icon"></i>_(Performance & Debugging)_</span></div>
-        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Advanced settings for troubleshooting and performance tuning.</p>
+        <div class="title"><span class="left"><i class="fa fa-sliders icon"></i>_(Advanced Options)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Performance tuning and troubleshooting options for advanced users.</p>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Debug Logging)_:</dt>
@@ -2291,10 +2285,14 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
 <!-- Updates Tab -->
 <div id="compose-tab-updates" class="compose-tab-content">
+    <blockquote class="inline_help" style="margin-bottom:20px;">
+        <strong>Updates Tab</strong> — Manage automatic stack updates and container image checking. Define global auto-update schedules and per-stack update policies. Changes save independently from Settings.
+    </blockquote>
 
     <!-- Auto-Update Settings Section -->
     <div class="backup-section">
-        <div class="title"><span class="left"><i class="fa fa-clock-o icon"></i>_(Auto-Update Settings)_</span></div>
+        <div class="title"><span class="left"><i class="fa fa-clock-o icon"></i>_(Global Auto-Update Settings)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Enable scheduled updates and set default schedules for all stacks.</p>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Enable Auto-Updates)_:</dt>
@@ -2345,8 +2343,8 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
     <!-- Check for Updates Section -->
     <div class="backup-section">
-        <div class="title"><span class="left"><i class="fa fa-refresh icon"></i>_(Check for Updates)_</span></div>
-        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Control automatic update checking for container images.</p>
+        <div class="title"><span class="left"><i class="fa fa-search icon"></i>_(Check for Image Updates)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Configure how often to scan for available container image updates.</p>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Auto Check for Updates)_:</dt>
@@ -2382,7 +2380,8 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
     <!-- Per-Stack Configuration Section -->
     <div class="backup-section">
-        <div class="title"><span class="left"><i class="fa fa-cubes icon"></i>_(Stack Configuration)_</span></div>
+        <div class="title"><span class="left"><i class="fa fa-cubes icon"></i>_(Per-Stack Auto-Update Settings)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Enable or disable auto-updates for individual stacks and set their specific schedules.</p>
 
         <dl>
             <dt>_(Stacks)_:</dt>
@@ -2410,10 +2409,14 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
 <!-- Backup / Restore Tab -->
 <div id="compose-tab-backup" class="compose-tab-content">
+    <blockquote class="inline_help" style="margin-bottom:20px;">
+        <strong>Backup Tab</strong> — Create, schedule, and restore backups of your Compose stack configurations and override files. Backups are independent from docker container data and volumes.
+    </blockquote>
 
     <!-- Backup Settings Section -->
     <div class="backup-section">
-        <div class="title"><span class="left"><i class="fa fa-download icon"></i>_(Backup Settings)_</span></div>
+        <div class="title"><span class="left"><i class="fa fa-download icon"></i>_(Backup Configuration)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Configure backup storage location, retention policy, and create scheduled backups.</p>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Backup Destination)_:</dt>
@@ -2551,6 +2554,10 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
 <!-- Log Tab -->
 <div id="compose-tab-log" class="compose-tab-content">
+    <blockquote class="inline_help" style="margin-bottom:20px;">
+        <strong>Log Tab</strong> — View system log entries generated by Compose Manager. Enable "Debug Logging" in the Settings tab to capture detailed command information. Logs help troubleshoot issues and verify operations.
+    </blockquote>
+
     <div class="log-controls">
         <label>_(Lines)_:
             <select id="log-lines" onchange="loadLogs()">
@@ -2592,7 +2599,11 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
 <!-- Credits Tab -->
 <div id="compose-tab-credits" class="compose-tab-content">
-    <div class="title"><span class="left"><i class="fa fa-star icon"></i>_(Credits)_</span></div>
+    <blockquote class="inline_help" style="margin-bottom:20px;">
+        <strong>Credits Tab</strong> — View plugin version information, acknowledgments of upstream projects, included libraries, and contributors. Links to GitHub repositories and project homepages.
+    </blockquote>
+
+    <div class="title"><span class="left"><i class="fa fa-star icon"></i>_(About Compose Manager)_</span></div>
 
     <div class="credits-section" style="padding:16px 12px;border-bottom:1px solid var(--dynamix-sb-border-color, #ccc);">
         <span style="font-size:1.2em;font-weight:bold;">Plugin Version: <?= htmlspecialchars($pluginVersion) ?></span><br>
