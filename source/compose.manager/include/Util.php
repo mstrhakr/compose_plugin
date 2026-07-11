@@ -191,9 +191,9 @@ function composeDeleteStackFolder(string $composeRoot, string $stackName, string
     ];
 
     $appendRemovedPath = static function (string $path) use (&$meta): void {
-        $meta['removedCount'] = (int)($meta['removedCount'] ?? 0) + 1;
-        $preview = $meta['removedPreview'] ?? [];
-        if (is_array($preview) && count($preview) < 40) {
+        $meta['removedCount']++;
+        $preview = $meta['removedPreview'];
+        if (count($preview) < 40) {
             $preview[] = $path;
             $meta['removedPreview'] = $preview;
         }
@@ -272,7 +272,7 @@ function composeDeleteStackFolder(string $composeRoot, string $stackName, string
                 if (!$removeTree($itemPath)) {
                     return false;
                 }
-                if (!@rmdir($itemPath) && is_dir($itemPath)) {
+                if (!@rmdir($itemPath)) {
                     $errorMessage = 'Failed to remove stack directory contents.';
                     $meta['failedPath'] = $itemPath;
                     return false;
@@ -281,7 +281,7 @@ function composeDeleteStackFolder(string $composeRoot, string $stackName, string
                 continue;
             }
 
-            if (!@unlink($itemPath) && file_exists($itemPath)) {
+            if (!@unlink($itemPath)) {
                 $errorMessage = 'Failed to remove stack file contents.';
                 $meta['failedPath'] = $itemPath;
                 return false;
@@ -296,13 +296,13 @@ function composeDeleteStackFolder(string $composeRoot, string $stackName, string
         return false;
     }
 
-    if (!@rmdir($targetPath) && is_dir($targetPath)) {
+    if (!@rmdir($targetPath)) {
         $errorMessage = 'Failed to remove stack folder.';
         return false;
     }
     $appendRemovedPath($targetPath . ' [dir]');
 
-    return !is_dir($targetPath);
+    return true;
 }
 
 /**
