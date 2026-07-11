@@ -710,7 +710,96 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
     function toggleAutoCheckInterval() {
         var autoCheckEnabled = $('#AUTO_CHECK_UPDATES').is(':checked');
-        $('#AUTO_CHECK_UPDATES_DAYS').prop('disabled', !autoCheckEnabled);
+        $('#AUTO_CHECK_UPDATES_MODE').prop('disabled', !autoCheckEnabled);
+
+        var mode = ($('#AUTO_CHECK_UPDATES_MODE').val() || 'daily').toLowerCase();
+        var showCustom = autoCheckEnabled && mode === 'custom';
+        $('#AUTO_CHECK_UPDATES_CUSTOM_WRAPPER').toggle(showCustom);
+        $('#AUTO_CHECK_UPDATES_DAYS_CUSTOM').prop('disabled', !showCustom);
+    }
+
+    function normalizeAutoCheckDaysValue(rawValue, fallback) {
+        var value = String(rawValue === undefined || rawValue === null ? '' : rawValue).trim();
+        if (value === '') {
+            return String(fallback || '1');
+        }
+
+        var parsed = parseFloat(value);
+        if (isNaN(parsed) || parsed < 0) {
+            return String(fallback || '1');
+        }
+
+        return String(parsed);
+    }
+
+    function resolveAutoCheckIntervalMode(daysRaw) {
+        var days = parseFloat(normalizeAutoCheckDaysValue(daysRaw, '1'));
+        if (Math.abs(days - 0) < 0.0001) return 'every_time';
+        if (Math.abs(days - 0.04) < 0.005 || Math.abs(days - (1 / 24)) < 0.005) return 'hourly';
+        if (Math.abs(days - 1) < 0.0001) return 'daily';
+        if (Math.abs(days - 7) < 0.0001) return 'weekly';
+        if (Math.abs(days - 30) < 0.0001) return 'monthly';
+        return 'custom';
+    }
+
+    function presetDaysForAutoCheckMode(mode) {
+        switch ((mode || '').toLowerCase()) {
+            case 'every_time':
+                return '0';
+            case 'hourly':
+                return '0.04';
+            case 'daily':
+                return '1';
+            case 'weekly':
+                return '7';
+            case 'monthly':
+                return '30';
+            default:
+                return null;
+        }
+    }
+
+    function setAutoCheckIntervalUIFromDays(daysRaw) {
+        var normalizedDays = normalizeAutoCheckDaysValue(daysRaw, '1');
+        var mode = resolveAutoCheckIntervalMode(normalizedDays);
+        $('#AUTO_CHECK_UPDATES_DAYS').val(normalizedDays);
+        $('#AUTO_CHECK_UPDATES_MODE').val(mode);
+
+        if (mode === 'custom') {
+            $('#AUTO_CHECK_UPDATES_DAYS_CUSTOM').val(normalizedDays);
+        } else {
+            var presetDays = presetDaysForAutoCheckMode(mode);
+            if (presetDays !== null) {
+                $('#AUTO_CHECK_UPDATES_DAYS_CUSTOM').val(presetDays);
+            }
+        }
+
+        toggleAutoCheckInterval();
+    }
+
+    function onAutoCheckModeChanged() {
+        var mode = ($('#AUTO_CHECK_UPDATES_MODE').val() || 'daily').toLowerCase();
+        var presetDays = presetDaysForAutoCheckMode(mode);
+
+        if (presetDays !== null) {
+            $('#AUTO_CHECK_UPDATES_DAYS').val(presetDays).trigger('change');
+        } else {
+            var customDays = normalizeAutoCheckDaysValue($('#AUTO_CHECK_UPDATES_DAYS_CUSTOM').val(), $('#AUTO_CHECK_UPDATES_DAYS').val() || '1');
+            $('#AUTO_CHECK_UPDATES_DAYS_CUSTOM').val(customDays);
+            $('#AUTO_CHECK_UPDATES_DAYS').val(customDays).trigger('change');
+        }
+
+        toggleAutoCheckInterval();
+    }
+
+    function onAutoCheckCustomDaysChanged() {
+        var customDays = normalizeAutoCheckDaysValue($('#AUTO_CHECK_UPDATES_DAYS_CUSTOM').val(), $('#AUTO_CHECK_UPDATES_DAYS').val() || '1');
+        $('#AUTO_CHECK_UPDATES_DAYS_CUSTOM').val(customDays);
+        $('#AUTO_CHECK_UPDATES_DAYS').val(customDays).trigger('change');
+    }
+
+    function onAutoCheckCustomDaysInput() {
+        $('#AUTO_CHECK_UPDATES_DAYS').val($('#AUTO_CHECK_UPDATES_DAYS_CUSTOM').val()).trigger('change');
     }
 
     function toggleComposeStatsCustomInterval() {
@@ -1411,7 +1500,8 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             }
 
             $('#AUTO_CHECK_UPDATES').prop('checked', data.AUTO_CHECK_UPDATES === 'true').trigger('change');
-            $('#AUTO_CHECK_UPDATES_DAYS').val(data.AUTO_CHECK_UPDATES_DAYS || '1').trigger('change');
+            setAutoCheckIntervalUIFromDays(data.AUTO_CHECK_UPDATES_DAYS || '1');
+            $('#AUTO_CHECK_UPDATES_DAYS').trigger('change');
             toggleAutoCheckInterval();
         }
 
@@ -1477,7 +1567,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             updateUnifiedActionState();
         });
 
-        $('#compose-tab-updates').on('input change', '#AUTO_CHECK_UPDATES, #AUTO_CHECK_UPDATES_DAYS', function() {
+        $('#compose-tab-updates').on('input change', '#AUTO_CHECK_UPDATES, #AUTO_CHECK_UPDATES_MODE, #AUTO_CHECK_UPDATES_DAYS, #AUTO_CHECK_UPDATES_DAYS_CUSTOM', function() {
             updateUnifiedActionState();
         });
 
@@ -1606,8 +1696,11 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         $('#SHOW_COMPOSE_IN_HEADER_MENU').change(toggleComposeOnTop);
 
         // Handle auto-check toggle state change
-        toggleAutoCheckInterval();
+        setAutoCheckIntervalUIFromDays($('#AUTO_CHECK_UPDATES_DAYS').val() || '1');
         $('#AUTO_CHECK_UPDATES').change(toggleAutoCheckInterval);
+        $('#AUTO_CHECK_UPDATES_MODE').on('change', onAutoCheckModeChanged);
+        $('#AUTO_CHECK_UPDATES_DAYS_CUSTOM').on('input', onAutoCheckCustomDaysInput);
+        $('#AUTO_CHECK_UPDATES_DAYS_CUSTOM').on('change', onAutoCheckCustomDaysChanged);
 
         // allow patch UI change handler to run now that switches are initialized
         _ignorePatchUIChange = false;
@@ -3007,10 +3100,21 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Check Interval)_:</dt>
             <dd>
-                <input type="number" name="AUTO_CHECK_UPDATES_DAYS" id="AUTO_CHECK_UPDATES_DAYS" min="0.04" max="30" step="0.01" value="<?= $cfg['AUTO_CHECK_UPDATES_DAYS'] ?? '1' ?>" style="width:80px;" <?= $cfg['AUTO_CHECK_UPDATES'] != 'true' ? 'disabled' : '' ?>> _(days)_
+                <select id="AUTO_CHECK_UPDATES_MODE" style="width:180px;" <?= $cfg['AUTO_CHECK_UPDATES'] != 'true' ? 'disabled' : '' ?>>
+                    <option value="every_time">_(Every Time)_</option>
+                    <option value="hourly">_(Hourly)_</option>
+                    <option value="daily">_(Daily)_</option>
+                    <option value="weekly">_(Weekly)_</option>
+                    <option value="monthly">_(Monthly)_</option>
+                    <option value="custom">_(Custom)_</option>
+                </select>
+                <span id="AUTO_CHECK_UPDATES_CUSTOM_WRAPPER" style="margin-left:8px;display:none;">
+                    <input type="number" id="AUTO_CHECK_UPDATES_DAYS_CUSTOM" min="0" max="30" step="0.01" value="<?= $cfg['AUTO_CHECK_UPDATES_DAYS'] ?? '1' ?>" style="width:80px;" <?= $cfg['AUTO_CHECK_UPDATES'] != 'true' ? 'disabled' : '' ?>> _(days)_
+                </span>
+                <input type="hidden" name="AUTO_CHECK_UPDATES_DAYS" id="AUTO_CHECK_UPDATES_DAYS" value="<?= $cfg['AUTO_CHECK_UPDATES_DAYS'] ?? '1' ?>">
                 <blockquote class="inline_help">
                     How often to check for updates. Only used if "Auto Check for Updates" is enabled.<br>
-                    <strong>Examples:</strong> 0.04 (hourly), 1 (daily), 7 (weekly).
+                    Use presets for common intervals, or choose Custom to enter days manually.
                 </blockquote>
             </dd>
         </dl>
