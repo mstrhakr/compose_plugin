@@ -4,7 +4,7 @@ Type="php"
 Menu="Docker:2"
 Lock="true"
 Nchan="compose_info"
-Cond="$var['fsState'] == 'Started' && exec('/etc/rc.d/rc.docker status | grep -v \"not\"') && (!file_exists('/boot/config/plugins/compose.manager/compose.manager.cfg') ? true : exec(\"grep '^SHOW_COMPOSE_IN_HEADER_MENU=' /boot/config/plugins/compose.manager/compose.manager.cfg 2>/dev/null | grep -v 'true'\"))"
+Cond="$var['fsState'] == 'Started' && exec('/etc/rc.d/rc.docker status | grep -v \"not\"') && exec('/usr/local/emhttp/plugins/compose.manager/scripts/header_menu_visibility.sh hide')"
 ---
 <?php
 // Redirect to settings page if accessed via /Settings/compose.manager
