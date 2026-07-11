@@ -1083,6 +1083,118 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             return tabId || settingsUnifiedState.activeTab || 'settings';
         }
 
+        function parseSnapshot(snapshot) {
+            if (!snapshot) {
+                return null;
+            }
+
+            try {
+                return JSON.parse(snapshot);
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function isPlainObject(value) {
+            return Object.prototype.toString.call(value) === '[object Object]';
+        }
+
+        function countLeafValues(value) {
+            if (value === undefined || value === null) {
+                return 1;
+            }
+
+            if (Array.isArray(value)) {
+                if (value.length === 0) {
+                    return 1;
+                }
+
+                var totalArrayLeaves = 0;
+                for (var i = 0; i < value.length; i++) {
+                    totalArrayLeaves += countLeafValues(value[i]);
+                }
+
+                return totalArrayLeaves;
+            }
+
+            if (isPlainObject(value)) {
+                var keys = Object.keys(value);
+                if (keys.length === 0) {
+                    return 1;
+                }
+
+                var totalObjectLeaves = 0;
+                for (var j = 0; j < keys.length; j++) {
+                    totalObjectLeaves += countLeafValues(value[keys[j]]);
+                }
+
+                return totalObjectLeaves;
+            }
+
+            return 1;
+        }
+
+        function countChangedSettingsValues(currentValue, baselineValue) {
+            if (currentValue === baselineValue) {
+                return 0;
+            }
+
+            if (currentValue === undefined || baselineValue === undefined) {
+                return countLeafValues(currentValue === undefined ? baselineValue : currentValue);
+            }
+
+            if (Array.isArray(currentValue) && Array.isArray(baselineValue)) {
+                var arrayDiffCount = 0;
+                var maxLength = Math.max(currentValue.length, baselineValue.length);
+
+                for (var i = 0; i < maxLength; i++) {
+                    arrayDiffCount += countChangedSettingsValues(currentValue[i], baselineValue[i]);
+                }
+
+                return arrayDiffCount;
+            }
+
+            if (isPlainObject(currentValue) && isPlainObject(baselineValue)) {
+                var objectDiffCount = 0;
+                var seenKeys = {};
+                var currentKeys = Object.keys(currentValue);
+                var baselineKeys = Object.keys(baselineValue);
+                var k;
+
+                for (k = 0; k < currentKeys.length; k++) {
+                    seenKeys[currentKeys[k]] = true;
+                }
+                for (k = 0; k < baselineKeys.length; k++) {
+                    seenKeys[baselineKeys[k]] = true;
+                }
+
+                var keys = Object.keys(seenKeys);
+                for (k = 0; k < keys.length; k++) {
+                    var key = keys[k];
+                    objectDiffCount += countChangedSettingsValues(currentValue[key], baselineValue[key]);
+                }
+
+                return objectDiffCount;
+            }
+
+            return 1;
+        }
+
+        function countChangedSettings(snapshotCurrent, snapshotBaseline) {
+            if (snapshotCurrent === snapshotBaseline) {
+                return 0;
+            }
+
+            var currentData = parseSnapshot(snapshotCurrent);
+            var baselineData = parseSnapshot(snapshotBaseline);
+
+            if (currentData === null || baselineData === null) {
+                return snapshotCurrent === snapshotBaseline ? 0 : 1;
+            }
+
+            return countChangedSettingsValues(currentData, baselineData);
+        }
+
         function saveImageUpdateCheckSettings() {
             var deferred = $.Deferred();
             var $settingsForm = $('form[name="compose_manager_settings"]');
@@ -1110,10 +1222,15 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
         function updateUnifiedActionState() {
             settingsUnifiedState.activeTab = getCurrentSettingsTabFromDom();
-            settingsUnifiedState.dirty.settings = captureSettingsSnapshot() !== settingsUnifiedState.baseline.settings;
-            settingsUnifiedState.dirty.backup = captureBackupSnapshot() !== settingsUnifiedState.baseline.backup;
-            settingsUnifiedState.dirty.updates = settingsUnifiedState.updatesInitialized && captureUpdatesSnapshot() !== settingsUnifiedState.baseline.updates;
-            settingsUnifiedState.dirty.imageCheck = captureImageCheckSnapshot() !== settingsUnifiedState.baseline.imageCheck;
+            var settingsSnapshot = captureSettingsSnapshot();
+            var backupSnapshot = captureBackupSnapshot();
+            var updatesSnapshot = captureUpdatesSnapshot();
+            var imageCheckSnapshot = captureImageCheckSnapshot();
+
+            settingsUnifiedState.dirty.settings = settingsSnapshot !== settingsUnifiedState.baseline.settings;
+            settingsUnifiedState.dirty.backup = backupSnapshot !== settingsUnifiedState.baseline.backup;
+            settingsUnifiedState.dirty.updates = settingsUnifiedState.updatesInitialized && updatesSnapshot !== settingsUnifiedState.baseline.updates;
+            settingsUnifiedState.dirty.imageCheck = imageCheckSnapshot !== settingsUnifiedState.baseline.imageCheck;
 
             var updatesDirty = settingsUnifiedState.dirty.updates || settingsUnifiedState.dirty.imageCheck;
 
@@ -1122,11 +1239,27 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             if (updatesDirty) changedTabs++;
             if (settingsUnifiedState.dirty.backup) changedTabs++;
 
+            var changedSettings = 0;
+            if (settingsUnifiedState.dirty.settings) {
+                changedSettings += countChangedSettings(settingsSnapshot, settingsUnifiedState.baseline.settings);
+            }
+            if (settingsUnifiedState.dirty.backup) {
+                changedSettings += countChangedSettings(backupSnapshot, settingsUnifiedState.baseline.backup);
+            }
+            if (settingsUnifiedState.dirty.updates) {
+                changedSettings += countChangedSettings(updatesSnapshot, settingsUnifiedState.baseline.updates);
+            }
+            if (settingsUnifiedState.dirty.imageCheck) {
+                changedSettings += countChangedSettings(imageCheckSnapshot, settingsUnifiedState.baseline.imageCheck);
+            }
+
             var hasChanges = changedTabs > 0;
             $('#global-settings-apply').prop('disabled', !hasChanges);
             $('#global-settings-reset').prop('disabled', !hasChanges);
             $('#global-settings-default').prop('disabled', settingsUnifiedState.activeTab !== 'settings');
-            $('#global-settings-change-count').text(changedTabs + (changedTabs === 1 ? ' tab changed' : ' tabs changed'));
+            var changedTabsText = changedTabs + (changedTabs === 1 ? ' tab changed' : ' tabs changed');
+            var changedSettingsText = changedSettings + (changedSettings === 1 ? ' setting changed' : ' settings changed');
+            $('#global-settings-change-count').text(changedTabsText + ' | ' + changedSettingsText);
 
             if (settingsUnifiedState.activeTab === 'credits' || settingsUnifiedState.activeTab === 'log') {
                 $('#global-settings-actions').addClass('hidden');
@@ -1185,6 +1318,13 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             });
         }
 
+        function clearDependentToggleSavedStateCache() {
+            $('#SHOW_COMPOSE_ON_TOP').removeData('saved-state');
+            $('#HIDE_COMPOSE_FROM_DOCKER').removeData('saved-state');
+            $('#HIDE_DOCKER_COMPOSE_CONTAINERS').removeData('saved-state');
+            $('#ONLY_EXPAND_RUNNING_STACKS').removeData('saved-state');
+        }
+
         function resetBackupFromBaseline() {
             var snapshot = settingsUnifiedState.baseline.backup;
             if (!snapshot) return;
@@ -1241,16 +1381,30 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         });
 
         $('#global-settings-reset').on('click', function() {
+            clearDependentToggleSavedStateCache();
             resetSettingsFromBaseline();
             resetBackupFromBaseline();
             resetImageCheckFromBaseline();
 
             if (settingsUnifiedState.updatesInitialized) {
-                loadUpdatesUI();
-                refreshCronStatus();
+                var pendingResetOps = 2;
+                var finalizeResetState = function() {
+                    pendingResetOps--;
+                    if (pendingResetOps > 0) return;
+                    initSwitchToggles($('#compose-tab-settings, #compose-tab-updates, #compose-tab-backup'));
+                    updateUnifiedActionState();
+                };
+
+                loadUpdatesUI({
+                    updateBaseline: false,
+                    onComplete: finalizeResetState
+                });
+                refreshCronStatus(finalizeResetState);
+                return;
             }
 
             window.setTimeout(function() {
+                initSwitchToggles($('#compose-tab-settings, #compose-tab-updates, #compose-tab-backup'));
                 updateUnifiedActionState();
             }, 200);
         });
@@ -1290,6 +1444,10 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 settingsUnifiedState.updatesInitialized = true;
                 settingsUnifiedState.baseline.updates = captureUpdatesSnapshot();
                 settingsUnifiedState.baseline.imageCheck = captureImageCheckSnapshot();
+                updateUnifiedActionState();
+            },
+            refreshDirtyState: function() {
+                settingsUnifiedState.updatesInitialized = true;
                 updateUnifiedActionState();
             }
         };
@@ -1991,7 +2149,11 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         initUpdatesSortable();
     }
 
-    function loadUpdatesUI() {
+    function loadUpdatesUI(options) {
+        options = options || {};
+        var updateBaseline = options.updateBaseline !== false;
+        var onComplete = typeof options.onComplete === 'function' ? options.onComplete : null;
+
         $('#updates-tbody').html('<tr><td colspan="5" class="compose-text-muted" style="text-align:center;padding:12px;">_(Loading stacks...)_</td></tr>');
         $.post('/plugins/compose.manager/include/Exec.php', {
             action: 'listProjects'
@@ -2049,18 +2211,29 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 initUpdatesSortable();
                 // Sync toggle-all state
                 updateToggleAllState();
-                if (window.composeSettingsUnifiedState && typeof window.composeSettingsUnifiedState.markUpdatesLoaded === 'function') {
+                if (updateBaseline && window.composeSettingsUnifiedState && typeof window.composeSettingsUnifiedState.markUpdatesLoaded === 'function') {
                     window.composeSettingsUnifiedState.markUpdatesLoaded();
+                } else if (!updateBaseline && window.composeSettingsUnifiedState && typeof window.composeSettingsUnifiedState.refreshDirtyState === 'function') {
+                    window.composeSettingsUnifiedState.refreshDirtyState();
+                }
+                if (onComplete) {
+                    onComplete();
                 }
             }, 'json').fail(function() {
                 $('#updates-tbody').html('<tr><td colspan="5" class="compose-status-danger" style="text-align:center;padding:12px;">_(Failed to load auto-update settings.)_</td></tr>');
+                if (onComplete) {
+                    onComplete();
+                }
             });
         }, 'json').fail(function() {
             $('#updates-tbody').html('<tr><td colspan="5" class="compose-status-danger" style="text-align:center;padding:12px;">_(Failed to load stacks.)_</td></tr>');
+            if (onComplete) {
+                onComplete();
+            }
         });
     }
 
-    function refreshCronStatus() {
+    function refreshCronStatus(onComplete) {
         $.post('/plugins/compose.manager/include/AutoUpdate.php', {
             action: 'getCronStatus'
         }, function(r) {
@@ -2079,6 +2252,9 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                     $cb.prop('checked', installed);
                 }
             }
+            if (typeof onComplete === 'function') {
+                onComplete();
+            }
         }, 'json').fail(function() {
             // On failure, leave checkbox unchecked
             var $cb = $('#AUTOUPDATE_ENABLED');
@@ -2089,6 +2265,9 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 } else {
                     $cb.prop('checked', false);
                 }
+            }
+            if (typeof onComplete === 'function') {
+                onComplete();
             }
         });
     }
@@ -2939,7 +3118,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         <input type="button" id="global-settings-default" class="settings-action-btn" value="_(Default)_">
         <input type="button" id="global-settings-apply" class="settings-action-btn" value="_(Apply)_" disabled>
         <input type="button" id="global-settings-reset" class="settings-action-btn" value="_(Reset)_" disabled>
-        <span class="settings-actions-meta" id="global-settings-change-count">0 tabs changed</span>
+        <span class="settings-actions-meta" id="global-settings-change-count">0 tabs changed | 0 settings changed</span>
     </div>
 </div>
 
