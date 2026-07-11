@@ -991,6 +991,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         var settingsUnifiedState = {
             activeTab: 'settings',
             updatesInitialized: false,
+            debugReady: false,
             baseline: {
                 settings: '',
                 updates: '',
@@ -1011,11 +1012,12 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
         function captureSettingsSnapshot() {
             var data = {};
-            $('#compose-tab-settings').find('input, select, textarea').each(function(index) {
+            $('#compose-tab-settings').find('input, select, textarea').each(function() {
                 var $el = $(this);
                 var type = ($el.attr('type') || '').toLowerCase();
                 if (type === 'hidden' || type === 'submit' || type === 'button') return;
-                var key = $el.attr('id') || $el.attr('name') || ('settings_field_' + index);
+                var key = $el.attr('id') || $el.attr('name');
+                if (!key) return;
                 if (type === 'checkbox' || type === 'radio') {
                     data[key] = $el.is(':checked') ? 'true' : 'false';
                 } else {
@@ -1195,6 +1197,27 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             return countChangedSettingsValues(currentData, baselineData);
         }
 
+        function computeChangedKeys(snapshotCurrent, snapshotBaseline) {
+            var currentData = parseSnapshot(snapshotCurrent);
+            var baselineData = parseSnapshot(snapshotBaseline);
+
+            if (currentData === null || baselineData === null || !isPlainObject(currentData) || !isPlainObject(baselineData)) {
+                return [];
+            }
+
+            var keys = {};
+            Object.keys(currentData).forEach(function(key) {
+                keys[key] = true;
+            });
+            Object.keys(baselineData).forEach(function(key) {
+                keys[key] = true;
+            });
+
+            return Object.keys(keys).filter(function(key) {
+                return countChangedSettingsValues(currentData[key], baselineData[key]) > 0;
+            });
+        }
+
         function saveImageUpdateCheckSettings() {
             var deferred = $.Deferred();
             var $settingsForm = $('form[name="compose_manager_settings"]');
@@ -1226,10 +1249,11 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             var backupSnapshot = captureBackupSnapshot();
             var updatesSnapshot = captureUpdatesSnapshot();
             var imageCheckSnapshot = captureImageCheckSnapshot();
+            var updatesBaselineReady = settingsUnifiedState.baseline.updates !== '';
 
             settingsUnifiedState.dirty.settings = settingsSnapshot !== settingsUnifiedState.baseline.settings;
             settingsUnifiedState.dirty.backup = backupSnapshot !== settingsUnifiedState.baseline.backup;
-            settingsUnifiedState.dirty.updates = settingsUnifiedState.updatesInitialized && updatesSnapshot !== settingsUnifiedState.baseline.updates;
+            settingsUnifiedState.dirty.updates = settingsUnifiedState.updatesInitialized && updatesBaselineReady && updatesSnapshot !== settingsUnifiedState.baseline.updates;
             settingsUnifiedState.dirty.imageCheck = imageCheckSnapshot !== settingsUnifiedState.baseline.imageCheck;
 
             var updatesDirty = settingsUnifiedState.dirty.updates || settingsUnifiedState.dirty.imageCheck;
@@ -1260,6 +1284,36 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             var changedTabsText = changedTabs + (changedTabs === 1 ? ' tab changed' : ' tabs changed');
             var changedSettingsText = changedSettings + (changedSettings === 1 ? ' setting changed' : ' settings changed');
             $('#global-settings-change-count').text(changedTabsText + ' | ' + changedSettingsText);
+
+            var debugSignature = [
+                settingsUnifiedState.activeTab,
+                changedTabs,
+                changedSettings,
+                settingsUnifiedState.dirty.settings ? '1' : '0',
+                settingsUnifiedState.dirty.updates ? '1' : '0',
+                settingsUnifiedState.dirty.imageCheck ? '1' : '0',
+                settingsUnifiedState.dirty.backup ? '1' : '0'
+            ].join('|');
+            if (settingsUnifiedState.debugReady && settingsUnifiedState.lastDebugSignature !== debugSignature) {
+                settingsUnifiedState.lastDebugSignature = debugSignature;
+                composeLogger('Dirty state recalculated', {
+                    activeTab: settingsUnifiedState.activeTab,
+                    changedTabs: changedTabs,
+                    changedSettings: changedSettings,
+                    dirty: {
+                        settings: settingsUnifiedState.dirty.settings,
+                        updates: settingsUnifiedState.dirty.updates,
+                        imageCheck: settingsUnifiedState.dirty.imageCheck,
+                        backup: settingsUnifiedState.dirty.backup
+                    },
+                    changedKeys: {
+                        settings: computeChangedKeys(settingsSnapshot, settingsUnifiedState.baseline.settings),
+                        updates: settingsUnifiedState.updatesInitialized ? computeChangedKeys(updatesSnapshot, settingsUnifiedState.baseline.updates) : [],
+                        imageCheck: computeChangedKeys(imageCheckSnapshot, settingsUnifiedState.baseline.imageCheck),
+                        backup: computeChangedKeys(backupSnapshot, settingsUnifiedState.baseline.backup)
+                    }
+                }, 'user', 'debug', 'settings');
+            }
 
             if (settingsUnifiedState.activeTab === 'credits' || settingsUnifiedState.activeTab === 'log') {
                 $('#global-settings-actions').addClass('hidden');
@@ -1303,11 +1357,12 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 return;
             }
 
-            $('#compose-tab-settings').find('input, select, textarea').each(function(index) {
+            $('#compose-tab-settings').find('input, select, textarea').each(function() {
                 var $el = $(this);
                 var type = ($el.attr('type') || '').toLowerCase();
                 if (type === 'hidden' || type === 'submit' || type === 'button') return;
-                var key = $el.attr('id') || $el.attr('name') || ('settings_field_' + index);
+                var key = $el.attr('id') || $el.attr('name');
+                if (!key) return;
                 if (!Object.prototype.hasOwnProperty.call(data, key)) return;
 
                 if (type === 'checkbox' || type === 'radio') {
@@ -1478,8 +1533,20 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             // Always load updates UI when switching to updates tab
             if (tabId === 'updates') {
                 if (!settingsUnifiedState.dirty.updates) {
-                    loadUpdatesUI();
-                    refreshCronStatus();
+                    var pendingUpdatesInitOps = 2;
+                    var finalizeUpdatesInit = function() {
+                        pendingUpdatesInitOps--;
+                        if (pendingUpdatesInitOps > 0) return;
+                        if (window.composeSettingsUnifiedState && typeof window.composeSettingsUnifiedState.markUpdatesLoaded === 'function') {
+                            window.composeSettingsUnifiedState.markUpdatesLoaded();
+                        }
+                    };
+
+                    loadUpdatesUI({
+                        updateBaseline: false,
+                        onComplete: finalizeUpdatesInit
+                    });
+                    refreshCronStatus(finalizeUpdatesInit);
                 }
             }
         });
@@ -1550,11 +1617,12 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         // Set only the correct tab and content as active
         $('.compose-tab[data-tab="' + savedTab + '"]').addClass('active');
         $('#compose-tab-' + savedTab).addClass('active');
-        setActiveSettingsTab(savedTab);
+        settingsUnifiedState.activeTab = savedTab;
 
         settingsUnifiedState.baseline.settings = captureSettingsSnapshot();
         settingsUnifiedState.baseline.backup = captureBackupSnapshot();
         settingsUnifiedState.baseline.imageCheck = captureImageCheckSnapshot();
+        settingsUnifiedState.debugReady = true;
         updateUnifiedActionState();
 
         // If the default tab is backup, load the backup list immediately
@@ -1570,8 +1638,20 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
         // If the default tab is updates, load updates UI immediately
         if (savedTab === 'updates') {
-            loadUpdatesUI();
-            refreshCronStatus();
+            var pendingInitialUpdatesOps = 2;
+            var finalizeInitialUpdates = function() {
+                pendingInitialUpdatesOps--;
+                if (pendingInitialUpdatesOps > 0) return;
+                if (window.composeSettingsUnifiedState && typeof window.composeSettingsUnifiedState.markUpdatesLoaded === 'function') {
+                    window.composeSettingsUnifiedState.markUpdatesLoaded();
+                }
+            };
+
+            loadUpdatesUI({
+                updateBaseline: false,
+                onComplete: finalizeInitialUpdates
+            });
+            refreshCronStatus(finalizeInitialUpdates);
         }
     });
 
@@ -2241,6 +2321,11 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             var installed = r && r.installed;
             var $cb = $('#AUTOUPDATE_ENABLED');
             var currentState = $cb.is(':checked');
+            composeLogger('refreshCronStatus result', {
+                installed: !!installed,
+                currentState: currentState,
+                changed: currentState !== installed
+            }, 'user', 'debug', 'settings');
             // Only update if state changed to avoid flicker
             if (currentState !== installed) {
                 // Click the switch-button-background to toggle visual state
@@ -2437,7 +2522,9 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                     completed++;
                     runNext();
                 }, 'json').fail(function() {
-                    console.log('runNow failed for path', p);
+                    if (typeof composeLogger === 'function') {
+                        composeLogger('runNow failed for path', { path: p }, 'user', 'warn', 'settings');
+                    }
                     runNext();
                 });
             }
