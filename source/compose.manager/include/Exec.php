@@ -371,24 +371,23 @@ switch ($_POST['action']) {
             'filesRemain' => $filesRemain
         ], 'user', 'debug', 'stack');
 
-        $execOutput = [];
-        $execRc = 0;
-        exec("rm -rf " . escapeshellarg($folderName), $execOutput, $execRc);
-
+        $deleteError = '';
+        $deleteMeta = [];
+        $deleteSuccess = composeDeleteStackFolder($compose_root, $stackName, $deleteError, $deleteMeta);
         $folderStillExists = is_dir($folderName);
-        if ($execRc !== 0 || $folderStillExists) {
+        if (!$deleteSuccess || $folderStillExists) {
             composeLogger("Stack folder delete failed", [
                 'stackName' => $stackName,
                 'folderName' => $folderName,
-                'execRc' => $execRc,
-                'execOutput' => $execOutput,
+                'deleteError' => $deleteError,
+                'deleteMeta' => $deleteMeta,
                 'folderStillExists' => $folderStillExists,
                 'filesRemain' => $filesRemain
             ], 'user', 'error', 'stack');
             $msg = "Failed to delete stack folder. " .
-                ($execRc !== 0 ? "rm exit code: $execRc. " : "") .
-                ($folderStillExists ? "Folder still exists after rm. " : "") .
-                (count($execOutput) ? "Output: " . implode("; ", $execOutput) : "");
+                ($deleteError !== '' ? "$deleteError " : "") .
+                ($folderStillExists ? "Folder still exists after delete. " : "") .
+                (isset($deleteMeta['failedPath']) ? "Path: " . $deleteMeta['failedPath'] . ". " : "");
             echo json_encode(['result' => 'error', 'message' => $msg]);
             break;
         }

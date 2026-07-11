@@ -172,6 +172,103 @@ function hasComposeFile($dir)
 }
 
 /**
+ * Delete a stack folder under compose root using guarded recursive deletion.
+ *
+ * @param string $composeRoot Base compose root directory
+ * @param string $stackName Stack directory name
+ * @param string $errorMessage Populated when deletion fails
+ * @param array<string,mixed> $meta Populated with debug metadata
+ * @return bool True when deleted (or already absent), false on guard/failure
+ */
+function composeDeleteStackFolder(string $composeRoot, string $stackName, string &$errorMessage = '', array &$meta = []): bool
+{
+    $errorMessage = '';
+    $meta = [
+        'composeRoot' => $composeRoot,
+        'stackName' => $stackName,
+    ];
+
+    $safeStackName = basename(trim($stackName));
+    $meta['safeStackName'] = $safeStackName;
+    if ($safeStackName === '' || $safeStackName === '.' || $safeStackName === '..') {
+        $errorMessage = 'Invalid stack name.';
+        return false;
+    }
+
+    $composeRootReal = realpath($composeRoot);
+    $meta['composeRootReal'] = $composeRootReal;
+    if ($composeRootReal === false) {
+        $errorMessage = 'Compose root is not available.';
+        return false;
+    }
+
+    $targetPath = rtrim($composeRootReal, '/') . '/' . $safeStackName;
+    $meta['targetPath'] = $targetPath;
+    if (!file_exists($targetPath)) {
+        return true;
+    }
+
+    $targetReal = realpath($targetPath);
+    $meta['targetReal'] = $targetReal;
+    if ($targetReal === false || !Path::isAllowedPath($targetReal, [$composeRootReal]) || $targetReal === $composeRootReal) {
+        $errorMessage = 'Invalid stack path resolved for deletion.';
+        return false;
+    }
+
+    if (is_link($targetPath)) {
+        if (!@unlink($targetPath) && file_exists($targetPath)) {
+            $errorMessage = 'Failed to remove stack symlink.';
+            return false;
+        }
+        return true;
+    }
+
+    if (!is_dir($targetPath)) {
+        if (!@unlink($targetPath) && file_exists($targetPath)) {
+            $errorMessage = 'Failed to remove stack file.';
+            return false;
+        }
+        return true;
+    }
+
+    try {
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($targetPath, FilesystemIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::CHILD_FIRST
+        );
+
+        foreach ($iterator as $item) {
+            $itemPath = $item->getPathname();
+            if ($item->isDir() && !$item->isLink()) {
+                if (!@rmdir($itemPath) && is_dir($itemPath)) {
+                    $errorMessage = 'Failed to remove stack directory contents.';
+                    $meta['failedPath'] = $itemPath;
+                    return false;
+                }
+                continue;
+            }
+
+            if (!@unlink($itemPath) && file_exists($itemPath)) {
+                $errorMessage = 'Failed to remove stack file contents.';
+                $meta['failedPath'] = $itemPath;
+                return false;
+            }
+        }
+    } catch (Throwable $e) {
+        $errorMessage = 'Failed to enumerate stack folder for deletion.';
+        $meta['exception'] = $e->getMessage();
+        return false;
+    }
+
+    if (!@rmdir($targetPath) && is_dir($targetPath)) {
+        $errorMessage = 'Failed to remove stack folder.';
+        return false;
+    }
+
+    return !is_dir($targetPath);
+}
+
+/**
  * Resolve the config file path used by auto-update.
  *
  * Prefers a persistent path under /boot/config when available and writable,
