@@ -4784,20 +4784,19 @@ function ViewLastCmdLog(project, displayName) {
     });
 }
 
-function ComposePullConfirmed(path, profile = "", background = false, suppressBackgroundNotification = false) {
-    var stackName = basename(path);
-    performComposeAction({
-        stackName: stackName,
+function ComposePullConfirmed(path, opts) {
+    opts = opts || {};
+    confirmedComposeAction(path, {
         actionName: 'pull',
-        title: 'Compose Pull: ' + stackName,
+        titlePrefix: 'Compose Pull',
         requestUrl: compURL,
         payload: {
             action: 'composePull',
             path: path,
-            profile: profile
+            profile: opts.profile || ''
         },
-        background: background,
-        suppressBackgroundNotification: suppressBackgroundNotification,
+        background: !!opts.background,
+        suppressBackgroundNotification: !!opts.suppressBackgroundNotification,
         pendingReload: true
     });
 }
