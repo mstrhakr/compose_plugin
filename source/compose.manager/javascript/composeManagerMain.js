@@ -6822,35 +6822,115 @@ function deleteStackByProject(project, projectName) {
                 stackName: project
             }, function(data) {
                 try {
-                    if (data) {
-                        var response = JSON.parse(data);
-                        if (response.result == "warning") {
-                            setTimeout(function() {
-                                swal({
-                                    title: "Files remain on disk.",
-                                    text: response.message,
-                                    type: "warning"
-                                }, function() {
-                                    composeLoadlist();
-                                });
-                            }, 100);
-                            return;
-                        }
+                    if (!data) {
+                        setStackActionInProgress(project, false);
+                        swal({
+                            title: 'Delete Failed',
+                            text: 'Empty response from server while deleting stack.',
+                            type: 'error'
+                        });
+                        return;
                     }
+
+                    var response = JSON.parse(data);
+                    if (!response || !response.result) {
+                        setStackActionInProgress(project, false);
+                        swal({
+                            title: 'Delete Failed',
+                            text: 'Unexpected delete response from server.',
+                            type: 'error'
+                        });
+                        return;
+                    }
+
+                    if (response.result === 'error') {
+                        setStackActionInProgress(project, false);
+                        swal({
+                            title: 'Delete Failed',
+                            text: response.message || 'Unable to delete stack.',
+                            type: 'error'
+                        });
+                        return;
+                    }
+
+                    removeStackFromUiByProject(project);
+
+                    if (response.result === 'warning') {
+                        setTimeout(function() {
+                            swal({
+                                title: 'Stack deleted. Files remain on disk.',
+                                text: response.message || 'Some external files were not removed.',
+                                type: 'warning'
+                            });
+                        }, 100);
+                        return;
+                    }
+
+                    setTimeout(function() {
+                        swal({
+                            title: 'Stack deleted',
+                            text: composeEscapeHtml(projectName) + ' was removed successfully.',
+                            type: 'success',
+                            showConfirmButton: false
+                        });
+                        setTimeout(function() {
+                            swal.close();
+                        }, 1200);
+                    }, 100);
                 } catch (e) {
+                    setStackActionInProgress(project, false);
                     composeLogger('Delete response parse error', {
                         project: project,
                         error: e
                     }, 'user', 'error', 'stack-action');
+                    swal({
+                        title: 'Delete Failed',
+                        text: 'Could not parse delete response.',
+                        type: 'error'
+                    });
                 }
             }).fail(function() {
+                setStackActionInProgress(project, false);
                 composeLogger('Delete request failed for project', {
                     project: project
                 }, 'user', 'error', 'stack-action');
+                swal({
+                    title: 'Delete Failed',
+                    text: 'Network error while deleting stack.',
+                    type: 'error'
+                });
             });
-            composeLoadlist();
         }
     });
+}
+
+function removeStackFromUiByProject(project) {
+    var $stackRow = $('#compose_stacks tr.compose-sortable[data-project="' + project + '"]');
+    if ($stackRow.length === 0) {
+        return;
+    }
+
+    var stackId = ($stackRow.attr('id') || '').replace('stack-row-', '');
+    if (stackId !== '') {
+        $('#details-row-' + stackId).remove();
+        delete expandedStacks[stackId];
+        delete stackDetailsDesiredExpanded[stackId];
+        delete stackDetailsLoading[stackId];
+        delete stackContainersCache[stackId];
+    }
+
+    delete composeStackActionInProgress[project];
+    delete stackDetailsPrefetchCache[project];
+    delete stackDetailsPrefetchPromises[project];
+
+    $stackRow.remove();
+    syncComposeStackRowStriping();
+    updateStackToggleAllButtonState();
+
+    var remainingRows = $('#compose_stacks tr.compose-sortable').length;
+    if (remainingRows === 0) {
+        $('#compose_list').html('<tr><td colspan="14" style="text-align:center;padding:20px;color:var(--alt-text-color);">No Docker Compose stacks found. Click "Add New Stack" to create one.</td></tr>');
+    }
 }
 
 // ============================================

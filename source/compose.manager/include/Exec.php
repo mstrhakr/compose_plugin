@@ -393,10 +393,15 @@ switch ($_POST['action']) {
         }
 
         if ($filesRemain == "") {
-            composeLogger("Deleted stack: $stackName", null, 'user', 'info', 'stack');
+            composeLogger("Deleted stack: $stackName", [
+                'deleteMeta' => $deleteMeta
+            ], 'user', 'info', 'stack');
             echo json_encode(['result' => 'success', 'message' => '']);
         } else {
-            composeLogger("Deleted stack: $stackName (indirect, external files remain at $filesRemain)", null, 'user', 'warning', 'stack');
+            composeLogger("Deleted stack: $stackName (indirect, external files remain at $filesRemain)", [
+                'deleteMeta' => $deleteMeta,
+                'filesRemain' => $filesRemain
+            ], 'user', 'warning', 'stack');
             echo json_encode(['result' => 'warning', 'message' => $filesRemain]);
         }
         break;

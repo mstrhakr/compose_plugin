@@ -186,7 +186,18 @@ function composeDeleteStackFolder(string $composeRoot, string $stackName, string
     $meta = [
         'composeRoot' => $composeRoot,
         'stackName' => $stackName,
+        'removedCount' => 0,
+        'removedPreview' => [],
     ];
+
+    $appendRemovedPath = static function (string $path) use (&$meta): void {
+        $meta['removedCount'] = (int)($meta['removedCount'] ?? 0) + 1;
+        $preview = $meta['removedPreview'] ?? [];
+        if (is_array($preview) && count($preview) < 40) {
+            $preview[] = $path;
+            $meta['removedPreview'] = $preview;
+        }
+    };
 
     $safeStackName = basename(trim($stackName));
     $meta['safeStackName'] = $safeStackName;
@@ -220,6 +231,7 @@ function composeDeleteStackFolder(string $composeRoot, string $stackName, string
             $errorMessage = 'Failed to remove stack symlink.';
             return false;
         }
+        $appendRemovedPath($targetPath . ' [symlink]');
         return true;
     }
 
@@ -228,23 +240,44 @@ function composeDeleteStackFolder(string $composeRoot, string $stackName, string
             $errorMessage = 'Failed to remove stack file.';
             return false;
         }
+        $appendRemovedPath($targetPath . ' [file]');
         return true;
     }
 
-    try {
-        $iterator = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator($targetPath, FilesystemIterator::SKIP_DOTS),
-            RecursiveIteratorIterator::CHILD_FIRST
-        );
+    $removeTree = static function (string $path) use (&$removeTree, &$errorMessage, &$meta, $appendRemovedPath): bool {
+        $entries = @scandir($path);
+        if (!is_array($entries)) {
+            $errorMessage = 'Failed to enumerate stack folder for deletion.';
+            $meta['failedPath'] = $path;
+            return false;
+        }
 
-        foreach ($iterator as $item) {
-            $itemPath = $item->getPathname();
-            if ($item->isDir() && !$item->isLink()) {
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+
+            $itemPath = rtrim($path, '/') . '/' . $entry;
+            if (is_link($itemPath)) {
+                if (!@unlink($itemPath) && file_exists($itemPath)) {
+                    $errorMessage = 'Failed to remove stack symlink contents.';
+                    $meta['failedPath'] = $itemPath;
+                    return false;
+                }
+                $appendRemovedPath($itemPath . ' [symlink]');
+                continue;
+            }
+
+            if (is_dir($itemPath)) {
+                if (!$removeTree($itemPath)) {
+                    return false;
+                }
                 if (!@rmdir($itemPath) && is_dir($itemPath)) {
                     $errorMessage = 'Failed to remove stack directory contents.';
                     $meta['failedPath'] = $itemPath;
                     return false;
                 }
+                $appendRemovedPath($itemPath . ' [dir]');
                 continue;
             }
 
@@ -253,10 +286,13 @@ function composeDeleteStackFolder(string $composeRoot, string $stackName, string
                 $meta['failedPath'] = $itemPath;
                 return false;
             }
+            $appendRemovedPath($itemPath . ' [file]');
         }
-    } catch (Throwable $e) {
-        $errorMessage = 'Failed to enumerate stack folder for deletion.';
-        $meta['exception'] = $e->getMessage();
+
+        return true;
+    };
+
+    if (!$removeTree($targetPath)) {
         return false;
     }
 
@@ -264,6 +300,7 @@ function composeDeleteStackFolder(string $composeRoot, string $stackName, string
         $errorMessage = 'Failed to remove stack folder.';
         return false;
     }
+    $appendRemovedPath($targetPath . ' [dir]');
 
     return !is_dir($targetPath);
 }
