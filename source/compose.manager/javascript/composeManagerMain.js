@@ -478,6 +478,8 @@ function hideComposeSpinner() {
 function composeLoadlist() {
     // Return a Promise so callers can reliably .then() / .catch() on completion
     return new Promise(function(resolve, reject) {
+        var composeLoadRequestTs = Date.now();
+
         // Bind autostart change handler early, before any rows are rendered or become interactive
         // during progressive loading. Use delegated event handler so it works for dynamically added rows.
         $('#compose_list').off('change', '.auto_start').on('change', '.auto_start', function() {
@@ -602,7 +604,8 @@ function composeLoadlist() {
         }
 
         $.get('/plugins/compose.manager/include/ComposeList.php', {
-                mode: 'list'
+            mode: 'list',
+            _: composeLoadRequestTs
             })
             .done(function(metaRaw) {
                 var meta = tryParseJson(metaRaw);
@@ -690,9 +693,10 @@ function composeLoadlist() {
                     }, 'user', 'debug', 'composeLoadlist');
 
                     activeRequests++;
-                    $.get('/plugins/compose.manager/include/ComposeList.php', {
+                        $.get('/plugins/compose.manager/include/ComposeList.php', {
                             mode: 'row',
-                            project: project
+                            project: project,
+                            _: composeLoadRequestTs + '-' + index
                         })
                         .done(function(rowRaw) {
                             var rowResp = tryParseJson(rowRaw);
@@ -6904,15 +6908,12 @@ function deleteStackByProject(project, projectName) {
     });
 }
 
-function removeStackFromUiByProject(project) {
-    var $stackRow = $('#compose_stacks tr.compose-sortable[data-project="' + project + '"]');
-    if ($stackRow.length === 0) {
+function purgeDeletedStackCaches(project, stackId) {
+    if (!project) {
         return;
     }
 
-    var stackId = ($stackRow.attr('id') || '').replace('stack-row-', '');
     if (stackId !== '') {
-        $('#details-row-' + stackId).remove();
         delete expandedStacks[stackId];
         delete stackDetailsDesiredExpanded[stackId];
         delete stackDetailsLoading[stackId];
@@ -6922,6 +6923,33 @@ function removeStackFromUiByProject(project) {
     delete composeStackActionInProgress[project];
     delete stackDetailsPrefetchCache[project];
     delete stackDetailsPrefetchPromises[project];
+    delete persistentContainerCache[project];
+    delete stackUpdateStatus[project];
+
+    pendingUpdateCheckStacks = (pendingUpdateCheckStacks || []).filter(function(stackName) {
+        return stackName !== project;
+    });
+    pendingComposeReloadStacks = (pendingComposeReloadStacks || []).filter(function(stackName) {
+        return stackName !== project;
+    });
+}
+
+function removeStackFromUiByProject(project) {
+    var $stackRow = $('#compose_stacks tr.compose-sortable[data-project="' + project + '"]');
+    var stackId = '';
+    if ($stackRow.length > 0) {
+        stackId = ($stackRow.attr('id') || '').replace('stack-row-', '');
+    }
+
+    if (stackId !== '') {
+        $('#details-row-' + stackId).remove();
+    }
+
+    purgeDeletedStackCaches(project, stackId);
+
+    if ($stackRow.length === 0) {
+        return;
+    }
 
     $stackRow.remove();
     syncComposeStackRowStriping();

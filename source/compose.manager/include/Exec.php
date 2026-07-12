@@ -107,6 +107,49 @@ if (!function_exists('composeSavePersistentContainerCache')) {
     }
 }
 
+if (!function_exists('composePurgeDeletedStackCaches')) {
+    /**
+     * Remove deleted stack entries from persistent cache files.
+     *
+     * @return array<string,bool> Per-cache purge result flags.
+     */
+    function composePurgeDeletedStackCaches(string $stackName): array
+    {
+        $purged = [
+            'persistentContainerCache' => false,
+            'savedUpdateStatus' => false,
+            'pendingRecheck' => false,
+        ];
+
+        $persistentContainerCache = composeLoadPersistentContainerCache();
+        if (isset($persistentContainerCache[$stackName])) {
+            unset($persistentContainerCache[$stackName]);
+            composeSavePersistentContainerCache($persistentContainerCache);
+            $purged['persistentContainerCache'] = true;
+        }
+
+        if (defined('COMPOSE_UPDATE_STATUS_FILE') && is_file(COMPOSE_UPDATE_STATUS_FILE)) {
+            $savedStatus = json_decode((string)file_get_contents(COMPOSE_UPDATE_STATUS_FILE), true);
+            if (is_array($savedStatus) && isset($savedStatus[$stackName])) {
+                unset($savedStatus[$stackName]);
+                file_put_contents(COMPOSE_UPDATE_STATUS_FILE, json_encode($savedStatus, JSON_PRETTY_PRINT));
+                $purged['savedUpdateStatus'] = true;
+            }
+        }
+
+        if (defined('PENDING_RECHECK_FILE') && is_file(PENDING_RECHECK_FILE)) {
+            $pending = json_decode((string)file_get_contents(PENDING_RECHECK_FILE), true);
+            if (is_array($pending) && isset($pending[$stackName])) {
+                unset($pending[$stackName]);
+                file_put_contents(PENDING_RECHECK_FILE, json_encode($pending, JSON_PRETTY_PRINT));
+                $purged['pendingRecheck'] = true;
+            }
+        }
+
+        return $purged;
+    }
+}
+
 if (!function_exists('composeResolveContainerIcon')) {
     /**
      * Resolve container icon using stack cache first, then docker inspect fallback.
@@ -392,17 +435,21 @@ switch ($_POST['action']) {
             break;
         }
 
+        $cachePurgeMeta = composePurgeDeletedStackCaches($stackName);
+
         if ($filesRemain == "") {
             composeLogger("Deleted stack: $stackName", [
-                'deleteMeta' => $deleteMeta
+                'deleteMeta' => $deleteMeta,
+                'cachePurgeMeta' => $cachePurgeMeta,
             ], 'user', 'info', 'stack');
-            echo json_encode(['result' => 'success', 'message' => '']);
+            echo json_encode(['result' => 'success', 'message' => '', 'cachePurge' => $cachePurgeMeta]);
         } else {
             composeLogger("Deleted stack: $stackName (indirect, external files remain at $filesRemain)", [
                 'deleteMeta' => $deleteMeta,
-                'filesRemain' => $filesRemain
+                'filesRemain' => $filesRemain,
+                'cachePurgeMeta' => $cachePurgeMeta,
             ], 'user', 'warning', 'stack');
-            echo json_encode(['result' => 'warning', 'message' => $filesRemain]);
+            echo json_encode(['result' => 'warning', 'message' => $filesRemain, 'cachePurge' => $cachePurgeMeta]);
         }
         break;
     case 'changeName':
