@@ -431,6 +431,7 @@ switch ($_POST['action']) {
                 ($deleteError !== '' ? "$deleteError " : "") .
                 ($folderStillExists ? "Folder still exists after delete. " : "") .
                 (isset($deleteMeta['failedPath']) ? "Path: " . $deleteMeta['failedPath'] . ". " : "");
+            composeSendNotification("Stack delete failed: $stackName", trim($msg), 'warning');
             echo json_encode(['result' => 'error', 'message' => $msg]);
             break;
         }
@@ -438,17 +439,21 @@ switch ($_POST['action']) {
         $cachePurgeMeta = composePurgeDeletedStackCaches($stackName);
 
         if ($filesRemain == "") {
+            $message = "Stack '$stackName' was deleted successfully.";
             composeLogger("Deleted stack: $stackName", [
                 'deleteMeta' => $deleteMeta,
                 'cachePurgeMeta' => $cachePurgeMeta,
             ], 'user', 'info', 'stack');
+            composeSendNotification("Stack delete complete: $stackName", $message);
             echo json_encode(['result' => 'success', 'message' => '', 'cachePurge' => $cachePurgeMeta]);
         } else {
+            $message = "Stack '$stackName' was deleted. Files remain on disk at '$filesRemain'.";
             composeLogger("Deleted stack: $stackName (indirect, external files remain at $filesRemain)", [
                 'deleteMeta' => $deleteMeta,
                 'filesRemain' => $filesRemain,
                 'cachePurgeMeta' => $cachePurgeMeta,
             ], 'user', 'warning', 'stack');
+            composeSendNotification("Stack delete complete: $stackName", $message, 'warning');
             echo json_encode(['result' => 'warning', 'message' => $filesRemain, 'cachePurge' => $cachePurgeMeta]);
         }
         break;
