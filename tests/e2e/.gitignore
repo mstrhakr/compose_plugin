@@ -1,0 +1,6 @@
+node_modules/
+playwright-report/
+test-results/
+.auth/*.json
+.auth/*.env
+!.auth/.gitkeep

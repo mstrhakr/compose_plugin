@@ -1,0 +1,17 @@
+{
+  "name": "compose-plugin-e2e",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Read-only Playwright smoke tests for Compose Manager against a live Unraid server",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:debug": "playwright test --debug",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.6.3"
+  }
+}
