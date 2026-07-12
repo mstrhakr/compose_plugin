@@ -4,6 +4,7 @@ import {
   composeDownAndWait,
   deleteStackWithRetries,
   postForm,
+  waitForStackUnlock,
 } from './helpers/composeE2eHelpers';
 
 const composePath = process.env.E2E_COMPOSE_PATH || '/Docker/Compose';
@@ -110,6 +111,23 @@ async function triggerUiActionAndCaptureRequest(
     const dialogTitle = page.locator('.sweet-alert h2').filter({ hasText: titleText });
     await expect(dialogTitle).toBeVisible();
 
+    // Modal should render the container list block and at least one icon image.
+    await expect(page.locator('.sweet-alert .fa.fa-cubes')).toBeVisible();
+    const modalIcons = page.locator('.sweet-alert img');
+    await expect(modalIcons.first()).toBeVisible();
+    await expect
+      .poll(
+        async () => {
+          const firstIcon = modalIcons.first();
+          return firstIcon.evaluate((img) => {
+            const image = img as HTMLImageElement;
+            return image.complete && image.naturalWidth > 0;
+          });
+        },
+        { timeout: 10_000 }
+      )
+      .toBe(true);
+
     const runBgCheckbox = page.locator('#swal-run-bg-checkbox');
     await expect(runBgCheckbox).toBeVisible();
 
@@ -202,7 +220,7 @@ test.describe('Compose Manager UI flow: background operations', () => {
 });
 
 test.describe('Compose Manager UI flow: foreground operations', () => {
-  test('compose up posts with background=0 from modal', async ({ page }) => {
+  test('compose up foreground opens ttyd/openBox and closes after completion', async ({ page }) => {
     test.setTimeout(180_000);
     test.skip(!process.env.E2E_BASE_URL, 'Set E2E_BASE_URL for live-server E2E tests.');
     test.skip(!mutationEnabled, 'Set E2E_ENABLE_MUTATION_TESTS=1 to allow mutation lifecycle tests.');
@@ -235,6 +253,45 @@ test.describe('Compose Manager UI flow: foreground operations', () => {
       projectPath = created.projectPath;
 
       await triggerUiActionAndCaptureRequest(page, projectPath, 'up', false);
+
+      const shadowboxWrapper = page.locator('#sb-wrapper');
+      await expect(shadowboxWrapper).toBeVisible({ timeout: 30_000 });
+
+      const openBoxFrame = page.locator('#sb-wrapper iframe').first();
+      await expect(openBoxFrame).toBeVisible({ timeout: 30_000 });
+
+      const openBoxDoc = page.frameLocator('#sb-wrapper iframe').first();
+      const ttydRuntime = openBoxDoc.locator('#ttyd-frame');
+      const ttydDoneButton = openBoxDoc.locator('#done-btn');
+      const loggingDoneButton = openBoxDoc.locator('button.logLine').filter({ hasText: /^Done$/i });
+
+      await expect
+        .poll(
+          async () => {
+            if (await ttydRuntime.isVisible()) {
+              return 'ttyd';
+            }
+            if (await loggingDoneButton.first().isVisible()) {
+              return 'logging';
+            }
+            return 'none';
+          },
+          { timeout: 30_000 }
+        )
+        .not.toBe('none');
+
+      // Foreground flow should keep modal open until user closes it after completion.
+      await waitForStackUnlock(page, createdProject);
+
+      if (await ttydDoneButton.isVisible()) {
+        await ttydDoneButton.click();
+      } else if (await loggingDoneButton.first().isVisible()) {
+        await loggingDoneButton.first().click();
+      } else {
+        await page.locator('#sb-nav-close').click();
+      }
+
+      await expect(shadowboxWrapper).toBeHidden({ timeout: 20_000 });
     } finally {
       if (createdProject) {
         const downError = await composeDownAndWait(page, createdProject, projectPath);
