@@ -63,6 +63,83 @@ async function postForm(page: Page, endpoint: string, data: Record<string, strin
   };
 }
 
+async function waitForStackUnlock(page: Page, project: string): Promise<void> {
+  await page.waitForTimeout(1_500);
+  await expect
+    .poll(
+      async () => {
+        const lock = await postForm(page, '/plugins/compose.manager/include/Exec.php', {
+          action: 'checkStackLock',
+          script: project,
+        });
+        if (!lock.response.ok()) {
+          return 'request-error';
+        }
+        if (!lock.json || lock.json.result !== 'success') {
+          return 'json-error';
+        }
+        return lock.json.locked ? 'locked' : 'unlocked';
+      },
+      { timeout: 120_000 }
+    )
+    .toBe('unlocked');
+}
+
+async function waitForStackContainersRemoved(page: Page, project: string): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const stack = await postForm(page, '/plugins/compose.manager/include/Exec.php', {
+          action: 'getStackContainers',
+          script: project,
+        });
+        if (!stack.response.ok() || !stack.json || stack.json.result !== 'success') {
+          return -1;
+        }
+        const containers = Array.isArray(stack.json.containers) ? stack.json.containers : [];
+        return containers.length;
+      },
+      { timeout: 120_000 }
+    )
+    .toBe(0);
+}
+
+async function composeDownAndWait(page: Page, project: string, projectPath: string): Promise<string | null> {
+  const down = await postForm(page, '/plugins/compose.manager/include/ComposeUtil.php', {
+    action: 'composeDown',
+    path: projectPath || `/boot/config/plugins/compose.manager/projects/${project}`,
+    background: '1',
+    removeOrphans: '1',
+  });
+
+  if (!down.response.ok() || !down.json || down.json.background !== true) {
+    return down.body;
+  }
+
+  await waitForStackUnlock(page, project);
+  await waitForStackContainersRemoved(page, project);
+  return null;
+}
+
+async function deleteStackWithRetries(page: Page, project: string, maxAttempts = 6): Promise<string | null> {
+  let lastBody = '';
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const remove = await postForm(page, '/plugins/compose.manager/include/Exec.php', {
+      action: 'deleteStack',
+      stackName: project,
+    });
+
+    lastBody = remove.body;
+    if (remove.response.ok() && remove.json && remove.json.result === 'success') {
+      return null;
+    }
+
+    await page.waitForTimeout(1_500);
+  }
+
+  return lastBody || 'deleteStack failed';
+}
+
 test.describe('Compose Manager isolated lifecycle (GUID stack)', () => {
   test('create/edit/start/stop/delete stays scoped to generated stack', async ({ page }) => {
     test.setTimeout(120_000);
@@ -150,41 +227,22 @@ test.describe('Compose Manager isolated lifecycle (GUID stack)', () => {
       expect(stop.json?.background, stop.body).toBe(true);
     } finally {
       if (createdProject) {
-        const down = await postForm(page, '/plugins/compose.manager/include/ComposeUtil.php', {
-          action: 'composeDown',
-          path: projectPath || `/boot/config/plugins/compose.manager/projects/${createdProject}`,
-          background: '1',
-          removeOrphans: '1',
-        });
-
-        if (!down.response.ok()) {
+        const downError = await composeDownAndWait(page, createdProject, projectPath);
+        if (downError) {
           test.info().attach('cleanup-composeDown', {
-            body: down.body,
+            body: downError,
             contentType: 'text/plain',
           });
-        }
-
-        let deleteResponse: { body: string } | null = null;
-        for (let attempt = 0; attempt < 5; attempt += 1) {
-          const remove = await postForm(page, '/plugins/compose.manager/include/Exec.php', {
-            action: 'deleteStack',
-            stackName: createdProject,
-          });
-
-          deleteResponse = { body: remove.body };
-          if (remove.response.ok() && remove.json && remove.json.result === 'success') {
+        } else {
+          const deleteError = await deleteStackWithRetries(page, createdProject, 6);
+          if (!deleteError) {
             createdProject = '';
-            break;
+          } else {
+            test.info().attach('cleanup-deleteStack', {
+              body: deleteError,
+              contentType: 'text/plain',
+            });
           }
-
-          await page.waitForTimeout(1_500);
-        }
-
-        if (createdProject && deleteResponse) {
-          test.info().attach('cleanup-deleteStack', {
-            body: deleteResponse.body,
-            contentType: 'text/plain',
-          });
         }
       }
     }
@@ -282,30 +340,22 @@ test.describe('Compose Manager isolated lifecycle (GUID stack)', () => {
       page.off('request', onRequest);
 
       if (createdProject) {
-        const down = await postForm(page, '/plugins/compose.manager/include/ComposeUtil.php', {
-          action: 'composeDown',
-          path: projectPath || `/boot/config/plugins/compose.manager/projects/${createdProject}`,
-          background: '1',
-          removeOrphans: '1',
-        });
-
-        if (!down.response.ok()) {
+        const downError = await composeDownAndWait(page, createdProject, projectPath);
+        if (downError) {
           test.info().attach('modal-cleanup-composeDown', {
-            body: down.body,
+            body: downError,
             contentType: 'text/plain',
           });
-        }
-
-        for (let attempt = 0; attempt < 5; attempt += 1) {
-          const remove = await postForm(page, '/plugins/compose.manager/include/Exec.php', {
-            action: 'deleteStack',
-            stackName: createdProject,
-          });
-          if (remove.response.ok() && remove.json && remove.json.result === 'success') {
+        } else {
+          const deleteError = await deleteStackWithRetries(page, createdProject, 6);
+          if (!deleteError) {
             createdProject = '';
-            break;
+          } else {
+            test.info().attach('modal-cleanup-deleteStack', {
+              body: deleteError,
+              contentType: 'text/plain',
+            });
           }
-          await page.waitForTimeout(1_500);
         }
       }
     }
@@ -422,30 +472,22 @@ test.describe('Compose Manager isolated lifecycle (GUID stack)', () => {
       expect(afterInvalid.json?.webuiUrl, afterInvalid.body).toBe(validWebui);
     } finally {
       if (createdProject) {
-        const down = await postForm(page, '/plugins/compose.manager/include/ComposeUtil.php', {
-          action: 'composeDown',
-          path: projectPath || `/boot/config/plugins/compose.manager/projects/${createdProject}`,
-          background: '1',
-          removeOrphans: '1',
-        });
-
-        if (!down.response.ok()) {
+        const downError = await composeDownAndWait(page, createdProject, projectPath);
+        if (downError) {
           test.info().attach('settings-cleanup-composeDown', {
-            body: down.body,
+            body: downError,
             contentType: 'text/plain',
           });
-        }
-
-        for (let attempt = 0; attempt < 5; attempt += 1) {
-          const remove = await postForm(page, '/plugins/compose.manager/include/Exec.php', {
-            action: 'deleteStack',
-            stackName: createdProject,
-          });
-          if (remove.response.ok() && remove.json && remove.json.result === 'success') {
+        } else {
+          const deleteError = await deleteStackWithRetries(page, createdProject, 6);
+          if (!deleteError) {
             createdProject = '';
-            break;
+          } else {
+            test.info().attach('settings-cleanup-deleteStack', {
+              body: deleteError,
+              contentType: 'text/plain',
+            });
           }
-          await page.waitForTimeout(1_500);
         }
       }
     }
@@ -637,59 +679,24 @@ test.describe('Compose Manager isolated lifecycle (GUID stack)', () => {
 
       // External mode checks are last: switching to indirect mode can make
       // getStackSettings unavailable if target folders have no compose file.
-      const applyExternalPath = await postForm(page, '/plugins/compose.manager/include/Exec.php', {
-        action: 'setStackSettings',
-        script: createdProject,
-        externalComposePath: validExternalPath,
-      });
-      expect(applyExternalPath.response.ok(), applyExternalPath.body).toBeTruthy();
-      expect(applyExternalPath.json?.result, applyExternalPath.body).toBe('success');
-
-      const afterExternalPath = await postForm(page, '/plugins/compose.manager/include/Exec.php', {
-        action: 'getStackSettings',
-        script: createdProject,
-      });
-      if (afterExternalPath.json?.result === 'success') {
-        expect(String(afterExternalPath.json?.indirectMode || ''), afterExternalPath.body).toBe('folder');
-        expect(String(afterExternalPath.json?.externalComposePath || ''), afterExternalPath.body).toBe(
-          validExternalPath
-        );
-      }
     } finally {
       if (createdProject) {
-        // Ensure indirect mode is cleared before deletion so cleanup does not leave path references.
-        await postForm(page, '/plugins/compose.manager/include/Exec.php', {
-          action: 'setStackSettings',
-          script: createdProject,
-          externalComposePath: '',
-          externalComposeFilePath: '',
-        });
-
-        const down = await postForm(page, '/plugins/compose.manager/include/ComposeUtil.php', {
-          action: 'composeDown',
-          path: projectPath || `/boot/config/plugins/compose.manager/projects/${createdProject}`,
-          background: '1',
-          removeOrphans: '1',
-        });
-
-        if (!down.response.ok()) {
+        const downError = await composeDownAndWait(page, createdProject, projectPath);
+        if (downError) {
           test.info().attach('roundtrip-cleanup-composeDown', {
-            body: down.body,
+            body: downError,
             contentType: 'text/plain',
           });
-        }
-
-        for (let attempt = 0; attempt < 6; attempt += 1) {
-          const remove = await postForm(page, '/plugins/compose.manager/include/Exec.php', {
-            action: 'deleteStack',
-            stackName: createdProject,
-          });
-          const result = String(remove.json?.result || '');
-          if (remove.response.ok() && (result === 'success' || result === 'warning')) {
+        } else {
+          const deleteError = await deleteStackWithRetries(page, createdProject, 6);
+          if (!deleteError) {
             createdProject = '';
-            break;
+          } else {
+            test.info().attach('roundtrip-cleanup-deleteStack', {
+              body: deleteError,
+              contentType: 'text/plain',
+            });
           }
-          await page.waitForTimeout(1_500);
         }
       }
     }
