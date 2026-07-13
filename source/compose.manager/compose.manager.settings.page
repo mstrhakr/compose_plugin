@@ -1013,12 +1013,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                     $checkbox.data('compose-original-name', name);
                 }
 
-                var value;
-                if (name === 'OUTPUTSTYLE') {
-                    value = $checkbox.is(':checked') ? 'ttyd' : 'basic';
-                } else {
-                    value = $checkbox.is(':checked') ? 'true' : 'false';
-                }
+                var value = $checkbox.is(':checked') ? 'true' : 'false';
 
                 $('<input type="hidden" class="compose-generated-hidden">')
                     .attr('name', name)
@@ -2667,17 +2662,6 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
         <div class="title"><span class="left"><i class="fa fa-bolt icon"></i>_(Stack Actions & Behavior)_</span></div>
         <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Control how stack operations execute and display results.</p>
-
-        <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Rich Terminal Output)_:</dt>
-            <dd>
-                <input type="checkbox" name="OUTPUTSTYLE" id="OUTPUTSTYLE" class="compose-toggle" <?= $cfg['OUTPUTSTYLE'] == 'ttyd' ? 'checked' : '' ?>>
-                <blockquote class="inline_help">
-                    Display compose commands in a rich terminal with color output and live progress.<br>
-                    When disabled, uses simple text output.
-                </blockquote>
-            </dd>
-        </dl>
 
         <div id="aggressive-mode-wrapper">
 

@@ -47,7 +47,6 @@ class ComposeUtilTest extends TestCase
         // Set up plugin config
         FunctionMocks::setPluginConfig('compose.manager', [
             'DEBUG_TO_LOG' => 'false',
-            'OUTPUTSTYLE' => 'nchan',
             'XDEBUG_MODE' => 'coverage',
         ]);
     }
@@ -91,9 +90,9 @@ class ComposeUtilTest extends TestCase
     }
 
     /**
-     * Test echoComposeCommand generates proper command format for nchan
+     * Test echoComposeCommand returns ttyd viewer URL.
      */
-    public function testEchoComposeCommandNchanFormat(): void
+    public function testEchoComposeCommandReturnsTtydViewerUrl(): void
     {
         global $compose_root, $plugin_root;
         $tempDir = $this->createTempDir();
@@ -121,11 +120,47 @@ class ComposeUtilTest extends TestCase
         echoComposeCommand('up');
         $output = ob_get_clean();
         
-        // Should be nchan format with arg parameters
-        $this->assertStringContainsString('&arg', $output);
-        $this->assertStringContainsString('-cup', $output);
+        // Should return ttyd viewer URL for non-log actions
+        $this->assertSame('/plugins/compose.manager/include/ShowTtyd.php?done=1', $output);
         
         // Cleanup
+        unlink("$varIniDir/var.ini");
+        rmdir($varIniDir);
+        unset($_POST['path'], $_POST['profile']);
+    }
+
+    /**
+     * Test echoComposeCommand no longer returns compose.sh query URLs.
+     */
+    public function testEchoComposeCommandDoesNotReturnLegacyComposeScriptUrl(): void
+    {
+        global $compose_root;
+        $tempDir = $this->createTempDir();
+        $compose_root = $tempDir;
+
+        // Create stack directory with compose file
+        $stackName = 'test-stack';
+        $stackDir = "$tempDir/$stackName";
+        mkdir($stackDir, 0755, true);
+        file_put_contents("$stackDir/" . COMPOSE_FILE_NAMES[0], "services:\n  web:\n    image: nginx\n");
+        file_put_contents("$stackDir/name", $stackName);
+
+        // Ensure array is started
+        $varIniDir = sys_get_temp_dir() . '/emhttp_test_' . uniqid();
+        mkdir($varIniDir, 0755, true);
+        file_put_contents("$varIniDir/var.ini", "mdState=STARTED\nfsState=Started\n");
+        \PluginTests\StreamWrapper\UnraidStreamWrapper::addMapping('/var/local/emhttp/var.ini', "$varIniDir/var.ini");
+
+        $_POST['path'] = $stackDir;
+        $_POST['profile'] = '';
+
+        ob_start();
+        echoComposeCommand('logs');
+        $output = ob_get_clean();
+
+        $this->assertStringContainsString('/plugins/compose.manager/include/ShowTtyd.php?socket=', $output);
+        $this->assertStringNotContainsString('compose.sh', $output);
+
         unlink("$varIniDir/var.ini");
         rmdir($varIniDir);
         unset($_POST['path'], $_POST['profile']);
@@ -162,8 +197,8 @@ class ComposeUtilTest extends TestCase
         echoComposeCommand('up');
         $output = ob_get_clean();
         
-        // Should include profile flag (no space between -g and value)
-        $this->assertStringContainsString('-gdev', $output);
+        // Should return ttyd viewer URL
+        $this->assertSame('/plugins/compose.manager/include/ShowTtyd.php?done=1', $output);
         
         // Cleanup
         unlink("$varIniDir/var.ini");
@@ -202,9 +237,8 @@ class ComposeUtilTest extends TestCase
         echoComposeCommand('up');
         $output = ob_get_clean();
         
-        // Should include both profile flags (no space between -g and value)
-        $this->assertStringContainsString('-gdev', $output);
-        $this->assertStringContainsString('-gprod', $output);
+        // Should return ttyd viewer URL
+        $this->assertSame('/plugins/compose.manager/include/ShowTtyd.php?done=1', $output);
         
         // Cleanup
         unlink("$varIniDir/var.ini");
@@ -247,9 +281,8 @@ class ComposeUtilTest extends TestCase
         echoComposeCommand('up');
         $output = ob_get_clean();
         
-        // Should use -f flag with resolved compose file path
-        $this->assertStringContainsString('-f', $output);
-        $this->assertStringContainsString("$indirectDir/" . COMPOSE_FILE_NAMES[0], $output);
+        // Should return ttyd viewer URL
+        $this->assertSame('/plugins/compose.manager/include/ShowTtyd.php?done=1', $output);
         
         // Cleanup
         unlink("$varIniDir/var.ini");
@@ -292,8 +325,8 @@ class ComposeUtilTest extends TestCase
         echoComposeCommand('up');
         $output = ob_get_clean();
         
-        // Should include override file
-        $this->assertStringContainsString('compose.override.yaml', $output);
+        // Should return ttyd viewer URL
+        $this->assertSame('/plugins/compose.manager/include/ShowTtyd.php?done=1', $output);
         
         // Cleanup
         unlink("$varIniDir/var.ini");
@@ -335,8 +368,8 @@ class ComposeUtilTest extends TestCase
         echoComposeCommand('up');
         $output = ob_get_clean();
         
-        // Should include env path
-        $this->assertStringContainsString('-e' . $customEnvPath, $output);
+        // Should return ttyd viewer URL
+        $this->assertSame('/plugins/compose.manager/include/ShowTtyd.php?done=1', $output);
         
         // Cleanup
         unlink("$varIniDir/var.ini");
@@ -407,7 +440,7 @@ class ComposeUtilTest extends TestCase
         echoComposeCommand($action);
         $output = ob_get_clean();
         
-        // Should include the expected action arg
+        // Should return expected ttyd viewer URL pattern for each action
         $this->assertStringContainsString($expectedArg, $output);
         
         // Cleanup
@@ -422,12 +455,12 @@ class ComposeUtilTest extends TestCase
     public static function actionsProvider(): array
     {
         return [
-            'up action' => ['up', '-cup'],
-            'down action' => ['down', '-cdown'],
-            'pull action' => ['pull', '-cpull'],
-            'stop action' => ['stop', '-cstop'],
-            'logs action' => ['logs', '-clogs'],
-            'update action' => ['update', '-cupdate'],
+            'up action' => ['up', 'ShowTtyd.php?done=1'],
+            'down action' => ['down', 'ShowTtyd.php?done=1'],
+            'pull action' => ['pull', 'ShowTtyd.php?done=1'],
+            'stop action' => ['stop', 'ShowTtyd.php?done=1'],
+            'logs action' => ['logs', 'ShowTtyd.php?socket='],
+            'update action' => ['update', 'ShowTtyd.php?done=1'],
         ];
     }
 }

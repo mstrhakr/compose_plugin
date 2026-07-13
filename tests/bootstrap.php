@@ -38,6 +38,7 @@ define('COMPOSE_STACK_ORDER_FILE',   $_bootConfigTemp . '/stack-order.json');
 define('UNRAID_UPDATE_STATUS_FILE',  sys_get_temp_dir() . '/unraid-update-status.json');
 define('PENDING_RECHECK_FILE',       $_bootConfigTemp . '/pending-recheck.json');
 define('COMPOSE_TTYD_SOCKET_DIR',    sys_get_temp_dir());
+define('COMPOSE_SKIP_TTYD_EXEC',     true);
 unset($_bootConfigTemp);
 
 // Load the plugin-tests framework
@@ -56,7 +57,6 @@ PluginBootstrap::init(
         'config' => [
             'PROJECTS_FOLDER' => sys_get_temp_dir() . '/compose_test_projects',
             'DEBUG_TO_LOG' => 'false',
-            'OUTPUTSTYLE' => 'nchan',
         ],
         'subPath' => 'include',
     ]

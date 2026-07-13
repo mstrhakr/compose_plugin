@@ -81,7 +81,7 @@ The built-in editor provides multiple tabs for managing your compose stack:
 - **Autostart & Shutdown** - Configurable per-stack autostart with optional force-recreate, wait-for-Docker, and configurable timeouts. Graceful shutdown handling.
 - **Visibility & Filtering** - Optionally hide Compose-managed containers from the native Docker UI and Dashboard tile to avoid duplicate entries (behavior varies by unRAID version).
 - **Backup & Restore** - Manual and scheduled backups with selective restore from the UI.
-- **Web Terminal** - Integrated ttyd terminal for live, colorized compose command output; also supports a basic output mode.
+- **Web Terminal** - Integrated ttyd terminal for live, colorized compose command output.
 - **Profiles** - Full support for Docker Compose profiles, including multi-profile selection per action.
 - **External Paths** - Compose files and env files can live outside the default projects folder (external compose path and env path per stack).
 - **Override File Management** - Centralized management of override files (`compose.override.yaml`, `compose.override.yml`, `docker-compose.override.yaml`, `docker-compose.override.yml`) with service rename handling.
