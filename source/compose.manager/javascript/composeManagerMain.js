@@ -759,6 +759,7 @@ function composeLoadlist() {
                         var $rowChunk = $(entry.rowResp.html);
                         $('#compose-load-progress-row').before($rowChunk);
                         initializeProgressiveLoadedRows($rowChunk);
+                        processPendingUpdateCheckForStack(entry.project);
                         if (typeof window.composeDockerLoadRenderCached === 'function' && composeShouldEnableDockerLoad()) {
                             window.composeDockerLoadRenderCached();
                         }
@@ -1655,12 +1656,18 @@ function checkPendingRechecks(callback) {
                             pendingStacks: pendingStacks
                         }, 'user', 'debug', 'update-check');
 
-                        // Check each pending stack
+                        // Queue the rechecks. Row-commit hook drains the queue as
+                        // each row lands. For rows already committed before this
+                        // async POST returned, sweep them now so they aren't stranded.
                         pendingStacks.forEach(function(stackName) {
-                            composeLogger('Running recheck for recently updated stack', {
-                                stackName: stackName
-                            }, 'user', 'debug', 'update-check');
-                            checkStackUpdates(stackName);
+                            if (pendingUpdateCheckStacks.indexOf(stackName) === -1) {
+                                pendingUpdateCheckStacks.push(stackName);
+                            }
+                        });
+                        pendingStacks.slice().forEach(function(stackName) {
+                            if ($('#compose_stacks tr.compose-sortable[data-project="' + stackName + '"]').length > 0) {
+                                processPendingUpdateCheckForStack(stackName);
+                            }
                         });
                     }
                 }
@@ -1865,14 +1872,14 @@ function executeUpdateAllStacks(stacks, background, suppressBackgroundNotificati
         return s.path;
     });
 
-    // Track all stacks for update check when dialog closes
+    // Track all stacks for update check when dialog closes.
+    // Server-side markStackForRecheck is authoritative; do NOT push into
+    // pendingUpdateCheckStacks at action start (drains would fire mid-action).
     var stackNames = [];
     stacks.forEach(function(s) {
         var stackName = s.project;
-        if (pendingUpdateCheckStacks.indexOf(stackName) === -1) {
-            pendingUpdateCheckStacks.push(stackName);
-        }
         stackNames.push(stackName);
+        setStackActionInProgress(stackName, true, composeActionStateText('update'));
     });
 
     // Mark stacks for recheck server-side (persists across page reload)
@@ -1895,6 +1902,15 @@ function executeUpdateAllStacks(stacks, background, suppressBackgroundNotificati
                 if (parsed && parsed.background) {
                     stacks.forEach(function(s) {
                         pollBackgroundCompletion(s.project);
+                    });
+                } else if (data) {
+                    stackNames.forEach(function(stackName) {
+                        setStackActionInProgress(stackName, false);
+                    });
+                    queuePendingComposeReloads(stackNames);
+                } else {
+                    stackNames.forEach(function(stackName) {
+                        setStackActionInProgress(stackName, false);
                     });
                 }
             }
@@ -2037,7 +2053,12 @@ function updateStackUpdateUI(stackName, stackInfo) {
 // Check updates for a single stack
 function checkStackUpdates(stackName) {
     var $stackRow = $('#compose_stacks tr.compose-sortable[data-project="' + stackName + '"]');
-    if ($stackRow.length === 0) return;
+    if ($stackRow.length === 0) {
+        if (pendingUpdateCheckStacks.indexOf(stackName) === -1) {
+            pendingUpdateCheckStacks.push(stackName);
+        }
+        return;
+    }
 
     var $updateCell = $stackRow.find('.compose-updatecolumn');
     $updateCell.html('<span class="compose-status-info"><i class="fa fa-refresh fa-spin"></i> checking...</span>');
@@ -3401,6 +3422,21 @@ function notifyBackgroundStarted(label, shouldNotify = true) {
     });
 }
 
+function queuePendingComposeReload(stackName) {
+    if (!stackName) return;
+    if (pendingComposeReloadStacks.indexOf(stackName) === -1) {
+        pendingComposeReloadStacks.push(stackName);
+    }
+}
+
+function queuePendingComposeReloads(stackNames, delayMs) {
+    if (!stackNames || stackNames.length === 0) return;
+    stackNames.forEach(function(stackName) {
+        queuePendingComposeReload(stackName);
+    });
+    schedulePendingComposeReloads(delayMs || 500);
+}
+
 // Poll for background operation completion by checking if stack lock is released
 // Once lock is released, refresh the stack and clear the checking state
 function pollBackgroundCompletion(stackName, refreshDelayMs = 0) {
@@ -3431,7 +3467,9 @@ function pollBackgroundCompletion(stackName, refreshDelayMs = 0) {
                     setStackActionInProgress(stackName, false);
                     setTimeout(function() {
                         refreshStackByProject(stackName);
-                        processPendingUpdateChecks();
+                        // Sync from server pending file (authoritative). This
+                        // populates the queue and sweeps any already-rendered rows.
+                        checkPendingRechecks();
                     }, refreshDelayMs);
                     return; // stop scheduling
                 }
@@ -3485,13 +3523,6 @@ function performComposeAction(opts) {
     var actionStateText = opts.actionStateText || composeActionStateText(actionName);
     var onComplete = opts.onComplete;
 
-    if (pendingReload && stackName) {
-        if (pendingComposeReloadStacks.indexOf(stackName) === -1) {
-            pendingComposeReloadStacks.push(stackName);
-            schedulePendingComposeReloads();
-        }
-    }
-
     if (stackName) {
         setStackActionInProgress(stackName, true, actionStateText);
     }
@@ -3504,9 +3535,6 @@ function performComposeAction(opts) {
     $.post(requestUrl, payload, function(data) {
         var parsed = tryParseJson(data);
         if (parsed && parsed.background) {
-            if (stackName && !pendingReload) {
-                setStackActionInProgress(stackName, true, actionStateText);
-            }
             if (!suppressBackgroundNotification) {
                 notifyBackgroundStarted(title, true);
             }
@@ -3514,8 +3542,11 @@ function performComposeAction(opts) {
                 pollBackgroundCompletion(stackName, opts.refreshDelayMs || 0);
             }
         } else if (data) {
-            if (stackName && !pendingReload) {
+            if (stackName) {
                 setStackActionInProgress(stackName, false);
+            }
+            if (pendingReload && stackName) {
+                queuePendingComposeReloads([stackName], opts.refreshDelayMs || 0);
             }
             openBox(data, title, 800, 1200, true);
         }
@@ -3686,9 +3717,10 @@ function ComposeRestart(path, profile = "") {
 function ForceUpdateStackConfirmed(path, opts) {
     opts = opts || {};
     var stackName = basename(path);
-    if (pendingUpdateCheckStacks.indexOf(stackName) === -1) {
-        pendingUpdateCheckStacks.push(stackName);
-    }
+
+    // Do NOT push to pendingUpdateCheckStacks here. See UpdateStackConfirmed
+    // for the reasoning — the server-side mark is authoritative and the
+    // client queue is populated from it on reload / background completion.
 
     confirmedComposeAction(path, {
         preAction: function(done) {
@@ -3807,6 +3839,22 @@ showConfirmButton: false
 // Using array to support Update All Stacks operation
 var pendingUpdateCheckStacks = [];
 
+function processPendingUpdateCheckForStack(stackName) {
+    if (!stackName || !pendingUpdateCheckStacks || pendingUpdateCheckStacks.length === 0) {
+        return;
+    }
+
+    var pendingIndex = pendingUpdateCheckStacks.indexOf(stackName);
+    if (pendingIndex === -1) {
+        return;
+    }
+
+    pendingUpdateCheckStacks.splice(pendingIndex, 1);
+    setTimeout(function() {
+        checkStackUpdates(stackName);
+    }, 0);
+}
+
 // Process the queued stacks from pending update checks.
 // This is called from refreshStackRow and processPendingComposeReloads.
 function processPendingUpdateChecks() {
@@ -3911,9 +3959,6 @@ function processPendingComposeReloads() {
             }, 'user', 'error', 'ui-render');
         }
     });
-
-    // After reload sequence, process any pending update checks.
-    processPendingUpdateChecks();
 }
 
 // Helper to refresh a single stack by project name (wrapper for refreshStackRow)
@@ -3973,12 +4018,16 @@ function refreshStackRow(stackId, project) {
             }
         }
         pendingComposeRefreshCount = Math.max(0, pendingComposeRefreshCount - 1);
-        processPendingUpdateChecks();
+        if (pendingComposeRefreshCount === 0) {
+            processPendingUpdateChecks();
+        }
     }).fail(function() {
         // On network failure, fall back to cache-based update
         updateParentStackFromContainers(stackId, project);
         pendingComposeRefreshCount = Math.max(0, pendingComposeRefreshCount - 1);
-        processPendingUpdateChecks();
+        if (pendingComposeRefreshCount === 0) {
+            processPendingUpdateChecks();
+        }
     });
 }
 
@@ -4034,9 +4083,11 @@ function setStackActionInProgress(stackName, inProgress, text) {
 function UpdateStackConfirmed(path, opts) {
     opts = opts || {};
     var stackName = basename(path);
-    if (pendingUpdateCheckStacks.indexOf(stackName) === -1) {
-        pendingUpdateCheckStacks.push(stackName);
-    }
+
+    // Do NOT push to pendingUpdateCheckStacks here. Server-side
+    // markStackForRecheck is authoritative; an incidental row refresh
+    // during the action would otherwise drain the queue and run the
+    // check while the update is still in progress.
 
     confirmedComposeAction(path, {
         preAction: function(done) {
