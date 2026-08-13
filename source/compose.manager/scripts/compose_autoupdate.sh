@@ -139,7 +139,7 @@ summarize_output() {
 get_image_digests() {
   docker compose "${project_dir_args[@]}" "${compose_file_args[@]}" "${env_file_args[@]}" -p "$PROJECT_NAME" images -q 2>/dev/null | while read -r img_id; do
     if [ -n "$img_id" ]; then
-      docker inspect --format='{{index .RepoDigests 0}}' "$img_id" 2>/dev/null || echo "$img_id"
+      docker inspect --format='{{.Id}}' "$img_id" 2>/dev/null || echo "$img_id"
     fi
   done | sort
 }

@@ -1587,8 +1587,12 @@ switch ($_POST['action']) {
             break;
         }
 
-        // Include Docker manager classes for update checking
-        require_once("/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php");
+        // Plugin-local update check: compares platform-specific image config
+        // digests (Docker .Id + resolved manifest.config.digest) rather than
+        // top-level index/manifest-list digests. This eliminates false
+        // "update-available" verdicts caused by registry index-only rewrites,
+        // and is scoped strictly to the images owned by this stack.
+        require_once("/usr/local/emhttp/plugins/compose.manager/include/UpdateCheck.php");
 
         // Resolve stack identity and compose CLI arguments via StackInfo
         $stackInfo = StackInfo::fromProject($compose_root, $script);
@@ -1598,7 +1602,6 @@ switch ($_POST['action']) {
         $rows = $stackInfo->getContainerList();
 
         $updateResults = [];
-        $DockerUpdate = new DockerUpdate();
         $persistentContainerCache = composeLoadPersistentContainerCache();
         $stackContainerCache = $persistentContainerCache[$script] ?? [];
         $iconByService = [];
@@ -1619,34 +1622,20 @@ switch ($_POST['action']) {
         $inspectIconCache = [];
         $stackCacheDirty = false;
 
-        // Load the update status file to get SHA values
-        $dockerManPaths = [
-            'update-status' => UNRAID_UPDATE_STATUS_FILE
-        ];
-
         if ($rows) {
-            // Load the update status data ONCE before the loop instead of per-container
-            $updateStatusData = DockerUtil::loadJSON($dockerManPaths['update-status']);
-            $statusDirty = false;
-
-            // First pass: clear cached local SHAs for all images that need checking
+            // Collect the compose-owned image set and batch-check in one call.
+            // ComposeUpdateCheck always re-inspects local and never touches
+            // status-file entries for non-compose images.
+            $imagesToCheck = [];
             foreach ($rows as $container) {
-                $image = $container['Image'] ?? '';
-                if ($image) {
-                    $image = ContainerInfo::normalizeImageForUpdateCheck($image);
-                    if (isset($updateStatusData[$image])) {
-                        $updateStatusData[$image]['local'] = null;
-                        $statusDirty = true;
-                    }
+                $img = trim((string) ($container['Image'] ?? ''));
+                if ($img !== '') {
+                    $imagesToCheck[] = $img;
                 }
             }
+            $updater = new ComposeUpdateCheck();
+            $checkResults = $updater->checkMany($imagesToCheck);
 
-            // Save once after clearing all cached SHAs
-            if ($statusDirty) {
-                DockerUtil::saveJSON($dockerManPaths['update-status'], $updateStatusData);
-            }
-
-            // Second pass: check updates and collect results
             foreach ($rows as $container) {
                 $containerLower = array_change_key_case($container, CASE_LOWER);
                 $containerName = trim((string) ($containerLower['name'] ?? $containerLower['names'] ?? ''));
@@ -1677,38 +1666,27 @@ switch ($_POST['action']) {
                     // Normalize image name (strip docker.io/ prefix, @sha256: digest, add library/ for official images)
                     $image = ContainerInfo::normalizeImageForUpdateCheck($image);
 
-                    // Check update status using Unraid's DockerUpdate class
-                    $DockerUpdate->reloadUpdateStatus($image);
-                    $updateStatus = $DockerUpdate->getUpdateStatus($image);
+                    $result = $checkResults[$image] ?? [
+                        'local' => '', 'remote' => '', 'status' => 'unknown', 'hasUpdate' => false,
+                    ];
 
-                    // Re-read status data (may have been updated by reloadUpdateStatus)
-                    $updateStatusData = DockerUtil::loadJSON($dockerManPaths['update-status']);
-                    $localSha = '';
-                    $remoteSha = '';
-
-                    if (isset($updateStatusData[$image])) {
-                        $localSha = $updateStatusData[$image]['local'] ?? '';
-                        $remoteSha = $updateStatusData[$image]['remote'] ?? '';
-                        // Shorten SHA for display (first 12 chars after sha256:)
-                        if ($localSha && strpos($localSha, 'sha256:') === 0) {
-                            $localSha = substr($localSha, 7, 12);
-                        }
-                        if ($remoteSha && strpos($remoteSha, 'sha256:') === 0) {
-                            $remoteSha = substr($remoteSha, 7, 12);
-                        }
+                    // Shorten SHAs for display (first 12 chars after sha256:)
+                    $localSha  = (string) $result['local'];
+                    $remoteSha = (string) $result['remote'];
+                    if ($localSha && strpos($localSha, 'sha256:') === 0) {
+                        $localSha = substr($localSha, 7, 12);
                     }
-
-                    // null = unknown, true = up to date, false = update available
-                    $hasUpdate = ($updateStatus === false);
-                    $statusText = ($updateStatus === null) ? 'unknown' : ($updateStatus ? 'up-to-date' : 'update-available');
+                    if ($remoteSha && strpos($remoteSha, 'sha256:') === 0) {
+                        $remoteSha = substr($remoteSha, 7, 12);
+                    }
 
                     $updateResults[] = ContainerInfo::fromUpdateResponse([
                         'container' => $containerName,
                         'service' => $service,
                         'image' => $image,
                         'icon' => $icon,
-                        'hasUpdate' => $hasUpdate,
-                        'status' => $statusText,
+                        'hasUpdate' => $result['hasUpdate'],
+                        'status' => $result['status'],
                         'localSha' => $localSha,
                         'remoteSha' => $remoteSha
                     ])->toUpdateArray();
@@ -1740,21 +1718,17 @@ switch ($_POST['action']) {
         file_put_contents($composeUpdateStatusFile, json_encode($savedStatus, JSON_PRETTY_PRINT));
         break;
     case 'checkAllStacksUpdates':
-        // Check for updates for all compose stacks
-        require_once("/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php");
+        // Check for updates for all compose stacks. Uses the plugin-local
+        // ComposeUpdateCheck (see checkStackUpdates rationale).
+        require_once("/usr/local/emhttp/plugins/compose.manager/include/UpdateCheck.php");
 
         composeLogger('Starting update check for all stacks', null, 'user', 'debug', 'update-check');
 
         $allUpdates = [];
-        $DockerUpdate = new DockerUpdate();
+        $updater = new ComposeUpdateCheck();
         $persistentContainerCache = composeLoadPersistentContainerCache();
         $persistentCacheDirty = false;
         $inspectIconCache = [];
-
-        // Path to update status file
-        $dockerManPaths = [
-            'update-status' => UNRAID_UPDATE_STATUS_FILE
-        ];
 
         foreach (StackInfo::allFromRoot($compose_root) as $stackInfoItem) {
             $stackName = $stackInfoItem->projectFolder;
@@ -1783,31 +1757,18 @@ switch ($_POST['action']) {
             $hasStackUpdate = false;
 
             if ($rows) {
-                // Load once, batch-clear local SHAs, save once (avoid per-container I/O)
-                $updateStatusData = DockerUtil::loadJSON($dockerManPaths['update-status']);
-                $statusDirty = false;
-
-                // First pass: collect running images and clear cached local SHAs
+                // Collect images from running containers only (matches prior
+                // behavior of this handler) and batch-check via the plugin-
+                // local update checker.
+                $imagesToCheck = [];
                 foreach ($rows as $container) {
-                    $state = $container['State'] ?? '';
-                    if ($state === 'running') {
-                        $image = $container['Image'] ?? '';
-                        if ($image) {
-                            $image = ContainerInfo::normalizeImageForUpdateCheck($image);
-                            if (isset($updateStatusData[$image])) {
-                                $updateStatusData[$image]['local'] = null;
-                                $statusDirty = true;
-                            }
-                        }
-                    }
+                    $state = strtolower((string) ($container['State'] ?? ''));
+                    if ($state !== 'running') continue;
+                    $img = trim((string) ($container['Image'] ?? ''));
+                    if ($img !== '') $imagesToCheck[] = $img;
                 }
+                $checkResults = $imagesToCheck ? $updater->checkMany($imagesToCheck) : [];
 
-                // Save once after clearing all cached SHAs
-                if ($statusDirty) {
-                    DockerUtil::saveJSON($dockerManPaths['update-status'], $updateStatusData);
-                }
-
-                // Second pass: check updates for running containers
                 foreach ($rows as $container) {
                     $containerLower = array_change_key_case($container, CASE_LOWER);
                     $containerName = trim($containerLower['name'] ?? $containerLower['names'] ?? '');
@@ -1839,37 +1800,29 @@ switch ($_POST['action']) {
 
                         $image = ContainerInfo::normalizeImageForUpdateCheck($image);
 
-                        $DockerUpdate->reloadUpdateStatus($image);
-                        $updateStatus = $DockerUpdate->getUpdateStatus($image);
+                        $result = $checkResults[$image] ?? [
+                            'local' => '', 'remote' => '', 'status' => 'unknown', 'hasUpdate' => false,
+                        ];
 
-                        // Re-read status data (may have been updated by reloadUpdateStatus)
-                        $updateStatusData = DockerUtil::loadJSON($dockerManPaths['update-status']);
-                        $localSha = '';
-                        $remoteSha = '';
-
-                        if (isset($updateStatusData[$image])) {
-                            $localSha = $updateStatusData[$image]['local'] ?? '';
-                            $remoteSha = $updateStatusData[$image]['remote'] ?? '';
-                            // Shorten SHA for display (first 12 chars after sha256:)
-                            if ($localSha && strpos($localSha, 'sha256:') === 0) {
-                                $localSha = substr($localSha, 7, 12);
-                            }
-                            if ($remoteSha && strpos($remoteSha, 'sha256:') === 0) {
-                                $remoteSha = substr($remoteSha, 7, 12);
-                            }
+                        // Shorten SHAs for display (first 12 chars after sha256:)
+                        $localSha  = (string) $result['local'];
+                        $remoteSha = (string) $result['remote'];
+                        if ($localSha && strpos($localSha, 'sha256:') === 0) {
+                            $localSha = substr($localSha, 7, 12);
+                        }
+                        if ($remoteSha && strpos($remoteSha, 'sha256:') === 0) {
+                            $remoteSha = substr($remoteSha, 7, 12);
                         }
 
-                        $hasUpdate = ($updateStatus === false);
-                        if ($hasUpdate)
-                            $hasStackUpdate = true;
+                        if ($result['hasUpdate']) $hasStackUpdate = true;
 
                         $stackUpdates[] = ContainerInfo::fromUpdateResponse([
                             'container' => $containerName,
                             'service' => $service,
                             'image' => $image,
                             'icon' => $icon,
-                            'hasUpdate' => $hasUpdate,
-                            'status' => ($updateStatus === null) ? 'unknown' : ($updateStatus ? 'up-to-date' : 'update-available'),
+                            'hasUpdate' => $result['hasUpdate'],
+                            'status' => $result['status'],
                             'localSha' => $localSha,
                             'remoteSha' => $remoteSha
                         ])->toUpdateArray();
