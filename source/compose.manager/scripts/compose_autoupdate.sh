@@ -134,14 +134,21 @@ summarize_output() {
   tail -n 40 "$OUT" 2>/dev/null | tr -cd '[:print:]\n\t'
 }
 
-# Get current image digests before pull
-# Uses docker compose images to list service images, then inspects each for RepoDigests
+# Get current image config digests by declared compose image refs.
+# This mirrors the plugin-local update-check approach: compare content-addressed
+# image config IDs (.Id), not container-bound image IDs returned by
+# `docker compose images -q`.
 get_image_digests() {
-  docker compose "${project_dir_args[@]}" "${compose_file_args[@]}" "${env_file_args[@]}" -p "$PROJECT_NAME" images -q 2>/dev/null | while read -r img_id; do
-    if [ -n "$img_id" ]; then
-      docker inspect --format='{{.Id}}' "$img_id" 2>/dev/null || echo "$img_id"
+  docker compose "${project_dir_args[@]}" "${compose_file_args[@]}" "${env_file_args[@]}" -p "$PROJECT_NAME" config --images 2>/dev/null | while read -r img_ref; do
+    img_ref="$(trim "$img_ref")"
+    if [ -n "$img_ref" ]; then
+      docker image inspect --format='{{.Id}}' "$img_ref" 2>/dev/null || echo "$img_ref"
     fi
   done | sort
+}
+
+get_running_container_count() {
+  docker compose "${project_dir_args[@]}" "${compose_file_args[@]}" "${env_file_args[@]}" -p "$PROJECT_NAME" ps -q 2>/dev/null | awk 'NF { count++ } END { print count+0 }'
 }
 
 OLD_DIGESTS=$(get_image_digests || true)
@@ -166,6 +173,15 @@ NEW_DIGESTS=$(get_image_digests || true)
 
 # Compare digests to determine if any images were updated
 if [ "$OLD_DIGESTS" != "$NEW_DIGESTS" ]; then
+  RUNNING_COUNT=$(get_running_container_count)
+  if [ "${RUNNING_COUNT:-0}" -eq 0 ]; then
+    MSG="Stack '$PROJECT_NAME' has image updates but is not running; skipping up -d."
+    composeLogger "$MSG" info autoupdate daemon
+    echo "$MSG"
+    rm -f "$OUT"
+    exit 0
+  fi
+
   # Images changed - run recreate/up
   timeout "$COMMAND_TIMEOUT" docker compose "${project_dir_args[@]}" "${compose_file_args[@]}" "${env_file_args[@]}" -p "$PROJECT_NAME" up -d >> "$OUT" 2>&1 || RC=$?
   

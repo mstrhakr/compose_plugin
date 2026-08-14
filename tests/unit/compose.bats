@@ -137,6 +137,21 @@ test_setup() {
     assert_success
 }
 
+@test "compose_autoupdate.sh uses compose config --images for digest detection" {
+    local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
+    run grep -E 'config --images' "$autoupdate_script"
+    assert_success
+}
+
+@test "compose_autoupdate.sh checks running containers before up -d" {
+    local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
+    run grep -E 'ps -q' "$autoupdate_script"
+    assert_success
+
+    run grep -E 'not running; skipping up -d' "$autoupdate_script"
+    assert_success
+}
+
 # ============================================================
 # Stack Directory Tests
 # ============================================================
