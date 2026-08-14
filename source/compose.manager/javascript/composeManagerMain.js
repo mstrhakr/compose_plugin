@@ -2169,6 +2169,30 @@ function loadComposeLoadSnapshot() {
     });
 }
 
+// The compose_info publisher process exits ~10s after its last WebSocket
+// subscriber disconnects (see webGui/include/publish.php's no-subscriber
+// abort). It's normally respawned by DefaultPageLayout.php's pgrep+exec
+// check on the next full page render. Since a hidden tab can now
+// deliberately stop/restart the composeinfo WebSocket without a page
+// reload, call this after reconnecting so the client doesn't end up
+// subscribed to a channel nothing is publishing to.
+function ensureComposeInfoPublisherRunning() {
+    $.ajax({
+        url: caURL,
+        method: 'POST',
+        dataType: 'json',
+        data: {
+            action: 'ensureComposeInfoPublisher'
+        }
+    })
+        .done(function(response) {
+            composeLogger('ensured compose_info publisher is running', response, 'user', 'debug', 'dockerload');
+        })
+        .fail(function() {
+            composeLogger('failed to ensure compose_info publisher is running', null, 'user', 'warn', 'dockerload');
+        });
+}
+
 function getPersistentContainerInfo(project, service) {
     if (!project || !service || !persistentContainerCache[project]) return null;
     return persistentContainerCache[project][service] || null;
@@ -2403,6 +2427,10 @@ $(function() {
                 clearTimeout(window._composeDockerLoadRenderTimer);
                 window._composeDockerLoadRenderTimer = null;
             }
+            if (window._composeDockerLoadHiddenIdleTimer) {
+                clearTimeout(window._composeDockerLoadHiddenIdleTimer);
+                window._composeDockerLoadHiddenIdleTimer = null;
+            }
             if (window._composeDockerLoadVisHandler) {
                 document.removeEventListener('visibilitychange', window._composeDockerLoadVisHandler);
             }
@@ -2430,6 +2458,13 @@ $(function() {
             var composeLoadStaleMs = 15000;
             var composeLoadRenderMinIntervalMs = 120;
             var composeLoadLastRenderMs = 0;
+
+            // If the tab stays hidden this long, stop the WebSocket entirely
+            // rather than leaving it connected (and the PHP publisher busy)
+            // indefinitely in a background tab. Restarted automatically when
+            // the tab becomes visible again -- see the visibilitychange handler.
+            var composeLoadHiddenStopMs = 60000;
+            var composeHiddenSinceMs = null;
 
             function isComposeLoadVisible() {
                 if (!composeHasVisibleLoadColumns()) return false;
@@ -2814,18 +2849,84 @@ $(function() {
             // stack index so the next WebSocket message rebuilds it from
             // the current DOM.  This prevents permanently stale data when
             // the page loaded or sat in a background tab.
+            //
+            // Also handles the hidden-tab lifecycle end to end:
+            //  - going hidden arms a timer that deliberately stops the
+            //    WebSocket after composeLoadHiddenStopMs, so a background tab
+            //    doesn't keep the socket (and the server-side publisher)
+            //    running indefinitely.
+            //  - becoming visible again clears that timer and, critically,
+            //    self-heals: it restarts the socket if we stopped it, and
+            //    forces a clean reconnect if the tab was hidden long enough
+            //    that the browser may have silently closed the connection
+            //    (tab freezing/throttling) without us seeing a close/error
+            //    event. Previously nothing restarted the socket here at all,
+            //    so a long-hidden tab could come back to a dead connection
+            //    that only a full page reload would fix.
             window._composeDockerLoadVisHandler = function() {
-                if (document.visibilityState === 'visible' && composeDockerLoadRunning) {
-                    if (composeDockerLoadDropped > 0) {
-                        composeLogger('browser tab became visible — skipped ' + composeDockerLoadDropped + ' messages while hidden, rendering cached data', null, 'user', 'debug', 'dockerload');
-                        composeDockerLoadDropped = 0;
-                    }
-                    composeStackIndex = null;
+                if (document.visibilityState === 'hidden') {
+                    composeHiddenSinceMs = Date.now();
+                    composeLogger('tab hidden — pausing render; WebSocket will stop after ' + Math.round(composeLoadHiddenStopMs / 1000) + 's if still hidden', null, 'user', 'debug', 'dockerload');
 
-                    // Immediately render the cached load data so the UI
-                    // shows current metrics without waiting for the next tick.
-                    scheduleComposeLoadRender(true);
+                    if (window._composeDockerLoadHiddenIdleTimer) {
+                        clearTimeout(window._composeDockerLoadHiddenIdleTimer);
+                    }
+                    window._composeDockerLoadHiddenIdleTimer = setTimeout(function() {
+                        window._composeDockerLoadHiddenIdleTimer = null;
+                        if (document.visibilityState === 'hidden' && composeDockerLoadRunning) {
+                            composeLogger('tab hidden for ' + Math.round((Date.now() - composeHiddenSinceMs) / 1000) + 's — stopping WebSocket to save resources', null, 'user', 'debug', 'dockerload');
+                            window.composeDockerLoadToggle(false);
+                        }
+                    }, composeLoadHiddenStopMs);
+                    return;
                 }
+
+                // visibilityState === 'visible'
+                var hiddenDurationMs = composeHiddenSinceMs ? (Date.now() - composeHiddenSinceMs) : 0;
+                composeHiddenSinceMs = null;
+                if (window._composeDockerLoadHiddenIdleTimer) {
+                    clearTimeout(window._composeDockerLoadHiddenIdleTimer);
+                    window._composeDockerLoadHiddenIdleTimer = null;
+                }
+
+                composeLogger('tab visible again after ' + Math.round(hiddenDurationMs / 1000) + 's hidden, socketRunning=' + composeDockerLoadRunning, null, 'user', 'debug', 'dockerload');
+
+                if (composeDockerLoadDropped > 0) {
+                    composeLogger('browser tab became visible — skipped ' + composeDockerLoadDropped + ' messages while hidden, rendering cached data', null, 'user', 'debug', 'dockerload');
+                    composeDockerLoadDropped = 0;
+                }
+
+                // A gap this long means every cached row is already past
+                // composeLoadStaleMs; prune now instead of waiting up to 3s
+                // for the stale-check timer so the UI doesn't briefly flash
+                // frozen numbers from before the tab was hidden.
+                if (hiddenDurationMs > composeLoadStaleMs && pruneStaleLoadEntries(Date.now())) {
+                    composeLogger('pruned stale container load entries after ' + Math.round(hiddenDurationMs / 1000) + 's hidden', null, 'user', 'debug', 'dockerload');
+                }
+
+                composeStackIndex = null;
+
+                if (composeShouldEnableDockerLoad()) {
+                    if (!composeDockerLoadRunning) {
+                        composeLogger('restarting WebSocket after hidden period (was stopped)', null, 'user', 'debug', 'dockerload');
+                        ensureComposeInfoPublisherRunning();
+                        window.composeDockerLoadToggle(true);
+                    } else if (hiddenDurationMs >= composeLoadHiddenStopMs) {
+                        // Still marked running, but hidden long enough that the
+                        // browser may have frozen/throttled the tab and silently
+                        // dropped the connection without an error event reaching
+                        // us. Force a clean reconnect rather than trusting a
+                        // socket we have no way to directly introspect.
+                        composeLogger('tab was hidden long enough that the WebSocket may be stale — forcing reconnect', null, 'user', 'debug', 'dockerload');
+                        ensureComposeInfoPublisherRunning();
+                        window.composeDockerLoadToggle(false);
+                        window.composeDockerLoadToggle(true);
+                    }
+                }
+
+                // Immediately render the cached load data so the UI shows
+                // current metrics without waiting for the next tick.
+                scheduleComposeLoadRender(true);
             };
             document.addEventListener('visibilitychange', window._composeDockerLoadVisHandler);
 

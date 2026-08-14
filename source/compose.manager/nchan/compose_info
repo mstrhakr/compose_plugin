@@ -32,7 +32,7 @@ if ($docroot === '') {
 require_once "$docroot/webGui/include/publish.php";
 require_once "$docroot/plugins/compose.manager/include/Helpers.php";
 
-composeLogger('publisher starting', null, 'user', 'info', 'nchan');
+composeLogger('publisher starting', null, 'user', 'debug', 'nchan');
 $statusFile = '/tmp/compose_info_nchan.status';
 $snapshotFile = '/tmp/compose_info_nchan.snapshot.json';
 
@@ -175,7 +175,7 @@ while (true) {
     }
 
     [$rateMode, $publishIntervalMs] = readPublishConfig();
-    composeLogger('starting docker stats stream (mode=' . $rateMode . ', intervalMs=' . $publishIntervalMs . ', containers=' . count($containerIds) . ')', null, 'user', 'info', 'nchan');
+    composeLogger('starting docker stats stream (mode=' . $rateMode . ', intervalMs=' . $publishIntervalMs . ', containers=' . count($containerIds) . ')', null, 'user', 'debug', 'nchan');
 
     $cmdIds = implode(' ', array_map('escapeshellarg', $containerIds));
     $cmd = "docker stats --format='{{.ID}};{{.CPUPerc}};{{.MemUsage}};{{.MemPerc}};{{.NetIO}};{{.BlockIO}}' $cmdIds 2>&1";
@@ -228,7 +228,7 @@ while (true) {
                 // removed, etc). `docker stats` exits entirely in this case,
                 // so break out and let the outer loop re-enumerate and
                 // restart cleanly with the current container set.
-                composeLogger('docker stats reported a missing container; restarting stream', ['line' => $trimmed], 'user', 'warn', 'nchan');
+                composeLogger('docker stats reported a missing container; restarting stream', ['line' => $trimmed], 'user', 'debug', 'nchan');
                 $containerMissing = true;
                 break;
             }
@@ -268,7 +268,7 @@ while (true) {
                 composeLogger('compose container set changed; restarting docker stats stream', [
                     'previous' => count($containerIds),
                     'current' => count($currentIds),
-                ], 'user', 'info', 'nchan');
+                ], 'user', 'debug', 'nchan');
                 break;
             }
         }

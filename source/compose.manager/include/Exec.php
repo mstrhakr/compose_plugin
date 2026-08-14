@@ -273,6 +273,32 @@ switch ($_POST['action']) {
             'snapshot' => is_array($snapshot) ? $snapshot : [],
         ]);
         break;
+    case 'ensureComposeInfoPublisher':
+        // The composeinfo WebSocket can now be deliberately stopped/restarted
+        // client-side when a tab is hidden for a while (see #130 hidden-tab
+        // handling), without a full page reload. publish.php's own
+        // no-subscriber abort logic (see webGui/include/publish.php) will
+        // exit the compose_info publisher process ~10s after the last
+        // subscriber disconnects. Normally that process only gets respawned
+        // by DefaultPageLayout.php's pgrep+exec check on the next full page
+        // render -- so without this, resubscribing client-side would connect
+        // to a channel nothing is publishing to. Mirror that same pgrep+exec
+        // respawn check here, scoped to just our own publisher script, so
+        // the client can trigger it directly after reconnecting.
+        $composeInfoScript = '/usr/local/emhttp/plugins/compose.manager/nchan/compose_info';
+        $pgrepOutput = [];
+        $pgrepStatus = 0;
+        exec('pgrep --ns $$ -f ' . escapeshellarg($composeInfoScript), $pgrepOutput, $pgrepStatus);
+        $publisherWasRunning = ($pgrepStatus === 0);
+        if (!$publisherWasRunning) {
+            composeLogger('compose_info publisher was not running; starting it', null, 'user', 'debug', 'nchan');
+            exec(escapeshellarg($composeInfoScript) . ' >/dev/null 2>&1 &');
+        }
+        echo json_encode([
+            'result' => 'success',
+            'wasRunning' => $publisherWasRunning,
+        ]);
+        break;
     case 'addStack':
         // Validate optional indirect inputs (folder or specific compose file)
         $indirectDir = isset($_POST['stackPath']) ? trim($_POST['stackPath']) : '';
