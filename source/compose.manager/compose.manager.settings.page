@@ -2881,7 +2881,9 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 </label>
                 <blockquote class="inline_help">
                     Controls how often Compose live metrics (CPU, memory, etc.) are updated on the UI.<br>
-                    <strong>Live:</strong> Publishes each stream update (most responsive, higher CPU).<br>
+                    Metrics are only collected for compose-managed containers, and only one update is
+                    published per interval regardless of container count.<br>
+                    <strong>Live:</strong> ~250ms updates (most responsive, still rate-limited).<br>
                     <strong>Medium/Slow:</strong> Batches updates (~2s or ~5s intervals, lower CPU).<br>
                     <strong>Custom:</strong> Use the interval in milliseconds.
                 </blockquote>

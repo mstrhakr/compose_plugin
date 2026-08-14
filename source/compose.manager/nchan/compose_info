@@ -7,6 +7,21 @@
  *
  * This is intentionally namespaced to Compose Manager so we can evolve
  * metric fields without touching Docker manager's dockerload publisher.
+ *
+ * Fix for #130 (nchan shared-memory exhaustion):
+ *  - `docker stats` is filtered to compose-managed container IDs only,
+ *    instead of streaming every container on the host.
+ *  - Publishes are coalesced to at most one per configured interval. The
+ *    previous code republished the entire stats map on every single stats
+ *    line, which made publish volume O(containers^2) since `docker stats`
+ *    redraws every row each refresh cycle.
+ *  - The container set is re-enumerated periodically so stack up/down is
+ *    picked up without restarting the whole publisher process, and a
+ *    container disappearing mid-stream (which kills `docker stats`
+ *    entirely) triggers a clean restart instead of a tight crash loop.
+ *  - A terminal status write on shutdown prevents the status file from
+ *    going stale forever if the script exits (e.g. publish.php's
+ *    no-subscriber abort).
  */
 
 $docroot = $_SERVER['DOCUMENT_ROOT'] ?? '/usr/local/emhttp';
@@ -21,11 +36,22 @@ composeLogger('publisher starting', null, 'user', 'info', 'nchan');
 $statusFile = '/tmp/compose_info_nchan.status';
 $snapshotFile = '/tmp/compose_info_nchan.snapshot.json';
 
+// Ensure the status file always reflects that the publisher stopped, rather
+// than going stale forever (e.g. publish.php's no-subscriber abort calls
+// exit() directly, which would otherwise skip any "shutting down" write).
+register_shutdown_function(function () use ($statusFile) {
+    @file_put_contents($statusFile, json_encode([
+        'state' => 'stopped',
+        'ts' => time(),
+    ], JSON_UNESCAPED_SLASHES));
+});
+
 function resolvePublishIntervalMs(string $mode, int $customMs): int
 {
     switch ($mode) {
         case 'live':
-            return 0;
+            // Coalesced floor, not "publish every stream line" -- see #130.
+            return 250;
         case 'medium':
             return 2000;
         case 'slow':
@@ -33,7 +59,7 @@ function resolvePublishIntervalMs(string $mode, int $customMs): int
         case 'custom':
             return max(100, min(10000, $customMs));
         default:
-            return 0;
+            return 250;
     }
 }
 
@@ -65,7 +91,8 @@ function buildPayload(array $statsById): string
 
 function composeStripAnsiAndControl(string $value): string
 {
-    // Strip ANSI CSI sequences and other control bytes.
+    // Strip ANSI CSI sequences and other control bytes. docker stats emits
+    // cursor-home/erase-line codes to redraw its table even when piped.
     $value = preg_replace('/\x1B\[[0-9;?]*[ -\/]*[@-~]/', '', $value) ?? $value;
     $value = preg_replace('/[\x00-\x1F\x7F-\x9F]/', '', $value) ?? $value;
     return trim($value);
@@ -83,15 +110,75 @@ function composeNormalizeContainerId(string $value): string
     return $value;
 }
 
-@file_put_contents($statusFile, json_encode([
+// Enumerate currently running compose-managed container IDs. `docker stats`
+// has no --filter flag, so filtering must be done by passing explicit IDs.
+// Returns a sorted list so callers can cheaply detect set changes.
+function getComposeContainerIds(): array
+{
+    $output = @shell_exec("docker ps --filter 'label=com.docker.compose.project' --format '{{.ID}}' 2>/dev/null");
+    if (!$output) {
+        return [];
+    }
+    $ids = [];
+    foreach (explode("\n", trim($output)) as $line) {
+        $id = composeNormalizeContainerId((string)$line);
+        if ($id !== '') {
+            $ids[] = $id;
+        }
+    }
+    $ids = array_values(array_unique($ids));
+    sort($ids);
+    return $ids;
+}
+
+function writeStatus(string $statusFile, array $data): void
+{
+    @file_put_contents($statusFile, json_encode($data, JSON_UNESCAPED_SLASHES));
+}
+
+writeStatus($statusFile, [
     'state' => 'starting',
     'ts' => time(),
-], JSON_UNESCAPED_SLASHES));
-while (true) {
-    [$rateMode, $publishIntervalMs] = readPublishConfig();
-    composeLogger('starting docker stats stream (mode=' . $rateMode . ', intervalMs=' . $publishIntervalMs . ')', null, 'user', 'info', 'nchan');
+]);
 
-    $cmd = "docker stats --format='{{.ID}};{{.CPUPerc}};{{.MemUsage}};{{.MemPerc}};{{.NetIO}};{{.BlockIO}}' 2>&1";
+// How often to re-check the compose-managed container set while a
+// `docker stats` stream is running, so stack up/down is reflected without
+// restarting the whole publisher process.
+$reenumerateIntervalMs = 5000;
+// Poll interval while there are no compose-managed containers running.
+// Never invoke `docker stats` with an empty/absent ID list -- with no
+// arguments it silently streams every container on the host, which is the
+// root cause of #130.
+$idleSleepUs = 1000000;
+
+while (true) {
+    $containerIds = getComposeContainerIds();
+    $lastEnumerateMs = (int)round(microtime(true) * 1000);
+
+    if (count($containerIds) === 0) {
+        [$rateMode, $publishIntervalMs] = readPublishConfig();
+        publish('composeinfo', '', 1, true, 10);
+        @file_put_contents($snapshotFile, json_encode([
+            'ts' => time(),
+            'raw' => '',
+        ], JSON_UNESCAPED_SLASHES));
+        writeStatus($statusFile, [
+            'state' => 'idle',
+            'ts' => time(),
+            'mode' => $rateMode,
+            'intervalMs' => $publishIntervalMs,
+            'rows' => 0,
+            'containers' => 0,
+        ]);
+        usleep($idleSleepUs);
+        continue;
+    }
+
+    [$rateMode, $publishIntervalMs] = readPublishConfig();
+    composeLogger('starting docker stats stream (mode=' . $rateMode . ', intervalMs=' . $publishIntervalMs . ', containers=' . count($containerIds) . ')', null, 'user', 'info', 'nchan');
+
+    $cmdIds = implode(' ', array_map('escapeshellarg', $containerIds));
+    $cmd = "docker stats --format='{{.ID}};{{.CPUPerc}};{{.MemUsage}};{{.MemPerc}};{{.NetIO}};{{.BlockIO}}' $cmdIds 2>&1";
     $descriptorspec = [
         0 => ['pipe', 'r'],
         1 => ['pipe', 'w'],
@@ -108,16 +195,13 @@ while (true) {
 
     $statsById = [];
     $lastPublishMs = 0;
-    $lastListenerCheckMs = 0;
+    $lastKeepaliveMs = 0;
     $lastStatusWriteMs = 0;
     $lastHeartbeatLogMs = 0;
+    $lastEnumerateCheckMs = $lastEnumerateMs;
     $streamUpdates = 0;
-    $lastStreamLineMs = 0;
-    $cadenceSamples = 0;
-    $cadenceTotalMs = 0;
-    $cadenceMinMs = 0;
-    $cadenceMaxMs = 0;
-    $lastCadenceMs = 0;
+    $publishCount = 0;
+    $containerMissing = false;
 
     while (true) {
         $procStatus = proc_get_status($process);
@@ -138,41 +222,55 @@ while (true) {
                     $rest = trim((string)($parts[1] ?? ''));
                     $statsById[$id] = $id . ';' . $rest;
                     $streamUpdates++;
-
-                    if ($lastStreamLineMs > 0) {
-                        $deltaMs = max(0, $nowMs - $lastStreamLineMs);
-                        $lastCadenceMs = $deltaMs;
-                        $cadenceTotalMs += $deltaMs;
-                        $cadenceSamples++;
-                        if ($cadenceMinMs === 0 || $deltaMs < $cadenceMinMs) {
-                            $cadenceMinMs = $deltaMs;
-                        }
-                        if ($deltaMs > $cadenceMaxMs) {
-                            $cadenceMaxMs = $deltaMs;
-                        }
-                    }
-                    $lastStreamLineMs = $nowMs;
                 }
-            }
-
-            if ($publishIntervalMs === 0 || ($nowMs - $lastPublishMs) >= $publishIntervalMs) {
-                $payload = buildPayload($statsById);
-                publish('composeinfo', $payload, 1, true, 10);
-                @file_put_contents($snapshotFile, json_encode([
-                    'ts' => time(),
-                    'raw' => $payload,
-                ], JSON_UNESCAPED_SLASHES));
-                $lastPublishMs = $nowMs;
-                $lastListenerCheckMs = $nowMs;
+            } elseif ($trimmed !== '' && stripos($trimmed, 'no such container') !== false) {
+                // A container disappeared mid-stream (stack went down, was
+                // removed, etc). `docker stats` exits entirely in this case,
+                // so break out and let the outer loop re-enumerate and
+                // restart cleanly with the current container set.
+                composeLogger('docker stats reported a missing container; restarting stream', ['line' => $trimmed], 'user', 'warn', 'nchan');
+                $containerMissing = true;
+                break;
             }
         } else {
-            // Keep abort timer progressing even if the stream is temporarily quiet.
-            if (($nowMs - $lastListenerCheckMs) >= 1000) {
-                $payload = buildPayload($statsById);
-                publish('composeinfo', $payload, 1, true, 10);
-                $lastListenerCheckMs = $nowMs;
+            usleep(20000);
+        }
+
+        // Publish at most once per configured interval -- never once per
+        // stats line. This is the core fix for #130: docker stats redraws
+        // every tracked row each refresh cycle, so publishing on every line
+        // made publish volume scale as O(containers^2).
+        if (($nowMs - $lastPublishMs) >= $publishIntervalMs) {
+            $payload = buildPayload($statsById);
+            publish('composeinfo', $payload, 1, true, 10);
+            @file_put_contents($snapshotFile, json_encode([
+                'ts' => time(),
+                'raw' => $payload,
+            ], JSON_UNESCAPED_SLASHES));
+            $lastPublishMs = $nowMs;
+            $lastKeepaliveMs = $nowMs;
+            $publishCount++;
+        } elseif (($nowMs - $lastKeepaliveMs) >= 1000) {
+            // publish()'s no-subscriber abort timer (see webGui/include/publish.php)
+            // only advances on calls to publish(). Keep calling it at ~1s even
+            // when the coalescing window above hasn't elapsed yet, but send an
+            // empty keepalive instead of re-serializing the whole stats map.
+            publish('composeinfo', '', 1, true, 10);
+            $lastKeepaliveMs = $nowMs;
+        }
+
+        // Re-enumerate periodically so stack up/down is reflected without
+        // restarting the whole publisher process.
+        if (($nowMs - $lastEnumerateCheckMs) >= $reenumerateIntervalMs) {
+            $currentIds = getComposeContainerIds();
+            $lastEnumerateCheckMs = $nowMs;
+            if ($currentIds !== $containerIds) {
+                composeLogger('compose container set changed; restarting docker stats stream', [
+                    'previous' => count($containerIds),
+                    'current' => count($currentIds),
+                ], 'user', 'info', 'nchan');
+                break;
             }
-            usleep(100000);
         }
 
         // Visible runtime heartbeat for troubleshooting startup/loop health.
@@ -181,46 +279,24 @@ while (true) {
             if (strlen($sample) > 120) {
                 $sample = substr($sample, 0, 120);
             }
-            $preview = '';
-            if (!empty($statsById)) {
-                $preview = array_values($statsById)[0];
-            }
-            $cadenceAvgMs = $cadenceSamples > 0 ? (int)round($cadenceTotalMs / $cadenceSamples) : 0;
-            @file_put_contents($statusFile, json_encode([
+            writeStatus($statusFile, [
                 'state' => 'running',
                 'ts' => time(),
                 'mode' => $rateMode,
                 'intervalMs' => $publishIntervalMs,
                 'rows' => count($statsById),
+                'containers' => count($containerIds),
                 'updates' => $streamUpdates,
-                'cadenceAvgMs' => $cadenceAvgMs,
-                'cadenceMinMs' => $cadenceMinMs,
-                'cadenceMaxMs' => $cadenceMaxMs,
-                'cadenceLastMs' => $lastCadenceMs,
+                'publishes' => $publishCount,
                 'sample' => $sample,
-            ], JSON_UNESCAPED_SLASHES));
+            ]);
             $lastStatusWriteMs = $nowMs;
         }
 
         // Lightweight health log every ~5 minutes.
         if (($nowMs - $lastHeartbeatLogMs) >= 300000) {
-            $preview = '';
-            if (!empty($statsById)) {
-                $preview = array_values($statsById)[0];
-            }
-            if (strlen($preview) > 140) {
-                $preview = substr($preview, 0, 140) . '...';
-            }
-            $cadenceAvgMs = $cadenceSamples > 0 ? (int)round($cadenceTotalMs / $cadenceSamples) : 0;
-            composeLogger('publisher heartbeat streamUpdates=' . $streamUpdates . ' rows=' . count($statsById) . ' cadenceAvgMs=' . $cadenceAvgMs . ' cadenceMinMs=' . $cadenceMinMs . ' cadenceMaxMs=' . $cadenceMaxMs . ' cadenceLastMs=' . $lastCadenceMs . ' sample=' . ($preview !== '' ? $preview : '<empty>'), null, 'user', 'debug', 'nchan');
+            composeLogger('publisher heartbeat streamUpdates=' . $streamUpdates . ' publishes=' . $publishCount . ' rows=' . count($statsById) . ' containers=' . count($containerIds), null, 'user', 'debug', 'nchan');
             $lastHeartbeatLogMs = $nowMs;
-
-            // Reset cadence window each heartbeat so logs show recent behavior.
-            $cadenceSamples = 0;
-            $cadenceTotalMs = 0;
-            $cadenceMinMs = 0;
-            $cadenceMaxMs = 0;
-            $lastCadenceMs = 0;
         }
     }
 
@@ -231,5 +307,9 @@ while (true) {
         @proc_close($process);
     }
 
-    sleep(1);
+    // Small backoff before restarting. A slightly longer pause when a
+    // container went missing mid-stream avoids a tight crash loop if the
+    // compose container set is churning (e.g. a stack repeatedly failing
+    // to start).
+    sleep($containerMissing ? 2 : 1);
 }
