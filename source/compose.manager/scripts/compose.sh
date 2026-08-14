@@ -27,6 +27,7 @@ cmd_args=()
 stack_path=""
 debug=false
 lock_fd=""
+operation_exit_code=0
 
 
 # Logging helper — delegates to shared composeLogger, adds console echo in debug mode
@@ -220,6 +221,7 @@ case $command in
     
     "${compose_base[@]}" -p "$name" up "${cmd_args[@]}" -d
     exit_code=$?
+    operation_exit_code=$exit_code
     
     if [ $exit_code -eq 0 ]; then
       # Save stack started timestamp and running profiles
@@ -245,6 +247,7 @@ case $command in
     
     "${compose_base[@]}" -p "$name" down "${cmd_args[@]}" 2>&1
     exit_code=$?
+    operation_exit_code=$exit_code
     
     if [ $exit_code -eq 0 ]; then
       # Clear running profiles on successful down
@@ -269,6 +272,7 @@ case $command in
     
     "${compose_base[@]}" -p "$name" pull --ignore-buildable
     exit_code=$?
+    operation_exit_code=$exit_code
     
     if [ $exit_code -eq 0 ]; then
       save_result "success" $exit_code "pull"
@@ -318,11 +322,12 @@ case $command in
     pull_exit=$?
     
     if [ $pull_exit -ne 0 ]; then
+      operation_exit_code=$pull_exit
       save_result "failed" $pull_exit "update"
       log_msg "ERROR" "Failed to pull images for $name, aborting update"
       echo ""
       echo "✗ Failed to pull images for $name, update aborted"
-      exit $pull_exit
+      exit $operation_exit_code
     fi
     
     # Recreate containers with new images
@@ -332,6 +337,7 @@ case $command in
     up_exit=$?
 
     if [ $up_exit -eq 0 ]; then
+      operation_exit_code=0
       # Clean up old images
       mapfile -t new_images < <("${compose_base[@]}" -p "$name" images -q 2>/dev/null)
       for target in "${new_images[@]}"; do
@@ -360,6 +366,7 @@ case $command in
       echo ""
       echo "✓ Stack $name updated successfully"
     else
+      operation_exit_code=$up_exit
       save_result "failed" $up_exit "update"
       log_msg "ERROR" "Failed to update stack $name (exit code: $up_exit)"
       echo ""
@@ -374,6 +381,7 @@ case $command in
     
     "${compose_base[@]}" -p "$name" stop 2>&1
     exit_code=$?
+    operation_exit_code=$exit_code
     
     if [ $exit_code -eq 0 ]; then
       save_result "success" $exit_code "stop"
@@ -408,6 +416,7 @@ case $command in
     fi
     "${compose_base[@]}" -p "$name" logs -f 2>&1
     exit_code=$?
+    operation_exit_code=$exit_code
     if [ $exit_code -ne 0 ]; then
       log_msg "ERROR" "Failed to stream logs (exit code: $exit_code)"
     fi
@@ -417,5 +426,11 @@ case $command in
     echo "Unknown command: $command"
     log_msg "ERROR" "Unknown command: $command (name: $name, files: ${file_args[*]})"
     exit 1
+    ;;
+esac
+
+case $command in
+  up|down|pull|update|stop|logs)
+    exit "${operation_exit_code:-0}"
     ;;
 esac
