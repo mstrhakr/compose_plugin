@@ -3020,8 +3020,24 @@ class StackInfo
             self::writeDefaultComposeFile($composeTarget);
         }
 
-        // Build + cache the instance (resolves override, etc.)
-        return self::fromProject($composeRoot, basename($path));
+        // Build + cache the instance (resolves override, etc.).
+        // New stacks must always have an app-managed project override template
+        // so shell/autostart flows that pass explicit -f lists do not point to
+        // a missing override file.
+        $stack = self::fromProject($composeRoot, basename($path));
+        $projectOverridePath = $stack->overrideInfo->getProjectOverridePath();
+        if (
+            $projectOverridePath !== null
+            && $projectOverridePath !== ''
+            && !is_file($projectOverridePath)
+            && !is_dir($projectOverridePath)
+        ) {
+            if (@file_put_contents($projectOverridePath, OverrideInfo::buildTemplateContent()) === false) {
+                throw new \RuntimeException("Failed to create override template: $projectOverridePath");
+            }
+        }
+
+        return $stack;
     }
 
     /**

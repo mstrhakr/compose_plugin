@@ -1069,6 +1069,8 @@ class StackInfoTest extends TestCase
         $this->assertSame($indirectDir, trim(file_get_contents($stack->path . '/indirect')));
         // Should have created compose.yaml at indirect target
         $this->assertFileExists($indirectDir . '/compose.yaml');
+        // New stacks also create an app-managed project override template.
+        $this->assertFileExists($stack->path . '/compose.override.yaml');
     }
 
     public function testCreateNewIndirectExistingComposeFile(): void
@@ -1121,10 +1123,11 @@ class StackInfoTest extends TestCase
         $stack = \StackInfo::createNew($this->tempRoot, 'Override Init');
 
         $this->assertInstanceOf(\OverrideInfo::class, $stack->overrideInfo);
-        // Override file should not be created until explicitly requested
+        // New stacks should always include a project override template.
         $overridePath = $stack->getOverridePath();
         $this->assertNotNull($overridePath);
-        $this->assertFileDoesNotExist($overridePath);
+        $this->assertFileExists($overridePath);
+        $this->assertStringContainsString('services: {}', (string) file_get_contents($overridePath));
     }
 
     public function testCreateNewIsCached(): void
