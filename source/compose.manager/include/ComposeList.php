@@ -32,15 +32,17 @@ if ($mode === 'list') {
  * @param string $path
  * @return string|null
  */
-function composeRowFindComposeFile(string $path): ?string
-{
-    foreach (COMPOSE_FILE_NAMES as $filename) {
-        $candidate = rtrim($path, '/') . '/' . $filename;
-        if (is_file($candidate)) {
-            return $candidate;
+if (!function_exists('composeRowFindComposeFile')) {
+    function composeRowFindComposeFile(string $path): ?string
+    {
+        foreach (COMPOSE_FILE_NAMES as $filename) {
+            $candidate = rtrim($path, '/') . '/' . $filename;
+            if (is_file($candidate)) {
+                return $candidate;
+            }
         }
+        return null;
     }
-    return null;
 }
 
 /**
@@ -50,20 +52,22 @@ function composeRowFindComposeFile(string $path): ?string
  * @param string $name
  * @return string|null
  */
-function composeRowReadMetadataValue(string $path, string $name): ?string
-{
-    $metadataPath = rtrim($path, '/') . '/' . $name;
-    if (!is_file($metadataPath)) {
-        return null;
-    }
+if (!function_exists('composeRowReadMetadataValue')) {
+    function composeRowReadMetadataValue(string $path, string $name): ?string
+    {
+        $metadataPath = rtrim($path, '/') . '/' . $name;
+        if (!is_file($metadataPath)) {
+            return null;
+        }
 
-    $raw = @file_get_contents($metadataPath);
-    if ($raw === false) {
-        return null;
-    }
+        $raw = @file_get_contents($metadataPath);
+        if ($raw === false) {
+            return null;
+        }
 
-    $value = trim($raw);
-    return ($value === '') ? null : $value;
+        $value = trim($raw);
+        return ($value === '') ? null : $value;
+    }
 }
 
 /**
@@ -74,89 +78,91 @@ function composeRowReadMetadataValue(string $path, string $name): ?string
  * @param string $exceptionMessage
  * @return array<string,mixed>
  */
-function composeRowBuildFailurePayload(string $composeRoot, string $project, string $exceptionMessage = ''): array
-{
-    $projectPath = rtrim($composeRoot, '/') . '/' . $project;
-    $reason = 'project_load_failed';
-    $message = 'Project failed to load.';
-    $details = [];
-    $checkedComposePaths = [];
-    $missingMetadataFiles = [];
+if (!function_exists('composeRowBuildFailurePayload')) {
+    function composeRowBuildFailurePayload(string $composeRoot, string $project, string $exceptionMessage = ''): array
+    {
+        $projectPath = rtrim($composeRoot, '/') . '/' . $project;
+        $reason = 'project_load_failed';
+        $message = 'Project failed to load.';
+        $details = [];
+        $checkedComposePaths = [];
+        $missingMetadataFiles = [];
 
-    if ($project === '') {
-        $reason = 'project_not_specified';
-        $message = 'Project not specified.';
-    } elseif (!file_exists($projectPath)) {
-        $reason = 'project_not_found';
-        $message = 'Project folder does not exist.';
-        $details[] = "Missing project path: $projectPath";
-    } elseif (!is_dir($projectPath)) {
-        $reason = 'invalid_project_path';
-        $message = 'Project path is not a directory.';
-        $details[] = "Path is not a directory: $projectPath";
-    } else {
-        foreach (['name', 'description', 'indirect', 'indirect_mode'] as $metadataFile) {
-            if (!is_file($projectPath . '/' . $metadataFile)) {
-                $missingMetadataFiles[] = $metadataFile;
+        if ($project === '') {
+            $reason = 'project_not_specified';
+            $message = 'Project not specified.';
+        } elseif (!file_exists($projectPath)) {
+            $reason = 'project_not_found';
+            $message = 'Project folder does not exist.';
+            $details[] = "Missing project path: $projectPath";
+        } elseif (!is_dir($projectPath)) {
+            $reason = 'invalid_project_path';
+            $message = 'Project path is not a directory.';
+            $details[] = "Path is not a directory: $projectPath";
+        } else {
+            foreach (['name', 'description', 'indirect', 'indirect_mode'] as $metadataFile) {
+                if (!is_file($projectPath . '/' . $metadataFile)) {
+                    $missingMetadataFiles[] = $metadataFile;
+                }
             }
-        }
 
-        $indirectPath = composeRowReadMetadataValue($projectPath, 'indirect');
-        $indirectMode = composeRowReadMetadataValue($projectPath, 'indirect_mode') ?? 'auto';
+            $indirectPath = composeRowReadMetadataValue($projectPath, 'indirect');
+            $indirectMode = composeRowReadMetadataValue($projectPath, 'indirect_mode') ?? 'auto';
 
-        if ($indirectPath !== null) {
-            $details[] = "indirect metadata points to: $indirectPath";
-            $details[] = "indirect_mode metadata: $indirectMode";
+            if ($indirectPath !== null) {
+                $details[] = "indirect metadata points to: $indirectPath";
+                $details[] = "indirect_mode metadata: $indirectMode";
 
-            if ($indirectMode === 'file' || is_file($indirectPath)) {
-                $checkedComposePaths[] = $indirectPath;
-                if (!is_file($indirectPath)) {
-                    $reason = 'missing_indirect_compose_file';
-                    $message = 'Indirect compose file is missing.';
-                    $details[] = "Missing indirect compose file: $indirectPath";
-                }
-            } elseif (is_dir($indirectPath)) {
-                foreach (COMPOSE_FILE_NAMES as $filename) {
-                    $checkedComposePaths[] = rtrim($indirectPath, '/') . '/' . $filename;
-                }
-                $composeFile = composeRowFindComposeFile($indirectPath);
-                if ($composeFile === null) {
-                    $reason = 'missing_compose_file';
-                    $message = 'No compose file found in indirect source directory.';
-                    $details[] = "No compose file found under indirect path: $indirectPath";
+                if ($indirectMode === 'file' || is_file($indirectPath)) {
+                    $checkedComposePaths[] = $indirectPath;
+                    if (!is_file($indirectPath)) {
+                        $reason = 'missing_indirect_compose_file';
+                        $message = 'Indirect compose file is missing.';
+                        $details[] = "Missing indirect compose file: $indirectPath";
+                    }
+                } elseif (is_dir($indirectPath)) {
+                    foreach (COMPOSE_FILE_NAMES as $filename) {
+                        $checkedComposePaths[] = rtrim($indirectPath, '/') . '/' . $filename;
+                    }
+                    $composeFile = composeRowFindComposeFile($indirectPath);
+                    if ($composeFile === null) {
+                        $reason = 'missing_compose_file';
+                        $message = 'No compose file found in indirect source directory.';
+                        $details[] = "No compose file found under indirect path: $indirectPath";
+                    }
+                } else {
+                    $reason = 'missing_indirect_path';
+                    $message = 'Indirect source path does not exist.';
+                    $details[] = "Missing indirect source path: $indirectPath";
                 }
             } else {
-                $reason = 'missing_indirect_path';
-                $message = 'Indirect source path does not exist.';
-                $details[] = "Missing indirect source path: $indirectPath";
-            }
-        } else {
-            foreach (COMPOSE_FILE_NAMES as $filename) {
-                $checkedComposePaths[] = rtrim($projectPath, '/') . '/' . $filename;
-            }
-            $composeFile = composeRowFindComposeFile($projectPath);
-            if ($composeFile === null) {
-                $reason = 'missing_compose_file';
-                $message = 'No compose file found in stack directory.';
-                $details[] = "No compose file found under project path: $projectPath";
+                foreach (COMPOSE_FILE_NAMES as $filename) {
+                    $checkedComposePaths[] = rtrim($projectPath, '/') . '/' . $filename;
+                }
+                $composeFile = composeRowFindComposeFile($projectPath);
+                if ($composeFile === null) {
+                    $reason = 'missing_compose_file';
+                    $message = 'No compose file found in stack directory.';
+                    $details[] = "No compose file found under project path: $projectPath";
+                }
             }
         }
-    }
 
-    if ($exceptionMessage !== '') {
-        $details[] = "StackInfo error: $exceptionMessage";
-    }
+        if ($exceptionMessage !== '') {
+            $details[] = "StackInfo error: $exceptionMessage";
+        }
 
-    return [
-        'result' => 'error',
-        'reason' => $reason,
-        'message' => $message,
-        'project' => $project,
-        'projectPath' => $projectPath,
-        'checkedComposePaths' => $checkedComposePaths,
-        'missingMetadataFiles' => $missingMetadataFiles,
-        'details' => $details,
-    ];
+        return [
+            'result' => 'error',
+            'reason' => $reason,
+            'message' => $message,
+            'project' => $project,
+            'projectPath' => $projectPath,
+            'checkedComposePaths' => $checkedComposePaths,
+            'missingMetadataFiles' => $missingMetadataFiles,
+            'details' => $details,
+        ];
+    }
 }
 
 $o = "";
