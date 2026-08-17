@@ -18,6 +18,7 @@ This is still live-prod testing. Treat it as smoke validation, not full mutation
 ```bash
 cd /code/compose_plugin/tests/e2e
 npm install
+npx playwright install-deps
 npx playwright install chromium firefox
 ```
 
