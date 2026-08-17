@@ -701,12 +701,26 @@ function composeLoadlist() {
                         .done(function(rowRaw) {
                             var rowResp = tryParseJson(rowRaw);
                             var elapsedMs = Date.now() - (stackLoadTimers[project] || Date.now());
+                            var detailParts = [];
+                            if (rowResp && Array.isArray(rowResp.details)) {
+                                detailParts = rowResp.details
+                                    .filter(function(item) {
+                                        return typeof item === 'string' && item.trim() !== '';
+                                    })
+                                    .slice(0, 3);
+                            }
                             pendingRowsByIndex[index] = {
                                 ok: !!(rowResp && rowResp.result === 'success' && rowResp.html),
                                 rowResp: rowResp,
                                 project: project,
                                 position: index + 1,
-                                elapsedMs: elapsedMs
+                                elapsedMs: elapsedMs,
+                                reason: (rowResp && rowResp.reason) ? String(rowResp.reason) : '',
+                                projectPath: (rowResp && rowResp.projectPath) ? String(rowResp.projectPath) : (compose_root + '/' + project),
+                                errorMessage: (rowResp && rowResp.message) ? String(rowResp.message) : '',
+                                failureDetail: detailParts.join(' | '),
+                                checkedComposePaths: (rowResp && Array.isArray(rowResp.checkedComposePaths)) ? rowResp.checkedComposePaths.slice(0, 6) : [],
+                                missingMetadataFiles: (rowResp && Array.isArray(rowResp.missingMetadataFiles)) ? rowResp.missingMetadataFiles.slice(0, 8) : []
                             };
                         })
                         .fail(function() {
@@ -716,7 +730,13 @@ function composeLoadlist() {
                                 rowResp: null,
                                 project: project,
                                 position: index + 1,
-                                elapsedMs: failElapsedMs
+                                elapsedMs: failElapsedMs,
+                                reason: 'request_failed',
+                                projectPath: compose_root + '/' + project,
+                                errorMessage: 'Row request failed before payload returned.',
+                                failureDetail: '',
+                                checkedComposePaths: [],
+                                missingMetadataFiles: []
                             };
                         })
                         .always(function() {
@@ -767,11 +787,17 @@ function composeLoadlist() {
                     } else {
                         composeLogger('progressive stack load failed', {
                             project: entry.project,
+                            projectPath: entry.projectPath || (compose_root + '/' + entry.project),
                             position: entry.position,
                             total: projects.length,
-                            elapsedMs: entry.elapsedMs
+                            elapsedMs: entry.elapsedMs,
+                            reason: entry.reason || 'unknown',
+                            errorMessage: entry.errorMessage || '',
+                            failureDetail: entry.failureDetail || '',
+                            checkedComposePaths: entry.checkedComposePaths || [],
+                            missingMetadataFiles: entry.missingMetadataFiles || [],
+                            uiAction: 'row_dropped'
                         }, 'user', 'warn', 'composeLoadlist');
-                        $('#compose-load-progress-row').before('<tr><td colspan="14" class="compose-status-danger" style="padding:8px 12px;">Failed to load ' + composeEscapeHtml(entry.project) + '.</td></tr>');
                     }
 
                     waitForExpansion.finally(function() {
