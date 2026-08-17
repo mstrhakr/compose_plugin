@@ -18,7 +18,6 @@
     </source>
     <coverage>
         <report>
-            <html outputDirectory="tests/coverage/html"/>
             <clover outputFile="tests/coverage/clover.xml"/>
             <text outputFile="tests/coverage/coverage.txt"/>
         </report>
