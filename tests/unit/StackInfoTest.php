@@ -935,7 +935,10 @@ class StackInfoTest extends TestCase
         file_put_contents("$stackDir/compose.debug.yaml", "services:\n  web:\n    image: nginx:alpine\n");
         file_put_contents("$stackDir/compose.extra.yaml", "services:\n  web:\n    image: nginx:alpine\n");
         $envPath = $stackDir . '/.env';
-        file_put_contents($envPath, 'COMPOSE_FILE="compose.debug.yaml":compose.extra.yaml');
+        // Use PATH_SEPARATOR (what splitComposeFileValue() actually splits on,
+        // matching Docker Compose's own OS-dependent COMPOSE_FILE separator)
+        // instead of a hardcoded ':' so this passes on Windows dev machines too.
+        file_put_contents($envPath, 'COMPOSE_FILE="compose.debug.yaml"' . PATH_SEPARATOR . 'compose.extra.yaml');
 
         $info = \StackInfo::fromProject($this->tempRoot, $stack);
         $args = $info->buildComposeArgs();
@@ -988,8 +991,14 @@ class StackInfoTest extends TestCase
 
         $this->assertFalse($info->useDefaultComposeFileDiscovery(), 'Explicit envpath should disable default discovery.');
         $this->assertStringContainsString('--env-file', $args['envFile']);
-        $this->assertStringContainsString($stackDir . '/.env', $args['envFile']);
-        $this->assertSame($stackDir . '/.env', $args['envFilePath']);
+
+        // envFile/envFilePath are resolved via realpath(), which normalizes to
+        // native path separators (backslashes on Windows); normalize both sides
+        // before comparing so this isn't sensitive to the dev OS.
+        $normalize = static fn(string $path): string => str_replace('\\', '/', $path);
+        $expectedEnvPath = $normalize($stackDir . '/.env');
+        $this->assertStringContainsString($expectedEnvPath, $normalize($args['envFile']));
+        $this->assertSame($expectedEnvPath, $normalize($args['envFilePath']));
     }
 
     public function testBuildComposeArgsIndirectFileModeDisablesDefaultDiscovery(): void
