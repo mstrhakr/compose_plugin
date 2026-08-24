@@ -6001,7 +6001,7 @@ function renderLabelsUI(mainDoc, overrideDoc) {
         }
 
         var containerName = service.container_name || serviceKey;
-        var iconValue = findLabelValue(overrideService, service, icon_label);
+        var iconValue = stripLocalIconScheme(findLabelValue(overrideService, service, icon_label));
         var webuiValue = findLabelValue(overrideService, service, webui_label);
         var shellValue = findLabelValue(overrideService, service, shell_label);
 
@@ -6039,7 +6039,7 @@ function renderLabelsUI(mainDoc, overrideDoc) {
             hasDeletedServices = true;
             var overrideService = overrideDoc.services[serviceKey];
             var containerName = (overrideService && overrideService.container_name) || serviceKey;
-            var iconValue = findLabelValue(overrideService, {}, icon_label);
+            var iconValue = stripLocalIconScheme(findLabelValue(overrideService, {}, icon_label));
             var webuiValue = findLabelValue(overrideService, {}, webui_label);
             var shellValue = findLabelValue(overrideService, {}, shell_label);
 
@@ -6124,6 +6124,18 @@ function findLabelValue(overrideService, mainService, labelKey) {
         return mainService.labels[labelKey];
     }
     return '';
+}
+
+// The plugin writes bare local paths (never file://) into compose.override.yaml
+// and only ever injects a file:// form transiently at compose-run time (see
+// StackInfo::getIconNormalizationOverridePath() server-side). Strip it back off
+// here so the Labels editor's icon field and file-browser widget always operate
+// on a plain path, regardless of how the value ended up file://-prefixed.
+function stripLocalIconScheme(value) {
+    if (typeof value !== 'string') {
+        return value;
+    }
+    return value.indexOf('file://') === 0 ? value.slice('file://'.length) : value;
 }
 
 // Toggle deleted services visibility

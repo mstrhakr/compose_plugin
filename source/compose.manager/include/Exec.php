@@ -119,6 +119,7 @@ if (!function_exists('composePurgeDeletedStackCaches')) {
             'persistentContainerCache' => false,
             'savedUpdateStatus' => false,
             'pendingRecheck' => false,
+            'iconNormalizeOverride' => false,
         ];
 
         $persistentContainerCache = composeLoadPersistentContainerCache();
@@ -126,6 +127,14 @@ if (!function_exists('composePurgeDeletedStackCaches')) {
             unset($persistentContainerCache[$stackName]);
             composeSavePersistentContainerCache($persistentContainerCache);
             $purged['persistentContainerCache'] = true;
+        }
+
+        if (defined('COMPOSE_ICON_NORMALIZE_DIR')) {
+            $projectName = StackInfo::sanitizeProjectString($stackName);
+            $iconOverridePath = rtrim(COMPOSE_ICON_NORMALIZE_DIR, '/') . '/' . $projectName . '.yaml';
+            if (is_file($iconOverridePath) && @unlink($iconOverridePath)) {
+                $purged['iconNormalizeOverride'] = true;
+            }
         }
 
         if (defined('COMPOSE_UPDATE_STATUS_FILE') && is_file(COMPOSE_UPDATE_STATUS_FILE)) {

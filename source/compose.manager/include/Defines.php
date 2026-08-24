@@ -25,6 +25,7 @@ defined('COMPOSE_STACK_ORDER_FILE')   || define('COMPOSE_STACK_ORDER_FILE',   '/
 defined('UNRAID_UPDATE_STATUS_FILE')  || define('UNRAID_UPDATE_STATUS_FILE',  '/var/lib/docker/unraid-update-status.json');
 defined('PENDING_RECHECK_FILE')       || define('PENDING_RECHECK_FILE',       '/boot/config/plugins/compose.manager/pending-recheck.json');
 defined('COMPOSE_TTYD_SOCKET_DIR')    || define('COMPOSE_TTYD_SOCKET_DIR',    '/var/tmp');
+defined('COMPOSE_ICON_NORMALIZE_DIR') || define('COMPOSE_ICON_NORMALIZE_DIR', '/var/tmp/compose-icon-normalize');
 
 /**
  * Reserved filename at the compose root level used by the plugin installer

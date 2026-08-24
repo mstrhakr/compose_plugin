@@ -1620,6 +1620,12 @@ class StackInfo
     /** @var array Lazy-loaded metadata cache (field => value|null, unset = not loaded) */
     private array $metadataCache = [];
 
+    /** @var string|null Cached path to the transient icon-normalization override, computed once per request */
+    private ?string $iconNormalizeOverridePath = null;
+
+    /** @var bool Whether getIconNormalizationOverridePath() has already run this request */
+    private bool $iconNormalizeOverrideComputed = false;
+
     /** @var array<string, StackInfo> Static instance cache keyed by composeRoot/project */
     private static array $instances = [];
 
@@ -2078,6 +2084,148 @@ class StackInfo
      *
      * @return string[]
      */
+    /**
+     * Whether a raw net.unraid.docker.icon label value is a bare local
+     * filesystem path that needs a `file://` scheme added.
+     *
+     * cURL (used by dynamix.docker.manager's native icon resolver) can only
+     * fetch a scheme-qualified URL; a bare absolute path like
+     * `/mnt/user/appdata/icons/x.png` fails with "No host part in the URL".
+     * Prefixing it with `file://` lets the same cURL-based resolver read it
+     * directly from disk.
+     *
+     * @param string $value
+     * @return bool
+     */
+    private static function isLocalIconPathNeedingScheme(string $value): bool
+    {
+        $value = trim($value);
+        if ($value === '' || $value[0] !== '/') {
+            return false;
+        }
+        return preg_match('#^(https?://|file://|data:)#i', $value) !== 1;
+    }
+
+    /**
+     * Scan raw override YAML for services whose net.unraid.docker.icon
+     * label is a bare local path needing a `file://` scheme.
+     *
+     * Uses the `yaml` PECL extension when available (same fallback pattern
+     * used elsewhere in this class), otherwise falls back to a simple
+     * indentation-based line scan of the well-known 2/4/6-space service /
+     * labels / label-key structure this plugin always writes.
+     *
+     * @param string $overrideContent
+     * @return array<string,string> Map of service name => raw icon path
+     */
+    private function extractLocalIconLabelsFromOverride(string $overrideContent): array
+    {
+        $result = [];
+
+        if (function_exists('yaml_parse')) {
+            $parsed = @yaml_parse($overrideContent);
+            if (is_array($parsed) && isset($parsed['services']) && is_array($parsed['services'])) {
+                foreach ($parsed['services'] as $serviceName => $serviceDef) {
+                    if (!is_array($serviceDef) || !isset($serviceDef['labels']) || !is_array($serviceDef['labels'])) {
+                        continue;
+                    }
+                    $icon = $serviceDef['labels']['net.unraid.docker.icon'] ?? null;
+                    if (is_string($icon) && self::isLocalIconPathNeedingScheme($icon)) {
+                        $result[(string) $serviceName] = trim($icon);
+                    }
+                }
+                return $result;
+            }
+        }
+
+        $currentService = null;
+        foreach (preg_split('/\R/', $overrideContent) as $line) {
+            if (preg_match('/^  ([^\s:][^:]*):\s*(?:#.*)?$/', $line, $m)) {
+                $currentService = trim($m[1]);
+                continue;
+            }
+            if ($currentService === null) {
+                continue;
+            }
+            if (preg_match('/^      net\.unraid\.docker\.icon\s*:\s*(.*?)\s*$/', $line, $m)) {
+                $value = trim($m[1]);
+                if (strlen($value) >= 2 && $value[0] === $value[strlen($value) - 1] && ($value[0] === '"' || $value[0] === "'")) {
+                    $value = substr($value, 1, -1);
+                }
+                if (self::isLocalIconPathNeedingScheme($value)) {
+                    $result[$currentService] = $value;
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Build (or clean up) a small transient compose override that rewrites
+     * bare-local-path net.unraid.docker.icon labels to `file://` URIs.
+     *
+     * Docker Compose reads labels verbatim from compose.override.yaml, but
+     * the native Docker tab/dashboard icon resolver only ever fetches icon
+     * labels via cURL. We keep the real override.yaml (and the Labels
+     * editor / file-browser field) storing clean bare paths, and only
+     * inject the `file://` form as a final, highest-precedence `-f` layer
+     * at command-build time — so nothing else about the stored config
+     * changes.
+     *
+     * Computed once per request (cached on the instance) and skipped
+     * entirely — no extra file write, no extra `-f` flag — when no service
+     * needs normalization.
+     *
+     * @return string|null Path to the transient override file, or null if unneeded
+     */
+    private function getIconNormalizationOverridePath(): ?string
+    {
+        if ($this->iconNormalizeOverrideComputed) {
+            return $this->iconNormalizeOverridePath;
+        }
+        $this->iconNormalizeOverrideComputed = true;
+
+        $targetPath = rtrim(COMPOSE_ICON_NORMALIZE_DIR, '/') . '/' . $this->projectName . '.yaml';
+
+        $overridePath = $this->getOverridePath();
+        if ($overridePath === null || !is_file($overridePath)) {
+            @unlink($targetPath);
+            return null;
+        }
+
+        $content = @file_get_contents($overridePath);
+        if ($content === false || trim($content) === '') {
+            @unlink($targetPath);
+            return null;
+        }
+
+        $iconsNeedingScheme = $this->extractLocalIconLabelsFromOverride($content);
+        if (empty($iconsNeedingScheme)) {
+            @unlink($targetPath);
+            return null;
+        }
+
+        $yaml = "services:\n";
+        foreach ($iconsNeedingScheme as $serviceName => $path) {
+            $yaml .= '  ' . $serviceName . ":\n";
+            $yaml .= "    labels:\n";
+            $yaml .= "      net.unraid.docker.icon: 'file://" . str_replace("'", "''", $path) . "'\n";
+        }
+
+        if (!is_dir(dirname($targetPath)) && !@mkdir(dirname($targetPath), 0755, true) && !is_dir(dirname($targetPath))) {
+            composeLogger("Failed to create icon-normalization directory for stack $this->projectFolder", ['dir' => dirname($targetPath)], 'user', 'warning', 'stack');
+            return null;
+        }
+        if (@file_put_contents($targetPath, $yaml) === false) {
+            composeLogger("Failed to write icon-normalization override for stack $this->projectFolder", ['path' => $targetPath], 'user', 'warning', 'stack');
+            return null;
+        }
+
+        $this->iconNormalizeOverridePath = $targetPath;
+        return $targetPath;
+    }
+
     private function getExtraComposeFiles(): array
     {
         $raw = $this->readMetadata('extra_compose_files');
@@ -2195,6 +2343,13 @@ class StackInfo
 
         foreach ($this->getExtraComposeFiles() as $extraFile) {
             $paths[] = $extraFile;
+        }
+
+        // Last (highest precedence) so it can safely override just the icon
+        // label without disturbing anything else the user/other files set.
+        $iconNormalizePath = $this->getIconNormalizationOverridePath();
+        if ($iconNormalizePath !== null) {
+            $paths[] = $iconNormalizePath;
         }
 
         $normalized = [];
