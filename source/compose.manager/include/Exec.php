@@ -107,6 +107,25 @@ if (!function_exists('composeSavePersistentContainerCache')) {
     }
 }
 
+if (!function_exists('composeResolveDockerHostIp')) {
+    /**
+     * Resolve the Docker host IP across multiple Unraid WebUI versions.
+     */
+    function composeResolveDockerHostIp(): string
+    {
+        if (method_exists('DockerUtil', 'host')) {
+            return trim((string) DockerUtil::host());
+        }
+
+        global $host;
+        if (is_string($host) && $host !== '') {
+            return trim($host);
+        }
+
+        return '';
+    }
+}
+
 if (!function_exists('composePurgeDeletedStackCaches')) {
     /**
      * Remove deleted stack entries from persistent cache files.
@@ -1378,7 +1397,7 @@ switch ($_POST['action']) {
         $rows = $stackInfo->getContainerList();
         // Hard dependency on Docker manager: use shared helpers directly.
         $networkDrivers = DockerUtil::driver();
-        $hostIP = trim((string) DockerUtil::host());
+        $hostIP = composeResolveDockerHostIp();
 
         $containers = [];
         // Load update status once before the loop (static data, doesn't change per-container)
