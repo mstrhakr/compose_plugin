@@ -215,8 +215,8 @@ class ComposeUpdateCheck
         if (preg_match('@www-authenticate:\s*Bearer\s*(.*)@i', (string) $probeReply, $m)) {
             $args = [];
             foreach (explode(',', $m[1]) as $arg) {
-                $kv = explode('=', $arg);
-                $args[$kv[0]] = trim($kv[1] ?? '', "\" \r\n");
+                $kv = explode('=', $arg, 2);
+                $args[trim($kv[0])] = trim($kv[1] ?? '', "\" \r\n");
             }
             if (empty($args['realm']) || empty($args['service']) || empty($args['scope'])) {
                 return null;
