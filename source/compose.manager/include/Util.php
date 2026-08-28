@@ -240,13 +240,6 @@ function composeDeleteStackFolder(string $composeRoot, string $stackName, string
         return true;
     }
 
-    $targetReal = realpath($targetPath);
-    $meta['targetReal'] = $targetReal;
-    if ($targetReal === false || !Path::isAllowedPath($targetReal, [$composeRootReal]) || $targetReal === $composeRootReal) {
-        $errorMessage = 'Invalid stack path resolved for deletion.';
-        return false;
-    }
-
     if (is_link($targetPath)) {
         if (!@unlink($targetPath) && file_exists($targetPath)) {
             $errorMessage = 'Failed to remove stack symlink.';
@@ -254,6 +247,13 @@ function composeDeleteStackFolder(string $composeRoot, string $stackName, string
         }
         $appendRemovedPath($targetPath . ' [symlink]');
         return true;
+    }
+
+    $targetReal = realpath($targetPath);
+    $meta['targetReal'] = $targetReal;
+    if ($targetReal === false || !Path::isAllowedPath($targetReal, [$composeRootReal]) || $targetReal === $composeRootReal) {
+        $errorMessage = 'Invalid stack path resolved for deletion.';
+        return false;
     }
 
     if (!is_dir($targetPath)) {
