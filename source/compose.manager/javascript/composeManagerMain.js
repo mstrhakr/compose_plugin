@@ -2437,14 +2437,28 @@ $(function() {
                 return false;
             }
 
-            // Tear down previous subscriber if page was re-navigated (Unraid
-            // AJAX navigation preserves window globals but old closures/sockets
-            // become stale).  Always create a fresh subscriber.
-            if (window._composeDockerLoad) {
-                composeLogger('tearing down previous subscriber', null, 'user', 'debug', 'dockerload');
+            var prevSubscriber = window._composeDockerLoad || null;
+            var newGeneration = (window._composeDockerLoadGeneration || 0) + 1;
+            window._composeDockerLoadGeneration = newGeneration;
+
+            // Tear down previous subscriber if page was re-navigated or a stale
+            // reconnect loop left an older socket alive. This must be a hard
+            // stop, not just a best-effort shutdown, otherwise a replacement
+            // connection can overlap with the old one for minutes.
+            if (prevSubscriber) {
+                composeLogger('tearing down previous subscriber', {
+                    generation: newGeneration,
+                    prevGeneration: window._composeDockerLoadGeneration - 1
+                }, 'user', 'debug', 'dockerload');
                 try {
-                    window._composeDockerLoad.stop();
+                    prevSubscriber.stop();
                 } catch (e) {}
+                try {
+                    if (typeof prevSubscriber.close === 'function') {
+                        prevSubscriber.close();
+                    }
+                } catch (e) {}
+                window._composeDockerLoad = null;
             }
             if (window._composeDockerLoadStaleTimer) {
                 clearInterval(window._composeDockerLoadStaleTimer);
@@ -2472,6 +2486,12 @@ $(function() {
                 reconnectTimeout: 5000
             });
             window._composeDockerLoad = composeDockerLoad;
+            window._composeDockerLoadGeneration = newGeneration;
+
+            function isCurrentComposeDockerLoad(subscriber, generation) {
+                return !!subscriber && window._composeDockerLoad === subscriber && (window._composeDockerLoadGeneration || 0) === generation;
+            }
+
             var composeDockerLoadRunning = false;
             var composeDockerLoadDropped = 0;
 
@@ -2595,6 +2615,14 @@ $(function() {
             });
 
             window.composeDockerLoadToggle = function(enable) {
+                if (!isCurrentComposeDockerLoad(composeDockerLoad, newGeneration)) {
+                    composeLogger('ignoring toggle for stale WebSocket generation', {
+                        requested: enable,
+                        generation: newGeneration,
+                        current: window._composeDockerLoadGeneration || 0
+                    }, 'user', 'debug', 'dockerload');
+                    return;
+                }
                 if (enable && !composeDockerLoadRunning) {
                     composeLogger('starting WebSocket', null, 'user', 'debug', 'dockerload');
                     composeDockerLoad.start();
@@ -2835,6 +2863,14 @@ $(function() {
             }
 
             composeDockerLoad.on('message', function(msg) {
+                if (!isCurrentComposeDockerLoad(composeDockerLoad, newGeneration)) {
+                    composeLogger('ignoring stale WebSocket message', {
+                        generation: newGeneration,
+                        current: window._composeDockerLoadGeneration || 0
+                    }, 'user', 'debug', 'dockerload');
+                    return;
+                }
+
                 var now = Date.now();
                 ingestComposeLoadPayload(msg, now);
 
@@ -2854,6 +2890,9 @@ $(function() {
             });
 
             composeDockerLoad.on('error', function(code, desc) {
+                if (!isCurrentComposeDockerLoad(composeDockerLoad, newGeneration)) {
+                    return;
+                }
                 composeLogger('WebSocket error', {
                     code: code,
                     desc: desc
