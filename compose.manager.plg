@@ -36,49 +36,12 @@
 >
 
 <CHANGES>
-###2026.08.23.2252
-- Features: enhance error handling and metadata retrieval in compose loading process
-- Features: implement client-side control for compose_info publisher and enhance WebSocket management for hidden tabs
-- Features: add additional ignored error messages for PHPStan analysis
-- Features: implement plugin-local update check for Compose Manager to enhance image update accuracy
-- Features (tests): enhance foreground operation tests for Compose Manager with modal interactions and image validation
-- Features (tests): add UI operation flow tests for Compose Manager and extract shared helpers
-- Features (notification): add composeSendNotification function for stack delete notifications
-- Features (e2e): add Playwright end-to-end tests for Compose Manager
-- Features (cache): add function to purge deleted stack caches and update UI accordingly
-- Features (settings): enhance auto-check updates functionality with mode selection and custom intervals
-- Features (settings-page): add functions to count changed settings and update UI accordingly
-- Features (settings-page): enhance global actions and settings form handling
-- Features (settings-page): enhance defaults with auto/manual verbage
-- Features (settings-page): enhance settings tab with descriptive help text and rephrase section titles
-- Features (settings-page): reorganize and enhance update checking section
-- Features (column-layout): implement shared column layout and visibility helpers
-- Bug Fixes (tests): use PATH_SEPARATOR for COMPOSE_FILE in env file to support Windows development
-- Bug Fixes (icons): resolve native Docker tab/Dashboard icons for local paths (#129)
-- Bug Fixes: add missing Playwright dependencies installation step in E2E test setup
-- Bug Fixes: ensure function definitions are wrapped in function_exists checks to prevent redeclaration errors
-- Bug Fixes: remove HTML coverage report generation from PHPUnit configuration
-- Bug Fixes: enhance image digest retrieval and add running container check in auto-update script to match manual update path Fixes #132
-- Bug Fixes: ensure new stacks create app-managed project override templates and update tests accordingly Fixes #134
-- Bug Fixes: ensure proper exit code propagation for compose commands and record operation exit status
-- Bug Fixes (nchan): optimize docker stats publishing and address shared-memory exhaustion
-- Bug Fixes: enhance stack update handling with improved reload queue management
-- Bug Fixes (tests): ensure tests remove containers each time
-- Bug Fixes (settings): remove unused referrer handling script for cleaner settings page
-- Bug Fixes (settings): add debug logging functions for settings changes and state tracking
-- Bug Fixes (stack): simplify removal logic in composeDeleteStackFolder function
-- Bug Fixes (ui): make stack deletion dynamic without full reload
-- Bug Fixes (stack): guard and harden deleteStack folder removal
-- Bug Fixes (menu): centralize header menu visibility condition
-- Bug Fixes (compose-pull): refactor ComposePullConfirmed function to use options object for parameters
-- Bug Fixes (sync-plugin-url): correct escaping in sed command for pluginURL update
-- Refactoring: remove basic output style handling
-- Refactoring (settings-page): reorganize settings and update help funcs
-- Chores: sync pluginURL+README for dev branch [skip ci]
-- Chores (columns): cleanup advanced/basic view mode references and legacy logic
-- Refactor IconTest and remove redundant tests; add ComposeListEndpointTest
+###2026.08.27.2113
+- Bug Fixes: enhance WebSocket subscriber management to prevent stale connections and messages
+- Bug Fixes: add composeResolveDockerHostIp function to retrieve Docker host IP across Unraid WebUI versions fixes #127
+- Chores: update COMPOSE_VERSION to 5.5.0
 - [PR #139](https://github.com/mstrhakr/compose_plugin/pull/139)
-- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.07.02...v2026.08.23.2252)
+- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.07.02...v2026.08.27.2113)
 </CHANGES>
 
 <!-- The 'pre-install' script. -->
