@@ -211,6 +211,11 @@ class ComposeUpdateCheck
         $header = ['Accept: ' . $accept];
         $basicUserPwd = null;
 
+        // Registry authentication: probe the manifest endpoint for auth challenges
+        // (Bearer token or Basic auth). If Bearer is required, fetch a token scoped
+        // to pull the specific repository. If Basic auth is required, save credentials
+        // for subsequent requests. Either way, add auth to the Accept header so the
+        // registry returns the actual manifest instead of a 401.
         // Bearer challenge → fetch a token scoped to repository:<repo>:pull.
         if (preg_match('@www-authenticate:\s*Bearer\s*(.*)@i', (string) $probeReply, $m)) {
             $args = [];
