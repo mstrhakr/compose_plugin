@@ -808,6 +808,12 @@ switch ($_POST['action']) {
             $cleared[] = $containerName;
         }
 
+        // Also drop the plugin-owned cache entry so the next resolve re-fetches
+        $iconUrl = $stackInfo->getIconUrl();
+        if ($iconUrl !== null) {
+            @unlink(compose_get_icon_cache_path($iconUrl));
+        }
+
         echo json_encode(['result' => 'success', 'cleared' => $cleared]);
         break;
     case 'updateAutostart':
