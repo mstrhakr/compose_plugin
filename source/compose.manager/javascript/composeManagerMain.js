@@ -115,25 +115,16 @@ function composeEscapeSelectorFragment(value) {
         if (!$checkbox.length) return;
 
         var $notice = $('#settings-default-compose-files-disabled-note');
-        if (!$notice.length) {
-            $notice = $('<div id="settings-default-compose-files-disabled-note" class="compose-status-warning" style="display:none;margin-top:8px;"></div>');
-            var $anchor = $checkbox.closest('label');
-            if ($anchor.length) {
-                $anchor.after($notice);
-            } else {
-                $checkbox.parent().append($notice);
-            }
-        }
+        var $badge = $('#settings-discovery-mode-badge');
+        var $toggle = $('#settings-discovery-mode-toggle');
 
         var manualOverrideReasons = [];
-        if (($('#settings-env-path').val() || '').trim() !== '') manualOverrideReasons.push('Env File Path');
+        if (($('#settings-env-path').val() || '').trim() !== '') manualOverrideReasons.push('External ENV File Path');
         if (($('#settings-external-compose-file').val() || '').trim() !== '') manualOverrideReasons.push('External Compose File');
         if (getExtraComposeFilesValue() !== '') manualOverrideReasons.push('Additional Compose Files');
 
-        if (manualOverrideReasons.length > 0) {
-            var reason = 'Default discovery disabled because ' + manualOverrideReasons.join(' and ')
-                + (manualOverrideReasons.length > 1 ? ' are set.' : ' is set.');
-
+        var locked = manualOverrideReasons.length > 0;
+        if (locked) {
             if ($checkbox.is(':checked')) {
                 $checkbox.prop('checked', false);
                 if (!suppressChangeTracking) {
@@ -141,10 +132,33 @@ function composeEscapeSelectorFragment(value) {
                 }
             }
             $checkbox.prop('disabled', true);
-            $notice.text(reason).show();
+            if ($notice.length) {
+                $notice.text('Locked to explicit -f flags because ' + manualOverrideReasons.join(' and ')
+                    + (manualOverrideReasons.length > 1 ? ' are set.' : ' is set.')).show();
+            }
         } else {
             $checkbox.prop('disabled', false);
-            $notice.hide();
+            if ($notice.length) $notice.hide();
+        }
+
+        var isDefault = $checkbox.is(':checked');
+        if ($badge.length) {
+            var badgeText = isDefault
+                ? 'Discovery mode: Docker Compose default'
+                : 'Discovery mode: Explicit -f flags';
+            // Preserve <code> styling for -f
+            if (isDefault) {
+                $badge.text(badgeText);
+            } else {
+                $badge.html('Discovery mode: Explicit <code>-f</code> flags');
+            }
+        }
+        if ($toggle.length) {
+            if (locked) {
+                $toggle.hide();
+            } else {
+                $toggle.text(isDefault ? 'Use explicit -f flags' : 'Use default discovery').show();
+            }
         }
     }
 
@@ -1274,6 +1288,16 @@ function initEditorModal() {
     $(document).off('change.composeSource', 'input[name="settings-compose-source"]')
         .on('change.composeSource', 'input[name="settings-compose-source"]', function() {
             setComposeSource($(this).val(), false);
+        });
+
+    // Compose File Discovery toggle button flips the (hidden) source-of-truth checkbox.
+    $(document).off('click.discoveryModeToggle', '#settings-discovery-mode-toggle')
+        .on('click.discoveryModeToggle', '#settings-discovery-mode-toggle', function(e) {
+            e.preventDefault();
+            var $checkbox = $('#settings-use-default-compose-files');
+            if ($checkbox.is(':disabled')) return;
+            $checkbox.prop('checked', !$checkbox.is(':checked')).trigger('change');
+            updateSettingsDefaultComposeDiscoveryState();
         });
 
     // Keyboard shortcuts - use namespaced event to avoid duplicates

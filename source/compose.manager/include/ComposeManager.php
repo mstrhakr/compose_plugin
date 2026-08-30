@@ -703,7 +703,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                             <div id="settings-extra-compose-candidates" style="display:none;"></div>
                             <div id="settings-extra-compose-none" class="settings-field-help" style="display:none;">No additional compose files found in the compose source folder (looking for <code>*compose*.yml</code> / <code>*compose*.yaml</code>).</div>
                             <details id="settings-extra-compose-external-wrap" style="margin-top:8px;">
-                                <summary style="cursor:pointer;">External files (advanced)</summary>
+                                <summary style="cursor:pointer;">Absolute paths (outside compose source folder)</summary>
                                 <textarea id="settings-extra-compose-external" rows="2" placeholder="One absolute path per line, e.g. /mnt/user/appdata/shared/gpu.compose.yml"></textarea>
                             </details>
                             <div class="settings-field-help">Selected files are appended as additional <code>-f</code> flags after the main compose and override files (e.g., GPU or environment overrides). Setting this disables default file discovery.</div>
@@ -716,12 +716,14 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                         </div>
 
                         <div class="settings-field">
-                            <label for="settings-use-default-compose-files">Compose File Selection</label>
-                            <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
-                                <input type="checkbox" id="settings-use-default-compose-files">
-                                Use Docker Compose default file discovery (no explicit <code>-f</code> flags)
-                            </label>
-                            <div class="settings-field-help">Enable this for projects that rely on auto-loaded <code>compose.override.*</code> and/or <code>COMPOSE_FILE</code> defined in <code>.env</code>. Leave disabled to keep explicit file selection behavior.</div>
+                            <label>Compose File Discovery</label>
+                            <div id="settings-discovery-mode-row" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                                <span id="settings-discovery-mode-badge" class="compose-status-info" style="padding:4px 10px;border:1px solid var(--dynamix-box-inner-div-border-color);border-radius:4px;font-size:0.9em;">Discovery mode: Explicit <code>-f</code> flags</span>
+                                <button type="button" id="settings-discovery-mode-toggle" class="btn btn-sm" style="padding:2px 12px;font-size:0.9em;">Use default discovery</button>
+                            </div>
+                            <div id="settings-default-compose-files-disabled-note" class="compose-status-warning" style="display:none;margin-top:8px;font-size:0.9em;"></div>
+                            <div class="settings-field-help"><strong>Default discovery</strong> lets Docker Compose auto-load <code>compose.override.*</code> and honor <code>COMPOSE_FILE</code> in <code>.env</code>. <strong>Explicit <code>-f</code> flags</strong> is used when the plugin passes each compose file directly. Overrides (external compose, additional files, external env path) require explicit mode.</div>
+                            <input type="checkbox" id="settings-use-default-compose-files" style="position:absolute;left:-9999px;" tabindex="-1" aria-hidden="true">
                         </div>
                     </div>
 
