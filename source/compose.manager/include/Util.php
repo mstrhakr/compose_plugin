@@ -188,6 +188,7 @@ if (!function_exists('compose_fetch_icon_to_cache')) {
         $cachePath = compose_get_icon_cache_path($source);
 
         if (!$forceRefresh && file_exists($cachePath)) {
+            composeLogger('Icon cache hit', ['source' => $source, 'cache' => $cachePath], 'system', 'debug', 'icon-cache');
             return $cachePath;
         }
 
@@ -282,10 +283,15 @@ if (!function_exists('compose_fetch_icon_to_cache')) {
 
         $pngBytes = compose_icon_to_png_bytes($rawBytes, $mimeHint);
         if ($pngBytes === null) {
+            composeLogger('Icon conversion returned null; not caching', ['source' => $source, 'mime' => $mimeHint], 'system', 'debug', 'icon-cache');
             return '';
         }
 
-        return file_put_contents($cachePath, $pngBytes) !== false ? $cachePath : '';
+        $written = file_put_contents($cachePath, $pngBytes) !== false;
+        if ($written) {
+            composeLogger('Icon cached', ['source' => $source, 'cache' => $cachePath, 'bytes' => strlen($pngBytes)], 'system', 'debug', 'icon-cache');
+        }
+        return $written ? $cachePath : '';
     }
 }
 
@@ -314,7 +320,9 @@ if (!function_exists('compose_seed_docker_manager_icon')) {
             if (!is_dir($dir)) {
                 @mkdir($dir, 0755, true);
             }
-            @copy($cachedPngPath, $dest);
+            if (@copy($cachedPngPath, $dest)) {
+                composeLogger('Seeded Docker Manager icon cache', ['container' => $containerName, 'dest' => $dest], 'system', 'debug', 'icon-cache');
+            }
         }
     }
 }

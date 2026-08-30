@@ -811,7 +811,10 @@ switch ($_POST['action']) {
         // Also drop the plugin-owned cache entry so the next resolve re-fetches
         $iconUrl = $stackInfo->getIconUrl();
         if ($iconUrl !== null) {
-            @unlink(compose_get_icon_cache_path($iconUrl));
+            $pluginCachePath = compose_get_icon_cache_path($iconUrl);
+            if (@unlink($pluginCachePath)) {
+                composeLogger('Cleared plugin icon cache', ['project' => $script, 'cache' => $pluginCachePath], 'system', 'debug', 'icon-cache');
+            }
         }
 
         echo json_encode(['result' => 'success', 'cleared' => $cleared]);
