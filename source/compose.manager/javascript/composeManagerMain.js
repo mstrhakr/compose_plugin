@@ -1602,39 +1602,75 @@ function updateEffectiveCommandDirtyIndicator() {
 function normalizeComposeSourceMode(mode) {
     if (mode === 'folder' || mode === 'file') return mode;
     return 'project';
-}// Apply a Compose Source selection: swap visible picker and clear the other input.
-// suppressChangeTracking=true when reflecting server state during load / reset.
-function setComposeSource(mode, suppressChangeTracking) {
-    mode = normalizeComposeSourceMode(mode);
-    editorModal.composeSourceMode = mode;
+}
 
-    $('input[name="settings-compose-source"][value="' + mode + '"]').prop('checked', true);
-    $('#settings-external-compose-path-wrap').toggle(mode === 'folder');
-    $('#settings-external-compose-file-wrap').toggle(mode === 'file');
+// Wiring for each surface that owns a Compose Source radio group.
+// Keeps setComposeSourceForScope decoupled from the concrete DOM IDs.
+var COMPOSE_SOURCE_SCOPE_CONFIGS = {
+    settings: {
+        radioName: 'settings-compose-source',
+        pathInputId: 'settings-external-compose-path',
+        fileInputId: 'settings-external-compose-file',
+        pathWrapId: 'settings-external-compose-path-wrap',
+        fileWrapId: 'settings-external-compose-file-wrap',
+        infoBannerId: 'settings-external-compose-info',
+        invalidWarningId: 'settings-invalid-indirect-warning',
+        onFileClear: function() { clearSettingsFieldError('external-compose-file'); }
+    },
+    'add-stack': {
+        radioName: 'compose-stack-compose-source',
+        pathInputId: 'compose-stack-external-path',
+        fileInputId: 'compose-stack-external-file',
+        pathWrapId: 'compose-stack-external-path-wrap',
+        fileWrapId: 'compose-stack-external-file-wrap',
+        infoBannerId: null,
+        invalidWarningId: null,
+        onFileClear: null
+    }
+};
+
+// Apply a Compose Source selection: swap visible picker and clear the other input.
+// suppressChangeTracking=true when reflecting server state during load / reset.
+function setComposeSourceForScope(scope, mode, suppressChangeTracking) {
+    var cfg = COMPOSE_SOURCE_SCOPE_CONFIGS[scope];
+    if (!cfg) return;
+    mode = normalizeComposeSourceMode(mode);
+    if (scope === 'settings') {
+        editorModal.composeSourceMode = mode;
+    }
+
+    $('input[name="' + cfg.radioName + '"][value="' + mode + '"]').prop('checked', true);
+    $('#' + cfg.pathWrapId).toggle(mode === 'folder');
+    $('#' + cfg.fileWrapId).toggle(mode === 'file');
 
     // Clear whichever input isn't the selected mode so the two states stay
     // mutually exclusive by construction (no save-time both-set error).
     if (mode !== 'folder') {
-        var $p = $('#settings-external-compose-path');
+        var $p = $('#' + cfg.pathInputId);
         if ($p.val() !== '') {
             $p.val('');
             if (!suppressChangeTracking) $p.trigger('input').trigger('change');
         }
     }
     if (mode !== 'file') {
-        var $f = $('#settings-external-compose-file');
+        var $f = $('#' + cfg.fileInputId);
         if ($f.val() !== '') {
             $f.val('');
             if (!suppressChangeTracking) $f.trigger('input').trigger('change');
         }
-        clearSettingsFieldError('external-compose-file');
+        if (typeof cfg.onFileClear === 'function') cfg.onFileClear();
     }
 
     // Info/invalid banners only make sense for external modes.
     if (mode === 'project') {
-        $('#settings-external-compose-info').hide();
-        $('#settings-invalid-indirect-warning').hide();
+        if (cfg.infoBannerId) $('#' + cfg.infoBannerId).hide();
+        if (cfg.invalidWarningId) $('#' + cfg.invalidWarningId).hide();
     }
+}
+
+// Legacy shim: existing editor call sites use setComposeSource() unqualified.
+function setComposeSource(mode, suppressChangeTracking) {
+    setComposeSourceForScope('settings', mode, suppressChangeTracking);
 }
 
 // Setting fieldIds that live under the Sources tab; all others belong to Settings.
@@ -3284,15 +3320,32 @@ function addStack() {
                         <div class="settings-section-title"><i class="fa fa-files-o"></i> Compose Sources &amp; Files</div>
 
                         <div class="settings-field">
-                            <label for="compose-stack-external-path">External Compose Path</label>
-                            <input type="text" id="compose-stack-external-path" placeholder="Default (project folder in compose root)" data-pickroot="/" data-picktop="/mnt" data-pickfolders="true" data-pickcloseonfile="true">
-                            <div class="settings-field-help">Path to an external folder containing your compose file(s). Leave empty to store files inside the plugin's project folder.</div>
-                        </div>
+                            <label>Compose Source</label>
+                            <div class="settings-field-help" style="margin-bottom:8px;">Where will this stack's compose file live?</div>
+                            <div id="compose-stack-compose-source-radios" style="display:flex;flex-direction:column;gap:6px;">
+                                <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+                                    <input type="radio" name="compose-stack-compose-source" value="project" checked>
+                                    <span>Project folder <span class="compose-text-muted" style="font-size:0.9em;">(default — plugin creates a folder for you in the compose root)</span></span>
+                                </label>
+                                <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+                                    <input type="radio" name="compose-stack-compose-source" value="folder">
+                                    <span>External folder <span class="compose-text-muted" style="font-size:0.9em;">(use an existing directory that contains a compose file)</span></span>
+                                </label>
+                                <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+                                    <input type="radio" name="compose-stack-compose-source" value="file">
+                                    <span>Specific compose file <span class="compose-text-muted" style="font-size:0.9em;">(point at one exact <code>.yml</code>/<code>.yaml</code>)</span></span>
+                                </label>
+                            </div>
 
-                        <div class="settings-field">
-                            <label for="compose-stack-external-file">External Compose File</label>
-                            <input type="text" id="compose-stack-external-file" placeholder="Optional specific compose file path" data-pickroot="/" data-picktop="/mnt" data-pickcloseonfile="true" data-pickfilter="yml,yaml">
-                            <div class="settings-field-help">Path to a specific external compose file. Leave empty to use folder mode or local project files.</div>
+                            <div id="compose-stack-external-path-wrap" class="settings-compose-source-input" style="margin-top:10px;display:none;">
+                                <input type="text" id="compose-stack-external-path" placeholder="/mnt/user/appdata/myapp/" data-pickroot="/" data-picktop="/mnt" data-pickfolders="true" data-pickcloseonfile="true">
+                                <div class="settings-field-help">Folder must exist and contain a file matching <code>*compose*.yml</code>.</div>
+                            </div>
+
+                            <div id="compose-stack-external-file-wrap" class="settings-compose-source-input" style="margin-top:10px;display:none;">
+                                <input type="text" id="compose-stack-external-file" placeholder="/mnt/user/appdata/myapp/custom.compose.yml" data-pickroot="/" data-picktop="/mnt" data-pickcloseonfile="true" data-pickfilter="yml,yaml">
+                                <div class="settings-field-help">Must be a <code>.yml</code>/<code>.yaml</code> file under <code>/mnt/</code> or <code>/boot/config/</code>.</div>
+                            </div>
                         </div>
 
                         <div class="settings-field">
@@ -3308,7 +3361,7 @@ function addStack() {
                                 Use Docker Compose default file discovery (no explicit <code>-f</code> flags)
                             </label>
                             <div id="compose-stack-default-compose-files-disabled-note" class="compose-status-warning" style="display:none;margin-top:8px;font-size:0.9em;"></div>
-                            <div class="settings-field-help">Enable for projects that rely on auto-loaded <code>compose.override.*</code> and/or <code>COMPOSE_FILE</code> in <code>.env</code>. Overrides (External Compose File, ENV path) force explicit mode.</div>
+                            <div class="settings-field-help">Enable for projects that rely on auto-loaded <code>compose.override.*</code> and/or <code>COMPOSE_FILE</code> in <code>.env</code>. Overrides (Specific compose file, ENV path) force explicit mode.</div>
                         </div>
                     </div>
 
@@ -3364,6 +3417,12 @@ function addStack() {
         updateAddStackDefaultComposeDiscoveryState();
     });
 
+    // Progressive disclosure between the three Compose Source modes.
+    $('input[name="compose-stack-compose-source"]').off('change.addStackComposeSource').on('change.addStackComposeSource', function() {
+        setComposeSourceForScope('add-stack', $(this).val(), false);
+    });
+    setComposeSourceForScope('add-stack', 'project', true);
+
     window.closeComposeStackModal = function() {
         var overlay = document.getElementById('compose-stack-modal-overlay');
         if (overlay) {
@@ -3385,11 +3444,8 @@ function addStack() {
             errorDiv.style.display = "block";
             return;
         }
-        if (externalPath && externalFile) {
-            errorDiv.textContent = "Set either External Compose Path or External Compose File, not both.";
-            errorDiv.style.display = "block";
-            return;
-        }
+        // Mutual exclusion is enforced structurally by the Compose Source radio
+        // group. Backend still guards defensively.
         errorDiv.style.display = "none";
         // Disable all buttons in the modal
         var modal = document.getElementById('compose-stack-modal-overlay');
