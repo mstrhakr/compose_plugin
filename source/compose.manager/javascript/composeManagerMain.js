@@ -1270,6 +1270,12 @@ function initEditorModal() {
         }
     });
 
+    // Compose Source radio — progressive disclosure between project / folder / file.
+    $(document).off('change.composeSource', 'input[name="settings-compose-source"]')
+        .on('change.composeSource', 'input[name="settings-compose-source"]', function() {
+            setComposeSource($(this).val(), false);
+        });
+
     // Keyboard shortcuts - use namespaced event to avoid duplicates
     $(document).off('keydown.editorModal').on('keydown.editorModal', function(e) {
         if ($('#editor-modal-overlay').hasClass('active')) {
@@ -1476,6 +1482,47 @@ function updateEffectiveOverridePathReadout() {
     }
     $('#settings-effective-override-path-value').text(effective);
     $wrap.show();
+}
+
+// Compose Source radio — normalize legacy modes to the three supported values.
+function normalizeComposeSourceMode(mode) {
+    if (mode === 'folder' || mode === 'file') return mode;
+    return 'project';
+}
+
+// Apply a Compose Source selection: swap visible picker and clear the other input.
+// suppressChangeTracking=true when reflecting server state during load / reset.
+function setComposeSource(mode, suppressChangeTracking) {
+    mode = normalizeComposeSourceMode(mode);
+    editorModal.composeSourceMode = mode;
+
+    $('input[name="settings-compose-source"][value="' + mode + '"]').prop('checked', true);
+    $('#settings-external-compose-path-wrap').toggle(mode === 'folder');
+    $('#settings-external-compose-file-wrap').toggle(mode === 'file');
+
+    // Clear whichever input isn't the selected mode so the two states stay
+    // mutually exclusive by construction (no save-time both-set error).
+    if (mode !== 'folder') {
+        var $p = $('#settings-external-compose-path');
+        if ($p.val() !== '') {
+            $p.val('');
+            if (!suppressChangeTracking) $p.trigger('input').trigger('change');
+        }
+    }
+    if (mode !== 'file') {
+        var $f = $('#settings-external-compose-file');
+        if ($f.val() !== '') {
+            $f.val('');
+            if (!suppressChangeTracking) $f.trigger('input').trigger('change');
+        }
+        $('#settings-external-compose-file-warning').hide();
+    }
+
+    // Info/invalid banners only make sense for external modes.
+    if (mode === 'project') {
+        $('#settings-external-compose-info').hide();
+        $('#settings-invalid-indirect-warning').hide();
+    }
 }
 
 // Update the modified indicator on tabs
@@ -5666,12 +5713,14 @@ function loadSettingsData(project, projectName) {
                     }, 'user', 'debug', 'stack-settings');
                     // Pre-populate with the broken path so the user can fix it
                     if (indirectMode === 'file') {
+                        setComposeSource('file', true);
                         $('#settings-external-compose-path').val('');
                         $('#settings-external-compose-file').val(invalidIndirectPath);
                         editorModal.originalSettings['external-compose-path'] = '';
                         editorModal.originalSettings['external-compose-file'] = '';
                         editorModal.modifiedSettings.add('external-compose-file');
                     } else {
+                        setComposeSource('folder', true);
                         $('#settings-external-compose-path').val(invalidIndirectPath);
                         $('#settings-external-compose-file').val('');
                         editorModal.originalSettings['external-compose-path'] = '';
@@ -5689,6 +5738,8 @@ function loadSettingsData(project, projectName) {
                             externalComposeFilePath: externalComposeFilePath
                         }, 'user', 'debug', 'stack-settings');
                     }
+                    var loadedMode = externalComposeFilePath ? 'file' : (externalComposePath ? 'folder' : 'project');
+                    setComposeSource(loadedMode, true);
                     $('#settings-external-compose-path').val(externalComposePath);
                     $('#settings-external-compose-file').val(externalComposeFilePath);
                     editorModal.originalSettings['external-compose-path'] = externalComposePath;
@@ -5774,6 +5825,7 @@ function loadSettingsData(project, projectName) {
         $('#settings-available-profiles').hide();
         updateEditorFileInfo();
         updateEffectiveOverridePathReadout();
+        setComposeSource('project', true);
         $('#settings-external-compose-info').hide();
         $('#settings-invalid-indirect-warning').hide();
     });
@@ -6610,14 +6662,6 @@ function saveSettings(saveErrors) {
         var defaultProfile = $('#settings-default-profile').val();
         var externalComposePath = $('#settings-external-compose-path').val();
         var externalComposeFilePath = $('#settings-external-compose-file').val();
-        if (externalComposePath && externalComposeFilePath) {
-            swal({
-                type: 'error',
-                title: 'Save Failed',
-                text: 'Set either External Compose Path or External Compose File, not both.'
-            });
-            return $.Deferred().resolve(false).promise();
-        }
         var stackPath = (editorModal.filePaths.stackMeta || '').replace(/\/$/, '');
         if (externalComposeFilePath && stackPath && externalComposeFilePath.startsWith(stackPath + '/')) {
             swal({
@@ -7044,6 +7088,7 @@ function doCloseEditorModal() {
     $('#settings-invalid-indirect-warning').hide();
     $('#settings-effective-override-path').hide();
     $('#settings-effective-override-path-value').text('');
+    setComposeSource('project', true);
 
     // Hide any open file-tree pickers (so they don't float outside the modal)
     $('.fileTree').slideUp('fast');

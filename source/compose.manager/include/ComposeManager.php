@@ -662,21 +662,40 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                         <div class="settings-section-title"><i class="fa fa-files-o"></i> Compose Sources &amp; Files</div>
 
                         <div class="settings-field">
-                            <label for="settings-external-compose-path">External Compose Path</label>
-                            <input type="text" id="settings-external-compose-path" placeholder="Default (uses compose file in project folder)" data-pickroot="/" data-picktop="/mnt" data-pickfolders="true" data-pickcloseonfile="true">
-                            <div class="settings-field-help">Path to an external folder containing your compose file(s) (e.g., /mnt/user/appdata/myapp/). The folder must contain a file matching *compose*.yml. Leave empty to use the compose file stored in the project folder.</div>
+                            <label>Compose Source</label>
+                            <div class="settings-field-help" style="margin-bottom:8px;">Where does this stack's compose file live?</div>
+                            <div id="settings-compose-source-radios" style="display:flex;flex-direction:column;gap:6px;">
+                                <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+                                    <input type="radio" name="settings-compose-source" value="project" checked>
+                                    <span>Project folder <span class="compose-text-muted" style="font-size:0.9em;">(default — file lives in the stack's project directory)</span></span>
+                                </label>
+                                <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+                                    <input type="radio" name="settings-compose-source" value="folder">
+                                    <span>External folder <span class="compose-text-muted" style="font-size:0.9em;">(choose a directory containing a compose file)</span></span>
+                                </label>
+                                <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+                                    <input type="radio" name="settings-compose-source" value="file">
+                                    <span>Specific compose file <span class="compose-text-muted" style="font-size:0.9em;">(point at one exact <code>.yml</code>/<code>.yaml</code>)</span></span>
+                                </label>
+                            </div>
+
+                            <div id="settings-external-compose-path-wrap" class="settings-compose-source-input" style="margin-top:10px;display:none;">
+                                <input type="text" id="settings-external-compose-path" placeholder="/mnt/user/appdata/myapp/" data-pickroot="/" data-picktop="/mnt" data-pickfolders="true" data-pickcloseonfile="true">
+                                <div class="settings-field-help">Folder must contain a file matching <code>*compose*.yml</code>. Leave the radio on Project folder to clear this.</div>
+                            </div>
+
+                            <div id="settings-external-compose-file-wrap" class="settings-compose-source-input" style="margin-top:10px;display:none;">
+                                <input type="text" id="settings-external-compose-file" placeholder="/mnt/user/appdata/myapp/custom.compose.yml" data-pickroot="/" data-picktop="/mnt" data-pickcloseonfile="true" data-pickfilter="yml,yaml">
+                                <div class="settings-field-help">Path must be outside this stack's project folder.</div>
+                            </div>
+
                             <div id="settings-invalid-indirect-warning" class="compose-status-danger" style="margin-top:8px;display:none;padding:8px 12px;border-radius:4px;">
-                                <span class="compose-status-danger" style="font-size:0.9em;"><i class="fa fa-exclamation-triangle"></i> <strong>Invalid external path.</strong> The path shown above is broken or the directory was not found. Correct the path and save to restore the stack, or clear it to use a local compose file instead.</span>
+                                <span class="compose-status-danger" style="font-size:0.9em;"><i class="fa fa-exclamation-triangle"></i> <strong>Invalid external path.</strong> The path shown above is broken or the target was not found. Correct the path and save to restore the stack, or switch back to Project folder.</span>
                             </div>
                             <div id="settings-external-compose-info" style="margin-top:8px;display:none;">
-                                <span class="compose-status-warning" style="font-size:0.9em;"><i class="fa fa-info-circle"></i> This stack uses an external compose file. The Compose editor tab will load the file from the external path.</span>
+                                <span class="compose-status-warning" style="font-size:0.9em;"><i class="fa fa-info-circle"></i> This stack uses an external compose source. The Compose editor tab loads and saves from that location.</span>
                             </div>
-                        </div>
-
-                        <div class="settings-field">
-                            <label for="settings-external-compose-file">External Compose File</label>
-                            <input type="text" id="settings-external-compose-file" placeholder="Optional specific compose file path" data-pickroot="/" data-picktop="/mnt" data-pickcloseonfile="true" data-pickfilter="yml,yaml">
-                            <div class="settings-field-help">Path to a specific external compose file (e.g., /mnt/user/appdata/myapp/custom.compose.yml). Leave empty to use folder mode or local project files.</div>
+                            <div id="settings-external-compose-file-warning" class="compose-status-danger" style="margin-top:6px;display:none;font-size:0.9em;"></div>
                         </div>
 
                         <div class="settings-field">
