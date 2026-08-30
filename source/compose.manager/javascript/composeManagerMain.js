@@ -87,19 +87,19 @@ function composeEscapeSelectorFragment(value) {
         var $notice = $('#compose-stack-default-compose-files-disabled-note');
         if (!$checkbox.length) return;
 
-        var hasIndirectFile = ($('#compose-stack-indirect-file').val() || '').trim() !== '';
+        var hasExternalFile = ($('#compose-stack-external-file').val() || '').trim() !== '';
         var hasEnvPath = ($('#compose-stack-env-path').val() || '').trim() !== '';
-        if (hasIndirectFile || hasEnvPath) {
+        if (hasExternalFile || hasEnvPath) {
             if ($checkbox.is(':checked')) {
                 $checkbox.prop('checked', false);
             }
             $checkbox.prop('disabled', true);
             if ($notice.length) {
-                var reason = hasIndirectFile && hasEnvPath
-                    ? 'Default discovery disabled because Indirect Compose File and Env File Path are set.'
-                    : (hasIndirectFile
-                        ? 'Default discovery disabled because Indirect Compose File is set.'
-                        : 'Default discovery disabled because Env File Path is set.');
+                var reason = hasExternalFile && hasEnvPath
+                    ? 'Default discovery disabled because External Compose File and External ENV File Path are set.'
+                    : (hasExternalFile
+                        ? 'Default discovery disabled because External Compose File is set.'
+                        : 'Default discovery disabled because External ENV File Path is set.');
                 $notice.text(reason).show();
             }
         } else {
@@ -3256,43 +3256,74 @@ function addStack() {
     // Show custom modal for stack creation
     var modalHtml = `
         <div id="compose-stack-modal-overlay" class="compose-modal-overlay" style="display:flex;" onclick="if (event.target === this) closeComposeStackModal();">
-            <div class="compose-modal" role="dialog" aria-modal="true" aria-labelledby="compose-stack-modal-title" aria-describedby="compose-stack-modal-desc" tabindex="-1" style="max-width:560px;">
+            <div class="compose-modal" role="dialog" aria-modal="true" aria-labelledby="compose-stack-modal-title" aria-describedby="compose-stack-modal-desc" tabindex="-1" style="max-width:680px;">
                 <div class="compose-modal-header">
                     <span id="compose-stack-modal-title">Add New Compose Stack</span>
                     <button type="button" class="editor-btn editor-btn-cancel" onclick="closeComposeStackModal()" aria-label="Close modal"><i class="fa fa-times"></i></button>
                 </div>
                 <div class="compose-modal-body">
-                    <div style="font-weight:bold;margin-bottom:8px;">Stack Name</div>
-                    <input type="text" id="compose-stack-name" placeholder="Stack Name" autofocus>
-                    <div id="compose-stack-modal-desc" style="font-weight:bold;margin-bottom:8px;">Description (optional)</div>
-                    <input type="text" id="compose-stack-desc" placeholder="Description">
-                    <div id="compose-stack-modal-error" class="compose-status-danger" style="margin-bottom:8px;display:none;"></div>
-                
-                    <details>
-                        <summary>Advanced Options</summary></br>
-                        <div style="font-weight:bold;margin-bottom:8px;">External ENV File Path</div>
-                        <input type="text" id="compose-stack-env-path" placeholder="Default (.env in project or indirect folder)" data-pickroot="/" data-picktop="/mnt" data-pickcloseonfile="true">
+                    <div id="compose-stack-modal-error" class="compose-status-danger" style="margin-bottom:12px;display:none;"></div>
 
-                        <div style="font-weight:bold;margin:14px 0 8px;">Indirect Path</div>
-                        <input type="text" id="compose-stack-indirect" placeholder="/mnt/user/compose/stackFolder" data-pickroot="/" data-picktop="/mnt" data-pickfolders="true" data-pickcloseonfile="true">
+                    <div class="settings-section">
+                        <div class="settings-section-title"><i class="fa fa-info-circle"></i> Stack Identity</div>
 
-                        <div style="font-weight:bold;margin:10px 0 8px;">Indirect Compose File</div>
-                        <input type="text" id="compose-stack-indirect-file" placeholder="/mnt/user/compose/stackFolder/custom.compose.yml" data-pickroot="/" data-picktop="/mnt" data-pickcloseonfile="true" data-pickfilter="yml,yaml">
+                        <div class="settings-field">
+                            <label for="compose-stack-name">Stack Name</label>
+                            <input type="text" id="compose-stack-name" placeholder="e.g. My Compose Stack" autofocus>
+                            <div class="settings-field-help">Display name shown in the UI.</div>
+                        </div>
 
-                        <div style="margin-top:14px;font-weight:bold;margin-bottom:8px;">Compose File Selection</div>
-                        <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
-                            <input type="checkbox" id="compose-stack-use-default-compose-files">
-                            Use Docker Compose default file discovery (no explicit -f flags)
-                        </label>
-                        <div id="compose-stack-default-compose-files-disabled-note" class="compose-status-warning" style="display:none;margin-top:8px;"></div>
+                        <div class="settings-field">
+                            <label for="compose-stack-desc" id="compose-stack-modal-desc">Description</label>
+                            <input type="text" id="compose-stack-desc" placeholder="Optional short description">
+                            <div class="settings-field-help">Brief description of what this stack does.</div>
+                        </div>
+                    </div>
 
-                        <div style="margin-top:14px;font-weight:bold;margin-bottom:8px;">Override File Management</div>
-                        <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
-                            <input type="checkbox" id="compose-stack-override-management-automatic" checked>
-                            Automatic (disable for Manual/raw override mode)
-                        </label>
-                    </details>
-                
+                    <div class="settings-section">
+                        <div class="settings-section-title"><i class="fa fa-files-o"></i> Compose Sources &amp; Files</div>
+
+                        <div class="settings-field">
+                            <label for="compose-stack-external-path">External Compose Path</label>
+                            <input type="text" id="compose-stack-external-path" placeholder="Default (project folder in compose root)" data-pickroot="/" data-picktop="/mnt" data-pickfolders="true" data-pickcloseonfile="true">
+                            <div class="settings-field-help">Path to an external folder containing your compose file(s). Leave empty to store files inside the plugin's project folder.</div>
+                        </div>
+
+                        <div class="settings-field">
+                            <label for="compose-stack-external-file">External Compose File</label>
+                            <input type="text" id="compose-stack-external-file" placeholder="Optional specific compose file path" data-pickroot="/" data-picktop="/mnt" data-pickcloseonfile="true" data-pickfilter="yml,yaml">
+                            <div class="settings-field-help">Path to a specific external compose file. Leave empty to use folder mode or local project files.</div>
+                        </div>
+
+                        <div class="settings-field">
+                            <label for="compose-stack-env-path">External ENV File Path</label>
+                            <input type="text" id="compose-stack-env-path" placeholder="Default (.env in compose source folder)" data-pickroot="/" data-picktop="/mnt" data-pickcloseonfile="true">
+                            <div class="settings-field-help">Path to an external .env file. Leave empty to use the default .env file in the compose source folder.</div>
+                        </div>
+
+                        <div class="settings-field">
+                            <label for="compose-stack-use-default-compose-files">Compose File Discovery</label>
+                            <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+                                <input type="checkbox" id="compose-stack-use-default-compose-files">
+                                Use Docker Compose default file discovery (no explicit <code>-f</code> flags)
+                            </label>
+                            <div id="compose-stack-default-compose-files-disabled-note" class="compose-status-warning" style="display:none;margin-top:8px;font-size:0.9em;"></div>
+                            <div class="settings-field-help">Enable for projects that rely on auto-loaded <code>compose.override.*</code> and/or <code>COMPOSE_FILE</code> in <code>.env</code>. Overrides (External Compose File, ENV path) force explicit mode.</div>
+                        </div>
+                    </div>
+
+                    <div class="settings-section">
+                        <div class="settings-section-title"><i class="fa fa-tags"></i> Labels &amp; Overrides</div>
+
+                        <div class="settings-field">
+                            <label for="compose-stack-override-management-automatic">Override File Management</label>
+                            <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+                                <input type="checkbox" id="compose-stack-override-management-automatic" checked>
+                                Automatic — plugin manages <code>compose.override.yaml</code> and the Labels tab shows the form editor
+                            </label>
+                            <div class="settings-field-help">Disable for Manual mode: you manage the override file directly and the Labels tab opens the raw YAML editor.</div>
+                        </div>
+                    </div>
                 </div>
                 <div class="compose-modal-footer">
                     <button class="editor-btn editor-btn-cancel" onclick="closeComposeStackModal()">Cancel</button>
@@ -3321,7 +3352,7 @@ function addStack() {
 
     // The add-stack modal is created dynamically, so attach the picker after insertion.
     if ($.fn.fileTreeAttach) {
-        var $indirectInputs = $('#compose-stack-indirect, #compose-stack-indirect-file, #compose-stack-env-path');
+        var $indirectInputs = $('#compose-stack-external-path, #compose-stack-external-file, #compose-stack-env-path');
         composeBindFileTreeInputs($indirectInputs, {
             zIndex: 100010,
             minWidth: 320,
@@ -3329,7 +3360,7 @@ function addStack() {
         });
     }
 
-    $('#compose-stack-indirect, #compose-stack-indirect-file, #compose-stack-env-path').off('input.defaultComposeDiscovery').on('input.defaultComposeDiscovery', function() {
+    $('#compose-stack-external-path, #compose-stack-external-file, #compose-stack-env-path').off('input.defaultComposeDiscovery').on('input.defaultComposeDiscovery', function() {
         updateAddStackDefaultComposeDiscoveryState();
     });
 
@@ -3343,8 +3374,8 @@ function addStack() {
     window.submitComposeStackModal = function() {
         var name = document.getElementById('compose-stack-name').value.trim();
         var desc = document.getElementById('compose-stack-desc').value.trim();
-        var indirect = document.getElementById('compose-stack-indirect').value.trim();
-        var indirectFile = document.getElementById('compose-stack-indirect-file').value.trim();
+        var externalPath = document.getElementById('compose-stack-external-path').value.trim();
+        var externalFile = document.getElementById('compose-stack-external-file').value.trim();
         var envPath = document.getElementById('compose-stack-env-path').value.trim();
         var useDefaultComposeFiles = document.getElementById('compose-stack-use-default-compose-files').checked ? 'true' : 'false';
         var overrideManagementAutomatic = document.getElementById('compose-stack-override-management-automatic').checked ? 'true' : 'false';
@@ -3354,8 +3385,8 @@ function addStack() {
             errorDiv.style.display = "block";
             return;
         }
-        if (indirect && indirectFile) {
-            errorDiv.textContent = "Set either Indirect Path or Indirect Compose File, not both.";
+        if (externalPath && externalFile) {
+            errorDiv.textContent = "Set either External Compose Path or External Compose File, not both.";
             errorDiv.style.display = "block";
             return;
         }
@@ -3373,8 +3404,8 @@ function addStack() {
                 action: 'addStack',
                 stackName: name,
                 stackDesc: desc,
-                stackPath: indirect,
-                stackFilePath: indirectFile,
+                stackPath: externalPath,
+                stackFilePath: externalFile,
                 envPath: envPath,
                 useDefaultComposeFiles: useDefaultComposeFiles,
                 overrideManagementAutomatic: overrideManagementAutomatic
