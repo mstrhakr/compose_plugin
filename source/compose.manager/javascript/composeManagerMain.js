@@ -83,84 +83,90 @@ function composeEscapeSelectorFragment(value) {
     return normalized.replace(/([!"#$%&'()*+,./:;<=>?@[\\\]^`{|}~])/g, '\\$1');
 }
     function updateAddStackDefaultComposeDiscoveryState() {
-        var $checkbox = $('#compose-stack-use-default-compose-files');
-        var $notice = $('#compose-stack-default-compose-files-disabled-note');
-        if (!$checkbox.length) return;
-
-        var hasExternalFile = ($('#compose-stack-external-file').val() || '').trim() !== '';
-        var hasEnvPath = ($('#compose-stack-env-path').val() || '').trim() !== '';
-        if (hasExternalFile || hasEnvPath) {
-            if ($checkbox.is(':checked')) {
-                $checkbox.prop('checked', false);
-            }
-            $checkbox.prop('disabled', true);
-            if ($notice.length) {
-                var reason = hasExternalFile && hasEnvPath
-                    ? 'Default discovery disabled because External Compose File and External ENV File Path are set.'
-                    : (hasExternalFile
-                        ? 'Default discovery disabled because External Compose File is set.'
-                        : 'Default discovery disabled because External ENV File Path is set.');
-                $notice.text(reason).show();
-            }
-        } else {
-            $checkbox.prop('disabled', false);
-            if ($notice.length) {
-                $notice.hide();
-            }
-        }
+        updateDiscoveryModeUI('add-stack', false);
     }
 
     function updateSettingsDefaultComposeDiscoveryState(suppressChangeTracking) {
-        var $checkbox = $('#settings-use-default-compose-files');
-        if (!$checkbox.length) return;
+        updateDiscoveryModeUI('settings', suppressChangeTracking);
+    }
 
-        var $notice = $('#settings-default-compose-files-disabled-note');
-        var $badge = $('#settings-discovery-mode-badge');
-        var $toggle = $('#settings-discovery-mode-toggle');
-
-        var manualOverrideReasons = [];
-        if (($('#settings-env-path').val() || '').trim() !== '') manualOverrideReasons.push('External ENV File Path');
-        if (($('#settings-external-compose-file').val() || '').trim() !== '') manualOverrideReasons.push('External Compose File');
-        if (getExtraComposeFilesValue() !== '') manualOverrideReasons.push('Additional Compose Files');
-
-        var locked = manualOverrideReasons.length > 0;
-        if (locked) {
-            if ($checkbox.is(':checked')) {
-                $checkbox.prop('checked', false);
-                if (!suppressChangeTracking) {
-                    $checkbox.trigger('change');
-                }
-            }
-            $checkbox.prop('disabled', true);
-            if ($notice.length) {
-                $notice.text('Locked to explicit -f flags because ' + manualOverrideReasons.join(' and ')
-                    + (manualOverrideReasons.length > 1 ? ' are set.' : ' is set.')).show();
-            }
-        } else {
-            $checkbox.prop('disabled', false);
-            if ($notice.length) $notice.hide();
+// Wiring for each surface that owns a Compose File Discovery badge+toggle.
+var DISCOVERY_MODE_SCOPE_CONFIGS = {
+    settings: {
+        checkboxId: 'settings-use-default-compose-files',
+        badgeId: 'settings-discovery-mode-badge',
+        toggleId: 'settings-discovery-mode-toggle',
+        noticeId: 'settings-default-compose-files-disabled-note',
+        getManualOverrideReasons: function() {
+            var reasons = [];
+            if (($('#settings-env-path').val() || '').trim() !== '') reasons.push('External ENV File Path');
+            if (($('#settings-external-compose-file').val() || '').trim() !== '') reasons.push('External Compose File');
+            if (getExtraComposeFilesValue() !== '') reasons.push('Additional Compose Files');
+            return reasons;
         }
-
-        var isDefault = $checkbox.is(':checked');
-        if ($badge.length) {
-            var badgeText = isDefault
-                ? 'Discovery mode: Docker Compose default'
-                : 'Discovery mode: Explicit -f flags';
-            // Preserve <code> styling for -f
-            if (isDefault) {
-                $badge.text(badgeText);
-            } else {
-                $badge.html('Discovery mode: Explicit <code>-f</code> flags');
-            }
-        }
-        if ($toggle.length) {
-            if (locked) {
-                $toggle.hide();
-            } else {
-                $toggle.text(isDefault ? 'Use explicit -f flags' : 'Use default discovery').show();
-            }
+    },
+    'add-stack': {
+        checkboxId: 'compose-stack-use-default-compose-files',
+        badgeId: 'compose-stack-discovery-mode-badge',
+        toggleId: 'compose-stack-discovery-mode-toggle',
+        noticeId: 'compose-stack-default-compose-files-disabled-note',
+        getManualOverrideReasons: function() {
+            var reasons = [];
+            if (($('#compose-stack-env-path').val() || '').trim() !== '') reasons.push('External ENV File Path');
+            if (($('#compose-stack-external-file').val() || '').trim() !== '') reasons.push('External Compose File');
+            return reasons;
         }
     }
+};
+
+// Render the discovery-mode badge, toggle button, and lock reason line
+// for a given scope. Locking clears any pending default-discovery state
+// so the checkbox stays consistent with what the badge advertises.
+function updateDiscoveryModeUI(scope, suppressChangeTracking) {
+    var cfg = DISCOVERY_MODE_SCOPE_CONFIGS[scope];
+    if (!cfg) return;
+    var $checkbox = $('#' + cfg.checkboxId);
+    if (!$checkbox.length) return;
+
+    var $notice = $('#' + cfg.noticeId);
+    var $badge = $('#' + cfg.badgeId);
+    var $toggle = $('#' + cfg.toggleId);
+
+    var reasons = cfg.getManualOverrideReasons();
+    var locked = reasons.length > 0;
+    if (locked) {
+        if ($checkbox.is(':checked')) {
+            $checkbox.prop('checked', false);
+            if (!suppressChangeTracking) {
+                $checkbox.trigger('change');
+            }
+        }
+        $checkbox.prop('disabled', true);
+        if ($notice.length) {
+            $notice.text('Locked to explicit -f flags because ' + reasons.join(' and ')
+                + (reasons.length > 1 ? ' are set.' : ' is set.')).show();
+        }
+    } else {
+        $checkbox.prop('disabled', false);
+        if ($notice.length) $notice.hide();
+    }
+
+    var isDefault = $checkbox.is(':checked');
+    if ($badge.length) {
+        if (isDefault) {
+            $badge.text('Discovery mode: Docker Compose default');
+        } else {
+            $badge.html('Discovery mode: Explicit <code>-f</code> flags');
+        }
+    }
+    if ($toggle.length) {
+        if (locked) {
+            $toggle.hide();
+        } else {
+            $toggle.text(isDefault ? 'Use explicit -f flags' : 'Use default discovery').show();
+        }
+    }
+}
 
 // ---- Additional Compose Files settings UI ----
 
@@ -3355,13 +3361,14 @@ function addStack() {
                         </div>
 
                         <div class="settings-field">
-                            <label for="compose-stack-use-default-compose-files">Compose File Discovery</label>
-                            <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
-                                <input type="checkbox" id="compose-stack-use-default-compose-files">
-                                Use Docker Compose default file discovery (no explicit <code>-f</code> flags)
-                            </label>
+                            <label>Compose File Discovery</label>
+                            <div id="compose-stack-discovery-mode-row" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                                <span id="compose-stack-discovery-mode-badge" class="compose-status-info" style="padding:4px 10px;border:1px solid var(--dynamix-box-inner-div-border-color);border-radius:4px;font-size:0.9em;">Discovery mode: Explicit <code>-f</code> flags</span>
+                                <button type="button" id="compose-stack-discovery-mode-toggle" class="btn btn-sm" style="padding:2px 12px;font-size:0.9em;">Use default discovery</button>
+                            </div>
                             <div id="compose-stack-default-compose-files-disabled-note" class="compose-status-warning" style="display:none;margin-top:8px;font-size:0.9em;"></div>
-                            <div class="settings-field-help">Enable for projects that rely on auto-loaded <code>compose.override.*</code> and/or <code>COMPOSE_FILE</code> in <code>.env</code>. Overrides (Specific compose file, ENV path) force explicit mode.</div>
+                            <div class="settings-field-help"><strong>Default discovery</strong> lets Docker Compose auto-load <code>compose.override.*</code> and honor <code>COMPOSE_FILE</code> in <code>.env</code>. <strong>Explicit <code>-f</code> flags</strong> is used when the plugin passes each compose file directly. Overrides (Specific compose file, ENV path) require explicit mode.</div>
+                            <input type="checkbox" id="compose-stack-use-default-compose-files" style="position:absolute;left:-9999px;" tabindex="-1" aria-hidden="true">
                         </div>
                     </div>
 
@@ -3422,6 +3429,16 @@ function addStack() {
         setComposeSourceForScope('add-stack', $(this).val(), false);
     });
     setComposeSourceForScope('add-stack', 'project', true);
+
+    // Discovery mode toggle button flips the hidden source-of-truth checkbox.
+    $('#compose-stack-discovery-mode-toggle').off('click.addStackDiscovery').on('click.addStackDiscovery', function(e) {
+        e.preventDefault();
+        var $checkbox = $('#compose-stack-use-default-compose-files');
+        if ($checkbox.is(':disabled')) return;
+        $checkbox.prop('checked', !$checkbox.is(':checked')).trigger('change');
+        updateAddStackDefaultComposeDiscoveryState();
+    });
+    updateAddStackDefaultComposeDiscoveryState();
 
     window.closeComposeStackModal = function() {
         var overlay = document.getElementById('compose-stack-modal-overlay');
