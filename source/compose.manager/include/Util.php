@@ -143,6 +143,7 @@ if (!function_exists('compose_icon_to_png_bytes')) {
     function compose_icon_to_png_bytes(string $rawBytes, string $mimeHint): ?string
     {
         $isSvg = $mimeHint === 'image/svg+xml' || stripos(substr($rawBytes, 0, 512), '<svg') !== false;
+        $isPng = $mimeHint === 'image/png' || substr($rawBytes, 0, 8) === "\x89PNG\r\n\x1a\n";
 
         if ($isSvg) {
             // Prefer bundled resvg (reads SVG from stdin, writes PNG to a temp file)
@@ -187,6 +188,10 @@ if (!function_exists('compose_icon_to_png_bytes')) {
             }
 
             return null;
+        }
+
+        if ($isPng) {
+            return $rawBytes;
         }
 
         if (!function_exists('imagecreatefromstring')) {

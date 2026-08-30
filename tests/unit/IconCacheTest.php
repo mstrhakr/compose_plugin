@@ -55,10 +55,6 @@ class IconCacheTest extends TestCase
 
     public function testFetchDataUriPngWritesCacheFile(): void
     {
-        if (!function_exists('imagecreatefromstring')) {
-            $this->markTestSkipped('GD not available');
-        }
-
         $source = 'data:image/png;base64,' . self::TINY_PNG_BASE64;
         $result = compose_fetch_icon_to_cache($source);
 
@@ -71,10 +67,6 @@ class IconCacheTest extends TestCase
 
     public function testFetchCacheHitReturnsSamePathWithoutReFetch(): void
     {
-        if (!function_exists('imagecreatefromstring')) {
-            $this->markTestSkipped('GD not available');
-        }
-
         $source = 'data:image/png;base64,' . self::TINY_PNG_BASE64;
         $first  = compose_fetch_icon_to_cache($source);
         $mtime1 = filemtime($first);
@@ -89,10 +81,6 @@ class IconCacheTest extends TestCase
 
     public function testFetchForceRefreshOverwritesExistingFile(): void
     {
-        if (!function_exists('imagecreatefromstring')) {
-            $this->markTestSkipped('GD not available');
-        }
-
         $source = 'data:image/png;base64,' . self::TINY_PNG_BASE64;
         $first  = compose_fetch_icon_to_cache($source);
 
@@ -191,9 +179,6 @@ class IconCacheTest extends TestCase
     public function testSeedSkipsInvalidContainerName(): void
     {
         // Build a valid cache PNG so the function reaches the name-validation guard
-        if (!function_exists('imagecreatefromstring')) {
-            $this->markTestSkipped('GD not available');
-        }
         $source = 'data:image/png;base64,' . self::TINY_PNG_BASE64;
         $cached = compose_fetch_icon_to_cache($source);
 
