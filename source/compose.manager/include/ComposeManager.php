@@ -649,6 +649,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                             <label for="settings-webui-url">WebUI URL</label>
                             <input type="text" id="settings-webui-url" placeholder="http://tower.local:8080/">
                             <div class="settings-field-help">URL to the main WebUI for this stack. This adds a "WebUI" option to the stack's context menu. </div>
+                            <div id="settings-webui-url-error" class="compose-status-danger" style="margin-top:6px;display:none;font-size:0.9em;"></div>
                             <div id="settings-webui-suggestion" style="display:none; margin-top:4px; padding:6px 10px; background:rgba(255,255,255,0.05); border:1px solid rgba(255,165,0,0.3); border-radius:4px; font-size:0.9em;">
                                 <span style="color:#aaa;">Detected: </span><code id="settings-webui-detected-url" style="user-select:all;"></code>
                                 <span id="settings-webui-detected-source" style="color:#888; margin-left:6px; font-size:0.85em;"></span>
@@ -695,7 +696,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                             <div id="settings-external-compose-info" style="margin-top:8px;display:none;">
                                 <span class="compose-status-warning" style="font-size:0.9em;"><i class="fa fa-info-circle"></i> This stack uses an external compose source. The Compose editor tab loads and saves from that location.</span>
                             </div>
-                            <div id="settings-external-compose-file-warning" class="compose-status-danger" style="margin-top:6px;display:none;font-size:0.9em;"></div>
+                            <div id="settings-external-compose-file-error" class="compose-status-danger" style="margin-top:6px;display:none;font-size:0.9em;"></div>
                         </div>
 
                         <div class="settings-field">

@@ -1257,6 +1257,24 @@ function initEditorModal() {
         }, 300);
     });
 
+    // WebUI URL inline validation
+    $('#settings-webui-url').on('input', function() {
+        var url = $(this).val().trim();
+        if (!url) {
+            clearSettingsFieldError('webui-url');
+            return;
+        }
+        if (!isValidWebUIUrl(url)) {
+            setSettingsFieldError('webui-url', 'Invalid WebUI URL. Must be http:// or https:// (supports [IP] and [PORT:xxxx] placeholders).');
+            return;
+        }
+        if (/\[PORT\]/i.test(url)) {
+            setSettingsFieldError('webui-url', 'Bare [PORT] placeholder is not supported at stack level. Use [PORT:xxxx] with a default port instead (e.g. [PORT:8080]).');
+            return;
+        }
+        clearSettingsFieldError('webui-url');
+    });
+
     // External compose path info toggle
     $('#settings-external-compose-path').on('input', function() {
         var path = $(this).val().trim();
@@ -1276,17 +1294,12 @@ function initEditorModal() {
             $('#settings-external-compose-info').hide();
         }
 
-        // Warn if the selected file lives inside the stack project folder
+        // Warn (and block Apply) if the selected file lives inside the stack project folder
         var stackPath = (editorModal.filePaths.stackMeta || '').replace(/\/$/, '');
-        var $warning = $('#settings-external-compose-file-warning');
         if (filePath && stackPath && filePath.startsWith(stackPath + '/')) {
-            if (!$warning.length) {
-                $warning = $('<div id="settings-external-compose-file-warning" class="compose-status-error" style="margin-top:6px;"></div>');
-                $(this).after($warning);
-            }
-            $warning.text('This file is inside the stack project folder. The path must be external to this stack.').show();
-        } else if ($warning.length) {
-            $warning.hide();
+            setSettingsFieldError('external-compose-file', 'This file is inside the stack project folder. The path must be external to this stack.');
+        } else {
+            clearSettingsFieldError('external-compose-file');
         }
     });
 
@@ -1614,7 +1627,7 @@ function setComposeSource(mode, suppressChangeTracking) {
             $f.val('');
             if (!suppressChangeTracking) $f.trigger('input').trigger('change');
         }
-        $('#settings-external-compose-file-warning').hide();
+        clearSettingsFieldError('external-compose-file');
     }
 
     // Info/invalid banners only make sense for external modes.
@@ -5512,6 +5525,7 @@ function openEditorModalByProject(project, projectName, initialTab) {
     editorModal.modifiedTabs = new Set();
     editorModal.modifiedSettings = new Set();
     editorModal.modifiedLabels = new Set();
+    editorModal.settingsValidationErrors = new Set();
     editorModal.originalContent = {};
     editorModal.originalSettings = {};
     editorModal.originalLabels = {};
@@ -5525,6 +5539,8 @@ function openEditorModalByProject(project, projectName, initialTab) {
         projectOverride: compose_root + '/' + project + '/compose.override.yaml',
         effectiveOverride: ''
     };
+    // Clear any lingering inline error slots from a previous open.
+    $('[id^="settings-"][id$="-error"]').hide().text('');
     $('#settings-override-management').prop('checked', true);
     $('#settings-override-management-label').text('Automatic');
 
@@ -6408,8 +6424,42 @@ function updateValidation(type, content, isValid, errorMsg) {
 function updateSaveButtonState() {
     var totalChanges = editorModal.modifiedTabs.size + editorModal.modifiedSettings.size + editorModal.modifiedLabels.size;
     var hasChanges = totalChanges > 0;
-    $('#editor-btn-apply').prop('disabled', !hasChanges);
+    var hasErrors = editorModal.settingsValidationErrors && editorModal.settingsValidationErrors.size > 0;
+    $('#editor-btn-apply').prop('disabled', !hasChanges || hasErrors);
     $('#editor-change-count').text(totalChanges + (totalChanges === 1 ? ' change' : ' changes'));
+}
+
+// Inline settings validation — errors block Apply until cleared.
+// Each fieldId maps to an inline error slot #settings-<fieldId>-error.
+function setSettingsFieldError(fieldId, message) {
+    if (!editorModal.settingsValidationErrors) {
+        editorModal.settingsValidationErrors = new Set();
+    }
+    editorModal.settingsValidationErrors.add(fieldId);
+    var $slot = $('#settings-' + fieldId + '-error');
+    if ($slot.length) {
+        $slot.text(message).show();
+    }
+    updateSaveButtonState();
+}
+
+function clearSettingsFieldError(fieldId) {
+    if (editorModal.settingsValidationErrors) {
+        editorModal.settingsValidationErrors.delete(fieldId);
+    }
+    var $slot = $('#settings-' + fieldId + '-error');
+    if ($slot.length) {
+        $slot.hide().text('');
+    }
+    updateSaveButtonState();
+}
+
+function clearAllSettingsValidationErrors() {
+    if (editorModal.settingsValidationErrors) {
+        editorModal.settingsValidationErrors.clear();
+    }
+    $('[id^="settings-"][id$="-error"]').hide().text('');
+    updateSaveButtonState();
 }
 
 function hasPathSensitiveSettingsChanges() {
@@ -6742,38 +6792,15 @@ function saveSettings(saveErrors) {
 
     // Save icon URL, webui URL, env path, default profile, and external compose settings if any are modified
     if (editorModal.modifiedSettings.has('icon-url') || editorModal.modifiedSettings.has('webui-url') || editorModal.modifiedSettings.has('env-path') || editorModal.modifiedSettings.has('extra-compose-files') || editorModal.modifiedSettings.has('default-profile') || editorModal.modifiedSettings.has('external-compose-path') || editorModal.modifiedSettings.has('external-compose-file') || editorModal.modifiedSettings.has('use-default-compose-files')) {
+        // Inline validation blocks Apply when errors are present, so by the
+        // time we reach saveSettings the visible form state is valid.
         var iconUrl = $('#settings-icon-url').val();
         var webuiUrl = $('#settings-webui-url').val();
-        if (webuiUrl && !isValidWebUIUrl(webuiUrl)) {
-            swal({
-                type: 'error',
-                title: 'Save Failed',
-                text: 'Invalid WebUI URL. Must be http:// or https:// (supports [IP] and [PORT:xxxx] placeholders).'
-            });
-            return $.Deferred().resolve(false).promise();
-        }
-        if (webuiUrl && /\[PORT\]/i.test(webuiUrl)) {
-            swal({
-                type: 'error',
-                title: 'Save Failed',
-                text: 'Bare [PORT] placeholder is not supported at stack level. Use [PORT:xxxx] with a default port instead (e.g. [PORT:8080]).'
-            });
-            return $.Deferred().resolve(false).promise();
-        }
         var envPath = $('#settings-env-path').val();
         var extraComposeFiles = getExtraComposeFilesValue();
         var defaultProfile = $('#settings-default-profile').val();
         var externalComposePath = $('#settings-external-compose-path').val();
         var externalComposeFilePath = $('#settings-external-compose-file').val();
-        var stackPath = (editorModal.filePaths.stackMeta || '').replace(/\/$/, '');
-        if (externalComposeFilePath && stackPath && externalComposeFilePath.startsWith(stackPath + '/')) {
-            swal({
-                type: 'error',
-                title: 'Save Failed',
-                text: 'External Compose File cannot be inside the stack project folder. Use a path that is external to this stack.'
-            });
-            return $.Deferred().resolve(false).promise();
-        }
         var useDefaultComposeFiles = $('#settings-use-default-compose-files').is(':checked') ? 'true' : 'false';
         savePromises.push(
             $.post(caURL, {
@@ -7157,6 +7184,7 @@ function doCloseEditorModal() {
     editorModal.modifiedTabs = new Set();
     editorModal.modifiedSettings = new Set();
     editorModal.modifiedLabels = new Set();
+    editorModal.settingsValidationErrors = new Set();
     editorModal.originalContent = {};
     editorModal.originalSettings = {};
     editorModal.originalLabels = {};
@@ -7201,6 +7229,7 @@ function doCloseEditorModal() {
     $('#settings-effective-override-path-value').text('');
     $('#settings-effective-command').text('Loading…');
     $('#settings-effective-command-dirty').hide();
+    clearAllSettingsValidationErrors();
     setComposeSource('project', true);
 
     // Hide any open file-tree pickers (so they don't float outside the modal)
