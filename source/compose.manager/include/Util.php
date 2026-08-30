@@ -81,6 +81,19 @@ function sanitizeLogText(string $text): string
     return htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
+if (!function_exists('compose_get_icon_cache_path')) {
+    function compose_get_icon_cache_path(string $source): string
+    {
+        $source = trim($source);
+        if ($source === '') {
+            return rtrim(COMPOSE_ICON_CACHE_DIR, '/') . '/missing.png';
+        }
+
+        $hash = sha1($source);
+        return rtrim(COMPOSE_ICON_CACHE_DIR, '/') . '/' . $hash . '.png';
+    }
+}
+
 if (!function_exists('composeSendNotification')) {
     function composeSendNotification(string $subject, string $message, string $icon = ''): void
     {
