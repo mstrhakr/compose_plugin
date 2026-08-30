@@ -2452,6 +2452,15 @@ function isValidWebUIUrl(url) {
     }
 }
 
+function composeIconFallback(img) {
+    if (!img || img.dataset.composeFallbackApplied === 'true') {
+        return;
+    }
+    img.dataset.composeFallbackApplied = 'true';
+    img.onerror = null;
+    img.src = '/plugins/compose.manager/images/question.png';
+}
+
 // Validate an icon source: http(s) URL, data URI, or local server path
 function isValidIconSrc(src) {
     if (!src) return false;
@@ -5253,7 +5262,7 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
 
             var iconSrc = (container.icon && isValidIconSrc(container.icon)) ?
                 composeEscapeAttr(container.icon) :
-                '/plugins/dynamix.docker.manager/images/question.png';
+                '/plugins/compose.manager/images/question.png';
 
             // Grey out containers without updates when showing update dialog
             var rowOpacity = (cfg.showVersionArrow && !hasUpdate && updateStatus === 'up-to-date') ? '0.5' : '1';
@@ -5261,7 +5270,7 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             var borderStyle = isLast ? '' : 'border-bottom:1px solid var(--dynamix-box-inner-div-border-color);';
 
             html += '<div style="display:flex;align-items:center;padding:8px 4px;' + borderStyle + 'opacity:' + rowOpacity + ';">';
-            html += '<img src="' + iconSrc + '" style="width:28px;height:28px;margin-right:10px;border-radius:4px;" onerror="this.src=\'/plugins/dynamix.docker.manager/images/question.png\'">';
+            html += '<img src="' + iconSrc + '" style="width:28px;height:28px;margin-right:10px;border-radius:4px;" onerror="composeIconFallback(this)">';
             html += '<div style="flex:1;">';
             html += '<div style="font-weight:bold;">' + composeEscapeHtml(shortName);
             // Show update badge if update is available (for update action)
@@ -6472,10 +6481,10 @@ function renderLabelsUI(mainDoc, overrideDoc) {
         editorModal.originalLabels[serviceKey + '_webui'] = webuiValue;
         editorModal.originalLabels[serviceKey + '_shell'] = shellValue;
 
-        var iconSrc = iconValue || '/plugins/dynamix.docker.manager/images/question.png';
+        var iconSrc = iconValue || '/plugins/compose.manager/images/question.png';
         html += '<div class="labels-service" data-service="' + composeEscapeAttr(serviceKey) + '">';
         html += '<div class="labels-service-header">';
-        html += '<img class="labels-service-icon" id="label-icon-preview-' + composeEscapeAttr(serviceKey) + '" src="' + composeEscapeAttr(iconSrc) + '" alt="" onerror="this.src=\'/plugins/dynamix.docker.manager/images/question.png\'">';
+        html += '<img class="labels-service-icon" id="label-icon-preview-' + composeEscapeAttr(serviceKey) + '" src="' + composeEscapeAttr(iconSrc) + '" alt="" onerror="composeIconFallback(this)">';
         html += '<span class="labels-service-name">' + composeEscapeHtml(containerName) + '</span>';
         html += '</div>';
         html += '<div class="labels-service-fields">';
@@ -6505,10 +6514,10 @@ function renderLabelsUI(mainDoc, overrideDoc) {
             var webuiValue = findLabelValue(overrideService, {}, webui_label);
             var shellValue = findLabelValue(overrideService, {}, shell_label);
 
-            var deletedIconSrc = iconValue || '/plugins/dynamix.docker.manager/images/question.png';
+            var deletedIconSrc = iconValue || '/plugins/compose.manager/images/question.png';
             deletedHtml += '<div class="labels-service deleted" data-service="' + composeEscapeAttr(serviceKey) + '" data-deleted="true">';
             deletedHtml += '<div class="labels-service-header">';
-            deletedHtml += '<img class="labels-service-icon" src="' + composeEscapeAttr(deletedIconSrc) + '" alt="" onerror="this.src=\'/plugins/dynamix.docker.manager/images/question.png\'">';
+            deletedHtml += '<img class="labels-service-icon" src="' + composeEscapeAttr(deletedIconSrc) + '" alt="" onerror="composeIconFallback(this)">';
             deletedHtml += '<span class="labels-service-name">' + composeEscapeHtml(containerName) + ' <span class="compose-status-danger" style="font-size:0.8em;">(will be removed on save)</span></span>';
             deletedHtml += '</div>';
             deletedHtml += '<div class="labels-service-fields">';
@@ -6567,7 +6576,7 @@ function renderLabelsUI(mainDoc, overrideDoc) {
                 if (iconUrl && isValidIconSrc(iconUrl)) {
                     $preview.attr('src', iconUrl);
                 } else {
-                    $preview.attr('src', '/plugins/dynamix.docker.manager/images/question.png');
+                    $preview.attr('src', '/plugins/compose.manager/images/question.png');
                 }
             }, 300));
         }
@@ -8020,8 +8029,8 @@ function renderContainerDetails(stackId, containers, project) {
         // Use actual image like Docker tab - either container icon or default question.png
         var iconSrc = (container.icon && isValidIconSrc(container.icon)) ?
             container.icon :
-            '/plugins/dynamix.docker.manager/images/question.png';
-        html += '<img src="' + composeEscapeAttr(iconSrc) + '" class="img" onerror="this.src=\'/plugins/dynamix.docker.manager/images/question.png\'">';
+            '/plugins/compose.manager/images/question.png';
+        html += '<img src="' + composeEscapeAttr(iconSrc) + '" class="img" onerror="composeIconFallback(this)">';
         html += '</span>';
         html += '<span class="inner"><span class="appname">' + composeEscapeHtml(shortName) + '</span><br>';
         html += '<i class="fa fa-' + shape + ' ' + statusText + ' ' + color + '"></i><span class="state">' + statusText + '</span>';

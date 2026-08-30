@@ -105,7 +105,8 @@ class ComposeListEndpointTest extends TestCase
         $this->assertStringContainsString("class='compose-sortable'", $output);
         $this->assertStringContainsString("data-project='alpha'", $output);
         $this->assertStringContainsString("class='col-update compose-updatecolumn'", $output);
-        $this->assertStringContainsString("onerror=\"this.src='/plugins/dynamix.docker.manager/images/question.png';\"", $output);
+        $this->assertStringContainsString("onerror=\"composeIconFallback(this)\"", $output);
+        $this->assertStringNotContainsString("/plugins/dynamix.docker.manager/images/question.png", $output);
         $this->assertStringNotContainsString("data-project='not-a-stack'", $output);
     }
 

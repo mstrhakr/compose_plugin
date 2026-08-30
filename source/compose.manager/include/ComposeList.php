@@ -351,11 +351,11 @@ foreach ($stackInfos as $stackInfo) {
     $o .= "</td>";
 
     // Icon column
-    $imgSrc = $projectIconUrl ?: '/plugins/dynamix.docker.manager/images/question.png';
+    $imgSrc = $projectIconUrl ?: '/plugins/compose.manager/images/question.png';
     $o .= "<td class='col-icon'>";
     $o .= "<span class='outer $outerClass'>";
     $o .= "<span id='stack-$id' class='hand' data-stackid='$id' data-project='$projectHtml' data-projectname='$projectNameHtml' data-isup='$isup' data-running='" . ($isrunning ? '1' : '0') . "'>";
-    $o .= "<img src='$imgSrc' class='img' onerror=\"this.src='/plugins/dynamix.docker.manager/images/question.png';\">";
+    $o .= "<img src='$imgSrc' class='img' onerror=\"composeIconFallback(this)\">";
     $o .= "</span>";
     $o .= "</span>";
     $o .= "</td>";
