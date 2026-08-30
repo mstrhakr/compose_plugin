@@ -1,6 +1,7 @@
 #!/bin/bash
 [ -z "$OUTPUT_FOLDER" ] && echo "Output Folder not set" && exit 1
 [ -z "$COMPOSE_VERSION" ] && echo "Compose Version not set" && exit 2
+[ -z "$RESVG_VERSION" ]  && echo "RESVG Version not set"   && exit 2
 [ -z "$PKG_VERSION" ] && echo "Package Version not set" && exit 5
 [ -z "$PKG_BUILD" ] && PKG_BUILD=$(date +%H%M)
 tmpdir=/tmp/tmp.$((RANDOM * 19318203981230 + 40))
@@ -167,6 +168,20 @@ run_quiet cp docker-compose-linux-x86_64 "$tmpdir/usr/lib/docker/cli-plugins/doc
 run_quiet chmod -R +x "$tmpdir/usr/lib/docker/cli-plugins/"
 run_quiet rm docker-compose-linux-x86_64
 
+echo "Downloading resvg v${RESVG_VERSION}..."
+download_with_sha_cache \
+  "https://github.com/linebender/resvg/releases/download/v${RESVG_VERSION}/resvg-linux-x86_64.tar.gz" \
+  "" \
+  "resvg-linux-x86_64.tar.gz" \
+  "${RESVG_SHA256:-}"
+
+echo "Installing resvg v${RESVG_VERSION}..."
+run_quiet mkdir -p "$tmpdir/usr/local/emhttp/plugins/compose.manager/bin/"
+tar -xzf resvg-linux-x86_64.tar.gz resvg
+run_quiet cp resvg "$tmpdir/usr/local/emhttp/plugins/compose.manager/bin/resvg"
+run_quiet chmod +x "$tmpdir/usr/local/emhttp/plugins/compose.manager/bin/resvg"
+run_quiet rm resvg resvg-linux-x86_64.tar.gz
+
 
 echo "Creating package description (slack-desc)..."
 run_quiet mkdir -p $tmpdir/install
@@ -203,6 +218,7 @@ MD5=$(md5sum "$OUTPUT_FOLDER/compose.manager-${version}-noarch-${build}.txz")
 {
   echo "MD5: $MD5"
   echo "Compose v${COMPOSE_VERSION}"
+  echo "resvg v${RESVG_VERSION}"
   echo ""
   echo "MD5: $(echo "$MD5" | head -n1 | awk '{print $1;}')"
 } >> "$OUTPUT_FOLDER/release_info"

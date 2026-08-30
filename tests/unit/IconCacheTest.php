@@ -105,10 +105,27 @@ class IconCacheTest extends TestCase
         $this->assertStringStartsWith("\x89PNG", (string) file_get_contents($second));
     }
 
-    public function testFetchSvgDataUriReturnsEmpty(): void
+    public function testFetchSvgDataUriReturnsEmptyWithoutResvg(): void
     {
+        if (is_executable(COMPOSE_RESVG_BIN)) {
+            $this->markTestSkipped('resvg available — SVG is converted, not rejected');
+        }
         $source = 'data:image/svg+xml;base64,' . base64_encode('<svg xmlns="http://www.w3.org/2000/svg"/>');
         $this->assertSame('', compose_fetch_icon_to_cache($source));
+    }
+
+    public function testFetchSvgDataUriSucceedsWithResvg(): void
+    {
+        if (!is_executable(COMPOSE_RESVG_BIN)) {
+            $this->markTestSkipped('resvg not available');
+        }
+        $svg    = '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8">'
+                . '<rect width="8" height="8" fill="blue"/></svg>';
+        $source = 'data:image/svg+xml;base64,' . base64_encode($svg);
+        $result = compose_fetch_icon_to_cache($source, true);
+        $this->assertNotSame('', $result);
+        $this->assertFileExists($result);
+        $this->assertStringStartsWith("\x89PNG", (string) file_get_contents($result));
     }
 
     public function testFetchLocalFileOutsideAllowedPathReturnsEmpty(): void
@@ -201,8 +218,23 @@ class IconCacheTest extends TestCase
 
     public function testPngBytesReturnsNullForSvg(): void
     {
+        if (is_executable(COMPOSE_RESVG_BIN)) {
+            $this->markTestSkipped('resvg is available — null-return path not exercised');
+        }
         $svg = '<svg xmlns="http://www.w3.org/2000/svg"/>';
         $this->assertNull(compose_icon_to_png_bytes($svg, 'image/svg+xml'));
+    }
+
+    public function testPngBytesConvertsSvgWhenResvgAvailable(): void
+    {
+        if (!is_executable(COMPOSE_RESVG_BIN)) {
+            $this->markTestSkipped('resvg binary not available');
+        }
+        $svg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16">'
+             . '<rect width="16" height="16" fill="red"/></svg>';
+        $out = compose_icon_to_png_bytes($svg, 'image/svg+xml');
+        $this->assertNotNull($out);
+        $this->assertStringStartsWith("\x89PNG", (string) $out);
     }
 
     public function testPngBytesReturnsNullForGarbage(): void

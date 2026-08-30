@@ -27,6 +27,7 @@ defined('PENDING_RECHECK_FILE')       || define('PENDING_RECHECK_FILE',       '/
 defined('COMPOSE_TTYD_SOCKET_DIR')    || define('COMPOSE_TTYD_SOCKET_DIR',    '/var/tmp');
 defined('COMPOSE_ICON_NORMALIZE_DIR') || define('COMPOSE_ICON_NORMALIZE_DIR', '/var/tmp/compose-icon-normalize');
 defined('COMPOSE_ICON_CACHE_DIR')     || define('COMPOSE_ICON_CACHE_DIR',     '/boot/config/plugins/compose.manager/icon-cache');
+defined('COMPOSE_RESVG_BIN')          || define('COMPOSE_RESVG_BIN',          '/usr/local/emhttp/plugins/compose.manager/bin/resvg');
 
 /**
  * Reserved filename at the compose root level used by the plugin installer

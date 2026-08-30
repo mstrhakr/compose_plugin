@@ -40,6 +40,9 @@ define('PENDING_RECHECK_FILE',       $_bootConfigTemp . '/pending-recheck.json')
 define('COMPOSE_TTYD_SOCKET_DIR',    sys_get_temp_dir());
 define('COMPOSE_SKIP_TTYD_EXEC',     true);
 define('COMPOSE_ICON_CACHE_DIR',     sys_get_temp_dir() . '/compose_manager_icon_cache_test');
+// Point to the dev-env resvg binary when present; plugin path used on real Unraid
+define('COMPOSE_RESVG_BIN',          is_executable('/tmp/resvg') ? '/tmp/resvg'
+    : '/usr/local/emhttp/plugins/compose.manager/bin/resvg');
 unset($_bootConfigTemp);
 
 // Load the plugin-tests framework

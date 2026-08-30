@@ -123,13 +123,35 @@ if (!function_exists('compose_icon_is_safe_host')) {
 
 if (!function_exists('compose_icon_to_png_bytes')) {
     /**
-     * Convert raw image bytes to PNG. Returns null when conversion is impossible
-     * (SVG without tooling, or non-PNG bytes with GD absent).
+     * Convert raw image bytes to PNG. Returns null when conversion is impossible.
+     * SVG: tries the bundled resvg binary. Raster: uses GD when available.
      */
     function compose_icon_to_png_bytes(string $rawBytes, string $mimeHint): ?string
     {
-        if ($mimeHint === 'image/svg+xml' || stripos(substr($rawBytes, 0, 512), '<svg') !== false) {
-            return null;
+        $isSvg = $mimeHint === 'image/svg+xml' || stripos(substr($rawBytes, 0, 512), '<svg') !== false;
+
+        if ($isSvg) {
+            $bin = defined('COMPOSE_RESVG_BIN') ? COMPOSE_RESVG_BIN : '';
+            if ($bin === '' || !is_executable($bin)) {
+                return null;
+            }
+            // resvg reads SVG from stdin but needs a temp file for PNG output
+            $tmpOut = tempnam(sys_get_temp_dir(), 'resvg_') . '.png';
+            $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+            $proc = proc_open([$bin, '--resources-dir', sys_get_temp_dir(), '-', $tmpOut], $descriptors, $pipes);
+            if (!is_resource($proc)) {
+                return null;
+            }
+            fwrite($pipes[0], $rawBytes);
+            fclose($pipes[0]);
+            stream_get_contents($pipes[1]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exit = proc_close($proc);
+
+            $out = ($exit === 0 && file_exists($tmpOut)) ? file_get_contents($tmpOut) : null;
+            @unlink($tmpOut);
+            return ($out !== false && $out !== '' && $out !== null) ? $out : null;
         }
 
         if (!function_exists('imagecreatefromstring')) {

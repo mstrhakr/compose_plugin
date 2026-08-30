@@ -6,6 +6,8 @@ VERSION=""
 DEV=false
 SKIP_TESTS=false
 COMPOSE_VERSION=""
+RESVG_VERSION=""
+RESVG_SHA256=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_PATH="$SCRIPT_DIR/archive"
 PLG_FILE="$SCRIPT_DIR/compose.manager.plg"
@@ -34,15 +36,16 @@ if [[ -f "$test_script" && "$SKIP_TESTS" = false ]]; then
     bash "$test_script"
 fi
 
-# Read Compose version from versions.env if not supplied
-if [[ -z "$COMPOSE_VERSION" && -f "$VERSIONS_FILE" ]]; then
+# Read pinned versions from versions.env if not supplied on CLI
+if [[ -f "$VERSIONS_FILE" ]]; then
     while IFS= read -r line; do
-        if [[ "$line" =~ ^COMPOSE_VERSION=(.+)$ ]]; then
-            COMPOSE_VERSION="${BASH_REMATCH[1]}"
-        fi
+        [[ "$line" =~ ^COMPOSE_VERSION=(.+)$ ]] && [[ -z "$COMPOSE_VERSION" ]] && COMPOSE_VERSION="${BASH_REMATCH[1]}"
+        [[ "$line" =~ ^RESVG_VERSION=(.+)$ ]]  && [[ -z "$RESVG_VERSION" ]]  && RESVG_VERSION="${BASH_REMATCH[1]}"
+        [[ "$line" =~ ^RESVG_SHA256=(.+)$ ]]   && [[ -z "$RESVG_SHA256" ]]   && RESVG_SHA256="${BASH_REMATCH[1]}"
     done < "$VERSIONS_FILE"
 fi
 : "${COMPOSE_VERSION:=5.1.2}"
+: "${RESVG_VERSION:=0.48.1}"
 
 # Generate dev version with timestamp if requested
 if [[ "$DEV" = true ]]; then
@@ -254,6 +257,8 @@ build_cmd_direct=(docker run --rm --tmpfs /tmp \
     -v "$HOST_CA_CERT:$CONTAINER_CA_CERT:ro" \
     -e TZ=America/New_York \
     -e COMPOSE_VERSION="$COMPOSE_VERSION" \
+    -e RESVG_VERSION="$RESVG_VERSION" \
+    -e RESVG_SHA256="$RESVG_SHA256" \
     -e OUTPUT_FOLDER=/mnt/output \
     -e DOWNLOAD_CACHE_DIR=/mnt/cache \
     -e PKG_VERSION="$VERSION" \
@@ -271,6 +276,8 @@ if "${build_cmd_direct[@]}"; then
       -v "$HOST_CA_CERT:$CONTAINER_CA_CERT:ro" \
       -e TZ=America/New_York \
       -e COMPOSE_VERSION="$COMPOSE_VERSION" \
+      -e RESVG_VERSION="$RESVG_VERSION" \
+      -e RESVG_SHA256="$RESVG_SHA256" \
       -e OUTPUT_FOLDER=/mnt/output \
       -e DOWNLOAD_CACHE_DIR=/mnt/cache \
       -e PKG_VERSION="$VERSION" \
@@ -288,6 +295,8 @@ else
       -v "$HOST_CA_CERT:$CONTAINER_CA_CERT:ro" \
       -e TZ=America/New_York \
       -e COMPOSE_VERSION="$COMPOSE_VERSION" \
+      -e RESVG_VERSION="$RESVG_VERSION" \
+      -e RESVG_SHA256="$RESVG_SHA256" \
       -e OUTPUT_FOLDER=/mnt/output \
       -e DOWNLOAD_CACHE_DIR=/mnt/cache \
       -e PKG_VERSION="$VERSION" \
