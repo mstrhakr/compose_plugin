@@ -685,12 +685,12 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
                         <div class="settings-field">
                             <label>Effective Command</label>
-                            <div id="settings-effective-command-wrap" style="border:1px solid var(--dynamix-box-inner-div-border-color);border-radius:4px;padding:10px;background:var(--dynamix-sb-body-bg-color);">
-                                <pre id="settings-effective-command" style="margin:0;font-family:var(--font-bitstream);font-size:0.85em;white-space:pre-wrap;word-break:break-all;">Loading…</pre>
+                            <div id="settings-effective-command-wrap" class="settings-effective-command-wrap">
+                                <pre id="settings-effective-command" class="settings-effective-command">Loading…</pre>
                             </div>
-                            <div class="settings-field-help" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                            <div class="settings-field-help settings-effective-command-note">
                                 <span>Reflects the currently <strong>saved</strong> configuration.</span>
-                                <span id="settings-effective-command-dirty" class="compose-status-warning" style="display:none;font-size:0.9em;"><i class="fa fa-pencil"></i> Unsaved changes — apply to refresh.</span>
+                                <span id="settings-effective-command-dirty" class="compose-status-warning settings-effective-command-dirty"><i class="fa fa-pencil"></i> Unsaved changes — apply to refresh.</span>
                             </div>
                         </div>
                     </div>
