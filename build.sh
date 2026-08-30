@@ -109,9 +109,6 @@ fi
 ARCHIVE_PATH="$OUTPUT_PATH"
 mkdir -p "$ARCHIVE_PATH"
 
-CACHE_PATH="$ARCHIVE_PATH/.build-cache"
-HOST_CACHE_PATH="$HOST_ARCHIVE_PATH/.build-cache"
-
 # Host path for docker socket operations should be the actual unRAID path.
 HOST_ARCHIVE_PATH="$ARCHIVE_PATH"
 if [[ "$in_container" == true && -d "/code" ]]; then
@@ -155,6 +152,9 @@ if [[ "$in_container" == true && -d "/config" && "$HOST_ARCHIVE_PATH" == "$ARCHI
 fi
 
 mkdir -p "$HOST_ARCHIVE_PATH" 2>/dev/null || true
+
+CACHE_PATH="$ARCHIVE_PATH/.build-cache"
+HOST_CACHE_PATH="$HOST_ARCHIVE_PATH/.build-cache"
 
 SOURCE_PATH="$SCRIPT_DIR/source"
 

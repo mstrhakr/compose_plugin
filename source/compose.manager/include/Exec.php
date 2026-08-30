@@ -1132,10 +1132,10 @@ switch ($_POST['action']) {
 
         echo json_encode([
             'result' => 'success',
-            'projectName' => $args['projectName'] ?? '',
-            'projectDirectory' => $args['projectDirectory'] ?? '',
+            'projectName' => $args['projectName'],
+            'projectDirectory' => $args['projectDirectory'],
             'useDefaultFileDiscovery' => !empty($args['useDefaultFileDiscovery']),
-            'filePaths' => $args['filePaths'] ?? [],
+            'filePaths' => $args['filePaths'],
             'envFilePath' => $args['envFilePath'] ?? '',
             'profiles' => $profiles,
         ]);

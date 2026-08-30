@@ -72,17 +72,21 @@ download_with_sha_cache() {
   local artifact_url="$1"
   local checksum_url="$2"
   local artifact_name="$3"
+  local expected_sha="${4:-}"
   local checksum_name="${artifact_name}.sha256"
-  local expected_sha=""
   local cache_file=""
 
-  # Always refresh checksum so cache validation tracks upstream updates.
-  echo "Fetching checksum for $artifact_name..." | tee -a "$LOG_FILE"
-  download_file_quiet "$checksum_url" "$checksum_name" "$artifact_name checksum"
-  expected_sha="$(awk 'NF {print $1; exit}' "$checksum_name")"
   if [[ -z "$expected_sha" ]]; then
-    echo "Failed to parse SHA256 from $checksum_name" | tee -a "$LOG_FILE"
-    exit 7
+    # Always refresh checksum so cache validation tracks upstream updates.
+    echo "Fetching checksum for $artifact_name..." | tee -a "$LOG_FILE"
+    download_file_quiet "$checksum_url" "$checksum_name" "$artifact_name checksum"
+    expected_sha="$(awk 'NF {print $1; exit}' "$checksum_name")"
+    if [[ -z "$expected_sha" ]]; then
+      echo "Failed to parse SHA256 from $checksum_name" | tee -a "$LOG_FILE"
+      exit 7
+    fi
+  else
+    echo "Using pinned checksum for $artifact_name..." | tee -a "$LOG_FILE"
   fi
 
   cache_file="${DOWNLOAD_CACHE_DIR%/}/${artifact_name}"
@@ -128,10 +132,10 @@ wget_args() {
 echo "Installing unzip dependency..."
 INFOZIP_PKG="infozip-6.0-x86_64-8.txz"
 download_with_sha_cache \
-  "https://mirrors.slackware.com/slackware/slackware64-current/slackware64/a/${INFOZIP_PKG}" \
-  "https://mirrors.slackware.com/slackware/slackware64-current/slackware64/a/${INFOZIP_PKG}.sha256" \
-  "$INFOZIP_PKG"
-run_quiet rm -f "${INFOZIP_PKG}.sha256"
+  "https://slackware.osuosl.org/slackware64-current/slackware64/a/${INFOZIP_PKG}" \
+  "" \
+  "$INFOZIP_PKG" \
+  "2df6d72a3662be939fb533564b1b1e6d4fedd1e2cbddaa8d39627509a397d4d3"
 run_quiet upgradepkg --install-new "${INFOZIP_PKG}"
 
 echo "Creating temporary package structure at $tmpdir..."
