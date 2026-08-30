@@ -633,8 +633,8 @@ class StackInfoTest extends TestCase
 
     public function testComposeIconCachePathUsesStableHashAndPluginCacheDir(): void
     {
-        $source = 'https://example.com/icons/app.png';
-        $expected = '/boot/config/plugins/compose.manager/icon-cache/' . sha1($source) . '.png';
+        $source   = 'https://example.com/icons/app.png';
+        $expected = rtrim(COMPOSE_ICON_CACHE_DIR, '/') . '/' . sha1($source) . '.png';
 
         $this->assertSame($expected, compose_get_icon_cache_path($source));
     }
