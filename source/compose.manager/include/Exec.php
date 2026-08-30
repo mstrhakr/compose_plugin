@@ -1113,6 +1113,33 @@ switch ($_POST['action']) {
 
         echo json_encode(['result' => 'success', 'labelsViewMode' => $labelsViewMode]);
         break;
+    case 'previewComposeArgs':
+        $script = getPostScript();
+        if (!$script) {
+            echo json_encode(['result' => 'error', 'message' => 'Stack not specified.']);
+            break;
+        }
+
+        try {
+            $stackInfo = StackInfo::fromProject($compose_root, $script);
+        } catch (\Throwable $e) {
+            echo json_encode(['result' => 'error', 'message' => 'Unable to load stack.']);
+            break;
+        }
+
+        $args = $stackInfo->buildComposeArgs();
+        $profiles = $stackInfo->getDefaultProfiles();
+
+        echo json_encode([
+            'result' => 'success',
+            'projectName' => $args['projectName'] ?? '',
+            'projectDirectory' => $args['projectDirectory'] ?? '',
+            'useDefaultFileDiscovery' => !empty($args['useDefaultFileDiscovery']),
+            'filePaths' => $args['filePaths'] ?? [],
+            'envFilePath' => $args['envFilePath'] ?? '',
+            'profiles' => $profiles,
+        ]);
+        break;
     case 'detectWebui':
         $script = getPostScript();
         if (!$script) {

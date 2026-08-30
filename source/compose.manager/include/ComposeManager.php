@@ -725,6 +725,17 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                             <div class="settings-field-help"><strong>Default discovery</strong> lets Docker Compose auto-load <code>compose.override.*</code> and honor <code>COMPOSE_FILE</code> in <code>.env</code>. <strong>Explicit <code>-f</code> flags</strong> is used when the plugin passes each compose file directly. Overrides (external compose, additional files, external env path) require explicit mode.</div>
                             <input type="checkbox" id="settings-use-default-compose-files" style="position:absolute;left:-9999px;" tabindex="-1" aria-hidden="true">
                         </div>
+
+                        <div class="settings-field">
+                            <label>Effective Command</label>
+                            <div id="settings-effective-command-wrap" style="border:1px solid var(--dynamix-box-inner-div-border-color);border-radius:4px;padding:10px;background:var(--dynamix-sb-body-bg-color);">
+                                <pre id="settings-effective-command" style="margin:0;font-family:var(--font-bitstream);font-size:0.85em;white-space:pre-wrap;word-break:break-all;">Loading…</pre>
+                            </div>
+                            <div class="settings-field-help" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                                <span>Reflects the currently <strong>saved</strong> configuration.</span>
+                                <span id="settings-effective-command-dirty" class="compose-status-warning" style="display:none;font-size:0.9em;"><i class="fa fa-pencil"></i> Unsaved changes — apply to refresh.</span>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Runtime Defaults -->

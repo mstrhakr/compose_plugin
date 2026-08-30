@@ -224,6 +224,9 @@ function onExtraComposeFilesChanged() {
     updateSaveButtonState();
     updateTabModifiedState();
     updateSettingsDefaultComposeDiscoveryState();
+    if (typeof updateEffectiveCommandDirtyIndicator === 'function') {
+        updateEffectiveCommandDirtyIndicator();
+    }
 }
 
 function resetExtraComposeFilesUI() {
@@ -1209,6 +1212,8 @@ function initEditorModal() {
         if (fieldId === 'env-path' || fieldId === 'external-compose-file') {
             updateSettingsDefaultComposeDiscoveryState();
         }
+
+        updateEffectiveCommandDirtyIndicator();
     });
 
     // Additional compose files: combined change tracking for the candidate
@@ -1233,6 +1238,7 @@ function initEditorModal() {
 
         updateSaveButtonState();
         updateTabModifiedState();
+        updateEffectiveCommandDirtyIndicator();
     });
 
     // Icon preview update with debounce
@@ -1506,6 +1512,75 @@ function updateEffectiveOverridePathReadout() {
     }
     $('#settings-effective-override-path-value').text(effective);
     $wrap.show();
+}
+
+// Render the effective docker compose command based on the saved-state
+// preview returned by the server. Kept saved-state only so we match the
+// authoritative buildComposeArgs() output byte-for-byte; the dirty pill
+// tells the user when the readout is stale relative to the form.
+function renderEffectiveCommandPreview(data) {
+    var $out = $('#settings-effective-command');
+    if (!$out.length) return;
+
+    var lines = ['docker compose'];
+
+    var projectDir = data.projectDirectory || '';
+    if (projectDir) {
+        lines.push('  --project-directory ' + projectDir);
+    }
+
+    if (data.useDefaultFileDiscovery) {
+        lines.push('  # default file discovery (compose.yaml, compose.override.*, COMPOSE_FILE)');
+    } else {
+        (data.filePaths || []).forEach(function(fp) {
+            if (fp) lines.push('  -f ' + fp);
+        });
+    }
+
+    if (data.envFilePath) {
+        lines.push('  --env-file ' + data.envFilePath);
+    }
+
+    (data.profiles || []).forEach(function(p) {
+        if (p) lines.push('  --profile ' + p);
+    });
+
+    if (data.projectName) {
+        lines.push('  -p ' + data.projectName);
+    }
+
+    lines.push('  <action>  # up | down | pull | update …');
+
+    $out.text(lines.join(' \\\n'));
+}
+
+function loadEffectiveCommandPreview(project) {
+    var $out = $('#settings-effective-command');
+    if (!$out.length || !project) return;
+    $out.text('Loading…');
+    $.post(caURL, { action: 'previewComposeArgs', script: project })
+        .then(function(data) {
+            var response;
+            try {
+                response = JSON.parse(data);
+            } catch (e) {
+                $out.text('Unable to parse preview response.');
+                return;
+            }
+            if (response.result !== 'success') {
+                $out.text(response.message || 'Preview unavailable.');
+                return;
+            }
+            renderEffectiveCommandPreview(response);
+        }).fail(function() {
+            $out.text('Failed to load preview (network error).');
+        });
+}
+
+// Show or hide the "Unsaved changes" pill next to the effective command.
+function updateEffectiveCommandDirtyIndicator() {
+    var dirty = editorModal.modifiedSettings && editorModal.modifiedSettings.size > 0;
+    $('#settings-effective-command-dirty').toggle(!!dirty);
 }
 
 // Compose Source radio — normalize legacy modes to the three supported values.
@@ -5792,6 +5867,8 @@ function loadSettingsData(project, projectName) {
                 editorModal.filePaths.effectiveOverride = response.effectiveOverridePath || editorModal.filePaths.projectOverride;
                 updateEditorFileInfo();
                 updateEffectiveOverridePathReadout();
+                loadEffectiveCommandPreview(project);
+                updateEffectiveCommandDirtyIndicator();
 
                 // Labels editor mode (per-stack)
                 var labelsViewMode = response.labelsViewMode === 'advanced' ? 'advanced' : 'basic';
@@ -5852,6 +5929,8 @@ function loadSettingsData(project, projectName) {
         setComposeSource('project', true);
         $('#settings-external-compose-info').hide();
         $('#settings-invalid-indirect-warning').hide();
+        $('#settings-effective-command').text('Preview unavailable.');
+        $('#settings-effective-command-dirty').hide();
     });
 }
 
@@ -6853,6 +6932,10 @@ function saveAllChanges(closeAfterSave) {
                     });
                     updateTabModifiedState();
                     updateSaveButtonState();
+                    updateEffectiveCommandDirtyIndicator();
+                    if (editorModal.currentProject) {
+                        loadEffectiveCommandPreview(editorModal.currentProject);
+                    }
                     return;
                 }
 
@@ -6876,6 +6959,10 @@ function saveAllChanges(closeAfterSave) {
                             refreshStackByProject(saveProject);
                         }
                     }, 1500);
+                }
+                updateEffectiveCommandDirtyIndicator();
+                if (editorModal.currentProject) {
+                    loadEffectiveCommandPreview(editorModal.currentProject);
                 }
             } else {
                 var filteredErrors = saveErrors.filter(function(message) {
@@ -7112,6 +7199,8 @@ function doCloseEditorModal() {
     $('#settings-invalid-indirect-warning').hide();
     $('#settings-effective-override-path').hide();
     $('#settings-effective-override-path-value').text('');
+    $('#settings-effective-command').text('Loading…');
+    $('#settings-effective-command-dirty').hide();
     setComposeSource('project', true);
 
     // Hide any open file-tree pickers (so they don't float outside the modal)
