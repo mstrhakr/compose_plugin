@@ -675,8 +675,29 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         })
     }
 
-    function clearUpdateCache() {
+    function clearAllIconCache() {
         swal({
+            title: 'Clear Icon Cache',
+            text: 'This will delete all locally cached icon files. Icons will be re-downloaded on next page load.',
+            type: 'warning',
+            showCancelButton: true,
+            confirmButtonText: 'Clear Cache'
+        }, function(confirmed) {
+            if (!confirmed) return;
+            $.post(caURL, {
+                action: 'clearAllIconCache'
+            }, function(data) {
+                var result = JSON.parse(data);
+                if (result.result === 'success') {
+                    swal('Success', 'Icon cache cleared (' + result.cleared + ' files removed).', 'success');
+                } else {
+                    swal('Error', result.message || 'Failed to clear icon cache', 'error');
+                }
+            });
+        });
+    }
+
+    function clearUpdateCache() {        swal({
             title: 'Clear Update Cache',
             text: 'This will clear the update status cache and remove stale entries. You will need to check for updates again.',
             type: 'warning',
@@ -3015,6 +3036,16 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 <blockquote class="inline_help">
                     How often to check for updates. Only used if "Auto Check for Updates" is enabled.<br>
                     Use presets for common intervals, or choose Custom to enter days manually.
+                </blockquote>
+            </dd>
+        </dl>
+
+        <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Clear Icon Cache)_:</dt>
+            <dd>
+                <input type="button" value="_(Clear Cache)_" onclick="clearAllIconCache()" class="orange-button">
+                <blockquote class="inline_help">
+                    Delete all locally cached icon files. Icons are re-downloaded and re-converted on next page load.
                 </blockquote>
             </dd>
         </dl>

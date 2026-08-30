@@ -178,6 +178,10 @@ if (!function_exists('compose_icon_to_png_bytes')) {
             return null;
         }
 
+        // Required to preserve alpha channel; without these GD composites onto white
+        imagealphablending($gd, false);
+        imagesavealpha($gd, true);
+
         ob_start();
         imagepng($gd, null, 6);
         $out = ob_get_clean();

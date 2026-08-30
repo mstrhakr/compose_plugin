@@ -923,6 +923,19 @@ switch ($_POST['action']) {
         }
         echo json_encode(['result' => 'success', 'message' => 'Update cache cleared']);
         break;
+    case 'clearAllIconCache':
+        $cleared = 0;
+        $cacheDir = rtrim(COMPOSE_ICON_CACHE_DIR, '/');
+        if (is_dir($cacheDir)) {
+            foreach (glob($cacheDir . '/*.png') ?: [] as $file) {
+                if (@unlink($file)) {
+                    $cleared++;
+                }
+            }
+        }
+        composeLogger('Cleared all plugin icon cache entries', ['count' => $cleared], 'user', 'debug', 'icon-cache');
+        echo json_encode(['result' => 'success', 'cleared' => $cleared]);
+        break;
     case 'setEnvPath':
         $script = getPostScript();
         if (!$script) {
