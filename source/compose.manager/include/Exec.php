@@ -1726,6 +1726,10 @@ switch ($_POST['action']) {
                 if ($containerName && $image) {
                     $icon = composeResolveContainerIcon($containerName, $service, $iconByService, $iconByName, $inspectIconCache);
 
+                    if ($icon !== '') {
+                        compose_seed_docker_manager_icon(compose_fetch_icon_to_cache($icon), $containerName);
+                    }
+
                     if ($service !== '' && $icon !== '') {
                         if (!isset($stackContainerCache[$service]) || !is_array($stackContainerCache[$service])) {
                             $stackContainerCache[$service] = [];
@@ -1860,6 +1864,10 @@ switch ($_POST['action']) {
                     // Only check updates for running containers
                     if ($containerName && $image && $state === 'running') {
                         $icon = composeResolveContainerIcon($containerName, $service, $iconByService, $iconByName, $inspectIconCache);
+
+                        if ($icon !== '') {
+                            compose_seed_docker_manager_icon(compose_fetch_icon_to_cache($icon), $containerName);
+                        }
 
                         if ($service !== '' && $icon !== '') {
                             if (!isset($stackContainerCache[$service]) || !is_array($stackContainerCache[$service])) {
