@@ -36,36 +36,10 @@
 >
 
 <CHANGES>
-###2026.08.30.1818
-- Features (icon): cache and normalize icons, seed Docker Manager cache (#141)
-- Features (icon): add debug logging for icon cache operations (#141)
-- Features (icon): bundle resvg for SVG → PNG conversion, add GD to CI (#141)
-- Features (tests): add GD extension to PHP setup in workflow
-- Features (icon): seed Docker Manager cache during container icon resolution (#141)
-- Features (icon): add fetch, convert, and DM-seed helpers (#141)
-- Features (icon): add plugin icon cache path helper (#141)
-- Features (settings): enhance effective command display with improved styling and structure
-- Features (add-stack): inline validation, slug preview, gated Create button
-- Features (add-stack): Automatic/Manual radio for Override File Management
-- Features (add-stack): shared discovery-mode badge + toggle
-- Features (add-stack): Compose Source radio group via shared helper
-- Features (editor): promote Compose Sources &amp; Files to its own tab
-- Features (editor): inline settings validation blocks Apply until resolved
-- Features (editor): live effective docker compose command preview
-- Features (editor): status badge + explicit toggle for compose file discovery
-- Features (editor): merge External Compose Path &amp; File into Compose Source radio
-- Bug Fixes (icon): fix alpha transparency in GD PNG conversion; add global Clear Icon Cache button (#141)
-- Bug Fixes (icon): serve icons through local cache proxy instead of remote URLs (#141)
-- Bug Fixes (icon): clear plugin icon cache on clearIconCache action (#141)
-- Bug Fixes (icon): guard fallback loop for invalid icons (#141)
-- Refactoring (build): reorganize cache path definitions in build scripts refactor(Exec): remove null coalescing for project name and directory refactor(pkg_build): enhance checksum handling in download function
-- Refactoring (add-stack): section-based layout with editor vocabulary
-- Refactoring (editor): split per-stack Advanced section into three subsections
-- Refactoring (settings): move REMOVE_ORPHANS_DEFAULT to global settings page
-- Tests (icon): fix hardcoded cache path expectation to use COMPOSE_ICON_CACHE_DIR constant
-- Tests (icon): add IconCacheTest and bootstrap COMPOSE_ICON_CACHE_DIR temp path (#141)
+###2026.08.30.1823
+- Minor updates and improvements
 - [PR #139](https://github.com/mstrhakr/compose_plugin/pull/139)
-- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.07.02...v2026.08.30.1818)
+- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.07.02...v2026.08.30.1823)
 </CHANGES>
 
 <!-- The 'pre-install' script. -->
