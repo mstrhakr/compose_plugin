@@ -90,6 +90,83 @@ function composeEscapeSelectorFragment(value) {
         updateDiscoveryModeUI('settings', suppressChangeTracking);
     }
 
+// Mirror of compose_manager_sanitize_project_name (ProjectNameSanitizer.php)
+// so the modal's slug preview matches what the server will create.
+function composeSanitizeProjectSlug(raw) {
+    var s = String(raw || '').toLowerCase().trim();
+    s = s.replace(/[^a-z0-9_-]/g, '_');
+    s = s.replace(/_+/g, '_');
+    s = s.replace(/-+/g, '-');
+    s = s.replace(/^[_-]+|[_-]+$/g, '');
+    return s === '' ? 'compose' : s;
+}
+
+// Show/hide the "Project folder: <slug>" preview under the Stack Name input.
+function updateAddStackSlugPreview() {
+    var name = ($('#compose-stack-name').val() || '').trim();
+    var $wrap = $('#compose-stack-name-slug-wrap');
+    if (!$wrap.length) return;
+    if (!name) {
+        $wrap.hide();
+        return;
+    }
+    $('#compose-stack-name-slug').text(composeSanitizeProjectSlug(name));
+    $wrap.show();
+}
+
+// Recompute per-field inline errors and gate the Create button.
+function updateAddStackValidity() {
+    var errors = [];
+    var name = ($('#compose-stack-name').val() || '').trim();
+    var $nameErr = $('#compose-stack-name-error');
+    if (!name) {
+        errors.push('name');
+        $nameErr.text('Stack name is required.').show();
+    } else {
+        $nameErr.hide().text('');
+    }
+
+    var mode = ($('input[name="compose-stack-compose-source"]:checked').val()) || 'project';
+
+    var $pathErr = $('#compose-stack-external-path-error');
+    var $fileErr = $('#compose-stack-external-file-error');
+
+    if (mode === 'folder') {
+        var path = ($('#compose-stack-external-path').val() || '').trim();
+        if (!path) {
+            errors.push('external-path');
+            $pathErr.text('Choose a folder for the external compose source.').show();
+        } else if (!/^\/(mnt|boot\/config)\//.test(path)) {
+            errors.push('external-path');
+            $pathErr.text('Path must be under /mnt/ or /boot/config/.').show();
+        } else {
+            $pathErr.hide().text('');
+        }
+    } else {
+        $pathErr.hide().text('');
+    }
+
+    if (mode === 'file') {
+        var file = ($('#compose-stack-external-file').val() || '').trim();
+        if (!file) {
+            errors.push('external-file');
+            $fileErr.text('Choose a compose file to use as the source.').show();
+        } else if (!/^\/(mnt|boot\/config)\//.test(file)) {
+            errors.push('external-file');
+            $fileErr.text('Path must be under /mnt/ or /boot/config/.').show();
+        } else if (!/\.ya?ml$/i.test(file)) {
+            errors.push('external-file');
+            $fileErr.text('File must have a .yml or .yaml extension.').show();
+        } else {
+            $fileErr.hide().text('');
+        }
+    } else {
+        $fileErr.hide().text('');
+    }
+
+    $('#compose-stack-create-btn').prop('disabled', errors.length > 0);
+}
+
 // Wiring for each surface that owns a Compose File Discovery badge+toggle.
 var DISCOVERY_MODE_SCOPE_CONFIGS = {
     settings: {
@@ -3312,7 +3389,13 @@ function addStack() {
                         <div class="settings-field">
                             <label for="compose-stack-name">Stack Name</label>
                             <input type="text" id="compose-stack-name" placeholder="e.g. My Compose Stack" autofocus>
-                            <div class="settings-field-help">Display name shown in the UI.</div>
+                            <div id="compose-stack-name-error" class="compose-status-danger" style="margin-top:6px;display:none;font-size:0.9em;"></div>
+                            <div class="settings-field-help" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                                <span>Display name shown in the UI.</span>
+                                <span id="compose-stack-name-slug-wrap" style="display:none;">
+                                    Project folder: <code id="compose-stack-name-slug" style="font-size:0.95em;"></code>
+                                </span>
+                            </div>
                         </div>
 
                         <div class="settings-field">
@@ -3345,11 +3428,13 @@ function addStack() {
 
                             <div id="compose-stack-external-path-wrap" class="settings-compose-source-input" style="margin-top:10px;display:none;">
                                 <input type="text" id="compose-stack-external-path" placeholder="/mnt/user/appdata/myapp/" data-pickroot="/" data-picktop="/mnt" data-pickfolders="true" data-pickcloseonfile="true">
+                                <div id="compose-stack-external-path-error" class="compose-status-danger" style="margin-top:6px;display:none;font-size:0.9em;"></div>
                                 <div class="settings-field-help">Folder must exist and contain a file matching <code>*compose*.yml</code>.</div>
                             </div>
 
                             <div id="compose-stack-external-file-wrap" class="settings-compose-source-input" style="margin-top:10px;display:none;">
                                 <input type="text" id="compose-stack-external-file" placeholder="/mnt/user/appdata/myapp/custom.compose.yml" data-pickroot="/" data-picktop="/mnt" data-pickcloseonfile="true" data-pickfilter="yml,yaml">
+                                <div id="compose-stack-external-file-error" class="compose-status-danger" style="margin-top:6px;display:none;font-size:0.9em;"></div>
                                 <div class="settings-field-help">Must be a <code>.yml</code>/<code>.yaml</code> file under <code>/mnt/</code> or <code>/boot/config/</code>.</div>
                             </div>
                         </div>
@@ -3393,7 +3478,7 @@ function addStack() {
                 </div>
                 <div class="compose-modal-footer">
                     <button class="editor-btn editor-btn-cancel" onclick="closeComposeStackModal()">Cancel</button>
-                    <button class="editor-btn editor-btn-save-all" onclick="submitComposeStackModal()">Create</button>
+                    <button class="editor-btn editor-btn-save-all" id="compose-stack-create-btn" onclick="submitComposeStackModal()" disabled>Create</button>
                 </div>
             </div>
         </div>
@@ -3446,6 +3531,20 @@ function addStack() {
         updateAddStackDefaultComposeDiscoveryState();
     });
     updateAddStackDefaultComposeDiscoveryState();
+
+    // Inline validation + slug preview.
+    $('#compose-stack-name').off('input.addStackValidate').on('input.addStackValidate', function() {
+        updateAddStackSlugPreview();
+        updateAddStackValidity();
+    });
+    $('#compose-stack-external-path, #compose-stack-external-file').off('input.addStackValidate').on('input.addStackValidate', function() {
+        updateAddStackValidity();
+    });
+    $('input[name="compose-stack-compose-source"]').off('change.addStackValidate').on('change.addStackValidate', function() {
+        updateAddStackValidity();
+    });
+    updateAddStackSlugPreview();
+    updateAddStackValidity();
 
     window.closeComposeStackModal = function() {
         var overlay = document.getElementById('compose-stack-modal-overlay');
