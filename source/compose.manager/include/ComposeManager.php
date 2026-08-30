@@ -526,6 +526,11 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                     <span id="editor-tab-labels-text">Labels</span>
                     <span class="editor-tab-modified" aria-hidden="true"></span>
                 </button>
+                <button class="editor-tab" id="editor-tab-sources" onclick="switchTab('sources')" role="tab" aria-selected="false" aria-controls="editor-panel-sources">
+                    <i class="fa fa-files-o" aria-hidden="true"></i>
+                    Sources
+                    <span class="editor-tab-modified" aria-hidden="true"></span>
+                </button>
                 <button class="editor-tab" id="editor-tab-settings" onclick="switchTab('settings')" role="tab" aria-selected="false" aria-controls="editor-panel-settings">
                     <i class="fa fa-sliders" aria-hidden="true"></i>
                     Settings
@@ -606,58 +611,9 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 </div>
             </div>
 
-            <!-- ========== SETTINGS PANEL ========== -->
-            <div class="editor-panel" id="editor-panel-settings" role="tabpanel" aria-labelledby="editor-tab-settings">
+            <!-- ========== SOURCES PANEL ========== -->
+            <div class="editor-panel" id="editor-panel-sources" role="tabpanel" aria-labelledby="editor-tab-sources">
                 <div class="settings-panel">
-                    <!-- Stack Identity -->
-                    <div class="settings-section">
-                        <div class="settings-section-title"><i class="fa fa-info-circle"></i> Stack Identity</div>
-
-                        <div class="settings-field">
-                            <label for="settings-name">Stack Name</label>
-                            <input type="text" id="settings-name" placeholder="Enter stack name">
-                            <div class="settings-field-help">Display name shown in the UI. Does not affect the project folder name.</div>
-                        </div>
-
-                        <div class="settings-field">
-                            <label for="settings-description">Description</label>
-                            <textarea id="settings-description" placeholder="Enter description for this stack"></textarea>
-                            <div class="settings-field-help">Brief description of what this stack does.</div>
-                        </div>
-                    </div>
-
-                    <!-- Appearance -->
-                    <div class="settings-section">
-                        <div class="settings-section-title"><i class="fa fa-picture-o"></i> Appearance</div>
-
-                        <div class="settings-field">
-                            <label for="settings-icon-url">Icon URL / Path</label>
-                            <input type="text" id="settings-icon-url" placeholder="https://example.com/icon.png or /path/to/icon.png" data-pickroot="/" data-picktop="/boot/config/plugins/compose.manager/projects" data-pickcloseonfile="true" data-pickfilter="png,jpg,jpeg,gif,svg,ico,webp">
-                            <div class="settings-field-help">URL or local path to a custom icon for this stack. Use the file picker or enter a URL. Leave empty to use the default icon.</div>
-                            <div class="settings-field-icon-preview" id="settings-icon-preview" style="display:none;">
-                                <span>Preview:</span>
-                                <img id="settings-icon-preview-img" src="" alt="Icon preview" onerror="this.parentElement.style.display='none';">
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Stack WebUI -->
-                    <div class="settings-section">
-                        <div class="settings-section-title"><i class="fa fa-globe"></i> Stack WebUI</div>
-
-                        <div class="settings-field">
-                            <label for="settings-webui-url">WebUI URL</label>
-                            <input type="text" id="settings-webui-url" placeholder="http://tower.local:8080/">
-                            <div class="settings-field-help">URL to the main WebUI for this stack. This adds a "WebUI" option to the stack's context menu. </div>
-                            <div id="settings-webui-url-error" class="compose-status-danger" style="margin-top:6px;display:none;font-size:0.9em;"></div>
-                            <div id="settings-webui-suggestion" style="display:none; margin-top:4px; padding:6px 10px; background:rgba(255,255,255,0.05); border:1px solid rgba(255,165,0,0.3); border-radius:4px; font-size:0.9em;">
-                                <span style="color:#aaa;">Detected: </span><code id="settings-webui-detected-url" style="user-select:all;"></code>
-                                <span id="settings-webui-detected-source" style="color:#888; margin-left:6px; font-size:0.85em;"></span>
-                                <button type="button" id="settings-webui-use-btn" class="btn btn-sm" style="margin-left:8px; padding:1px 10px; font-size:0.85em;">Use</button>
-                            </div>
-                        </div>
-                    </div>
-
                     <!-- Compose Sources & Files -->
                     <div class="settings-section">
                         <div class="settings-section-title"><i class="fa fa-files-o"></i> Compose Sources &amp; Files</div>
@@ -735,6 +691,60 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                             <div class="settings-field-help" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
                                 <span>Reflects the currently <strong>saved</strong> configuration.</span>
                                 <span id="settings-effective-command-dirty" class="compose-status-warning" style="display:none;font-size:0.9em;"><i class="fa fa-pencil"></i> Unsaved changes — apply to refresh.</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ========== SETTINGS PANEL ========== -->
+            <div class="editor-panel" id="editor-panel-settings" role="tabpanel" aria-labelledby="editor-tab-settings">
+                <div class="settings-panel">
+                    <!-- Stack Identity -->
+                    <div class="settings-section">
+                        <div class="settings-section-title"><i class="fa fa-info-circle"></i> Stack Identity</div>
+
+                        <div class="settings-field">
+                            <label for="settings-name">Stack Name</label>
+                            <input type="text" id="settings-name" placeholder="Enter stack name">
+                            <div class="settings-field-help">Display name shown in the UI. Does not affect the project folder name.</div>
+                        </div>
+
+                        <div class="settings-field">
+                            <label for="settings-description">Description</label>
+                            <textarea id="settings-description" placeholder="Enter description for this stack"></textarea>
+                            <div class="settings-field-help">Brief description of what this stack does.</div>
+                        </div>
+                    </div>
+
+                    <!-- Appearance -->
+                    <div class="settings-section">
+                        <div class="settings-section-title"><i class="fa fa-picture-o"></i> Appearance</div>
+
+                        <div class="settings-field">
+                            <label for="settings-icon-url">Icon URL / Path</label>
+                            <input type="text" id="settings-icon-url" placeholder="https://example.com/icon.png or /path/to/icon.png" data-pickroot="/" data-picktop="/boot/config/plugins/compose.manager/projects" data-pickcloseonfile="true" data-pickfilter="png,jpg,jpeg,gif,svg,ico,webp">
+                            <div class="settings-field-help">URL or local path to a custom icon for this stack. Use the file picker or enter a URL. Leave empty to use the default icon.</div>
+                            <div class="settings-field-icon-preview" id="settings-icon-preview" style="display:none;">
+                                <span>Preview:</span>
+                                <img id="settings-icon-preview-img" src="" alt="Icon preview" onerror="this.parentElement.style.display='none';">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Stack WebUI -->
+                    <div class="settings-section">
+                        <div class="settings-section-title"><i class="fa fa-globe"></i> Stack WebUI</div>
+
+                        <div class="settings-field">
+                            <label for="settings-webui-url">WebUI URL</label>
+                            <input type="text" id="settings-webui-url" placeholder="http://tower.local:8080/">
+                            <div class="settings-field-help">URL to the main WebUI for this stack. This adds a "WebUI" option to the stack's context menu. </div>
+                            <div id="settings-webui-url-error" class="compose-status-danger" style="margin-top:6px;display:none;font-size:0.9em;"></div>
+                            <div id="settings-webui-suggestion" style="display:none; margin-top:4px; padding:6px 10px; background:rgba(255,255,255,0.05); border:1px solid rgba(255,165,0,0.3); border-radius:4px; font-size:0.9em;">
+                                <span style="color:#aaa;">Detected: </span><code id="settings-webui-detected-url" style="user-select:all;"></code>
+                                <span id="settings-webui-detected-source" style="color:#888; margin-left:6px; font-size:0.85em;"></span>
+                                <button type="button" id="settings-webui-use-btn" class="btn btn-sm" style="margin-left:8px; padding:1px 10px; font-size:0.85em;">Use</button>
                             </div>
                         </div>
                     </div>

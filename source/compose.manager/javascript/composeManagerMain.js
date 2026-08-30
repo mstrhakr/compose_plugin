@@ -1337,7 +1337,7 @@ function initEditorModal() {
                 var $activeTab = $('.editor-tab.active');
                 if ($activeTab.is(':focus') || $activeTab.parent().find(':focus').length) {
                     e.preventDefault();
-                    var tabs = ['compose', 'env', 'labels', 'settings'];
+                    var tabs = ['compose', 'env', 'labels', 'sources', 'settings'];
                     var currentIdx = tabs.indexOf(editorModal.currentTab);
                     var newIdx;
                     if (e.key === 'ArrowLeft') {
@@ -1385,15 +1385,15 @@ function initEditorModal() {
 
 // Switch between tabs (compose / env / labels / settings)
 function switchTab(tabName) {
-    var validTabs = ['compose', 'env', 'labels', 'settings'];
+    var validTabs = ['compose', 'env', 'labels', 'sources', 'settings'];
     if (validTabs.indexOf(tabName) === -1) {
         composeLogger('Invalid tab name: ' + tabName, null, 'user', 'error', 'switchTab');
         return;
     }
 
-    if (tabName !== 'settings' && hasPathSensitiveSettingsChanges()) {
+    if (tabName !== 'sources' && hasPathSensitiveSettingsChanges()) {
         enforcePathSettingsExclusivity('opening other tabs');
-        tabName = 'settings';
+        tabName = 'sources';
     }
 
     // Update tab buttons
@@ -1469,6 +1469,7 @@ function getEditorSaveTargetPath() {
                 return editorModal.filePaths.effectiveOverride || editorModal.filePaths.projectOverride || editorModal.filePaths.stackMeta;
             }
             return editorModal.filePaths.projectOverride || editorModal.filePaths.stackMeta;
+        case 'sources':
         case 'settings':
         default:
             return editorModal.filePaths.stackMeta;
@@ -1486,6 +1487,7 @@ function getEditorActiveFilePath() {
                 return editorModal.filePaths.effectiveOverride || editorModal.filePaths.projectOverride || '';
             }
             return '';
+        case 'sources':
         case 'settings':
         default:
             return '';
@@ -1600,9 +1602,7 @@ function updateEffectiveCommandDirtyIndicator() {
 function normalizeComposeSourceMode(mode) {
     if (mode === 'folder' || mode === 'file') return mode;
     return 'project';
-}
-
-// Apply a Compose Source selection: swap visible picker and clear the other input.
+}// Apply a Compose Source selection: swap visible picker and clear the other input.
 // suppressChangeTracking=true when reflecting server state during load / reset.
 function setComposeSource(mode, suppressChangeTracking) {
     mode = normalizeComposeSourceMode(mode);
@@ -1637,6 +1637,15 @@ function setComposeSource(mode, suppressChangeTracking) {
     }
 }
 
+// Setting fieldIds that live under the Sources tab; all others belong to Settings.
+var SOURCES_TAB_SETTING_FIELDS = new Set([
+    'external-compose-path',
+    'external-compose-file',
+    'extra-compose-files',
+    'env-path',
+    'use-default-compose-files'
+]);
+
 // Update the modified indicator on tabs
 function updateTabModifiedState() {
     // Compose tab
@@ -1660,8 +1669,24 @@ function updateTabModifiedState() {
         $('#editor-tab-labels').removeClass('modified');
     }
 
-    // Settings tab
-    if (editorModal.modifiedSettings.size > 0) {
+    // Sources vs Settings — split editorModal.modifiedSettings by field ownership.
+    var sourcesModified = false;
+    var settingsModified = false;
+    editorModal.modifiedSettings.forEach(function(fieldId) {
+        if (SOURCES_TAB_SETTING_FIELDS.has(fieldId)) {
+            sourcesModified = true;
+        } else {
+            settingsModified = true;
+        }
+    });
+
+    if (sourcesModified) {
+        $('#editor-tab-sources').addClass('modified');
+    } else {
+        $('#editor-tab-sources').removeClass('modified');
+    }
+
+    if (settingsModified) {
         $('#editor-tab-settings').addClass('modified');
     } else {
         $('#editor-tab-settings').removeClass('modified');
@@ -6483,11 +6508,11 @@ function enforcePathSettingsExclusivity(actionLabel) {
     }
 
     swal({
-        title: 'Save Settings First',
-        text: 'Path/discovery settings changed. Save settings and reload the editor before ' + actionLabel + '.',
+        title: 'Save Sources First',
+        text: 'Compose Sources changed. Save the Sources tab and reload the editor before ' + actionLabel + '.',
         type: 'warning',
         showCancelButton: true,
-        confirmButtonText: 'Save Settings & Reload',
+        confirmButtonText: 'Save Sources & Reload',
         cancelButtonText: 'Cancel'
     }, function(confirmed) {
         if (confirmed) {
@@ -6597,7 +6622,7 @@ function saveCurrentTab() {
     if (!currentTab) return;
     var saveErrors = [];
 
-    if (currentTab !== 'settings' && enforcePathSettingsExclusivity('saving files')) {
+    if (currentTab !== 'sources' && enforcePathSettingsExclusivity('saving files')) {
         return;
     }
 
