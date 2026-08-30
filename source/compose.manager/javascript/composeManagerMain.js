@@ -3376,12 +3376,18 @@ function addStack() {
                         <div class="settings-section-title"><i class="fa fa-tags"></i> Labels &amp; Overrides</div>
 
                         <div class="settings-field">
-                            <label for="compose-stack-override-management-automatic">Override File Management</label>
-                            <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
-                                <input type="checkbox" id="compose-stack-override-management-automatic" checked>
-                                Automatic — plugin manages <code>compose.override.yaml</code> and the Labels tab shows the form editor
-                            </label>
-                            <div class="settings-field-help">Disable for Manual mode: you manage the override file directly and the Labels tab opens the raw YAML editor.</div>
+                            <label>Override File Management</label>
+                            <div id="compose-stack-override-management-radios" style="display:flex;flex-direction:column;gap:6px;">
+                                <label style="display:flex;align-items:flex-start;gap:8px;font-weight:normal;">
+                                    <input type="radio" name="compose-stack-override-management" value="automatic" checked style="margin-top:3px;">
+                                    <span><strong>Automatic</strong> — plugin manages <code>compose.override.yaml</code>. Labels tab shows the form editor.</span>
+                                </label>
+                                <label style="display:flex;align-items:flex-start;gap:8px;font-weight:normal;">
+                                    <input type="radio" name="compose-stack-override-management" value="manual" style="margin-top:3px;">
+                                    <span><strong>Manual</strong> — you manage <code>compose.override.yaml</code> directly. Labels tab shows the raw YAML editor and automated edits are blocked.</span>
+                                </label>
+                            </div>
+                            <div class="settings-field-help">Automatic is recommended for most stacks.</div>
                         </div>
                     </div>
                 </div>
@@ -3406,7 +3412,8 @@ function addStack() {
         var defaultUseDefaultComposeFiles = pluginCfg && pluginCfg.NEW_STACK_USE_DEFAULT_COMPOSE_FILES === 'true';
         var defaultOverrideAutomatic = !(pluginCfg && pluginCfg.NEW_STACK_OVERRIDE_MANAGEMENT_AUTOMATIC === 'false');
         $('#compose-stack-use-default-compose-files').prop('checked', defaultUseDefaultComposeFiles);
-        $('#compose-stack-override-management-automatic').prop('checked', defaultOverrideAutomatic);
+        var overrideMode = defaultOverrideAutomatic ? 'automatic' : 'manual';
+        $('input[name="compose-stack-override-management"][value="' + overrideMode + '"]').prop('checked', true);
         updateAddStackDefaultComposeDiscoveryState();
     });
 
@@ -3454,7 +3461,8 @@ function addStack() {
         var externalFile = document.getElementById('compose-stack-external-file').value.trim();
         var envPath = document.getElementById('compose-stack-env-path').value.trim();
         var useDefaultComposeFiles = document.getElementById('compose-stack-use-default-compose-files').checked ? 'true' : 'false';
-        var overrideManagementAutomatic = document.getElementById('compose-stack-override-management-automatic').checked ? 'true' : 'false';
+        var overrideRadio = document.querySelector('input[name="compose-stack-override-management"]:checked');
+        var overrideManagementAutomatic = (overrideRadio && overrideRadio.value === 'manual') ? 'false' : 'true';
         var errorDiv = document.getElementById('compose-stack-modal-error');
         if (!name) {
             errorDiv.textContent = "Please enter a stack name.";
