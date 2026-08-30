@@ -94,6 +94,209 @@ if (!function_exists('compose_get_icon_cache_path')) {
     }
 }
 
+if (!function_exists('compose_icon_ext_to_mime')) {
+    function compose_icon_ext_to_mime(string $ext): string
+    {
+        return match (strtolower($ext)) {
+            'png'        => 'image/png',
+            'jpg', 'jpeg' => 'image/jpeg',
+            'gif'        => 'image/gif',
+            'webp'       => 'image/webp',
+            'ico'        => 'image/x-icon',
+            'svg'        => 'image/svg+xml',
+            default      => '',
+        };
+    }
+}
+
+if (!function_exists('compose_icon_is_safe_host')) {
+    /** Block loopback, private, and link-local hosts (SSRF prevention). */
+    function compose_icon_is_safe_host(string $host): bool
+    {
+        $ip = gethostbyname($host);
+        if ($ip === $host && filter_var($host, FILTER_VALIDATE_IP) === false) {
+            return false; // unresolvable
+        }
+        return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
+    }
+}
+
+if (!function_exists('compose_icon_to_png_bytes')) {
+    /**
+     * Convert raw image bytes to PNG. Returns null when conversion is impossible
+     * (SVG without tooling, or non-PNG bytes with GD absent).
+     */
+    function compose_icon_to_png_bytes(string $rawBytes, string $mimeHint): ?string
+    {
+        if ($mimeHint === 'image/svg+xml' || stripos(substr($rawBytes, 0, 512), '<svg') !== false) {
+            return null;
+        }
+
+        if (!function_exists('imagecreatefromstring')) {
+            // GD absent — pass through only if bytes are already PNG
+            return substr($rawBytes, 0, 8) === "\x89PNG\r\n\x1a\n" ? $rawBytes : null;
+        }
+
+        $gd = @imagecreatefromstring($rawBytes);
+        if ($gd === false) {
+            return null;
+        }
+
+        ob_start();
+        imagepng($gd, null, 6);
+        $out = ob_get_clean();
+        imagedestroy($gd);
+
+        return ($out !== false && $out !== '') ? $out : null;
+    }
+}
+
+if (!function_exists('compose_fetch_icon_to_cache')) {
+    /**
+     * Download / read an icon source and store as a PNG in the plugin cache dir.
+     * Returns the cache file path on success, or '' on failure.
+     */
+    function compose_fetch_icon_to_cache(string $source, bool $forceRefresh = false): string
+    {
+        $source = trim($source);
+        if ($source === '') {
+            return '';
+        }
+
+        $cachePath = compose_get_icon_cache_path($source);
+
+        if (!$forceRefresh && file_exists($cachePath)) {
+            return $cachePath;
+        }
+
+        $cacheDir = rtrim(COMPOSE_ICON_CACHE_DIR, '/');
+        if (!is_dir($cacheDir) && !@mkdir($cacheDir, 0755, true)) {
+            return '';
+        }
+
+        $rawBytes = null;
+        $mimeHint = '';
+
+        if (strncasecmp($source, 'data:', 5) === 0) {
+            if (preg_match('#^data:(image/[a-z0-9.+\-]+)(?:;[^,]*)?;base64,([A-Za-z0-9+/=\s]+)$#i', $source, $m)) {
+                $mimeHint = strtolower($m[1]);
+                $decoded  = base64_decode(preg_replace('/\s+/', '', $m[2]), true);
+                if ($decoded === false) {
+                    return '';
+                }
+                $rawBytes = $decoded;
+            } elseif (preg_match('#^data:(image/[a-z0-9.+\-]+)(?:;[^,]*)?,(.+)$#is', $source, $m)) {
+                $mimeHint = strtolower($m[1]);
+                $rawBytes = rawurldecode($m[2]);
+            } else {
+                return '';
+            }
+        } elseif (strncasecmp($source, 'http://', 7) === 0 || strncasecmp($source, 'https://', 8) === 0) {
+            $host = parse_url($source, PHP_URL_HOST);
+            if (!$host || !compose_icon_is_safe_host((string) $host)) {
+                return '';
+            }
+            if (!function_exists('curl_init')) {
+                return '';
+            }
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL            => $source,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_MAXREDIRS      => 3,
+                CURLOPT_TIMEOUT        => 10,
+                CURLOPT_CONNECTTIMEOUT => 5,
+                CURLOPT_NOPROGRESS     => false,
+                CURLOPT_PROGRESSFUNCTION => static function ($ch, $dlTotal, $dlNow) {
+                    // Abort if response body exceeds 512 KB
+                    return $dlNow > 524288 ? 1 : 0;
+                },
+                CURLOPT_USERAGENT      => 'ComposeManager/1.0',
+                CURLOPT_SSL_VERIFYPEER => true,
+            ]);
+            $body     = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $ct       = (string) curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
+            curl_close($ch);
+
+            if ($body === false || $httpCode < 200 || $httpCode >= 300) {
+                return '';
+            }
+            $rawBytes = $body;
+            if ($ct !== '') {
+                $mimeHint = strtolower(trim(explode(';', $ct)[0]));
+            }
+            if ($mimeHint === '') {
+                $ext      = strtolower(pathinfo((string) parse_url($source, PHP_URL_PATH), PATHINFO_EXTENSION));
+                $mimeHint = compose_icon_ext_to_mime($ext);
+            }
+        } elseif (strpos($source, '/') === 0) {
+            if (strpos($source, '..') !== false) {
+                return '';
+            }
+            if (
+                strpos($source, '/mnt/') !== 0
+                && strpos($source, '/boot/config/plugins/compose.manager/') !== 0
+            ) {
+                return '';
+            }
+            if (!is_file($source)) {
+                return '';
+            }
+            $raw = file_get_contents($source);
+            if ($raw === false) {
+                return '';
+            }
+            $rawBytes = $raw;
+            $mimeHint = compose_icon_ext_to_mime(strtolower(pathinfo($source, PATHINFO_EXTENSION)));
+        } else {
+            return '';
+        }
+
+        if ($rawBytes === null || $rawBytes === '') {
+            return '';
+        }
+
+        $pngBytes = compose_icon_to_png_bytes($rawBytes, $mimeHint);
+        if ($pngBytes === null) {
+            return '';
+        }
+
+        return file_put_contents($cachePath, $pngBytes) !== false ? $cachePath : '';
+    }
+}
+
+if (!function_exists('compose_seed_docker_manager_icon')) {
+    /** Copy a cached PNG into both Docker Manager icon cache locations. */
+    function compose_seed_docker_manager_icon(string $cachedPngPath, string $containerName): void
+    {
+        if ($cachedPngPath === '' || !file_exists($cachedPngPath)) {
+            return;
+        }
+        if (!preg_match('#^[a-zA-Z0-9][a-zA-Z0-9._-]*$#', $containerName)) {
+            return;
+        }
+
+        $destName = $containerName . '-icon.png';
+        $targets  = [
+            '/usr/local/emhttp/state/plugins/dynamix.docker.manager/images/' . $destName,
+            '/var/lib/docker/unraid/images/' . $destName,
+        ];
+
+        foreach ($targets as $dest) {
+            if (file_exists($dest)) {
+                continue; // DM already has it; don't overwrite
+            }
+            $dir = dirname($dest);
+            if (!is_dir($dir)) {
+                @mkdir($dir, 0755, true);
+            }
+            @copy($cachedPngPath, $dest);
+        }
+    }
+}
+
 if (!function_exists('composeSendNotification')) {
     function composeSendNotification(string $subject, string $message, string $icon = ''): void
     {
