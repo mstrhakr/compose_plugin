@@ -657,9 +657,9 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                         </div>
                     </div>
 
-                    <!-- Advanced -->
+                    <!-- Compose Sources & Files -->
                     <div class="settings-section">
-                        <div class="settings-section-title"><i class="fa fa-sliders"></i> Advanced</div>
+                        <div class="settings-section-title"><i class="fa fa-files-o"></i> Compose Sources &amp; Files</div>
 
                         <div class="settings-field">
                             <label for="settings-external-compose-path">External Compose Path</label>
@@ -697,6 +697,20 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                         </div>
 
                         <div class="settings-field">
+                            <label for="settings-use-default-compose-files">Compose File Selection</label>
+                            <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+                                <input type="checkbox" id="settings-use-default-compose-files">
+                                Use Docker Compose default file discovery (no explicit <code>-f</code> flags)
+                            </label>
+                            <div class="settings-field-help">Enable this for projects that rely on auto-loaded <code>compose.override.*</code> and/or <code>COMPOSE_FILE</code> defined in <code>.env</code>. Leave disabled to keep explicit file selection behavior.</div>
+                        </div>
+                    </div>
+
+                    <!-- Runtime Defaults -->
+                    <div class="settings-section">
+                        <div class="settings-section-title"><i class="fa fa-cogs"></i> Runtime Defaults</div>
+
+                        <div class="settings-field">
                             <label for="settings-default-profile">Default Profile(s)</label>
                             <input type="text" id="settings-default-profile" placeholder="Leave empty for all services">
                             <div class="settings-field-help">
@@ -708,15 +722,11 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                                 <span id="settings-profiles-list" style="font-family:var(--font-bitstream);"></span>
                             </div>
                         </div>
+                    </div>
 
-                        <div class="settings-field">
-                            <label for="settings-use-default-compose-files">Compose File Selection</label>
-                            <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
-                                <input type="checkbox" id="settings-use-default-compose-files">
-                                Use Docker Compose default file discovery (no explicit <code>-f</code> flags)
-                            </label>
-                            <div class="settings-field-help">Enable this for projects that rely on auto-loaded <code>compose.override.*</code> and/or <code>COMPOSE_FILE</code> defined in <code>.env</code>. Leave disabled to keep explicit file selection behavior.</div>
-                        </div>
+                    <!-- Labels & Overrides -->
+                    <div class="settings-section">
+                        <div class="settings-section-title"><i class="fa fa-tags"></i> Labels &amp; Overrides</div>
 
                         <div class="settings-field">
                             <label for="settings-override-management">Override File Management</label>
@@ -724,7 +734,11 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                                 <input type="checkbox" id="settings-override-management">
                                 <span id="settings-override-management-label">Automatic</span>
                             </label>
-                            <div class="settings-field-help">When <strong>Automatic</strong>, the plugin manages the override file in the project directory — label edits and background maintenance are applied automatically. When <strong>Manual</strong>, you control the override file directly; all automated edits are blocked and the Labels tab opens the raw override editor instead of the form view.</div>
+                            <div class="settings-field-help"><strong>Automatic:</strong> plugin manages <code>compose.override.yaml</code> in the project directory and the Labels tab shows the form editor. <strong>Manual:</strong> you own the override file, automated edits are blocked, and the Labels tab shows the raw YAML editor.</div>
+                            <div id="settings-effective-override-path" style="margin-top:8px;display:none;">
+                                <span class="compose-text-muted" style="font-size:0.9em;">Effective override file: </span>
+                                <code id="settings-effective-override-path-value" style="font-size:0.9em;user-select:all;"></code>
+                            </div>
                         </div>
                     </div>
                 </div>

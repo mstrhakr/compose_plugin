@@ -1464,6 +1464,20 @@ function updateEditorFileInfo() {
     setEditorPathText('#editor-edit-file', activeFilePath, fallbackText);
 }
 
+// Render the effective override file path in the Labels & Overrides section.
+function updateEffectiveOverridePathReadout() {
+    var $wrap = $('#settings-effective-override-path');
+    if (!$wrap.length) return;
+    var effective = editorModal.filePaths.effectiveOverride || '';
+    if (!effective) {
+        $wrap.hide();
+        $('#settings-effective-override-path-value').text('');
+        return;
+    }
+    $('#settings-effective-override-path-value').text(effective);
+    $wrap.show();
+}
+
 // Update the modified indicator on tabs
 function updateTabModifiedState() {
     // Compose tab
@@ -5702,6 +5716,7 @@ function loadSettingsData(project, projectName) {
                 editorModal.filePaths.projectOverride = response.projectOverridePath || (compose_root + '/' + project + '/compose.override.yaml');
                 editorModal.filePaths.effectiveOverride = response.effectiveOverridePath || editorModal.filePaths.projectOverride;
                 updateEditorFileInfo();
+                updateEffectiveOverridePathReadout();
 
                 // Labels editor mode (per-stack)
                 var labelsViewMode = response.labelsViewMode === 'advanced' ? 'advanced' : 'basic';
@@ -5758,6 +5773,7 @@ function loadSettingsData(project, projectName) {
         $('#settings-icon-preview').hide();
         $('#settings-available-profiles').hide();
         updateEditorFileInfo();
+        updateEffectiveOverridePathReadout();
         $('#settings-external-compose-info').hide();
         $('#settings-invalid-indirect-warning').hide();
     });
@@ -7026,6 +7042,8 @@ function doCloseEditorModal() {
     $('#settings-available-profiles').hide();
     $('#settings-external-compose-info').hide();
     $('#settings-invalid-indirect-warning').hide();
+    $('#settings-effective-override-path').hide();
+    $('#settings-effective-override-path-value').text('');
 
     // Hide any open file-tree pickers (so they don't float outside the modal)
     $('.fileTree').slideUp('fast');
