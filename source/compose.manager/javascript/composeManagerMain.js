@@ -2469,6 +2469,18 @@ function isValidIconSrc(src) {
         s.indexOf('data:image/') === 0 || s.indexOf('/') === 0;
 }
 
+/** Route remote http(s) icons through the local cache proxy; passthrough otherwise. */
+function composeIconSrc(src) {
+    if (!src || !isValidIconSrc(src)) {
+        return '/plugins/compose.manager/images/question.png';
+    }
+    var s = src.trim();
+    if (s.indexOf('http://') === 0 || s.indexOf('https://') === 0) {
+        return '/plugins/compose.manager/IconCache.php?src=' + encodeURIComponent(s);
+    }
+    return s;
+}
+
 function loadPersistentContainerCache() {
     return new Promise(function(resolve) {
         $.ajax({
@@ -5260,9 +5272,8 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             var localSha = container.localSha || '';
             var remoteSha = container.remoteSha || '';
 
-            var iconSrc = (container.icon && isValidIconSrc(container.icon)) ?
-                composeEscapeAttr(container.icon) :
-                '/plugins/compose.manager/images/question.png';
+            var iconSrc = composeIconSrc(container.icon);
+            iconSrc = composeEscapeAttr(iconSrc);
 
             // Grey out containers without updates when showing update dialog
             var rowOpacity = (cfg.showVersionArrow && !hasUpdate && updateStatus === 'up-to-date') ? '0.5' : '1';
@@ -6481,8 +6492,7 @@ function renderLabelsUI(mainDoc, overrideDoc) {
         editorModal.originalLabels[serviceKey + '_webui'] = webuiValue;
         editorModal.originalLabels[serviceKey + '_shell'] = shellValue;
 
-        var iconSrc = iconValue || '/plugins/compose.manager/images/question.png';
-        html += '<div class="labels-service" data-service="' + composeEscapeAttr(serviceKey) + '">';
+        var iconSrc = composeIconSrc(iconValue); + composeEscapeAttr(serviceKey) + '">';
         html += '<div class="labels-service-header">';
         html += '<img class="labels-service-icon" id="label-icon-preview-' + composeEscapeAttr(serviceKey) + '" src="' + composeEscapeAttr(iconSrc) + '" alt="" onerror="composeIconFallback(this)">';
         html += '<span class="labels-service-name">' + composeEscapeHtml(containerName) + '</span>';
@@ -6514,7 +6524,7 @@ function renderLabelsUI(mainDoc, overrideDoc) {
             var webuiValue = findLabelValue(overrideService, {}, webui_label);
             var shellValue = findLabelValue(overrideService, {}, shell_label);
 
-            var deletedIconSrc = iconValue || '/plugins/compose.manager/images/question.png';
+            var deletedIconSrc = composeIconSrc(iconValue);
             deletedHtml += '<div class="labels-service deleted" data-service="' + composeEscapeAttr(serviceKey) + '" data-deleted="true">';
             deletedHtml += '<div class="labels-service-header">';
             deletedHtml += '<img class="labels-service-icon" src="' + composeEscapeAttr(deletedIconSrc) + '" alt="" onerror="composeIconFallback(this)">';
@@ -8027,9 +8037,7 @@ function renderContainerDetails(stackId, containers, project) {
         var containerShell = container.shell || '/bin/sh';
         html += '<span id="' + uniqueId + '" class="hand" data-name="' + composeEscapeAttr(containerName) + '" data-state="' + composeEscapeAttr(state) + '" data-webui="' + composeEscapeAttr(webui) + '" data-stackid="' + composeEscapeAttr(stackId) + '" data-shell="' + composeEscapeAttr(containerShell) + '">';
         // Use actual image like Docker tab - either container icon or default question.png
-        var iconSrc = (container.icon && isValidIconSrc(container.icon)) ?
-            container.icon :
-            '/plugins/compose.manager/images/question.png';
+        var iconSrc = composeIconSrc(container.icon);
         html += '<img src="' + composeEscapeAttr(iconSrc) + '" class="img" onerror="composeIconFallback(this)">';
         html += '</span>';
         html += '<span class="inner"><span class="appname">' + composeEscapeHtml(shortName) + '</span><br>';

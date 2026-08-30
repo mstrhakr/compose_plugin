@@ -109,8 +109,22 @@ if (!function_exists('compose_icon_ext_to_mime')) {
     }
 }
 
-if (!function_exists('compose_icon_is_safe_host')) {
-    /** Block loopback, private, and link-local hosts (SSRF prevention). */
+if (!function_exists('compose_icon_browser_url')) {
+    /** Return the URL the browser should use: proxy for http(s), passthrough otherwise. */
+    function compose_icon_browser_url(string $src): string
+    {
+        $src = trim($src);
+        if ($src === '') {
+            return '';
+        }
+        if (strncasecmp($src, 'http://', 7) === 0 || strncasecmp($src, 'https://', 8) === 0) {
+            return '/plugins/compose.manager/IconCache.php?src=' . urlencode($src);
+        }
+        return $src;
+    }
+}
+
+if (!function_exists('compose_icon_is_safe_host')) {    /** Block loopback, private, and link-local hosts (SSRF prevention). */
     function compose_icon_is_safe_host(string $host): bool
     {
         $ip = gethostbyname($host);

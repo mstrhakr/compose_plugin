@@ -489,7 +489,7 @@ $script .= <<<'EOT'
                         var stateColor = isRunning ? 'green-text' : 'red-text';
                         var stateText = isRunning ? 'started' : 'stopped';
                         var ctElId = 'dash-ct-' + ctIdShort;
-                        var imgSrc = ctIcon;
+                        var imgSrc = composeIconSrc(ctIcon);
                         var shell = ctShell;
                         var shortId = ctIdShort;
                         var webui = resolveContainerWebUI(ctWebUI);
@@ -563,7 +563,7 @@ $script .= <<<'EOT'
                     var stateColor = state === 'started' ? 'green-text' :
                                     (state === 'partial' ? 'orange-text' : 'red-text');
                     var stateText = state === 'partial' ? 'partial' : state;
-                    var imgSrc = stack.icon || '/plugins/compose.manager/images/question.png';
+                    var imgSrc = composeIconSrc(stack.icon);
                     var isRunning = state === 'started' || state === 'partial';
 
                     // Update status display

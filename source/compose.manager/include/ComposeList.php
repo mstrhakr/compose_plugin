@@ -351,7 +351,9 @@ foreach ($stackInfos as $stackInfo) {
     $o .= "</td>";
 
     // Icon column
-    $imgSrc = $projectIconUrl ?: '/plugins/compose.manager/images/question.png';
+    $imgSrc = $projectIconUrl
+        ? compose_icon_browser_url($projectIconUrl)
+        : '/plugins/compose.manager/images/question.png';
     $o .= "<td class='col-icon'>";
     $o .= "<span class='outer $outerClass'>";
     $o .= "<span id='stack-$id' class='hand' data-stackid='$id' data-project='$projectHtml' data-projectname='$projectNameHtml' data-isup='$isup' data-running='" . ($isrunning ? '1' : '0') . "'>";
