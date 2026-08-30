@@ -36,10 +36,10 @@
 >
 
 <CHANGES>
-###2026.08.30.1823
+###2026.08.30.1848
 - Minor updates and improvements
 - [PR #139](https://github.com/mstrhakr/compose_plugin/pull/139)
-- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.07.02...v2026.08.30.1823)
+- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.07.02...v2026.08.30.1848)
 </CHANGES>
 
 <!-- The 'pre-install' script. -->
