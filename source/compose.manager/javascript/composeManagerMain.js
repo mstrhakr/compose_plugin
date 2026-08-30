@@ -5343,6 +5343,7 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
         var bgDefault = pluginCfg && pluginCfg.RUN_IN_BACKGROUND_DEFAULT === 'true';
         removeOrphansDefault = pluginCfg && pluginCfg.REMOVE_ORPHANS_DEFAULT === 'true';
         var disableWarnings = pluginCfg && pluginCfg.DISABLE_ACTION_WARNINGS === 'true';
+        var stackMismatchDetected = !!showRemoveOrphans;
 
         if (disableWarnings) {
             // In default background mode (warnings disabled and background enabled), don't show toast if background is used
@@ -5355,8 +5356,8 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             return;
         }
 
-        var removeOrphansChecked = removeOrphansDefault || showRemoveOrphans;
-        var showRemoveOrphansOption = cfg.showRemoveOrphans && (removeOrphansChecked || showRemoveOrphans);
+        var removeOrphansChecked = removeOrphansDefault || stackMismatchDetected;
+        var showRemoveOrphansOption = !!cfg.showRemoveOrphans || stackMismatchDetected;
 
         // Use native swal (SweetAlert 1.x) with callback style
         swal({
