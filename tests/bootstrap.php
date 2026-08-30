@@ -39,6 +39,7 @@ define('UNRAID_UPDATE_STATUS_FILE',  sys_get_temp_dir() . '/unraid-update-status
 define('PENDING_RECHECK_FILE',       $_bootConfigTemp . '/pending-recheck.json');
 define('COMPOSE_TTYD_SOCKET_DIR',    sys_get_temp_dir());
 define('COMPOSE_SKIP_TTYD_EXEC',     true);
+define('COMPOSE_ICON_CACHE_DIR',     sys_get_temp_dir() . '/compose_manager_icon_cache_test');
 unset($_bootConfigTemp);
 
 // Load the plugin-tests framework
