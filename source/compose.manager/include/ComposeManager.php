@@ -710,15 +710,6 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                         </div>
 
                         <div class="settings-field">
-                            <label for="REMOVE_ORPHANS_DEFAULT">Remove Orphans by Default</label>
-                            <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
-                                <input type="checkbox" id="REMOVE_ORPHANS_DEFAULT" name="REMOVE_ORPHANS_DEFAULT" <?= ($cfg['REMOVE_ORPHANS_DEFAULT'] ?? 'false') == 'true' ? 'checked' : '' ?>>
-                                Enable <code>--remove-orphans</code> by default for Compose Up/Down actions
-                            </label>
-                            <div class="settings-field-help">When enabled, the Remove orphans option is pre-checked in Compose Up/Down dialogs and bulk start/stop dialogs. Useful when a stack is edited while containers still exist.</div>
-                        </div>
-
-                        <div class="settings-field">
                             <label for="settings-use-default-compose-files">Compose File Selection</label>
                             <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
                                 <input type="checkbox" id="settings-use-default-compose-files">

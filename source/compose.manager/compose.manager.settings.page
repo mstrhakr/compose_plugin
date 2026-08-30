@@ -2693,6 +2693,17 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
         </div>
 
+        <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Remove Orphans by Default)_:</dt>
+            <dd>
+                <input type="checkbox" name="REMOVE_ORPHANS_DEFAULT" id="REMOVE_ORPHANS_DEFAULT" class="compose-toggle" <?= ($cfg['REMOVE_ORPHANS_DEFAULT'] ?? 'false') == 'true' ? 'checked' : '' ?>>
+                <blockquote class="inline_help">
+                    When enabled, the <em>Remove orphans</em> option is pre-checked in Compose Up/Down dialogs and bulk start/stop dialogs.
+                    Useful when a stack is edited while containers still exist. Adds <code>--remove-orphans</code> to the resulting docker compose command.
+                </blockquote>
+            </dd>
+        </dl>
+
         <div class="title"><span class="left"><i class="fa fa-plus-square icon"></i>_(New Stack Configuration)_</span></div>
         <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Default settings applied automatically when creating new compose stacks.</p>
 
