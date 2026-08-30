@@ -145,27 +145,48 @@ if (!function_exists('compose_icon_to_png_bytes')) {
         $isSvg = $mimeHint === 'image/svg+xml' || stripos(substr($rawBytes, 0, 512), '<svg') !== false;
 
         if ($isSvg) {
+            // Prefer bundled resvg (reads SVG from stdin, writes PNG to a temp file)
             $bin = defined('COMPOSE_RESVG_BIN') ? COMPOSE_RESVG_BIN : '';
-            if ($bin === '' || !is_executable($bin)) {
-                return null;
+            if ($bin !== '' && is_executable($bin)) {
+                $tmpOut = tempnam(sys_get_temp_dir(), 'resvg_') . '.png';
+                $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+                $proc = proc_open([$bin, '--resources-dir', sys_get_temp_dir(), '-', $tmpOut], $descriptors, $pipes);
+                if (is_resource($proc)) {
+                    fwrite($pipes[0], $rawBytes);
+                    fclose($pipes[0]);
+                    stream_get_contents($pipes[1]);
+                    fclose($pipes[1]);
+                    fclose($pipes[2]);
+                    $exit = proc_close($proc);
+                    $out  = ($exit === 0 && file_exists($tmpOut)) ? file_get_contents($tmpOut) : null;
+                    @unlink($tmpOut);
+                    if ($out !== false && $out !== '' && $out !== null) {
+                        return $out;
+                    }
+                }
             }
-            // resvg reads SVG from stdin but needs a temp file for PNG output
-            $tmpOut = tempnam(sys_get_temp_dir(), 'resvg_') . '.png';
-            $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
-            $proc = proc_open([$bin, '--resources-dir', sys_get_temp_dir(), '-', $tmpOut], $descriptors, $pipes);
-            if (!is_resource($proc)) {
-                return null;
-            }
-            fwrite($pipes[0], $rawBytes);
-            fclose($pipes[0]);
-            stream_get_contents($pipes[1]);
-            fclose($pipes[1]);
-            fclose($pipes[2]);
-            $exit = proc_close($proc);
 
-            $out = ($exit === 0 && file_exists($tmpOut)) ? file_get_contents($tmpOut) : null;
-            @unlink($tmpOut);
-            return ($out !== false && $out !== '' && $out !== null) ? $out : null;
+            // Fallback: rsvg-convert (common on Unraid and most Linux systems)
+            $rsvg = trim((string) shell_exec('command -v rsvg-convert 2>/dev/null'));
+            if ($rsvg !== '') {
+                $tmpSvg = tempnam(sys_get_temp_dir(), 'cmpi_') . '.svg';
+                $tmpPng = substr($tmpSvg, 0, -4) . '.png';
+                if (@file_put_contents($tmpSvg, $rawBytes) !== false) {
+                    exec(escapeshellarg($rsvg) . ' -w 64 -h 64 -o ' . escapeshellarg($tmpPng)
+                        . ' ' . escapeshellarg($tmpSvg) . ' 2>/dev/null', $_out, $rc);
+                    @unlink($tmpSvg);
+                    if ($rc === 0 && is_file($tmpPng)) {
+                        $out = file_get_contents($tmpPng);
+                        @unlink($tmpPng);
+                        if ($out !== false && $out !== '') {
+                            return $out;
+                        }
+                    }
+                    @unlink($tmpPng);
+                }
+            }
+
+            return null;
         }
 
         if (!function_exists('imagecreatefromstring')) {

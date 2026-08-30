@@ -639,6 +639,113 @@ class StackInfoTest extends TestCase
         $this->assertSame($expected, compose_get_icon_cache_path($source));
     }
 
+    // ===========================================
+    // Icon Fetch + Cache Tests
+    // ===========================================
+
+    /** Minimal valid 1×1 red PNG, no GD required to decode. */
+    private function minimalPngBytes(): string
+    {
+        return base64_decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADklEQVQI12P4z8BQDwAD' .
+            'hQGAWjR9awAAAABJRU5ErkJggg=='
+        );
+    }
+
+    public function testFetchIconToCachePersistsPngDataUri(): void
+    {
+        $png    = $this->minimalPngBytes();
+        $source = 'data:image/png;base64,' . base64_encode($png);
+
+        $path = compose_fetch_icon_to_cache($source);
+
+        $this->assertNotSame('', $path, 'cache write must succeed for a PNG data URI');
+        $this->assertFileExists($path);
+        $this->assertSame($png, file_get_contents($path));
+    }
+
+    public function testFetchIconToCacheIsIdempotent(): void
+    {
+        $source = 'data:image/png;base64,' . base64_encode($this->minimalPngBytes());
+
+        $path1 = compose_fetch_icon_to_cache($source);
+        $path2 = compose_fetch_icon_to_cache($source);
+
+        $this->assertNotSame('', $path1);
+        $this->assertSame($path1, $path2, 'second call must return the same cached path');
+    }
+
+    public function testFetchIconToCacheReturnsEmptyForEmptySource(): void
+    {
+        $this->assertSame('', compose_fetch_icon_to_cache(''));
+    }
+
+    public function testFetchIconToCacheRejectsPathOutsideAllowedPrefixes(): void
+    {
+        $this->assertSame('', compose_fetch_icon_to_cache('/etc/passwd'));
+        $this->assertSame('', compose_fetch_icon_to_cache('/tmp/icon.png'));
+    }
+
+    public function testFetchIconToCacheStoresLocalPngFile(): void
+    {
+        $pluginDir = '/boot/config/plugins/compose.manager';
+        if (!is_dir($pluginDir) || !is_writable($pluginDir)) {
+            $this->markTestSkipped('Plugin config dir not writable; local-file test requires real Unraid paths');
+        }
+
+        $png     = $this->minimalPngBytes();
+        $tmpFile = $pluginDir . '/test-icon-src-' . uniqid() . '.png';
+        file_put_contents($tmpFile, $png);
+
+        try {
+            $path = compose_fetch_icon_to_cache($tmpFile);
+            $this->assertNotSame('', $path, 'local PNG under allowed prefix must be cached');
+            $this->assertFileExists($path);
+        } finally {
+            @unlink($tmpFile);
+            @unlink(compose_get_icon_cache_path($tmpFile));
+        }
+    }
+
+    public function testFetchIconToCacheReturnsFallbackEmptyForSvgWithoutConverter(): void
+    {
+        $resvgOk = defined('COMPOSE_RESVG_BIN') && is_executable(COMPOSE_RESVG_BIN);
+        $rsvgOk  = trim((string) shell_exec('command -v rsvg-convert 2>/dev/null')) !== '';
+        if ($resvgOk || $rsvgOk) {
+            $this->markTestSkipped('SVG converter available; graceful-fail path not reachable');
+        }
+
+        $svg    = '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"></svg>';
+        $source = 'data:image/svg+xml;base64,' . base64_encode($svg);
+
+        $this->assertSame('', compose_fetch_icon_to_cache($source));
+    }
+
+    public function testIconNormalizePngPassthrough(): void
+    {
+        $png = $this->minimalPngBytes();
+        $this->assertSame($png, compose_icon_to_png_bytes($png, 'image/png'));
+    }
+
+    public function testSeedDockerManagerIconCopiesFile(): void
+    {
+        $source = 'data:image/png;base64,' . base64_encode($this->minimalPngBytes());
+        $cached = compose_fetch_icon_to_cache($source);
+
+        if ($cached === '') {
+            $this->markTestSkipped('Cache write failed; cannot test DM seeding');
+        }
+
+        $name    = 'test-compose-icon-seed';
+        $ramPath = '/usr/local/emhttp/state/plugins/dynamix.docker.manager/images/' . $name . '-icon.png';
+        @unlink($ramPath);
+
+        compose_seed_docker_manager_icon($cached, $name);
+
+        $this->assertFileExists($ramPath, 'seeding must copy PNG into Docker Manager RAM cache');
+        @unlink($ramPath);
+    }
+
     public function testGetWebUIUrl(): void
     {
         $stack = 'webui-stack';
