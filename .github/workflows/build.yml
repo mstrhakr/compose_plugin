@@ -115,6 +115,8 @@ jobs:
             -v /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro \
             -e TZ="America/New_York" \
             -e COMPOSE_VERSION="$COMPOSE_VERSION" \
+            -e RESVG_VERSION="$RESVG_VERSION" \
+            -e RESVG_SHA256="$RESVG_SHA256" \
             -e OUTPUT_FOLDER="/mnt/output" \
             -e PKG_VERSION="${VERSION}" \
             -e PKG_BUILD="${BUILD}" \
