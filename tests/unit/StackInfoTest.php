@@ -737,7 +737,16 @@ class StackInfoTest extends TestCase
         }
 
         $name    = 'test-compose-icon-seed';
+        $ramDir  = '/usr/local/emhttp/state/plugins/dynamix.docker.manager/images';
         $ramPath = '/usr/local/emhttp/state/plugins/dynamix.docker.manager/images/' . $name . '-icon.png';
+
+        if (!is_dir($ramDir) && !@mkdir($ramDir, 0755, true)) {
+            $this->markTestSkipped('Docker Manager RAM icon dir is not creatable in this environment');
+        }
+        if (!is_writable($ramDir)) {
+            $this->markTestSkipped('Docker Manager RAM icon dir is not writable in this environment');
+        }
+
         @unlink($ramPath);
 
         compose_seed_docker_manager_icon($cached, $name);
