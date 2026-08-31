@@ -36,10 +36,10 @@
 >
 
 <CHANGES>
-###2026.08.31.1513
-- Bug Fixes (codeql): avoid html sink in labels renderer
+###2026.08.31.1552
+- Bug Fixes (codeql): add sanitization for user-entered icon values in live preview
 - [PR #139](https://github.com/mstrhakr/compose_plugin/pull/139)
-- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.07.02...v2026.08.31.1513)
+- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.07.02...v2026.08.31.1552)
 </CHANGES>
 
 <!-- The 'pre-install' script. -->
