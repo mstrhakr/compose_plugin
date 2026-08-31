@@ -2481,6 +2481,41 @@ function composeIconSrc(src) {
     return s;
 }
 
+// Sanitize user-entered icon values before assigning to image src in live preview.
+function sanitizeIconPreviewSrc(raw) {
+    var fallback = '/plugins/compose.manager/images/question.png';
+    if (typeof raw !== 'string') {
+        return fallback;
+    }
+
+    var s = raw.trim();
+    if (!s) {
+        return fallback;
+    }
+
+    if (/^https?:\/\//i.test(s)) {
+        try {
+            var parsed = new URL(s);
+            if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+                return composeIconSrc(s);
+            }
+        } catch (e) {
+            return fallback;
+        }
+        return fallback;
+    }
+
+    if (/^\/[\w./:@%+\-=~]+$/i.test(s)) {
+        return s;
+    }
+
+    if (/^data:image\/(png|jpeg|jpg|gif|webp|x-icon|vnd\.microsoft\.icon);base64,[a-z0-9+/=\s]+$/i.test(s)) {
+        return s.replace(/\s+/g, '');
+    }
+
+    return fallback;
+}
+
 function loadPersistentContainerCache() {
     return new Promise(function(resolve) {
         $.ajax({
@@ -6655,11 +6690,7 @@ function renderLabelsUI(mainDoc, overrideDoc) {
             $input.data('iconDebounce', setTimeout(function() {
                 var iconUrl = $input.val().trim();
                 var $preview = $('#label-icon-preview-' + service);
-                if (iconUrl && isValidIconSrc(iconUrl)) {
-                    $preview.attr('src', iconUrl);
-                } else {
-                    $preview.attr('src', '/plugins/compose.manager/images/question.png');
-                }
+                $preview.attr('src', sanitizeIconPreviewSrc(iconUrl));
             }, 300));
         }
 
