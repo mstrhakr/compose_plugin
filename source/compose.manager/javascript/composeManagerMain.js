@@ -6462,10 +6462,22 @@ function createEnvTemplate() {
 
 // Render the WebUI Labels UI
 function renderLabelsUI(mainDoc, overrideDoc) {
-    var html = '';
-    var deletedHtml = '';
+    var $container = $('#labels-services-container');
     var hasServices = false;
     var hasDeletedServices = false;
+    var $deletedServices = $('<div>', { 'class': 'labels-deleted-services' });
+
+    $container.empty();
+
+    function buildLabeledInput(iconClass, labelText, inputAttrs) {
+        var $field = $('<div>', { 'class': 'labels-field' });
+        var $label = $('<label>');
+        $label.append($('<i>', { 'class': iconClass }));
+        $label.append(document.createTextNode(' ' + labelText));
+        $field.append($label);
+        $field.append($('<input>').attr(inputAttrs));
+        return $field;
+    }
 
     // Process services from main compose file
     for (var serviceKey in mainDoc.services) {
@@ -6493,26 +6505,52 @@ function renderLabelsUI(mainDoc, overrideDoc) {
         editorModal.originalLabels[serviceKey + '_webui'] = webuiValue;
         editorModal.originalLabels[serviceKey + '_shell'] = shellValue;
 
-        var iconSrc = composeIconSrc(iconValue); + composeEscapeAttr(serviceKey) + '">';
-        html += '<div class="labels-service-header">';
-        html += '<img class="labels-service-icon" id="label-icon-preview-' + composeEscapeAttr(serviceKey) + '" src="' + composeEscapeAttr(iconSrc) + '" alt="" onerror="composeIconFallback(this)">';
-        html += '<span class="labels-service-name">' + composeEscapeHtml(containerName) + '</span>';
-        html += '</div>';
-        html += '<div class="labels-service-fields">';
-        html += '<div class="labels-field">';
-        html += '<label><i class="fa fa-picture-o"></i> Icon URL / Path</label>';
-        html += '<input type="text" id="label-' + composeEscapeAttr(serviceKey) + '-icon" value="' + composeEscapeAttr(iconValue) + '" placeholder="https://example.com/icon.png or /path/to/icon.png" data-service="' + composeEscapeAttr(serviceKey) + '" data-field="icon" data-pickroot="/" data-picktop="/boot/config/plugins/compose.manager/projects" data-pickcloseonfile="true" data-pickfilter="png,jpg,jpeg,gif,svg,ico,webp">';
-        html += '</div>';
-        html += '<div class="labels-field">';
-        html += '<label><i class="fa fa-globe"></i> WebUI URL</label>';
-        html += '<input type="text" id="label-' + composeEscapeAttr(serviceKey) + '-webui" value="' + composeEscapeAttr(webuiValue) + '" placeholder="http://[IP]:[PORT:8080]/" data-service="' + composeEscapeAttr(serviceKey) + '" data-field="webui">';
-        html += '</div>';
-        html += '<div class="labels-field">';
-        html += '<label><i class="fa fa-terminal"></i> Shell</label>';
-        html += '<input type="text" id="label-' + composeEscapeAttr(serviceKey) + '-shell" value="' + composeEscapeAttr(shellValue) + '" placeholder="/bin/bash" data-service="' + composeEscapeAttr(serviceKey) + '" data-field="shell">';
-        html += '</div>';
-        html += '</div>';
-        html += '</div>';
+        var iconSrc = composeIconSrc(iconValue);
+        var $serviceRow = $('<div>', { 'class': 'labels-service' }).attr('data-service', serviceKey);
+        var $header = $('<div>', { 'class': 'labels-service-header' });
+        var $fields = $('<div>', { 'class': 'labels-service-fields' });
+
+        $header.append(
+            $('<img>', {
+                'class': 'labels-service-icon',
+                id: 'label-icon-preview-' + serviceKey,
+                src: iconSrc,
+                alt: ''
+            }).attr('onerror', 'composeIconFallback(this)')
+        );
+        $header.append($('<span>', { 'class': 'labels-service-name' }).text(containerName));
+
+        $fields.append(buildLabeledInput('fa fa-picture-o', 'Icon URL / Path', {
+            type: 'text',
+            id: 'label-' + serviceKey + '-icon',
+            value: iconValue,
+            placeholder: 'https://example.com/icon.png or /path/to/icon.png',
+            'data-service': serviceKey,
+            'data-field': 'icon',
+            'data-pickroot': '/',
+            'data-picktop': '/boot/config/plugins/compose.manager/projects',
+            'data-pickcloseonfile': 'true',
+            'data-pickfilter': 'png,jpg,jpeg,gif,svg,ico,webp'
+        }));
+        $fields.append(buildLabeledInput('fa fa-globe', 'WebUI URL', {
+            type: 'text',
+            id: 'label-' + serviceKey + '-webui',
+            value: webuiValue,
+            placeholder: 'http://[IP]:[PORT:8080]/',
+            'data-service': serviceKey,
+            'data-field': 'webui'
+        }));
+        $fields.append(buildLabeledInput('fa fa-terminal', 'Shell', {
+            type: 'text',
+            id: 'label-' + serviceKey + '-shell',
+            value: shellValue,
+            placeholder: '/bin/bash',
+            'data-service': serviceKey,
+            'data-field': 'shell'
+        }));
+
+        $serviceRow.append($header).append($fields);
+        $container.append($serviceRow);
     }
 
     // Check for orphaned services in override that aren't in main (e.g., after rename)
@@ -6526,32 +6564,65 @@ function renderLabelsUI(mainDoc, overrideDoc) {
             var shellValue = findLabelValue(overrideService, {}, shell_label);
 
             var deletedIconSrc = composeIconSrc(iconValue);
-            deletedHtml += '<div class="labels-service deleted" data-service="' + composeEscapeAttr(serviceKey) + '" data-deleted="true">';
-            deletedHtml += '<div class="labels-service-header">';
-            deletedHtml += '<img class="labels-service-icon" src="' + composeEscapeAttr(deletedIconSrc) + '" alt="" onerror="composeIconFallback(this)">';
-            deletedHtml += '<span class="labels-service-name">' + composeEscapeHtml(containerName) + ' <span class="compose-status-danger" style="font-size:0.8em;">(will be removed on save)</span></span>';
-            deletedHtml += '</div>';
-            deletedHtml += '<div class="labels-service-fields">';
-            deletedHtml += '<div class="labels-field"><label><i class="fa fa-picture-o"></i> Icon</label><input type="text" id="orphan-' + composeEscapeAttr(serviceKey) + '-icon" value="' + composeEscapeAttr(iconValue) + '" readonly></div>';
-            deletedHtml += '<div class="labels-field"><label><i class="fa fa-globe"></i> WebUI</label><input type="text" id="orphan-' + composeEscapeAttr(serviceKey) + '-webui" value="' + composeEscapeAttr(webuiValue) + '" readonly></div>';
-            deletedHtml += '<div class="labels-field"><label><i class="fa fa-terminal"></i> Shell</label><input type="text" id="orphan-' + composeEscapeAttr(serviceKey) + '-shell" value="' + composeEscapeAttr(shellValue) + '" readonly></div>';
-            deletedHtml += '</div>';
-            deletedHtml += '</div>';
+            var $deletedRow = $('<div>', { 'class': 'labels-service deleted' })
+                .attr('data-service', serviceKey)
+                .attr('data-deleted', 'true');
+            var $deletedHeader = $('<div>', { 'class': 'labels-service-header' });
+            var $deletedName = $('<span>', { 'class': 'labels-service-name' }).text(containerName + ' ');
+            var $deletedFields = $('<div>', { 'class': 'labels-service-fields' });
+
+            $deletedHeader.append(
+                $('<img>', {
+                    'class': 'labels-service-icon',
+                    src: deletedIconSrc,
+                    alt: ''
+                }).attr('onerror', 'composeIconFallback(this)')
+            );
+            $deletedName.append(
+                $('<span>', { 'class': 'compose-status-danger', style: 'font-size:0.8em;' })
+                    .text('(will be removed on save)')
+            );
+            $deletedHeader.append($deletedName);
+
+            $deletedFields.append(buildLabeledInput('fa fa-picture-o', 'Icon', {
+                type: 'text',
+                id: 'orphan-' + serviceKey + '-icon',
+                value: iconValue,
+                readonly: 'readonly'
+            }));
+            $deletedFields.append(buildLabeledInput('fa fa-globe', 'WebUI', {
+                type: 'text',
+                id: 'orphan-' + serviceKey + '-webui',
+                value: webuiValue,
+                readonly: 'readonly'
+            }));
+            $deletedFields.append(buildLabeledInput('fa fa-terminal', 'Shell', {
+                type: 'text',
+                id: 'orphan-' + serviceKey + '-shell',
+                value: shellValue,
+                readonly: 'readonly'
+            }));
+
+            $deletedRow.append($deletedHeader).append($deletedFields);
+            $deletedServices.append($deletedRow);
         }
     }
 
     if (!hasServices) {
-        html = '<div class="labels-empty-state"><i class="fa fa-cubes"></i> No services defined in compose file</div>';
+        var $empty = $('<div>', { 'class': 'labels-empty-state' });
+        $empty.append($('<i>', { 'class': 'fa fa-cubes' }));
+        $empty.append(document.createTextNode(' No services defined in compose file'));
+        $container.append($empty);
     }
 
     if (hasDeletedServices) {
-        html += '<div class="labels-deleted-section">';
-        html += '<div class="labels-deleted-title" onclick="toggleDeletedServices(this)"><i class="fa fa-chevron-right"></i> Orphaned Services (copy values before saving)</div>';
-        html += '<div class="labels-deleted-services">' + deletedHtml + '</div>';
-        html += '</div>';
+        var $deletedSection = $('<div>', { 'class': 'labels-deleted-section' });
+        var $deletedTitle = $('<div>', { 'class': 'labels-deleted-title' }).attr('onclick', 'toggleDeletedServices(this)');
+        $deletedTitle.append($('<i>', { 'class': 'fa fa-chevron-right' }));
+        $deletedTitle.append(document.createTextNode(' Orphaned Services (copy values before saving)'));
+        $deletedSection.append($deletedTitle).append($deletedServices);
+        $container.append($deletedSection);
     }
-
-    $('#labels-services-container').html(html);
 
     // Attach file tree picker to container icon inputs
     if ($.fn.fileTreeAttach && typeof composeBindFileTreeInputs === 'function') {
