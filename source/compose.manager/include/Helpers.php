@@ -175,8 +175,8 @@ function echoComposeCommand($action, array $options = [])
             return;
         }
 
-        // Fail closed: never hand Docker Compose a project name we could not prove.
-        if (!$stackInfo->hasResolvedIdentity()) {
+        // Fail closed for mutating actions only; logs remains read-only.
+        if ($action !== 'logs' && !$stackInfo->hasResolvedIdentity()) {
             composeLogger(
                 "Blocked '$action' for '{$stackInfo->projectFolder}': compose project identity is unresolved",
                 ['action' => $action, 'path' => $path, 'identity' => $stackInfo->identity->toArray()],
