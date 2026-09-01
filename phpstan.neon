@@ -22,6 +22,7 @@ parameters:
         - "#my_scale_status#"
         - "#csrf_token#"
         - "#getComposeRoot#"
+        - "#getCurlHandle#"
       identifier: function.notFound
     # Platform classes (Docker management)
     - messages:
@@ -29,6 +30,11 @@ parameters:
         - "#DockerUpdate#"
         - "#DockerUtil#"
       identifier: class.notFound
+    # method_exists() against platform classes above is always false in
+    # static analysis (the classes only exist at Unraid runtime), which is
+    # expected -- it's a runtime capability check, not a real bug.
+    - message: "#Call to function method_exists\\(\\) with 'DockerUtil' and#"
+      identifier: function.impossibleType
     # Global variables from platform/defines.php
     - message: "#Variable \\$\\w+ might not be defined#"
       identifier: variable.undefined

@@ -475,7 +475,7 @@ $script .= <<<'EOT'
                         var ctIdRaw = ct.ID || ct.Id || ct.id || ctName;
                         var ctId = String(ctIdRaw || ctName);
                         var ctIdShort = ctId.substring(0, 12);
-                        var ctIcon = ct.Icon || ct.icon || '/plugins/dynamix.docker.manager/images/question.png';
+                        var ctIcon = ct.Icon || ct.icon || '/plugins/compose.manager/images/question.png';
                         var ctShell = ct.Shell || ct.shell || '/bin/bash';
                         var ctWebUI = ct.WebUI || ct.webUI || ct.webui || '';
                         var ctImage = ct.Image || ct.image || '';
@@ -489,7 +489,7 @@ $script .= <<<'EOT'
                         var stateColor = isRunning ? 'green-text' : 'red-text';
                         var stateText = isRunning ? 'started' : 'stopped';
                         var ctElId = 'dash-ct-' + ctIdShort;
-                        var imgSrc = ctIcon;
+                        var imgSrc = composeIconSrc(ctIcon);
                         var shell = ctShell;
                         var shortId = ctIdShort;
                         var webui = resolveContainerWebUI(ctWebUI);
@@ -515,7 +515,7 @@ $script .= <<<'EOT'
 
                         html += '<div class="compose-dash-container">';
                         html += '<span class="compose-dash-ct-icon" id="' + ctElId + '" data-ct-name="' + composeEscapeAttr(ctName) + '" data-ct-id="' + composeEscapeAttr(shortId) + '" data-ct-running="' + (isRunning ? '1' : '0') + '" data-ct-webui="' + composeEscapeAttr(webui) + '" data-ct-shell="' + composeEscapeAttr(shell) + '">';
-                        html += '<img src="' + composeEscapeAttr(imgSrc) + '" onerror="this.src=\'/plugins/dynamix.docker.manager/images/question.png\';">';
+                        html += '<img src="' + composeEscapeAttr(imgSrc) + '" onerror="composeIconFallback(this)">';
                         html += '</span>';
                         html += '<span class="compose-dash-ct-info">';
                         html += '<div class="compose-dash-ct-name">' + composeEscapeHtml(ctName) + '</div>';
@@ -563,7 +563,7 @@ $script .= <<<'EOT'
                     var stateColor = state === 'started' ? 'green-text' :
                                     (state === 'partial' ? 'orange-text' : 'red-text');
                     var stateText = state === 'partial' ? 'partial' : state;
-                    var imgSrc = stack.icon || '/plugins/dynamix.docker.manager/images/question.png';
+                    var imgSrc = composeIconSrc(stack.icon);
                     var isRunning = state === 'started' || state === 'partial';
 
                     // Update status display
@@ -589,7 +589,7 @@ $script .= <<<'EOT'
                     var stateClass = state === 'stopped' ? 'stopped' : 'started';
                     html += '<div class="compose-dash-stack outer stacks ' + stateClass + '" data-stackid="' + stackId + '" data-folder="' + stack.folder + '">';
                     html += '<i class="fa fa-chevron-right compose-dash-expand" id="compose-dash-exp-' + stackId + '"></i>';
-                    html += '<span class="compose-dash-icon" id="compose-dash-icon-' + stackId + '" data-stack-folder="' + stack.folder + '" data-stack-running="' + (isRunning ? '1' : '0') + '" data-stack-webui="' + composeEscapeAttr(webui) + '"><img src="' + composeEscapeAttr(imgSrc) + '" onerror="this.src=\'/plugins/dynamix.docker.manager/images/question.png\';"></span>';
+                    html += '<span class="compose-dash-icon" id="compose-dash-icon-' + stackId + '" data-stack-folder="' + stack.folder + '" data-stack-running="' + (isRunning ? '1' : '0') + '" data-stack-webui="' + composeEscapeAttr(webui) + '"><img src="' + composeEscapeAttr(imgSrc) + '" onerror="composeIconFallback(this)"></span>';
                     html += '<span class="compose-dash-info">';
                     html += '<div class="compose-dash-name">' + $('<div>').text(stack.name).html() + '</div>';
                     html += '<div class="compose-dash-state ' + stateColor + '"><i class="fa ' + stateIcon + '"></i> ' + stateText + '</div>';

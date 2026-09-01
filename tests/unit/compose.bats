@@ -114,9 +114,41 @@ test_setup() {
     [ "$count" -ge 2 ]
 }
 
+@test "compose.sh mutating commands have explicit final exit propagation" {
+    run grep -E '^\s*up\|down\|pull\|update\|stop\|logs\)' "$COMPOSE_SCRIPT"
+    assert_success
+
+    run grep -E '^\s*exit "\$\{operation_exit_code:-0\}"' "$COMPOSE_SCRIPT"
+    assert_success
+}
+
+@test "compose.sh records command rc into operation_exit_code" {
+    run grep -E '^\s*operation_exit_code=\$exit_code' "$COMPOSE_SCRIPT"
+    assert_success
+
+    local count
+    count=$(grep -cE '^\s*operation_exit_code=\$exit_code' "$COMPOSE_SCRIPT")
+    [ "$count" -ge 4 ]
+}
+
 @test "compose_autoupdate.sh uses --ignore-buildable" {
     local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
     run grep -E 'pull --ignore-buildable' "$autoupdate_script"
+    assert_success
+}
+
+@test "compose_autoupdate.sh uses compose config --images for digest detection" {
+    local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
+    run grep -E 'config --images' "$autoupdate_script"
+    assert_success
+}
+
+@test "compose_autoupdate.sh checks running containers before up -d" {
+    local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
+    run grep -E 'ps -q' "$autoupdate_script"
+    assert_success
+
+    run grep -E 'not running; skipping up -d' "$autoupdate_script"
     assert_success
 }
 

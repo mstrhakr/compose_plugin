@@ -48,6 +48,10 @@ function execComposeCommandInTTY($cmd, $debug, $logFile = '', $socketOverride = 
     global $socket_name;
     $effectiveSocket = $socketOverride !== '' ? $socketOverride : $socket_name;
     $socketFile = rtrim(COMPOSE_TTYD_SOCKET_DIR, '/') . "/$effectiveSocket.sock";
+    if (defined('COMPOSE_SKIP_TTYD_EXEC') && COMPOSE_SKIP_TTYD_EXEC) {
+        composeLogger("Skipping ttyd execution in test mode: " . $cmd, ['command' => $cmd], 'user', 'debug', 'ttyd');
+        return;
+    }
     // Use pkill -f for more robust process matching instead of pgrep|awk pipeline
     exec("pkill -f " . escapeshellarg("$effectiveSocket.sock") . " 2>/dev/null");
     usleep(300000); // 300ms for process to exit
@@ -222,7 +226,7 @@ function echoComposeCommand($action, array $options = [])
             composeLogger("Background command: " . $bgCmd, ['command' => $bgCmd], 'user', 'debug', 'compose');
             // Signal to JS that this ran in background (no terminal window to open)
             echo json_encode(['background' => true]);
-        } elseif ($cfg['OUTPUTSTYLE'] == "ttyd") {
+        } else {
             $logFile = getLastCmdLogFileForComposeAction($action, $path);
             $composeCommandEscaped = array_map(function ($item) {
                 return escapeshellarg($item);
@@ -241,17 +245,6 @@ function echoComposeCommand($action, array $options = [])
             } else {
                 $composeCommand = "/plugins/compose.manager/include/ShowTtyd.php?done=1";
             }
-            echo $composeCommand;
-        } else {
-            $i = 0;
-            $composeCommand = array_reduce($composeCommand, function ($v1, $v2) use (&$i) {
-                if ($v2[0] == "-") {
-                    $i++; // increment $i
-                    return $v1 . "&arg" . $i . "=" . $v2;
-                } else {
-                    return $v1 . $v2;
-                }
-            }, "");
             echo $composeCommand;
         }
         composeLogger("Final compose command: " . $composeCommand, ['command' => $composeCommand], 'user', 'debug', 'compose');
@@ -387,69 +380,37 @@ function echoComposeCommandMultiple($action, array $options = [])
         return;
     }
 
-    if ($cfg['OUTPUTSTYLE'] == "ttyd") {
-        // Create a temporary script and execute it via ttyd.
-        // This avoids nested shell-quote edge cases and continues after per-stack failures.
-        $tmpScript = "/tmp/compose_multi_" . uniqid() . ".sh";
-        $scriptContent = "#!/bin/bash\n";
-        $scriptContent .= "# Multi-stack compose script (ttyd) - auto-generated\n\n";
+    // Create a temporary script and execute it via ttyd.
+    // This avoids nested shell-quote edge cases and continues after per-stack failures.
+    $tmpScript = "/tmp/compose_multi_" . uniqid() . ".sh";
+    $scriptContent = "#!/bin/bash\n";
+    $scriptContent .= "# Multi-stack compose script (ttyd) - auto-generated\n\n";
 
-        foreach ($commands as $idx => $cmd) {
-            $cmdStr = implode(" ", array_map('escapeshellarg', $cmd));
-            $stackTitle = str_replace(['\\', '"'], ['\\\\', '\\"'], $stackNames[$idx]);
+    foreach ($commands as $idx => $cmd) {
+        $cmdStr = implode(" ", array_map('escapeshellarg', $cmd));
+        $stackTitle = str_replace(['\\', '"'], ['\\\\', '\\"'], $stackNames[$idx]);
 
-            $scriptContent .= "echo \"\"\n";
-            $scriptContent .= "echo \"=== " . $actionLabel . ": " . $stackTitle . " ===\"\n";
-            $scriptContent .= "echo \"\"\n";
-            $scriptContent .= $cmdStr . "\n";
-            $scriptContent .= "rc=$?\n";
-            $scriptContent .= "if [ \$rc -ne 0 ]; then\n";
-            $scriptContent .= "  echo \"X Stack " . $stackTitle . " failed to " . strtolower($actionLabel) . " (exit code: \$rc)\"\n";
-            $scriptContent .= "fi\n";
-            $scriptContent .= "echo \"\"\n";
-        }
-
-        $scriptContent .= "echo \"========================================\"\n";
-        $scriptContent .= "echo \"=== All operations complete ===\"\n";
-        $scriptContent .= "echo \"========================================\"\n";
-        $scriptContent .= "rm -f " . escapeshellarg($tmpScript) . "\n";
-
-        file_put_contents($tmpScript, $scriptContent);
-        chmod($tmpScript, 0755);
-
-        $ttydCommand = "bash " . escapeshellarg($tmpScript);
-        execComposeCommandInTTY($ttydCommand, $debug);
-        composeLogger("Multi-stack script created: " . $tmpScript, null, 'user', 'debug', 'compose-multi');
-        echo "/plugins/compose.manager/include/ShowTtyd.php?done=1";
-    } else {
-        // For nchan/traditional output, create a temporary bash script that runs all commands
-        $tmpScript = "/tmp/compose_multi_" . uniqid() . ".sh";
-        $scriptContent = "#!/bin/bash\n";
-        $scriptContent .= "# Multi-stack compose script - auto-generated\n\n";
-
-        foreach ($commands as $idx => $cmd) {
-            $cmdStr = implode(" ", array_map('escapeshellarg', $cmd));
-            $scriptContent .= "echo \"\"\n";
-            $scriptContent .= "echo \"========================================\"\n";
-            $scriptContent .= "echo \"=== " . str_replace('"', '\\"', $stackNames[$idx]) . " ===\"\n";
-            $scriptContent .= "echo \"========================================\"\n";
-            $scriptContent .= "echo \"\"\n";
-            $scriptContent .= "$cmdStr\n";
-            $scriptContent .= "echo \"\"\n";
-        }
-
-        // Add cleanup at the end
-        $scriptContent .= "\necho \"\"\n";
-        $scriptContent .= "echo \"========================================\"\n";
-        $scriptContent .= "echo \"=== All operations complete ===\"\n";
-        $scriptContent .= "echo \"========================================\"\n";
-        $scriptContent .= "rm -f " . escapeshellarg($tmpScript) . "\n";
-
-        file_put_contents($tmpScript, $scriptContent);
-        chmod($tmpScript, 0755);
-
-        composeLogger("Multi-stack script created: $tmpScript", null, 'user', 'debug', 'compose-multi');
-
-        echo $tmpScript;
+        $scriptContent .= "echo \"\"\n";
+        $scriptContent .= "echo \"=== " . $actionLabel . ": " . $stackTitle . " ===\"\n";
+        $scriptContent .= "echo \"\"\n";
+        $scriptContent .= $cmdStr . "\n";
+        $scriptContent .= "rc=$?\n";
+        $scriptContent .= "if [ \$rc -ne 0 ]; then\n";
+        $scriptContent .= "  echo \"X Stack " . $stackTitle . " failed to " . strtolower($actionLabel) . " (exit code: \$rc)\"\n";
+        $scriptContent .= "fi\n";
+        $scriptContent .= "echo \"\"\n";
     }
+
+    $scriptContent .= "echo \"========================================\"\n";
+    $scriptContent .= "echo \"=== All operations complete ===\"\n";
+    $scriptContent .= "echo \"========================================\"\n";
+    $scriptContent .= "rm -f " . escapeshellarg($tmpScript) . "\n";
+
+    file_put_contents($tmpScript, $scriptContent);
+    chmod($tmpScript, 0755);
+
+    $ttydCommand = "bash " . escapeshellarg($tmpScript);
+    execComposeCommandInTTY($ttydCommand, $debug);
+    composeLogger("Multi-stack script created: " . $tmpScript, null, 'user', 'debug', 'compose-multi');
+    echo "/plugins/compose.manager/include/ShowTtyd.php?done=1";
 }

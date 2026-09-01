@@ -2,15 +2,15 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "compose.manager">
 <!ENTITY author "mstrhakr">
-<!ENTITY version     "2026.07.02">
+<!ENTITY version     "2026.08.31.1552">
 <!ENTITY launch "Settings/&name;.settings">
 <!ENTITY packageVER "&version;">
-<!ENTITY packageMD5  "936c69547f5a759e90f8915409f41835">
-<!ENTITY pkgBUILD    "0825">
+<!ENTITY packageMD5  "19f6203e4025b11daeb9d8951526ded2">
+<!ENTITY pkgBUILD    "1552">
 <!ENTITY packageName "&name;-&packageVER;-noarch-&pkgBUILD;">
 <!ENTITY packagefile "&packageName;.txz">
 <!ENTITY github "mstrhakr/compose_plugin">
-<!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/main/&name;.plg">
+<!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/dev/&name;.plg">
 <!ENTITY packageURL "https://github.com/&github;/releases/download/v&version;/&packagefile;">
 <!ENTITY pluginsPATH "/boot/config/plugins">
 <!ENTITY pluginLOC "&pluginsPATH;/&name;">
@@ -36,67 +36,10 @@
 >
 
 <CHANGES>
-###2026.07.02
-- Features (compose): enhance column customization with reorder functionality and UI updates
-- Features (compose): implement stack row striping synchronization for improved UI consistency
-- Features (compose): add health status column and related functionality to stack and container views
-- Features: add custom interval settings for compose stats and enhance nchan publisher
-- Features: refactor column customization UI with transfer lists and responsive design
-- Features: enhance stack toggle functionality with batching and user intent tracking
-- Features: add expand/collapse all functionality for compose stacks
-- Features: promote col customizer and remove basic/advanced toggle
-- Features: Implement snapshot loading for compose metrics and enhance data publishing to ensure data shows during progressive loading
-- Features: Add column visibility customization for stack and service tables
-- Features (tests): add tests for pruning auto-managed and legacy labels only orphans
-- Features: add 'Remove Orphans by Default' option and integrate into compose actions
-- Features: add progressive stack list loading
-- Features (container): add persistent container cache and icon resolution logic
-- Features: return to update dialog when changelog is dismissed
-- Features: show docker.versions changelogs in the update dialog
-- Bug Fixes (composeStats): enhance memory value parsing and sanitize docker stats fields
-- Bug Fixes: enhance logging for stack management and settings handling
-- Bug Fixes: add support for --remove-orphans flag in compose command
-- Bug Fixes: add support for removeOrphans flag in performComposeAction
-- Bug Fixes: delay stack refresh after prompt to ensure proper UI feedback
-- Bug Fixes (cache): add endpoint to retrieve persistent container cache and update loading method
-- Bug Fixes (deploy.sh, test.sh): update file permissions to make scripts executable
-- Bug Fixes (Exec.php): update dockerVersionsInstalled check to verify plugin directory existence and cleanup tests
-- Bug Fixes (ExecActionsTest): improve testGetSavedUpdateStatusDockerVersionsNotInstalled for determinism
-- Bug Fixes (composeLoadlist): bind autostart change handler early for dynamic rows and update loading status on success
-- Bug Fixes (Exec.php): improve dockerVersionsInstalled check to verify actual changelog assets
-- Bug Fixes (sync-plugin-url): enhance branch detection and pluginURL synchronization logic
-- Bug Fixes (docker.versions): conditionally load external styles for Docker versions if available
-- Bug Fixes (compose): optimize cache invalidation logic based on stack/container structure changes
-- Bug Fixes (changelog): conditionally load changelog script if available so it works when compose is on its own tab
-- Bug Fixes (update): update button now triggers update action instead of always triggering force update
-- Bug Fixes (composeSortable): enhance details row detachment logic during drag-and-drop
-- Bug Fixes (composeSortable): improve drag-and-drop behavior by detaching non-sortable rows
-- Bug Fixes (profiles): unify action profile picker and enforce profile precedence
-- Bug Fixes: plug poll interval leak and skip dialog reopen when warnings disabled
-- Bug Fixes: whitelist changelog message types, filter scaffolding noise
-- Bug Fixes: discard stale Nchan buffer and concurrent changelog messages
-- Bug Fixes: correct version and package details in plugin metadata
-- Performance (compose): throttle dockerload cache paints during websocket bursts
-- Performance (compose): avoid full-table applyListView during progressive row inserts
-- Performance (compose): debounce composeListRefreshed during progressive row load
-- Performance: implement parallel project loading with request queuing and progress tracking
-- Refactoring: update echoComposeCommand and echoComposeCommandMultiple to use options array
-- Refactoring: delegate changelog display to docker.versions' showChangeLog()
-- Documentation: document docker.versions changelog integration in user guide
-- Tests: add unit tests for getSavedUpdateStatus docker.versions detection
-- Chores: update changelog for v2026.06.18.1637 [skip ci]
-- Chores: update changelog for v2026.06.15.1000 [skip ci]
-- Chores: update changelog for v2026.06.14.1531 [skip ci]
-- Chores: update changelog for v2026.06.14.1530 [skip ci]
-- Chores: update changelog for v2026.06.14.1451 [skip ci]
-- Chores: update changelog for v2026.06.11.1526 [skip ci]
-- Chores: update changelog for v2026.06.11.1517 [skip ci]
-- Chores: sync pluginURL+README for dev branch [skip ci]
-- Chores: remove test compose setup
-- Fix dropdown z-index on docker page when clicking on stack icon
-- Add support for additional compose files per stack
-- Potential fix for pull request finding
-- [View all changes](https://github.com/mstrhakr/compose_plugin/compare/v2026.06.06...v2026.07.02)
+###2026.08.31.1552
+- Bug Fixes (codeql): add sanitization for user-entered icon values in live preview
+- [PR #139](https://github.com/mstrhakr/compose_plugin/pull/139)
+- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.07.02...v2026.08.31.1552)
 </CHANGES>
 
 <!-- The 'pre-install' script. -->

@@ -631,6 +631,130 @@ class StackInfoTest extends TestCase
         $this->assertSame($iconDataUrl, $info->getIconUrl());
     }
 
+    public function testComposeIconCachePathUsesStableHashAndPluginCacheDir(): void
+    {
+        $source   = 'https://example.com/icons/app.png';
+        $expected = rtrim(COMPOSE_ICON_CACHE_DIR, '/') . '/' . sha1($source) . '.png';
+
+        $this->assertSame($expected, compose_get_icon_cache_path($source));
+    }
+
+    // ===========================================
+    // Icon Fetch + Cache Tests
+    // ===========================================
+
+    /** Minimal valid 1×1 red PNG, no GD required to decode. */
+    private function minimalPngBytes(): string
+    {
+        return base64_decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADklEQVQI12P4z8BQDwAD' .
+            'hQGAWjR9awAAAABJRU5ErkJggg=='
+        );
+    }
+
+    public function testFetchIconToCachePersistsPngDataUri(): void
+    {
+        $png    = $this->minimalPngBytes();
+        $source = 'data:image/png;base64,' . base64_encode($png);
+
+        $path = compose_fetch_icon_to_cache($source);
+
+        $this->assertNotSame('', $path, 'cache write must succeed for a PNG data URI');
+        $this->assertFileExists($path);
+        $this->assertSame($png, file_get_contents($path));
+    }
+
+    public function testFetchIconToCacheIsIdempotent(): void
+    {
+        $source = 'data:image/png;base64,' . base64_encode($this->minimalPngBytes());
+
+        $path1 = compose_fetch_icon_to_cache($source);
+        $path2 = compose_fetch_icon_to_cache($source);
+
+        $this->assertNotSame('', $path1);
+        $this->assertSame($path1, $path2, 'second call must return the same cached path');
+    }
+
+    public function testFetchIconToCacheReturnsEmptyForEmptySource(): void
+    {
+        $this->assertSame('', compose_fetch_icon_to_cache(''));
+    }
+
+    public function testFetchIconToCacheRejectsPathOutsideAllowedPrefixes(): void
+    {
+        $this->assertSame('', compose_fetch_icon_to_cache('/etc/passwd'));
+        $this->assertSame('', compose_fetch_icon_to_cache('/tmp/icon.png'));
+    }
+
+    public function testFetchIconToCacheStoresLocalPngFile(): void
+    {
+        $pluginDir = '/boot/config/plugins/compose.manager';
+        if (!is_dir($pluginDir) || !is_writable($pluginDir)) {
+            $this->markTestSkipped('Plugin config dir not writable; local-file test requires real Unraid paths');
+        }
+
+        $png     = $this->minimalPngBytes();
+        $tmpFile = $pluginDir . '/test-icon-src-' . uniqid() . '.png';
+        file_put_contents($tmpFile, $png);
+
+        try {
+            $path = compose_fetch_icon_to_cache($tmpFile);
+            $this->assertNotSame('', $path, 'local PNG under allowed prefix must be cached');
+            $this->assertFileExists($path);
+        } finally {
+            @unlink($tmpFile);
+            @unlink(compose_get_icon_cache_path($tmpFile));
+        }
+    }
+
+    public function testFetchIconToCacheReturnsFallbackEmptyForSvgWithoutConverter(): void
+    {
+        $resvgOk = defined('COMPOSE_RESVG_BIN') && is_executable(COMPOSE_RESVG_BIN);
+        $rsvgOk  = trim((string) shell_exec('command -v rsvg-convert 2>/dev/null')) !== '';
+        if ($resvgOk || $rsvgOk) {
+            $this->markTestSkipped('SVG converter available; graceful-fail path not reachable');
+        }
+
+        $svg    = '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"></svg>';
+        $source = 'data:image/svg+xml;base64,' . base64_encode($svg);
+
+        $this->assertSame('', compose_fetch_icon_to_cache($source));
+    }
+
+    public function testIconNormalizePngPassthrough(): void
+    {
+        $png = $this->minimalPngBytes();
+        $this->assertSame($png, compose_icon_to_png_bytes($png, 'image/png'));
+    }
+
+    public function testSeedDockerManagerIconCopiesFile(): void
+    {
+        $source = 'data:image/png;base64,' . base64_encode($this->minimalPngBytes());
+        $cached = compose_fetch_icon_to_cache($source);
+
+        if ($cached === '') {
+            $this->markTestSkipped('Cache write failed; cannot test DM seeding');
+        }
+
+        $name    = 'test-compose-icon-seed';
+        $ramDir  = '/usr/local/emhttp/state/plugins/dynamix.docker.manager/images';
+        $ramPath = '/usr/local/emhttp/state/plugins/dynamix.docker.manager/images/' . $name . '-icon.png';
+
+        if (!is_dir($ramDir) && !@mkdir($ramDir, 0755, true)) {
+            $this->markTestSkipped('Docker Manager RAM icon dir is not creatable in this environment');
+        }
+        if (!is_writable($ramDir)) {
+            $this->markTestSkipped('Docker Manager RAM icon dir is not writable in this environment');
+        }
+
+        @unlink($ramPath);
+
+        compose_seed_docker_manager_icon($cached, $name);
+
+        $this->assertFileExists($ramPath, 'seeding must copy PNG into Docker Manager RAM cache');
+        @unlink($ramPath);
+    }
+
     public function testGetWebUIUrl(): void
     {
         $stack = 'webui-stack';
@@ -935,7 +1059,10 @@ class StackInfoTest extends TestCase
         file_put_contents("$stackDir/compose.debug.yaml", "services:\n  web:\n    image: nginx:alpine\n");
         file_put_contents("$stackDir/compose.extra.yaml", "services:\n  web:\n    image: nginx:alpine\n");
         $envPath = $stackDir . '/.env';
-        file_put_contents($envPath, 'COMPOSE_FILE="compose.debug.yaml":compose.extra.yaml');
+        // Use PATH_SEPARATOR (what splitComposeFileValue() actually splits on,
+        // matching Docker Compose's own OS-dependent COMPOSE_FILE separator)
+        // instead of a hardcoded ':' so this passes on Windows dev machines too.
+        file_put_contents($envPath, 'COMPOSE_FILE="compose.debug.yaml"' . PATH_SEPARATOR . 'compose.extra.yaml');
 
         $info = \StackInfo::fromProject($this->tempRoot, $stack);
         $args = $info->buildComposeArgs();
@@ -988,8 +1115,14 @@ class StackInfoTest extends TestCase
 
         $this->assertFalse($info->useDefaultComposeFileDiscovery(), 'Explicit envpath should disable default discovery.');
         $this->assertStringContainsString('--env-file', $args['envFile']);
-        $this->assertStringContainsString($stackDir . '/.env', $args['envFile']);
-        $this->assertSame($stackDir . '/.env', $args['envFilePath']);
+
+        // envFile/envFilePath are resolved via realpath(), which normalizes to
+        // native path separators (backslashes on Windows); normalize both sides
+        // before comparing so this isn't sensitive to the dev OS.
+        $normalize = static fn(string $path): string => str_replace('\\', '/', $path);
+        $expectedEnvPath = $normalize($stackDir . '/.env');
+        $this->assertStringContainsString($expectedEnvPath, $normalize($args['envFile']));
+        $this->assertSame($expectedEnvPath, $normalize($args['envFilePath']));
     }
 
     public function testBuildComposeArgsIndirectFileModeDisablesDefaultDiscovery(): void
@@ -1069,6 +1202,8 @@ class StackInfoTest extends TestCase
         $this->assertSame($indirectDir, trim(file_get_contents($stack->path . '/indirect')));
         // Should have created compose.yaml at indirect target
         $this->assertFileExists($indirectDir . '/compose.yaml');
+        // New stacks also create an app-managed project override template.
+        $this->assertFileExists($stack->path . '/compose.override.yaml');
     }
 
     public function testCreateNewIndirectExistingComposeFile(): void
@@ -1121,10 +1256,11 @@ class StackInfoTest extends TestCase
         $stack = \StackInfo::createNew($this->tempRoot, 'Override Init');
 
         $this->assertInstanceOf(\OverrideInfo::class, $stack->overrideInfo);
-        // Override file should not be created until explicitly requested
+        // New stacks should always include a project override template.
         $overridePath = $stack->getOverridePath();
         $this->assertNotNull($overridePath);
-        $this->assertFileDoesNotExist($overridePath);
+        $this->assertFileExists($overridePath);
+        $this->assertStringContainsString('services: {}', (string) file_get_contents($overridePath));
     }
 
     public function testCreateNewIsCached(): void

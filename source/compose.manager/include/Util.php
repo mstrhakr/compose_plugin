@@ -81,6 +81,317 @@ function sanitizeLogText(string $text): string
     return htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
+if (!function_exists('compose_get_icon_cache_path')) {
+    function compose_get_icon_cache_path(string $source): string
+    {
+        $source = trim($source);
+        if ($source === '') {
+            return rtrim(COMPOSE_ICON_CACHE_DIR, '/') . '/missing.png';
+        }
+
+        $hash = sha1($source);
+        return rtrim(COMPOSE_ICON_CACHE_DIR, '/') . '/' . $hash . '.png';
+    }
+}
+
+if (!function_exists('compose_icon_ext_to_mime')) {
+    function compose_icon_ext_to_mime(string $ext): string
+    {
+        return match (strtolower($ext)) {
+            'png'        => 'image/png',
+            'jpg', 'jpeg' => 'image/jpeg',
+            'gif'        => 'image/gif',
+            'webp'       => 'image/webp',
+            'ico'        => 'image/x-icon',
+            'svg'        => 'image/svg+xml',
+            default      => '',
+        };
+    }
+}
+
+if (!function_exists('compose_icon_browser_url')) {
+    /** Return the URL the browser should use: proxy for http(s), passthrough otherwise. */
+    function compose_icon_browser_url(string $src): string
+    {
+        $src = trim($src);
+        if ($src === '') {
+            return '';
+        }
+        if (strncasecmp($src, 'http://', 7) === 0 || strncasecmp($src, 'https://', 8) === 0) {
+            return '/plugins/compose.manager/IconCache.php?src=' . urlencode($src);
+        }
+        return $src;
+    }
+}
+
+if (!function_exists('compose_icon_is_safe_host')) {    /** Block loopback, private, and link-local hosts (SSRF prevention). */
+    function compose_icon_is_safe_host(string $host): bool
+    {
+        $ip = gethostbyname($host);
+        if ($ip === $host && filter_var($host, FILTER_VALIDATE_IP) === false) {
+            return false; // unresolvable
+        }
+        return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
+    }
+}
+
+if (!function_exists('compose_icon_to_png_bytes')) {
+    /**
+     * Convert raw image bytes to PNG. Returns null when conversion is impossible.
+     * SVG: tries the bundled resvg binary. Raster: uses GD when available.
+     */
+    function compose_icon_to_png_bytes(string $rawBytes, string $mimeHint): ?string
+    {
+        $isSvg = $mimeHint === 'image/svg+xml' || stripos(substr($rawBytes, 0, 512), '<svg') !== false;
+        $isPng = substr($rawBytes, 0, 8) === "\x89PNG\r\n\x1a\n";
+
+        if ($isSvg) {
+            // Prefer bundled resvg (reads SVG from stdin, writes PNG to a temp file)
+            $bin = defined('COMPOSE_RESVG_BIN') ? COMPOSE_RESVG_BIN : '';
+            if ($bin !== '' && is_executable($bin)) {
+                $tmpOut = tempnam(sys_get_temp_dir(), 'resvg_') . '.png';
+                $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+                $proc = proc_open([$bin, '--resources-dir', sys_get_temp_dir(), '-', $tmpOut], $descriptors, $pipes);
+                if (is_resource($proc)) {
+                    fwrite($pipes[0], $rawBytes);
+                    fclose($pipes[0]);
+                    stream_get_contents($pipes[1]);
+                    fclose($pipes[1]);
+                    fclose($pipes[2]);
+                    $exit = proc_close($proc);
+                    $out  = ($exit === 0 && file_exists($tmpOut)) ? file_get_contents($tmpOut) : null;
+                    @unlink($tmpOut);
+                    if ($out !== false && $out !== '' && $out !== null) {
+                        return $out;
+                    }
+                }
+            }
+
+            // Fallback: rsvg-convert (common on Unraid and most Linux systems)
+            $rsvg = trim((string) shell_exec('command -v rsvg-convert 2>/dev/null'));
+            if ($rsvg !== '') {
+                $tmpSvg = tempnam(sys_get_temp_dir(), 'cmpi_') . '.svg';
+                $tmpPng = substr($tmpSvg, 0, -4) . '.png';
+                if (@file_put_contents($tmpSvg, $rawBytes) !== false) {
+                    exec(escapeshellarg($rsvg) . ' -w 64 -h 64 -o ' . escapeshellarg($tmpPng)
+                        . ' ' . escapeshellarg($tmpSvg) . ' 2>/dev/null', $_out, $rc);
+                    @unlink($tmpSvg);
+                    if ($rc === 0 && is_file($tmpPng)) {
+                        $out = file_get_contents($tmpPng);
+                        @unlink($tmpPng);
+                        if ($out !== false && $out !== '') {
+                            return $out;
+                        }
+                    }
+                    @unlink($tmpPng);
+                }
+            }
+
+            return null;
+        }
+
+        if ($isPng) {
+            return $rawBytes;
+        }
+
+        if (!function_exists('imagecreatefromstring')) {
+            // GD absent — pass through only if bytes are already PNG
+            return substr($rawBytes, 0, 8) === "\x89PNG\r\n\x1a\n" ? $rawBytes : null;
+        }
+
+        $gd = @imagecreatefromstring($rawBytes);
+        if ($gd === false) {
+            return null;
+        }
+
+        // Required to preserve alpha channel; without these GD composites onto white
+        imagealphablending($gd, false);
+        imagesavealpha($gd, true);
+
+        ob_start();
+        imagepng($gd, null, 6);
+        $out = ob_get_clean();
+        imagedestroy($gd);
+
+        return ($out !== false && $out !== '') ? $out : null;
+    }
+}
+
+if (!function_exists('compose_fetch_icon_to_cache')) {
+    /**
+     * Download / read an icon source and store as a PNG in the plugin cache dir.
+     * Returns the cache file path on success, or '' on failure.
+     */
+    function compose_fetch_icon_to_cache(string $source, bool $forceRefresh = false): string
+    {
+        $source = trim($source);
+        if ($source === '') {
+            return '';
+        }
+
+        $cachePath = compose_get_icon_cache_path($source);
+
+        if (!$forceRefresh && file_exists($cachePath)) {
+            composeLogger('Icon cache hit', ['source' => $source, 'cache' => $cachePath], 'system', 'debug', 'icon-cache');
+            return $cachePath;
+        }
+
+        $cacheDir = rtrim(COMPOSE_ICON_CACHE_DIR, '/');
+        if (!is_dir($cacheDir) && !@mkdir($cacheDir, 0755, true)) {
+            return '';
+        }
+
+        $rawBytes = null;
+        $mimeHint = '';
+
+        if (strncasecmp($source, 'data:', 5) === 0) {
+            if (preg_match('#^data:(image/[a-z0-9.+\-]+)(?:;[^,]*)?;base64,([A-Za-z0-9+/=\s]+)$#i', $source, $m)) {
+                $mimeHint = strtolower($m[1]);
+                $decoded  = base64_decode(preg_replace('/\s+/', '', $m[2]), true);
+                if ($decoded === false) {
+                    return '';
+                }
+                $rawBytes = $decoded;
+            } elseif (preg_match('#^data:(image/[a-z0-9.+\-]+)(?:;[^,]*)?,(.+)$#is', $source, $m)) {
+                $mimeHint = strtolower($m[1]);
+                $rawBytes = rawurldecode($m[2]);
+            } else {
+                return '';
+            }
+        } elseif (strncasecmp($source, 'http://', 7) === 0 || strncasecmp($source, 'https://', 8) === 0) {
+            $host = parse_url($source, PHP_URL_HOST);
+            if (!$host || !compose_icon_is_safe_host((string) $host)) {
+                return '';
+            }
+            if (!function_exists('curl_init')) {
+                return '';
+            }
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL            => $source,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_MAXREDIRS      => 3,
+                CURLOPT_TIMEOUT        => 10,
+                CURLOPT_CONNECTTIMEOUT => 5,
+                CURLOPT_NOPROGRESS     => false,
+                CURLOPT_PROGRESSFUNCTION => static function ($ch, $dlTotal, $dlNow) {
+                    // Abort if response body exceeds 512 KB
+                    return $dlNow > 524288 ? 1 : 0;
+                },
+                CURLOPT_USERAGENT      => 'ComposeManager/1.0',
+                CURLOPT_SSL_VERIFYPEER => true,
+            ]);
+            $body     = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $ct       = (string) curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
+            curl_close($ch);
+
+            if ($body === false || $httpCode < 200 || $httpCode >= 300) {
+                return '';
+            }
+            $rawBytes = $body;
+            if ($ct !== '') {
+                $mimeHint = strtolower(trim(explode(';', $ct)[0]));
+            }
+            if ($mimeHint === '') {
+                $ext      = strtolower(pathinfo((string) parse_url($source, PHP_URL_PATH), PATHINFO_EXTENSION));
+                $mimeHint = compose_icon_ext_to_mime($ext);
+            }
+        } elseif (strpos($source, '/') === 0) {
+            if (strpos($source, '..') !== false) {
+                return '';
+            }
+            if (
+                strpos($source, '/mnt/') !== 0
+                && strpos($source, '/boot/config/plugins/compose.manager/') !== 0
+            ) {
+                return '';
+            }
+            if (!is_file($source)) {
+                return '';
+            }
+            $raw = file_get_contents($source);
+            if ($raw === false) {
+                return '';
+            }
+            $rawBytes = $raw;
+            $mimeHint = compose_icon_ext_to_mime(strtolower(pathinfo($source, PATHINFO_EXTENSION)));
+        } else {
+            return '';
+        }
+
+        if ($rawBytes === null || $rawBytes === '') {
+            return '';
+        }
+
+        $pngBytes = compose_icon_to_png_bytes($rawBytes, $mimeHint);
+        if ($pngBytes === null) {
+            composeLogger('Icon conversion returned null; not caching', ['source' => $source, 'mime' => $mimeHint], 'system', 'debug', 'icon-cache');
+            return '';
+        }
+
+        $written = file_put_contents($cachePath, $pngBytes) !== false;
+        if ($written) {
+            composeLogger('Icon cached', ['source' => $source, 'cache' => $cachePath, 'bytes' => strlen($pngBytes)], 'system', 'debug', 'icon-cache');
+        }
+        return $written ? $cachePath : '';
+    }
+}
+
+if (!function_exists('compose_seed_docker_manager_icon')) {
+    /** Copy a cached PNG into both Docker Manager icon cache locations. */
+    function compose_seed_docker_manager_icon(string $cachedPngPath, string $containerName): void
+    {
+        if ($cachedPngPath === '' || !file_exists($cachedPngPath)) {
+            return;
+        }
+        if (!preg_match('#^[a-zA-Z0-9][a-zA-Z0-9._-]*$#', $containerName)) {
+            return;
+        }
+
+        $destName = $containerName . '-icon.png';
+        $targets  = [
+            '/usr/local/emhttp/state/plugins/dynamix.docker.manager/images/' . $destName,
+            '/var/lib/docker/unraid/images/' . $destName,
+        ];
+
+        foreach ($targets as $dest) {
+            if (file_exists($dest)) {
+                continue; // DM already has it; don't overwrite
+            }
+            $dir = dirname($dest);
+            if (!is_dir($dir)) {
+                @mkdir($dir, 0755, true);
+            }
+            if (@copy($cachedPngPath, $dest)) {
+                composeLogger('Seeded Docker Manager icon cache', ['container' => $containerName, 'dest' => $dest], 'system', 'debug', 'icon-cache');
+            }
+        }
+    }
+}
+
+if (!function_exists('composeSendNotification')) {
+    function composeSendNotification(string $subject, string $message, string $icon = ''): void
+    {
+        $notifyScript = '/usr/local/emhttp/webGui/scripts/notify';
+        if (!is_executable($notifyScript)) {
+            return;
+        }
+
+        $command = escapeshellarg($notifyScript)
+            . ' -e ' . escapeshellarg('Compose Manager')
+            . ' -s ' . escapeshellarg($subject)
+            . ' -d ' . escapeshellarg($message);
+
+        if ($icon !== '') {
+            $command .= ' -i ' . escapeshellarg($icon);
+        }
+
+        exec($command);
+    }
+}
+
 if (!function_exists('getElement')) {
     /**
      * Convert an element name to a safe HTML ID.
@@ -169,6 +480,140 @@ function findComposeFile($dir)
 function hasComposeFile($dir)
 {
     return findComposeFile($dir) !== false;
+}
+
+/**
+ * Delete a stack folder under compose root using guarded recursive deletion.
+ *
+ * @param string $composeRoot Base compose root directory
+ * @param string $stackName Stack directory name
+ * @param string $errorMessage Populated when deletion fails
+ * @param array<string,mixed> $meta Populated with debug metadata
+ * @return bool True when deleted (or already absent), false on guard/failure
+ */
+function composeDeleteStackFolder(string $composeRoot, string $stackName, string &$errorMessage = '', array &$meta = []): bool
+{
+    $errorMessage = '';
+    $meta = [
+        'composeRoot' => $composeRoot,
+        'stackName' => $stackName,
+        'removedCount' => 0,
+        'removedPreview' => [],
+    ];
+
+    $appendRemovedPath = static function (string $path) use (&$meta): void {
+        $meta['removedCount']++;
+        $preview = $meta['removedPreview'];
+        if (count($preview) < 40) {
+            $preview[] = $path;
+            $meta['removedPreview'] = $preview;
+        }
+    };
+
+    $safeStackName = basename(trim($stackName));
+    $meta['safeStackName'] = $safeStackName;
+    if ($safeStackName === '' || $safeStackName === '.' || $safeStackName === '..') {
+        $errorMessage = 'Invalid stack name.';
+        return false;
+    }
+
+    $composeRootReal = realpath($composeRoot);
+    $meta['composeRootReal'] = $composeRootReal;
+    if ($composeRootReal === false) {
+        $errorMessage = 'Compose root is not available.';
+        return false;
+    }
+
+    $targetPath = rtrim($composeRootReal, '/') . '/' . $safeStackName;
+    $meta['targetPath'] = $targetPath;
+    if (!file_exists($targetPath)) {
+        return true;
+    }
+
+    if (is_link($targetPath)) {
+        if (!@unlink($targetPath) && file_exists($targetPath)) {
+            $errorMessage = 'Failed to remove stack symlink.';
+            return false;
+        }
+        $appendRemovedPath($targetPath . ' [symlink]');
+        return true;
+    }
+
+    $targetReal = realpath($targetPath);
+    $meta['targetReal'] = $targetReal;
+    if ($targetReal === false || !Path::isAllowedPath($targetReal, [$composeRootReal]) || $targetReal === $composeRootReal) {
+        $errorMessage = 'Invalid stack path resolved for deletion.';
+        return false;
+    }
+
+    if (!is_dir($targetPath)) {
+        if (!@unlink($targetPath) && file_exists($targetPath)) {
+            $errorMessage = 'Failed to remove stack file.';
+            return false;
+        }
+        $appendRemovedPath($targetPath . ' [file]');
+        return true;
+    }
+
+    $removeTree = static function (string $path) use (&$removeTree, &$errorMessage, &$meta, $appendRemovedPath): bool {
+        $entries = @scandir($path);
+        if (!is_array($entries)) {
+            $errorMessage = 'Failed to enumerate stack folder for deletion.';
+            $meta['failedPath'] = $path;
+            return false;
+        }
+
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+
+            $itemPath = rtrim($path, '/') . '/' . $entry;
+            if (is_link($itemPath)) {
+                if (!@unlink($itemPath) && file_exists($itemPath)) {
+                    $errorMessage = 'Failed to remove stack symlink contents.';
+                    $meta['failedPath'] = $itemPath;
+                    return false;
+                }
+                $appendRemovedPath($itemPath . ' [symlink]');
+                continue;
+            }
+
+            if (is_dir($itemPath)) {
+                if (!$removeTree($itemPath)) {
+                    return false;
+                }
+                if (!@rmdir($itemPath)) {
+                    $errorMessage = 'Failed to remove stack directory contents.';
+                    $meta['failedPath'] = $itemPath;
+                    return false;
+                }
+                $appendRemovedPath($itemPath . ' [dir]');
+                continue;
+            }
+
+            if (!@unlink($itemPath)) {
+                $errorMessage = 'Failed to remove stack file contents.';
+                $meta['failedPath'] = $itemPath;
+                return false;
+            }
+            $appendRemovedPath($itemPath . ' [file]');
+        }
+
+        return true;
+    };
+
+    if (!$removeTree($targetPath)) {
+        return false;
+    }
+
+    if (!@rmdir($targetPath)) {
+        $errorMessage = 'Failed to remove stack folder.';
+        return false;
+    }
+    $appendRemovedPath($targetPath . ' [dir]');
+
+    return true;
 }
 
 /**
@@ -1465,6 +1910,12 @@ class StackInfo
     /** @var array Lazy-loaded metadata cache (field => value|null, unset = not loaded) */
     private array $metadataCache = [];
 
+    /** @var string|null Cached path to the transient icon-normalization override, computed once per request */
+    private ?string $iconNormalizeOverridePath = null;
+
+    /** @var bool Whether getIconNormalizationOverridePath() has already run this request */
+    private bool $iconNormalizeOverrideComputed = false;
+
     /** @var array<string, StackInfo> Static instance cache keyed by composeRoot/project */
     private static array $instances = [];
 
@@ -1923,6 +2374,148 @@ class StackInfo
      *
      * @return string[]
      */
+    /**
+     * Whether a raw net.unraid.docker.icon label value is a bare local
+     * filesystem path that needs a `file://` scheme added.
+     *
+     * cURL (used by dynamix.docker.manager's native icon resolver) can only
+     * fetch a scheme-qualified URL; a bare absolute path like
+     * `/mnt/user/appdata/icons/x.png` fails with "No host part in the URL".
+     * Prefixing it with `file://` lets the same cURL-based resolver read it
+     * directly from disk.
+     *
+     * @param string $value
+     * @return bool
+     */
+    private static function isLocalIconPathNeedingScheme(string $value): bool
+    {
+        $value = trim($value);
+        if ($value === '' || $value[0] !== '/') {
+            return false;
+        }
+        return preg_match('#^(https?://|file://|data:)#i', $value) !== 1;
+    }
+
+    /**
+     * Scan raw override YAML for services whose net.unraid.docker.icon
+     * label is a bare local path needing a `file://` scheme.
+     *
+     * Uses the `yaml` PECL extension when available (same fallback pattern
+     * used elsewhere in this class), otherwise falls back to a simple
+     * indentation-based line scan of the well-known 2/4/6-space service /
+     * labels / label-key structure this plugin always writes.
+     *
+     * @param string $overrideContent
+     * @return array<string,string> Map of service name => raw icon path
+     */
+    private function extractLocalIconLabelsFromOverride(string $overrideContent): array
+    {
+        $result = [];
+
+        if (function_exists('yaml_parse')) {
+            $parsed = @yaml_parse($overrideContent);
+            if (is_array($parsed) && isset($parsed['services']) && is_array($parsed['services'])) {
+                foreach ($parsed['services'] as $serviceName => $serviceDef) {
+                    if (!is_array($serviceDef) || !isset($serviceDef['labels']) || !is_array($serviceDef['labels'])) {
+                        continue;
+                    }
+                    $icon = $serviceDef['labels']['net.unraid.docker.icon'] ?? null;
+                    if (is_string($icon) && self::isLocalIconPathNeedingScheme($icon)) {
+                        $result[(string) $serviceName] = trim($icon);
+                    }
+                }
+                return $result;
+            }
+        }
+
+        $currentService = null;
+        foreach (preg_split('/\R/', $overrideContent) as $line) {
+            if (preg_match('/^  ([^\s:][^:]*):\s*(?:#.*)?$/', $line, $m)) {
+                $currentService = trim($m[1]);
+                continue;
+            }
+            if ($currentService === null) {
+                continue;
+            }
+            if (preg_match('/^      net\.unraid\.docker\.icon\s*:\s*(.*?)\s*$/', $line, $m)) {
+                $value = trim($m[1]);
+                if (strlen($value) >= 2 && $value[0] === $value[strlen($value) - 1] && ($value[0] === '"' || $value[0] === "'")) {
+                    $value = substr($value, 1, -1);
+                }
+                if (self::isLocalIconPathNeedingScheme($value)) {
+                    $result[$currentService] = $value;
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Build (or clean up) a small transient compose override that rewrites
+     * bare-local-path net.unraid.docker.icon labels to `file://` URIs.
+     *
+     * Docker Compose reads labels verbatim from compose.override.yaml, but
+     * the native Docker tab/dashboard icon resolver only ever fetches icon
+     * labels via cURL. We keep the real override.yaml (and the Labels
+     * editor / file-browser field) storing clean bare paths, and only
+     * inject the `file://` form as a final, highest-precedence `-f` layer
+     * at command-build time — so nothing else about the stored config
+     * changes.
+     *
+     * Computed once per request (cached on the instance) and skipped
+     * entirely — no extra file write, no extra `-f` flag — when no service
+     * needs normalization.
+     *
+     * @return string|null Path to the transient override file, or null if unneeded
+     */
+    private function getIconNormalizationOverridePath(): ?string
+    {
+        if ($this->iconNormalizeOverrideComputed) {
+            return $this->iconNormalizeOverridePath;
+        }
+        $this->iconNormalizeOverrideComputed = true;
+
+        $targetPath = rtrim(COMPOSE_ICON_NORMALIZE_DIR, '/') . '/' . $this->projectName . '.yaml';
+
+        $overridePath = $this->getOverridePath();
+        if ($overridePath === null || !is_file($overridePath)) {
+            @unlink($targetPath);
+            return null;
+        }
+
+        $content = @file_get_contents($overridePath);
+        if ($content === false || trim($content) === '') {
+            @unlink($targetPath);
+            return null;
+        }
+
+        $iconsNeedingScheme = $this->extractLocalIconLabelsFromOverride($content);
+        if (empty($iconsNeedingScheme)) {
+            @unlink($targetPath);
+            return null;
+        }
+
+        $yaml = "services:\n";
+        foreach ($iconsNeedingScheme as $serviceName => $path) {
+            $yaml .= '  ' . $serviceName . ":\n";
+            $yaml .= "    labels:\n";
+            $yaml .= "      net.unraid.docker.icon: 'file://" . str_replace("'", "''", $path) . "'\n";
+        }
+
+        if (!is_dir(dirname($targetPath)) && !@mkdir(dirname($targetPath), 0755, true) && !is_dir(dirname($targetPath))) {
+            composeLogger("Failed to create icon-normalization directory for stack $this->projectFolder", ['dir' => dirname($targetPath)], 'user', 'warning', 'stack');
+            return null;
+        }
+        if (@file_put_contents($targetPath, $yaml) === false) {
+            composeLogger("Failed to write icon-normalization override for stack $this->projectFolder", ['path' => $targetPath], 'user', 'warning', 'stack');
+            return null;
+        }
+
+        $this->iconNormalizeOverridePath = $targetPath;
+        return $targetPath;
+    }
+
     private function getExtraComposeFiles(): array
     {
         $raw = $this->readMetadata('extra_compose_files');
@@ -2040,6 +2633,13 @@ class StackInfo
 
         foreach ($this->getExtraComposeFiles() as $extraFile) {
             $paths[] = $extraFile;
+        }
+
+        // Last (highest precedence) so it can safely override just the icon
+        // label without disturbing anything else the user/other files set.
+        $iconNormalizePath = $this->getIconNormalizationOverridePath();
+        if ($iconNormalizePath !== null) {
+            $paths[] = $iconNormalizePath;
         }
 
         $normalized = [];
@@ -2865,8 +3465,24 @@ class StackInfo
             self::writeDefaultComposeFile($composeTarget);
         }
 
-        // Build + cache the instance (resolves override, etc.)
-        return self::fromProject($composeRoot, basename($path));
+        // Build + cache the instance (resolves override, etc.).
+        // New stacks must always have an app-managed project override template
+        // so shell/autostart flows that pass explicit -f lists do not point to
+        // a missing override file.
+        $stack = self::fromProject($composeRoot, basename($path));
+        $projectOverridePath = $stack->overrideInfo->getProjectOverridePath();
+        if (
+            $projectOverridePath !== null
+            && $projectOverridePath !== ''
+            && !is_file($projectOverridePath)
+            && !is_dir($projectOverridePath)
+        ) {
+            if (@file_put_contents($projectOverridePath, OverrideInfo::buildTemplateContent()) === false) {
+                throw new \RuntimeException("Failed to create override template: $projectOverridePath");
+            }
+        }
+
+        return $stack;
     }
 
     /**

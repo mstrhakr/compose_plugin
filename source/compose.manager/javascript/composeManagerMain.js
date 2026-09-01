@@ -83,70 +83,167 @@ function composeEscapeSelectorFragment(value) {
     return normalized.replace(/([!"#$%&'()*+,./:;<=>?@[\\\]^`{|}~])/g, '\\$1');
 }
     function updateAddStackDefaultComposeDiscoveryState() {
-        var $checkbox = $('#compose-stack-use-default-compose-files');
-        var $notice = $('#compose-stack-default-compose-files-disabled-note');
-        if (!$checkbox.length) return;
-
-        var hasIndirectFile = ($('#compose-stack-indirect-file').val() || '').trim() !== '';
-        var hasEnvPath = ($('#compose-stack-env-path').val() || '').trim() !== '';
-        if (hasIndirectFile || hasEnvPath) {
-            if ($checkbox.is(':checked')) {
-                $checkbox.prop('checked', false);
-            }
-            $checkbox.prop('disabled', true);
-            if ($notice.length) {
-                var reason = hasIndirectFile && hasEnvPath
-                    ? 'Default discovery disabled because Indirect Compose File and Env File Path are set.'
-                    : (hasIndirectFile
-                        ? 'Default discovery disabled because Indirect Compose File is set.'
-                        : 'Default discovery disabled because Env File Path is set.');
-                $notice.text(reason).show();
-            }
-        } else {
-            $checkbox.prop('disabled', false);
-            if ($notice.length) {
-                $notice.hide();
-            }
-        }
+        updateDiscoveryModeUI('add-stack', false);
     }
 
     function updateSettingsDefaultComposeDiscoveryState(suppressChangeTracking) {
-        var $checkbox = $('#settings-use-default-compose-files');
-        if (!$checkbox.length) return;
+        updateDiscoveryModeUI('settings', suppressChangeTracking);
+    }
 
-        var $notice = $('#settings-default-compose-files-disabled-note');
-        if (!$notice.length) {
-            $notice = $('<div id="settings-default-compose-files-disabled-note" class="compose-status-warning" style="display:none;margin-top:8px;"></div>');
-            var $anchor = $checkbox.closest('label');
-            if ($anchor.length) {
-                $anchor.after($notice);
-            } else {
-                $checkbox.parent().append($notice);
-            }
-        }
+// Mirror of compose_manager_sanitize_project_name (ProjectNameSanitizer.php)
+// so the modal's slug preview matches what the server will create.
+function composeSanitizeProjectSlug(raw) {
+    var s = String(raw || '').toLowerCase().trim();
+    s = s.replace(/[^a-z0-9_-]/g, '_');
+    s = s.replace(/_+/g, '_');
+    s = s.replace(/-+/g, '-');
+    s = s.replace(/^[_-]+|[_-]+$/g, '');
+    return s === '' ? 'compose' : s;
+}
 
-        var manualOverrideReasons = [];
-        if (($('#settings-env-path').val() || '').trim() !== '') manualOverrideReasons.push('Env File Path');
-        if (($('#settings-external-compose-file').val() || '').trim() !== '') manualOverrideReasons.push('External Compose File');
-        if (getExtraComposeFilesValue() !== '') manualOverrideReasons.push('Additional Compose Files');
+// Show/hide the "Project folder: <slug>" preview under the Stack Name input.
+function updateAddStackSlugPreview() {
+    var name = ($('#compose-stack-name').val() || '').trim();
+    var $wrap = $('#compose-stack-name-slug-wrap');
+    if (!$wrap.length) return;
+    if (!name) {
+        $wrap.hide();
+        return;
+    }
+    $('#compose-stack-name-slug').text(composeSanitizeProjectSlug(name));
+    $wrap.show();
+}
 
-        if (manualOverrideReasons.length > 0) {
-            var reason = 'Default discovery disabled because ' + manualOverrideReasons.join(' and ')
-                + (manualOverrideReasons.length > 1 ? ' are set.' : ' is set.');
+// Recompute per-field inline errors and gate the Create button.
+function updateAddStackValidity() {
+    var errors = [];
+    var name = ($('#compose-stack-name').val() || '').trim();
+    var $nameErr = $('#compose-stack-name-error');
+    if (!name) {
+        errors.push('name');
+        $nameErr.text('Stack name is required.').show();
+    } else {
+        $nameErr.hide().text('');
+    }
 
-            if ($checkbox.is(':checked')) {
-                $checkbox.prop('checked', false);
-                if (!suppressChangeTracking) {
-                    $checkbox.trigger('change');
-                }
-            }
-            $checkbox.prop('disabled', true);
-            $notice.text(reason).show();
+    var mode = ($('input[name="compose-stack-compose-source"]:checked').val()) || 'project';
+
+    var $pathErr = $('#compose-stack-external-path-error');
+    var $fileErr = $('#compose-stack-external-file-error');
+
+    if (mode === 'folder') {
+        var path = ($('#compose-stack-external-path').val() || '').trim();
+        if (!path) {
+            errors.push('external-path');
+            $pathErr.text('Choose a folder for the external compose source.').show();
+        } else if (!/^\/(mnt|boot\/config)\//.test(path)) {
+            errors.push('external-path');
+            $pathErr.text('Path must be under /mnt/ or /boot/config/.').show();
         } else {
-            $checkbox.prop('disabled', false);
-            $notice.hide();
+            $pathErr.hide().text('');
+        }
+    } else {
+        $pathErr.hide().text('');
+    }
+
+    if (mode === 'file') {
+        var file = ($('#compose-stack-external-file').val() || '').trim();
+        if (!file) {
+            errors.push('external-file');
+            $fileErr.text('Choose a compose file to use as the source.').show();
+        } else if (!/^\/(mnt|boot\/config)\//.test(file)) {
+            errors.push('external-file');
+            $fileErr.text('Path must be under /mnt/ or /boot/config/.').show();
+        } else if (!/\.ya?ml$/i.test(file)) {
+            errors.push('external-file');
+            $fileErr.text('File must have a .yml or .yaml extension.').show();
+        } else {
+            $fileErr.hide().text('');
+        }
+    } else {
+        $fileErr.hide().text('');
+    }
+
+    $('#compose-stack-create-btn').prop('disabled', errors.length > 0);
+}
+
+// Wiring for each surface that owns a Compose File Discovery badge+toggle.
+var DISCOVERY_MODE_SCOPE_CONFIGS = {
+    settings: {
+        checkboxId: 'settings-use-default-compose-files',
+        badgeId: 'settings-discovery-mode-badge',
+        toggleId: 'settings-discovery-mode-toggle',
+        noticeId: 'settings-default-compose-files-disabled-note',
+        getManualOverrideReasons: function() {
+            var reasons = [];
+            if (($('#settings-env-path').val() || '').trim() !== '') reasons.push('External ENV File Path');
+            if (($('#settings-external-compose-file').val() || '').trim() !== '') reasons.push('External Compose File');
+            if (getExtraComposeFilesValue() !== '') reasons.push('Additional Compose Files');
+            return reasons;
+        }
+    },
+    'add-stack': {
+        checkboxId: 'compose-stack-use-default-compose-files',
+        badgeId: 'compose-stack-discovery-mode-badge',
+        toggleId: 'compose-stack-discovery-mode-toggle',
+        noticeId: 'compose-stack-default-compose-files-disabled-note',
+        getManualOverrideReasons: function() {
+            var reasons = [];
+            if (($('#compose-stack-env-path').val() || '').trim() !== '') reasons.push('External ENV File Path');
+            if (($('#compose-stack-external-file').val() || '').trim() !== '') reasons.push('External Compose File');
+            return reasons;
         }
     }
+};
+
+// Render the discovery-mode badge, toggle button, and lock reason line
+// for a given scope. Locking clears any pending default-discovery state
+// so the checkbox stays consistent with what the badge advertises.
+function updateDiscoveryModeUI(scope, suppressChangeTracking) {
+    var cfg = DISCOVERY_MODE_SCOPE_CONFIGS[scope];
+    if (!cfg) return;
+    var $checkbox = $('#' + cfg.checkboxId);
+    if (!$checkbox.length) return;
+
+    var $notice = $('#' + cfg.noticeId);
+    var $badge = $('#' + cfg.badgeId);
+    var $toggle = $('#' + cfg.toggleId);
+
+    var reasons = cfg.getManualOverrideReasons();
+    var locked = reasons.length > 0;
+    if (locked) {
+        if ($checkbox.is(':checked')) {
+            $checkbox.prop('checked', false);
+            if (!suppressChangeTracking) {
+                $checkbox.trigger('change');
+            }
+        }
+        $checkbox.prop('disabled', true);
+        if ($notice.length) {
+            $notice.text('Locked to explicit -f flags because ' + reasons.join(' and ')
+                + (reasons.length > 1 ? ' are set.' : ' is set.')).show();
+        }
+    } else {
+        $checkbox.prop('disabled', false);
+        if ($notice.length) $notice.hide();
+    }
+
+    var isDefault = $checkbox.is(':checked');
+    if ($badge.length) {
+        if (isDefault) {
+            $badge.text('Discovery mode: Docker Compose default');
+        } else {
+            $badge.html('Discovery mode: Explicit <code>-f</code> flags');
+        }
+    }
+    if ($toggle.length) {
+        if (locked) {
+            $toggle.hide();
+        } else {
+            $toggle.text(isDefault ? 'Use explicit -f flags' : 'Use default discovery').show();
+        }
+    }
+}
 
 // ---- Additional Compose Files settings UI ----
 
@@ -210,6 +307,9 @@ function onExtraComposeFilesChanged() {
     updateSaveButtonState();
     updateTabModifiedState();
     updateSettingsDefaultComposeDiscoveryState();
+    if (typeof updateEffectiveCommandDirtyIndicator === 'function') {
+        updateEffectiveCommandDirtyIndicator();
+    }
 }
 
 function resetExtraComposeFilesUI() {
@@ -478,6 +578,8 @@ function hideComposeSpinner() {
 function composeLoadlist() {
     // Return a Promise so callers can reliably .then() / .catch() on completion
     return new Promise(function(resolve, reject) {
+        var composeLoadRequestTs = Date.now();
+
         // Bind autostart change handler early, before any rows are rendered or become interactive
         // during progressive loading. Use delegated event handler so it works for dynamically added rows.
         $('#compose_list').off('change', '.auto_start').on('change', '.auto_start', function() {
@@ -602,7 +704,8 @@ function composeLoadlist() {
         }
 
         $.get('/plugins/compose.manager/include/ComposeList.php', {
-                mode: 'list'
+            mode: 'list',
+            _: composeLoadRequestTs
             })
             .done(function(metaRaw) {
                 var meta = tryParseJson(metaRaw);
@@ -690,19 +793,34 @@ function composeLoadlist() {
                     }, 'user', 'debug', 'composeLoadlist');
 
                     activeRequests++;
-                    $.get('/plugins/compose.manager/include/ComposeList.php', {
+                        $.get('/plugins/compose.manager/include/ComposeList.php', {
                             mode: 'row',
-                            project: project
+                            project: project,
+                            _: composeLoadRequestTs + '-' + index
                         })
                         .done(function(rowRaw) {
                             var rowResp = tryParseJson(rowRaw);
                             var elapsedMs = Date.now() - (stackLoadTimers[project] || Date.now());
+                            var detailParts = [];
+                            if (rowResp && Array.isArray(rowResp.details)) {
+                                detailParts = rowResp.details
+                                    .filter(function(item) {
+                                        return typeof item === 'string' && item.trim() !== '';
+                                    })
+                                    .slice(0, 3);
+                            }
                             pendingRowsByIndex[index] = {
                                 ok: !!(rowResp && rowResp.result === 'success' && rowResp.html),
                                 rowResp: rowResp,
                                 project: project,
                                 position: index + 1,
-                                elapsedMs: elapsedMs
+                                elapsedMs: elapsedMs,
+                                reason: (rowResp && rowResp.reason) ? String(rowResp.reason) : '',
+                                projectPath: (rowResp && rowResp.projectPath) ? String(rowResp.projectPath) : (compose_root + '/' + project),
+                                errorMessage: (rowResp && rowResp.message) ? String(rowResp.message) : '',
+                                failureDetail: detailParts.join(' | '),
+                                checkedComposePaths: (rowResp && Array.isArray(rowResp.checkedComposePaths)) ? rowResp.checkedComposePaths.slice(0, 6) : [],
+                                missingMetadataFiles: (rowResp && Array.isArray(rowResp.missingMetadataFiles)) ? rowResp.missingMetadataFiles.slice(0, 8) : []
                             };
                         })
                         .fail(function() {
@@ -712,7 +830,13 @@ function composeLoadlist() {
                                 rowResp: null,
                                 project: project,
                                 position: index + 1,
-                                elapsedMs: failElapsedMs
+                                elapsedMs: failElapsedMs,
+                                reason: 'request_failed',
+                                projectPath: compose_root + '/' + project,
+                                errorMessage: 'Row request failed before payload returned.',
+                                failureDetail: '',
+                                checkedComposePaths: [],
+                                missingMetadataFiles: []
                             };
                         })
                         .always(function() {
@@ -755,6 +879,7 @@ function composeLoadlist() {
                         var $rowChunk = $(entry.rowResp.html);
                         $('#compose-load-progress-row').before($rowChunk);
                         initializeProgressiveLoadedRows($rowChunk);
+                        processPendingUpdateCheckForStack(entry.project);
                         if (typeof window.composeDockerLoadRenderCached === 'function' && composeShouldEnableDockerLoad()) {
                             window.composeDockerLoadRenderCached();
                         }
@@ -762,11 +887,17 @@ function composeLoadlist() {
                     } else {
                         composeLogger('progressive stack load failed', {
                             project: entry.project,
+                            projectPath: entry.projectPath || (compose_root + '/' + entry.project),
                             position: entry.position,
                             total: projects.length,
-                            elapsedMs: entry.elapsedMs
+                            elapsedMs: entry.elapsedMs,
+                            reason: entry.reason || 'unknown',
+                            errorMessage: entry.errorMessage || '',
+                            failureDetail: entry.failureDetail || '',
+                            checkedComposePaths: entry.checkedComposePaths || [],
+                            missingMetadataFiles: entry.missingMetadataFiles || [],
+                            uiAction: 'row_dropped'
                         }, 'user', 'warn', 'composeLoadlist');
-                        $('#compose-load-progress-row').before('<tr><td colspan="14" class="compose-status-danger" style="padding:8px 12px;">Failed to load ' + composeEscapeHtml(entry.project) + '.</td></tr>');
                     }
 
                     waitForExpansion.finally(function() {
@@ -837,8 +968,8 @@ function initStackListUI() {
         lessLink: "<a href='#' style='text-align:center'><i class='fa fa-chevron-up'></i></a>"
     });
 
-    // Apply current view mode (advanced/basic) with centralized logic
-    applyListView(false);
+    // Apply list enhancements driven by current column visibility.
+    applyListEnhancements(false);
 
             // Recompute stack-row striping after all stack rows are present so
             // hidden detail rows do not skew alternating backgrounds.
@@ -896,7 +1027,7 @@ function initializeProgressiveLoadedRows($rowChunk) {
         });
     });
 
-    // Skip full-table applyListView here; new rows already get row-local
+    // Skip full-table helper refresh here; new rows already get row-local
     // readmore/context/toggle setup above, and global apply runs at finalize.
 
     // Apply cached update status immediately for new rows when available.
@@ -1164,6 +1295,8 @@ function initEditorModal() {
         if (fieldId === 'env-path' || fieldId === 'external-compose-file') {
             updateSettingsDefaultComposeDiscoveryState();
         }
+
+        updateEffectiveCommandDirtyIndicator();
     });
 
     // Additional compose files: combined change tracking for the candidate
@@ -1188,6 +1321,7 @@ function initEditorModal() {
 
         updateSaveButtonState();
         updateTabModifiedState();
+        updateEffectiveCommandDirtyIndicator();
     });
 
     // Icon preview update with debounce
@@ -1204,6 +1338,24 @@ function initEditorModal() {
                 $('#settings-icon-preview').hide();
             }
         }, 300);
+    });
+
+    // WebUI URL inline validation
+    $('#settings-webui-url').on('input', function() {
+        var url = $(this).val().trim();
+        if (!url) {
+            clearSettingsFieldError('webui-url');
+            return;
+        }
+        if (!isValidWebUIUrl(url)) {
+            setSettingsFieldError('webui-url', 'Invalid WebUI URL. Must be http:// or https:// (supports [IP] and [PORT:xxxx] placeholders).');
+            return;
+        }
+        if (/\[PORT\]/i.test(url)) {
+            setSettingsFieldError('webui-url', 'Bare [PORT] placeholder is not supported at stack level. Use [PORT:xxxx] with a default port instead (e.g. [PORT:8080]).');
+            return;
+        }
+        clearSettingsFieldError('webui-url');
     });
 
     // External compose path info toggle
@@ -1225,19 +1377,30 @@ function initEditorModal() {
             $('#settings-external-compose-info').hide();
         }
 
-        // Warn if the selected file lives inside the stack project folder
+        // Warn (and block Apply) if the selected file lives inside the stack project folder
         var stackPath = (editorModal.filePaths.stackMeta || '').replace(/\/$/, '');
-        var $warning = $('#settings-external-compose-file-warning');
         if (filePath && stackPath && filePath.startsWith(stackPath + '/')) {
-            if (!$warning.length) {
-                $warning = $('<div id="settings-external-compose-file-warning" class="compose-status-error" style="margin-top:6px;"></div>');
-                $(this).after($warning);
-            }
-            $warning.text('This file is inside the stack project folder. The path must be external to this stack.').show();
-        } else if ($warning.length) {
-            $warning.hide();
+            setSettingsFieldError('external-compose-file', 'This file is inside the stack project folder. The path must be external to this stack.');
+        } else {
+            clearSettingsFieldError('external-compose-file');
         }
     });
+
+    // Compose Source radio — progressive disclosure between project / folder / file.
+    $(document).off('change.composeSource', 'input[name="settings-compose-source"]')
+        .on('change.composeSource', 'input[name="settings-compose-source"]', function() {
+            setComposeSource($(this).val(), false);
+        });
+
+    // Compose File Discovery toggle button flips the (hidden) source-of-truth checkbox.
+    $(document).off('click.discoveryModeToggle', '#settings-discovery-mode-toggle')
+        .on('click.discoveryModeToggle', '#settings-discovery-mode-toggle', function(e) {
+            e.preventDefault();
+            var $checkbox = $('#settings-use-default-compose-files');
+            if ($checkbox.is(':disabled')) return;
+            $checkbox.prop('checked', !$checkbox.is(':checked')).trigger('change');
+            updateSettingsDefaultComposeDiscoveryState();
+        });
 
     // Keyboard shortcuts - use namespaced event to avoid duplicates
     $(document).off('keydown.editorModal').on('keydown.editorModal', function(e) {
@@ -1257,7 +1420,7 @@ function initEditorModal() {
                 var $activeTab = $('.editor-tab.active');
                 if ($activeTab.is(':focus') || $activeTab.parent().find(':focus').length) {
                     e.preventDefault();
-                    var tabs = ['compose', 'env', 'labels', 'settings'];
+                    var tabs = ['compose', 'env', 'labels', 'sources', 'settings'];
                     var currentIdx = tabs.indexOf(editorModal.currentTab);
                     var newIdx;
                     if (e.key === 'ArrowLeft') {
@@ -1305,15 +1468,15 @@ function initEditorModal() {
 
 // Switch between tabs (compose / env / labels / settings)
 function switchTab(tabName) {
-    var validTabs = ['compose', 'env', 'labels', 'settings'];
+    var validTabs = ['compose', 'env', 'labels', 'sources', 'settings'];
     if (validTabs.indexOf(tabName) === -1) {
         composeLogger('Invalid tab name: ' + tabName, null, 'user', 'error', 'switchTab');
         return;
     }
 
-    if (tabName !== 'settings' && hasPathSensitiveSettingsChanges()) {
+    if (tabName !== 'sources' && hasPathSensitiveSettingsChanges()) {
         enforcePathSettingsExclusivity('opening other tabs');
-        tabName = 'settings';
+        tabName = 'sources';
     }
 
     // Update tab buttons
@@ -1389,6 +1552,7 @@ function getEditorSaveTargetPath() {
                 return editorModal.filePaths.effectiveOverride || editorModal.filePaths.projectOverride || editorModal.filePaths.stackMeta;
             }
             return editorModal.filePaths.projectOverride || editorModal.filePaths.stackMeta;
+        case 'sources':
         case 'settings':
         default:
             return editorModal.filePaths.stackMeta;
@@ -1406,6 +1570,7 @@ function getEditorActiveFilePath() {
                 return editorModal.filePaths.effectiveOverride || editorModal.filePaths.projectOverride || '';
             }
             return '';
+        case 'sources':
         case 'settings':
         default:
             return '';
@@ -1433,6 +1598,173 @@ function updateEditorFileInfo() {
     setEditorPathText('#editor-edit-file', activeFilePath, fallbackText);
 }
 
+// Render the effective override file path in the Labels & Overrides section.
+function updateEffectiveOverridePathReadout() {
+    var $wrap = $('#settings-effective-override-path');
+    if (!$wrap.length) return;
+    var effective = editorModal.filePaths.effectiveOverride || '';
+    if (!effective) {
+        $wrap.hide();
+        $('#settings-effective-override-path-value').text('');
+        return;
+    }
+    $('#settings-effective-override-path-value').text(effective);
+    $wrap.show();
+}
+
+// Render the effective docker compose command based on the saved-state
+// preview returned by the server. Kept saved-state only so we match the
+// authoritative buildComposeArgs() output byte-for-byte; the dirty pill
+// tells the user when the readout is stale relative to the form.
+function renderEffectiveCommandPreview(data) {
+    var $out = $('#settings-effective-command');
+    if (!$out.length) return;
+
+    var lines = ['docker compose'];
+
+    var projectDir = data.projectDirectory || '';
+    if (projectDir) {
+        lines.push('  --project-directory ' + projectDir);
+    }
+
+    if (data.useDefaultFileDiscovery) {
+        lines.push('  # default file discovery (compose.yaml, compose.override.*, COMPOSE_FILE)');
+    } else {
+        (data.filePaths || []).forEach(function(fp) {
+            if (fp) lines.push('  -f ' + fp);
+        });
+    }
+
+    if (data.envFilePath) {
+        lines.push('  --env-file ' + data.envFilePath);
+    }
+
+    (data.profiles || []).forEach(function(p) {
+        if (p) lines.push('  --profile ' + p);
+    });
+
+    if (data.projectName) {
+        lines.push('  -p ' + data.projectName);
+    }
+
+    lines.push('  <action>  # up | down | pull | update …');
+
+    $out.text(lines.join(' \\\n'));
+}
+
+function loadEffectiveCommandPreview(project) {
+    var $out = $('#settings-effective-command');
+    if (!$out.length || !project) return;
+    $out.text('Loading…');
+    $.post(caURL, { action: 'previewComposeArgs', script: project })
+        .then(function(data) {
+            var response;
+            try {
+                response = JSON.parse(data);
+            } catch (e) {
+                $out.text('Unable to parse preview response.');
+                return;
+            }
+            if (response.result !== 'success') {
+                $out.text(response.message || 'Preview unavailable.');
+                return;
+            }
+            renderEffectiveCommandPreview(response);
+        }).fail(function() {
+            $out.text('Failed to load preview (network error).');
+        });
+}
+
+// Show or hide the "Unsaved changes" pill next to the effective command.
+function updateEffectiveCommandDirtyIndicator() {
+    var dirty = editorModal.modifiedSettings && editorModal.modifiedSettings.size > 0;
+    $('#settings-effective-command-dirty').toggle(!!dirty);
+}
+
+// Compose Source radio — normalize legacy modes to the three supported values.
+function normalizeComposeSourceMode(mode) {
+    if (mode === 'folder' || mode === 'file') return mode;
+    return 'project';
+}
+
+// Wiring for each surface that owns a Compose Source radio group.
+// Keeps setComposeSourceForScope decoupled from the concrete DOM IDs.
+var COMPOSE_SOURCE_SCOPE_CONFIGS = {
+    settings: {
+        radioName: 'settings-compose-source',
+        pathInputId: 'settings-external-compose-path',
+        fileInputId: 'settings-external-compose-file',
+        pathWrapId: 'settings-external-compose-path-wrap',
+        fileWrapId: 'settings-external-compose-file-wrap',
+        infoBannerId: 'settings-external-compose-info',
+        invalidWarningId: 'settings-invalid-indirect-warning',
+        onFileClear: function() { clearSettingsFieldError('external-compose-file'); }
+    },
+    'add-stack': {
+        radioName: 'compose-stack-compose-source',
+        pathInputId: 'compose-stack-external-path',
+        fileInputId: 'compose-stack-external-file',
+        pathWrapId: 'compose-stack-external-path-wrap',
+        fileWrapId: 'compose-stack-external-file-wrap',
+        infoBannerId: null,
+        invalidWarningId: null,
+        onFileClear: null
+    }
+};
+
+// Apply a Compose Source selection: swap visible picker and clear the other input.
+// suppressChangeTracking=true when reflecting server state during load / reset.
+function setComposeSourceForScope(scope, mode, suppressChangeTracking) {
+    var cfg = COMPOSE_SOURCE_SCOPE_CONFIGS[scope];
+    if (!cfg) return;
+    mode = normalizeComposeSourceMode(mode);
+    if (scope === 'settings') {
+        editorModal.composeSourceMode = mode;
+    }
+
+    $('input[name="' + cfg.radioName + '"][value="' + mode + '"]').prop('checked', true);
+    $('#' + cfg.pathWrapId).toggle(mode === 'folder');
+    $('#' + cfg.fileWrapId).toggle(mode === 'file');
+
+    // Clear whichever input isn't the selected mode so the two states stay
+    // mutually exclusive by construction (no save-time both-set error).
+    if (mode !== 'folder') {
+        var $p = $('#' + cfg.pathInputId);
+        if ($p.val() !== '') {
+            $p.val('');
+            if (!suppressChangeTracking) $p.trigger('input').trigger('change');
+        }
+    }
+    if (mode !== 'file') {
+        var $f = $('#' + cfg.fileInputId);
+        if ($f.val() !== '') {
+            $f.val('');
+            if (!suppressChangeTracking) $f.trigger('input').trigger('change');
+        }
+        if (typeof cfg.onFileClear === 'function') cfg.onFileClear();
+    }
+
+    // Info/invalid banners only make sense for external modes.
+    if (mode === 'project') {
+        if (cfg.infoBannerId) $('#' + cfg.infoBannerId).hide();
+        if (cfg.invalidWarningId) $('#' + cfg.invalidWarningId).hide();
+    }
+}
+
+// Legacy shim: existing editor call sites use setComposeSource() unqualified.
+function setComposeSource(mode, suppressChangeTracking) {
+    setComposeSourceForScope('settings', mode, suppressChangeTracking);
+}
+
+// Setting fieldIds that live under the Sources tab; all others belong to Settings.
+var SOURCES_TAB_SETTING_FIELDS = new Set([
+    'external-compose-path',
+    'external-compose-file',
+    'extra-compose-files',
+    'env-path',
+    'use-default-compose-files'
+]);
+
 // Update the modified indicator on tabs
 function updateTabModifiedState() {
     // Compose tab
@@ -1456,8 +1788,24 @@ function updateTabModifiedState() {
         $('#editor-tab-labels').removeClass('modified');
     }
 
-    // Settings tab
-    if (editorModal.modifiedSettings.size > 0) {
+    // Sources vs Settings — split editorModal.modifiedSettings by field ownership.
+    var sourcesModified = false;
+    var settingsModified = false;
+    editorModal.modifiedSettings.forEach(function(fieldId) {
+        if (SOURCES_TAB_SETTING_FIELDS.has(fieldId)) {
+            sourcesModified = true;
+        } else {
+            settingsModified = true;
+        }
+    });
+
+    if (sourcesModified) {
+        $('#editor-tab-sources').addClass('modified');
+    } else {
+        $('#editor-tab-sources').removeClass('modified');
+    }
+
+    if (settingsModified) {
         $('#editor-tab-settings').addClass('modified');
     } else {
         $('#editor-tab-settings').removeClass('modified');
@@ -1651,12 +1999,18 @@ function checkPendingRechecks(callback) {
                             pendingStacks: pendingStacks
                         }, 'user', 'debug', 'update-check');
 
-                        // Check each pending stack
+                        // Queue the rechecks. Row-commit hook drains the queue as
+                        // each row lands. For rows already committed before this
+                        // async POST returned, sweep them now so they aren't stranded.
                         pendingStacks.forEach(function(stackName) {
-                            composeLogger('Running recheck for recently updated stack', {
-                                stackName: stackName
-                            }, 'user', 'debug', 'update-check');
-                            checkStackUpdates(stackName);
+                            if (pendingUpdateCheckStacks.indexOf(stackName) === -1) {
+                                pendingUpdateCheckStacks.push(stackName);
+                            }
+                        });
+                        pendingStacks.slice().forEach(function(stackName) {
+                            if ($('#compose_stacks tr.compose-sortable[data-project="' + stackName + '"]').length > 0) {
+                                processPendingUpdateCheckForStack(stackName);
+                            }
                         });
                     }
                 }
@@ -1861,14 +2215,14 @@ function executeUpdateAllStacks(stacks, background, suppressBackgroundNotificati
         return s.path;
     });
 
-    // Track all stacks for update check when dialog closes
+    // Track all stacks for update check when dialog closes.
+    // Server-side markStackForRecheck is authoritative; do NOT push into
+    // pendingUpdateCheckStacks at action start (drains would fire mid-action).
     var stackNames = [];
     stacks.forEach(function(s) {
         var stackName = s.project;
-        if (pendingUpdateCheckStacks.indexOf(stackName) === -1) {
-            pendingUpdateCheckStacks.push(stackName);
-        }
         stackNames.push(stackName);
+        setStackActionInProgress(stackName, true, composeActionStateText('update'));
     });
 
     // Mark stacks for recheck server-side (persists across page reload)
@@ -1891,6 +2245,15 @@ function executeUpdateAllStacks(stacks, background, suppressBackgroundNotificati
                 if (parsed && parsed.background) {
                     stacks.forEach(function(s) {
                         pollBackgroundCompletion(s.project);
+                    });
+                } else if (data) {
+                    stackNames.forEach(function(stackName) {
+                        setStackActionInProgress(stackName, false);
+                    });
+                    queuePendingComposeReloads(stackNames);
+                } else {
+                    stackNames.forEach(function(stackName) {
+                        setStackActionInProgress(stackName, false);
                     });
                 }
             }
@@ -1954,7 +2317,7 @@ function updateStackUpdateUI(stackName, stackInfo) {
                 updateHtml += '</div>';
             } else if (updatesWithSha.length > 1) {
                 // Multiple updates - show expand hint
-                updateHtml += '<div class="cm-advanced compose-text-muted" style="font-size:0.8em;margin-top:2px;">Expand for details</div>';
+                updateHtml += '<div class="compose-text-muted" style="font-size:0.8em;margin-top:2px;">Expand for details</div>';
             }
         }
 
@@ -1972,15 +2335,14 @@ function updateStackUpdateUI(stackName, stackInfo) {
         } else if (pinnedCount > 0) {
             // Some containers pinned, rest up-to-date
             var html = '<span class="green-text" style="white-space:nowrap;"><i class="fa fa-check fa-fw"></i> up-to-date</span>';
-            html += '<div class="cm-advanced compose-status-info" style="font-size:0.8em;margin-top:2px;"><i class="fa fa-thumb-tack fa-fw"></i> ' + pinnedCount + ' pinned</div>';
-            html += '<div class="cm-advanced"><a class="exec" style="cursor:pointer;" onclick="showUpdateWarning(\'' + composeEscapeAttr(stackName) + '\', \'' + composeEscapeAttr(stackId) + '\', \'forceUpdate\');"><span style="white-space:nowrap;"><i class="fa fa-cloud-download fa-fw"></i> force update</span></a></div>';
+            html += '<div class="compose-status-info" style="font-size:0.8em;margin-top:2px;"><i class="fa fa-thumb-tack fa-fw"></i> ' + pinnedCount + ' pinned</div>';
+            html += '<div><a class="exec" style="cursor:pointer;" onclick="showUpdateWarning(\'' + composeEscapeAttr(stackName) + '\', \'' + composeEscapeAttr(stackId) + '\', \'forceUpdate\');"><span style="white-space:nowrap;"><i class="fa fa-cloud-download fa-fw"></i> force update</span></a></div>';
             $updateCell.html(html);
         } else {
             // No updates, no pinned - green "up-to-date" style (like Docker tab)
-            // Basic view: just shows up-to-date
-            // Advanced view: shows force update link
+            // Additional row details are conditionally shown by column layout CSS.
             var html = '<span class="green-text" style="white-space:nowrap;"><i class="fa fa-check fa-fw"></i> up-to-date</span>';
-            html += '<div class="cm-advanced"><a class="exec" style="cursor:pointer;" onclick="showUpdateWarning(\'' + composeEscapeAttr(stackName) + '\', \'' + composeEscapeAttr(stackId) + '\', \'forceUpdate\');"><span style="white-space:nowrap;"><i class="fa fa-cloud-download fa-fw"></i> force update</span></a></div>';
+            html += '<div><a class="exec" style="cursor:pointer;" onclick="showUpdateWarning(\'' + composeEscapeAttr(stackName) + '\', \'' + composeEscapeAttr(stackId) + '\', \'forceUpdate\');"><span style="white-space:nowrap;"><i class="fa fa-cloud-download fa-fw"></i> force update</span></a></div>';
             $updateCell.html(html);
         }
     } else {
@@ -1990,9 +2352,8 @@ function updateStackUpdateUI(stackName, stackInfo) {
         $updateCell.html('<a class="exec" style="cursor:pointer;" onclick="checkStackUpdates(\'' + composeEscapeAttr(stackName) + '\');"><i class="fa fa-cloud-download fa-fw"></i> check for updates</a>');
     }
 
-    // Apply current view mode — cm-advanced elements are controlled by
-    // the .cm-advanced-view class on #compose_stacks (CSS-only, no need to
-    // show/hide individual elements here since CSS handles visibility).
+    // Extra detail elements are controlled by table column visibility classes.
+    // No per-cell show/hide work is needed here.
 
     // Rebuild context menus to reflect update status (only target icon spans with data-stackid, not the row)
     $('[id^="stack-"][data-stackid][data-project="' + stackName + '"]').each(function() {
@@ -2035,7 +2396,12 @@ function updateStackUpdateUI(stackName, stackInfo) {
 // Check updates for a single stack
 function checkStackUpdates(stackName) {
     var $stackRow = $('#compose_stacks tr.compose-sortable[data-project="' + stackName + '"]');
-    if ($stackRow.length === 0) return;
+    if ($stackRow.length === 0) {
+        if (pendingUpdateCheckStacks.indexOf(stackName) === -1) {
+            pendingUpdateCheckStacks.push(stackName);
+        }
+        return;
+    }
 
     var $updateCell = $stackRow.find('.compose-updatecolumn');
     $updateCell.html('<span class="compose-status-info"><i class="fa fa-refresh fa-spin"></i> checking...</span>');
@@ -2086,12 +2452,68 @@ function isValidWebUIUrl(url) {
     }
 }
 
+function composeIconFallback(img) {
+    if (!img || img.dataset.composeFallbackApplied === 'true') {
+        return;
+    }
+    img.dataset.composeFallbackApplied = 'true';
+    img.onerror = null;
+    img.src = '/plugins/compose.manager/images/question.png';
+}
+
 // Validate an icon source: http(s) URL, data URI, or local server path
 function isValidIconSrc(src) {
     if (!src) return false;
     var s = src.trim();
     return s.indexOf('http://') === 0 || s.indexOf('https://') === 0 ||
         s.indexOf('data:image/') === 0 || s.indexOf('/') === 0;
+}
+
+/** Route remote http(s) icons through the local cache proxy; passthrough otherwise. */
+function composeIconSrc(src) {
+    if (!src || !isValidIconSrc(src)) {
+        return '/plugins/compose.manager/images/question.png';
+    }
+    var s = src.trim();
+    if (s.indexOf('http://') === 0 || s.indexOf('https://') === 0) {
+        return '/plugins/compose.manager/IconCache.php?src=' + encodeURIComponent(s);
+    }
+    return s;
+}
+
+// Sanitize user-entered icon values before assigning to image src in live preview.
+function sanitizeIconPreviewSrc(raw) {
+    var fallback = '/plugins/compose.manager/images/question.png';
+    if (typeof raw !== 'string') {
+        return fallback;
+    }
+
+    var s = raw.trim();
+    if (!s) {
+        return fallback;
+    }
+
+    if (/^https?:\/\//i.test(s)) {
+        try {
+            var parsed = new URL(s);
+            if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+                return composeIconSrc(s);
+            }
+        } catch (e) {
+            return fallback;
+        }
+        return fallback;
+    }
+
+    if (/^\/[\w./:@%+\-=~]+$/i.test(s)) {
+        return s;
+    }
+
+    if (/^data:image\/(png|jpeg|jpg|gif|webp|x-icon|vnd\.microsoft\.icon);base64,[a-z0-9+/=\s]+$/i.test(s)) {
+        return s.replace(/\s+/g, '');
+    }
+
+    return fallback;
 }
 
 function loadPersistentContainerCache() {
@@ -2146,6 +2568,30 @@ function loadComposeLoadSnapshot() {
     });
 }
 
+// The compose_info publisher process exits ~10s after its last WebSocket
+// subscriber disconnects (see webGui/include/publish.php's no-subscriber
+// abort). It's normally respawned by DefaultPageLayout.php's pgrep+exec
+// check on the next full page render. Since a hidden tab can now
+// deliberately stop/restart the composeinfo WebSocket without a page
+// reload, call this after reconnecting so the client doesn't end up
+// subscribed to a channel nothing is publishing to.
+function ensureComposeInfoPublisherRunning() {
+    $.ajax({
+        url: caURL,
+        method: 'POST',
+        dataType: 'json',
+        data: {
+            action: 'ensureComposeInfoPublisher'
+        }
+    })
+        .done(function(response) {
+            composeLogger('ensured compose_info publisher is running', response, 'user', 'debug', 'dockerload');
+        })
+        .fail(function() {
+            composeLogger('failed to ensure compose_info publisher is running', null, 'user', 'warn', 'dockerload');
+        });
+}
+
 function getPersistentContainerInfo(project, service) {
     if (!project || !service || !persistentContainerCache[project]) return null;
     return persistentContainerCache[project][service] || null;
@@ -2164,10 +2610,6 @@ function processWebUIUrl(url) {
     // but handle gracefully by removing the placeholder and any preceding colon
     url = url.replace(/:?\[PORT\]/gi, '');
     return url;
-}
-
-function isComposeAdvancedMode() {
-    return true;
 }
 
 function composeHasVisibleLoadColumns() {
@@ -2191,9 +2633,8 @@ function composeShouldEnableDockerLoad() {
     return composeHasVisibleLoadColumns();
 }
 
-// Legacy compatibility shim. Basic/advanced toggle was removed in favor of
-// column customizer visibility controls.
-function applyListView(animate) {
+// Apply list-level helpers that depend on the current column layout.
+function applyListEnhancements(animate) {
     if (typeof window.composeDockerLoadToggle === 'function') {
         window.composeDockerLoadToggle(composeShouldEnableDockerLoad());
     }
@@ -2246,7 +2687,7 @@ $(function() {
     });
 
     // Refresh per-row UI helpers after initial DOM is ready.
-    applyListView();
+    applyListEnhancements();
 
     // ebox observer removed; pending update checks are now processed from
     // refreshStackRow and processPendingComposeReloads directly.
@@ -2361,7 +2802,7 @@ $(function() {
         })();
 
         // ── CPU & Memory load via dockerload Nchan channel ─────────────
-        // composeDockerLoadToggle(true/false) is called from applyListView()
+        // composeDockerLoadToggle(true/false) is called from applyListEnhancements()
         // and column visibility handlers so the socket follows visible load columns.
         function initComposeDockerLoadSubscriber() {
             if (typeof NchanSubscriber !== 'function') {
@@ -2369,14 +2810,28 @@ $(function() {
                 return false;
             }
 
-            // Tear down previous subscriber if page was re-navigated (Unraid
-            // AJAX navigation preserves window globals but old closures/sockets
-            // become stale).  Always create a fresh subscriber.
-            if (window._composeDockerLoad) {
-                composeLogger('tearing down previous subscriber', null, 'user', 'debug', 'dockerload');
+            var prevSubscriber = window._composeDockerLoad || null;
+            var newGeneration = (window._composeDockerLoadGeneration || 0) + 1;
+            window._composeDockerLoadGeneration = newGeneration;
+
+            // Tear down previous subscriber if page was re-navigated or a stale
+            // reconnect loop left an older socket alive. This must be a hard
+            // stop, not just a best-effort shutdown, otherwise a replacement
+            // connection can overlap with the old one for minutes.
+            if (prevSubscriber) {
+                composeLogger('tearing down previous subscriber', {
+                    generation: newGeneration,
+                    prevGeneration: window._composeDockerLoadGeneration - 1
+                }, 'user', 'debug', 'dockerload');
                 try {
-                    window._composeDockerLoad.stop();
+                    prevSubscriber.stop();
                 } catch (e) {}
+                try {
+                    if (typeof prevSubscriber.close === 'function') {
+                        prevSubscriber.close();
+                    }
+                } catch (e) {}
+                window._composeDockerLoad = null;
             }
             if (window._composeDockerLoadStaleTimer) {
                 clearInterval(window._composeDockerLoadStaleTimer);
@@ -2384,6 +2839,10 @@ $(function() {
             if (window._composeDockerLoadRenderTimer) {
                 clearTimeout(window._composeDockerLoadRenderTimer);
                 window._composeDockerLoadRenderTimer = null;
+            }
+            if (window._composeDockerLoadHiddenIdleTimer) {
+                clearTimeout(window._composeDockerLoadHiddenIdleTimer);
+                window._composeDockerLoadHiddenIdleTimer = null;
             }
             if (window._composeDockerLoadVisHandler) {
                 document.removeEventListener('visibilitychange', window._composeDockerLoadVisHandler);
@@ -2400,6 +2859,12 @@ $(function() {
                 reconnectTimeout: 5000
             });
             window._composeDockerLoad = composeDockerLoad;
+            window._composeDockerLoadGeneration = newGeneration;
+
+            function isCurrentComposeDockerLoad(subscriber, generation) {
+                return !!subscriber && window._composeDockerLoad === subscriber && (window._composeDockerLoadGeneration || 0) === generation;
+            }
+
             var composeDockerLoadRunning = false;
             var composeDockerLoadDropped = 0;
 
@@ -2412,6 +2877,13 @@ $(function() {
             var composeLoadStaleMs = 15000;
             var composeLoadRenderMinIntervalMs = 120;
             var composeLoadLastRenderMs = 0;
+
+            // If the tab stays hidden this long, stop the WebSocket entirely
+            // rather than leaving it connected (and the PHP publisher busy)
+            // indefinitely in a background tab. Restarted automatically when
+            // the tab becomes visible again -- see the visibilitychange handler.
+            var composeLoadHiddenStopMs = 60000;
+            var composeHiddenSinceMs = null;
 
             function isComposeLoadVisible() {
                 if (!composeHasVisibleLoadColumns()) return false;
@@ -2516,6 +2988,14 @@ $(function() {
             });
 
             window.composeDockerLoadToggle = function(enable) {
+                if (!isCurrentComposeDockerLoad(composeDockerLoad, newGeneration)) {
+                    composeLogger('ignoring toggle for stale WebSocket generation', {
+                        requested: enable,
+                        generation: newGeneration,
+                        current: window._composeDockerLoadGeneration || 0
+                    }, 'user', 'debug', 'dockerload');
+                    return;
+                }
                 if (enable && !composeDockerLoadRunning) {
                     composeLogger('starting WebSocket', null, 'user', 'debug', 'dockerload');
                     composeDockerLoad.start();
@@ -2756,6 +3236,14 @@ $(function() {
             }
 
             composeDockerLoad.on('message', function(msg) {
+                if (!isCurrentComposeDockerLoad(composeDockerLoad, newGeneration)) {
+                    composeLogger('ignoring stale WebSocket message', {
+                        generation: newGeneration,
+                        current: window._composeDockerLoadGeneration || 0
+                    }, 'user', 'debug', 'dockerload');
+                    return;
+                }
+
                 var now = Date.now();
                 ingestComposeLoadPayload(msg, now);
 
@@ -2775,6 +3263,9 @@ $(function() {
             });
 
             composeDockerLoad.on('error', function(code, desc) {
+                if (!isCurrentComposeDockerLoad(composeDockerLoad, newGeneration)) {
+                    return;
+                }
                 composeLogger('WebSocket error', {
                     code: code,
                     desc: desc
@@ -2796,18 +3287,84 @@ $(function() {
             // stack index so the next WebSocket message rebuilds it from
             // the current DOM.  This prevents permanently stale data when
             // the page loaded or sat in a background tab.
+            //
+            // Also handles the hidden-tab lifecycle end to end:
+            //  - going hidden arms a timer that deliberately stops the
+            //    WebSocket after composeLoadHiddenStopMs, so a background tab
+            //    doesn't keep the socket (and the server-side publisher)
+            //    running indefinitely.
+            //  - becoming visible again clears that timer and, critically,
+            //    self-heals: it restarts the socket if we stopped it, and
+            //    forces a clean reconnect if the tab was hidden long enough
+            //    that the browser may have silently closed the connection
+            //    (tab freezing/throttling) without us seeing a close/error
+            //    event. Previously nothing restarted the socket here at all,
+            //    so a long-hidden tab could come back to a dead connection
+            //    that only a full page reload would fix.
             window._composeDockerLoadVisHandler = function() {
-                if (document.visibilityState === 'visible' && composeDockerLoadRunning) {
-                    if (composeDockerLoadDropped > 0) {
-                        composeLogger('browser tab became visible — skipped ' + composeDockerLoadDropped + ' messages while hidden, rendering cached data', null, 'user', 'debug', 'dockerload');
-                        composeDockerLoadDropped = 0;
-                    }
-                    composeStackIndex = null;
+                if (document.visibilityState === 'hidden') {
+                    composeHiddenSinceMs = Date.now();
+                    composeLogger('tab hidden — pausing render; WebSocket will stop after ' + Math.round(composeLoadHiddenStopMs / 1000) + 's if still hidden', null, 'user', 'debug', 'dockerload');
 
-                    // Immediately render the cached load data so the UI
-                    // shows current metrics without waiting for the next tick.
-                    scheduleComposeLoadRender(true);
+                    if (window._composeDockerLoadHiddenIdleTimer) {
+                        clearTimeout(window._composeDockerLoadHiddenIdleTimer);
+                    }
+                    window._composeDockerLoadHiddenIdleTimer = setTimeout(function() {
+                        window._composeDockerLoadHiddenIdleTimer = null;
+                        if (document.visibilityState === 'hidden' && composeDockerLoadRunning) {
+                            composeLogger('tab hidden for ' + Math.round((Date.now() - composeHiddenSinceMs) / 1000) + 's — stopping WebSocket to save resources', null, 'user', 'debug', 'dockerload');
+                            window.composeDockerLoadToggle(false);
+                        }
+                    }, composeLoadHiddenStopMs);
+                    return;
                 }
+
+                // visibilityState === 'visible'
+                var hiddenDurationMs = composeHiddenSinceMs ? (Date.now() - composeHiddenSinceMs) : 0;
+                composeHiddenSinceMs = null;
+                if (window._composeDockerLoadHiddenIdleTimer) {
+                    clearTimeout(window._composeDockerLoadHiddenIdleTimer);
+                    window._composeDockerLoadHiddenIdleTimer = null;
+                }
+
+                composeLogger('tab visible again after ' + Math.round(hiddenDurationMs / 1000) + 's hidden, socketRunning=' + composeDockerLoadRunning, null, 'user', 'debug', 'dockerload');
+
+                if (composeDockerLoadDropped > 0) {
+                    composeLogger('browser tab became visible — skipped ' + composeDockerLoadDropped + ' messages while hidden, rendering cached data', null, 'user', 'debug', 'dockerload');
+                    composeDockerLoadDropped = 0;
+                }
+
+                // A gap this long means every cached row is already past
+                // composeLoadStaleMs; prune now instead of waiting up to 3s
+                // for the stale-check timer so the UI doesn't briefly flash
+                // frozen numbers from before the tab was hidden.
+                if (hiddenDurationMs > composeLoadStaleMs && pruneStaleLoadEntries(Date.now())) {
+                    composeLogger('pruned stale container load entries after ' + Math.round(hiddenDurationMs / 1000) + 's hidden', null, 'user', 'debug', 'dockerload');
+                }
+
+                composeStackIndex = null;
+
+                if (composeShouldEnableDockerLoad()) {
+                    if (!composeDockerLoadRunning) {
+                        composeLogger('restarting WebSocket after hidden period (was stopped)', null, 'user', 'debug', 'dockerload');
+                        ensureComposeInfoPublisherRunning();
+                        window.composeDockerLoadToggle(true);
+                    } else if (hiddenDurationMs >= composeLoadHiddenStopMs) {
+                        // Still marked running, but hidden long enough that the
+                        // browser may have frozen/throttled the tab and silently
+                        // dropped the connection without an error event reaching
+                        // us. Force a clean reconnect rather than trusting a
+                        // socket we have no way to directly introspect.
+                        composeLogger('tab was hidden long enough that the WebSocket may be stale — forcing reconnect', null, 'user', 'debug', 'dockerload');
+                        ensureComposeInfoPublisherRunning();
+                        window.composeDockerLoadToggle(false);
+                        window.composeDockerLoadToggle(true);
+                    }
+                }
+
+                // Immediately render the cached load data so the UI shows
+                // current metrics without waiting for the next tick.
+                scheduleComposeLoadRender(true);
             };
             document.addEventListener('visibilitychange', window._composeDockerLoadVisHandler);
 
@@ -2874,47 +3431,110 @@ function addStack() {
     // Show custom modal for stack creation
     var modalHtml = `
         <div id="compose-stack-modal-overlay" class="compose-modal-overlay" style="display:flex;" onclick="if (event.target === this) closeComposeStackModal();">
-            <div class="compose-modal" role="dialog" aria-modal="true" aria-labelledby="compose-stack-modal-title" aria-describedby="compose-stack-modal-desc" tabindex="-1" style="max-width:560px;">
+            <div class="compose-modal" role="dialog" aria-modal="true" aria-labelledby="compose-stack-modal-title" aria-describedby="compose-stack-modal-desc" tabindex="-1" style="max-width:680px;">
                 <div class="compose-modal-header">
                     <span id="compose-stack-modal-title">Add New Compose Stack</span>
                     <button type="button" class="editor-btn editor-btn-cancel" onclick="closeComposeStackModal()" aria-label="Close modal"><i class="fa fa-times"></i></button>
                 </div>
                 <div class="compose-modal-body">
-                    <div style="font-weight:bold;margin-bottom:8px;">Stack Name</div>
-                    <input type="text" id="compose-stack-name" placeholder="Stack Name" autofocus>
-                    <div id="compose-stack-modal-desc" style="font-weight:bold;margin-bottom:8px;">Description (optional)</div>
-                    <input type="text" id="compose-stack-desc" placeholder="Description">
-                    <div id="compose-stack-modal-error" class="compose-status-danger" style="margin-bottom:8px;display:none;"></div>
-                
-                    <details>
-                        <summary>Advanced Options</summary></br>
-                        <div style="font-weight:bold;margin-bottom:8px;">External ENV File Path</div>
-                        <input type="text" id="compose-stack-env-path" placeholder="Default (.env in project or indirect folder)" data-pickroot="/" data-picktop="/mnt" data-pickcloseonfile="true">
+                    <div id="compose-stack-modal-error" class="compose-status-danger" style="margin-bottom:12px;display:none;"></div>
 
-                        <div style="font-weight:bold;margin:14px 0 8px;">Indirect Path</div>
-                        <input type="text" id="compose-stack-indirect" placeholder="/mnt/user/compose/stackFolder" data-pickroot="/" data-picktop="/mnt" data-pickfolders="true" data-pickcloseonfile="true">
+                    <div class="settings-section">
+                        <div class="settings-section-title"><i class="fa fa-info-circle"></i> Stack Identity</div>
 
-                        <div style="font-weight:bold;margin:10px 0 8px;">Indirect Compose File</div>
-                        <input type="text" id="compose-stack-indirect-file" placeholder="/mnt/user/compose/stackFolder/custom.compose.yml" data-pickroot="/" data-picktop="/mnt" data-pickcloseonfile="true" data-pickfilter="yml,yaml">
+                        <div class="settings-field">
+                            <label for="compose-stack-name">Stack Name</label>
+                            <input type="text" id="compose-stack-name" placeholder="e.g. My Compose Stack" autofocus>
+                            <div id="compose-stack-name-error" class="compose-status-danger" style="margin-top:6px;display:none;font-size:0.9em;"></div>
+                            <div class="settings-field-help" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                                <span>Display name shown in the UI.</span>
+                                <span id="compose-stack-name-slug-wrap" style="display:none;">
+                                    Project folder: <code id="compose-stack-name-slug" style="font-size:0.95em;"></code>
+                                </span>
+                            </div>
+                        </div>
 
-                        <div style="margin-top:14px;font-weight:bold;margin-bottom:8px;">Compose File Selection</div>
-                        <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
-                            <input type="checkbox" id="compose-stack-use-default-compose-files">
-                            Use Docker Compose default file discovery (no explicit -f flags)
-                        </label>
-                        <div id="compose-stack-default-compose-files-disabled-note" class="compose-status-warning" style="display:none;margin-top:8px;"></div>
+                        <div class="settings-field">
+                            <label for="compose-stack-desc" id="compose-stack-modal-desc">Description</label>
+                            <input type="text" id="compose-stack-desc" placeholder="Optional short description">
+                            <div class="settings-field-help">Brief description of what this stack does.</div>
+                        </div>
+                    </div>
 
-                        <div style="margin-top:14px;font-weight:bold;margin-bottom:8px;">Override File Management</div>
-                        <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
-                            <input type="checkbox" id="compose-stack-override-management-automatic" checked>
-                            Automatic (disable for Manual/raw override mode)
-                        </label>
-                    </details>
-                
+                    <div class="settings-section">
+                        <div class="settings-section-title"><i class="fa fa-files-o"></i> Compose Sources &amp; Files</div>
+
+                        <div class="settings-field">
+                            <label>Compose Source</label>
+                            <div class="settings-field-help" style="margin-bottom:8px;">Where will this stack's compose file live?</div>
+                            <div id="compose-stack-compose-source-radios" style="display:flex;flex-direction:column;gap:6px;">
+                                <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+                                    <input type="radio" name="compose-stack-compose-source" value="project" checked>
+                                    <span>Project folder <span class="compose-text-muted" style="font-size:0.9em;">(default — plugin creates a folder for you in the compose root)</span></span>
+                                </label>
+                                <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+                                    <input type="radio" name="compose-stack-compose-source" value="folder">
+                                    <span>External folder <span class="compose-text-muted" style="font-size:0.9em;">(use an existing directory that contains a compose file)</span></span>
+                                </label>
+                                <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+                                    <input type="radio" name="compose-stack-compose-source" value="file">
+                                    <span>Specific compose file <span class="compose-text-muted" style="font-size:0.9em;">(point at one exact <code>.yml</code>/<code>.yaml</code>)</span></span>
+                                </label>
+                            </div>
+
+                            <div id="compose-stack-external-path-wrap" class="settings-compose-source-input" style="margin-top:10px;display:none;">
+                                <input type="text" id="compose-stack-external-path" placeholder="/mnt/user/appdata/myapp/" data-pickroot="/" data-picktop="/mnt" data-pickfolders="true" data-pickcloseonfile="true">
+                                <div id="compose-stack-external-path-error" class="compose-status-danger" style="margin-top:6px;display:none;font-size:0.9em;"></div>
+                                <div class="settings-field-help">Folder must exist and contain a file matching <code>*compose*.yml</code>.</div>
+                            </div>
+
+                            <div id="compose-stack-external-file-wrap" class="settings-compose-source-input" style="margin-top:10px;display:none;">
+                                <input type="text" id="compose-stack-external-file" placeholder="/mnt/user/appdata/myapp/custom.compose.yml" data-pickroot="/" data-picktop="/mnt" data-pickcloseonfile="true" data-pickfilter="yml,yaml">
+                                <div id="compose-stack-external-file-error" class="compose-status-danger" style="margin-top:6px;display:none;font-size:0.9em;"></div>
+                                <div class="settings-field-help">Must be a <code>.yml</code>/<code>.yaml</code> file under <code>/mnt/</code> or <code>/boot/config/</code>.</div>
+                            </div>
+                        </div>
+
+                        <div class="settings-field">
+                            <label for="compose-stack-env-path">External ENV File Path</label>
+                            <input type="text" id="compose-stack-env-path" placeholder="Default (.env in compose source folder)" data-pickroot="/" data-picktop="/mnt" data-pickcloseonfile="true">
+                            <div class="settings-field-help">Path to an external .env file. Leave empty to use the default .env file in the compose source folder.</div>
+                        </div>
+
+                        <div class="settings-field">
+                            <label>Compose File Discovery</label>
+                            <div id="compose-stack-discovery-mode-row" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                                <span id="compose-stack-discovery-mode-badge" class="compose-status-info" style="padding:4px 10px;border:1px solid var(--dynamix-box-inner-div-border-color);border-radius:4px;font-size:0.9em;">Discovery mode: Explicit <code>-f</code> flags</span>
+                                <button type="button" id="compose-stack-discovery-mode-toggle" class="btn btn-sm" style="padding:2px 12px;font-size:0.9em;">Use default discovery</button>
+                            </div>
+                            <div id="compose-stack-default-compose-files-disabled-note" class="compose-status-warning" style="display:none;margin-top:8px;font-size:0.9em;"></div>
+                            <div class="settings-field-help"><strong>Default discovery</strong> lets Docker Compose auto-load <code>compose.override.*</code> and honor <code>COMPOSE_FILE</code> in <code>.env</code>. <strong>Explicit <code>-f</code> flags</strong> is used when the plugin passes each compose file directly. Overrides (Specific compose file, ENV path) require explicit mode.</div>
+                            <input type="checkbox" id="compose-stack-use-default-compose-files" style="position:absolute;left:-9999px;" tabindex="-1" aria-hidden="true">
+                        </div>
+                    </div>
+
+                    <div class="settings-section">
+                        <div class="settings-section-title"><i class="fa fa-tags"></i> Labels &amp; Overrides</div>
+
+                        <div class="settings-field">
+                            <label>Override File Management</label>
+                            <div id="compose-stack-override-management-radios" style="display:flex;flex-direction:column;gap:6px;">
+                                <label style="display:flex;align-items:flex-start;gap:8px;font-weight:normal;">
+                                    <input type="radio" name="compose-stack-override-management" value="automatic" checked style="margin-top:3px;">
+                                    <span><strong>Automatic</strong> — plugin manages <code>compose.override.yaml</code>. Labels tab shows the form editor.</span>
+                                </label>
+                                <label style="display:flex;align-items:flex-start;gap:8px;font-weight:normal;">
+                                    <input type="radio" name="compose-stack-override-management" value="manual" style="margin-top:3px;">
+                                    <span><strong>Manual</strong> — you manage <code>compose.override.yaml</code> directly. Labels tab shows the raw YAML editor and automated edits are blocked.</span>
+                                </label>
+                            </div>
+                            <div class="settings-field-help">Automatic is recommended for most stacks.</div>
+                        </div>
+                    </div>
                 </div>
                 <div class="compose-modal-footer">
                     <button class="editor-btn editor-btn-cancel" onclick="closeComposeStackModal()">Cancel</button>
-                    <button class="editor-btn editor-btn-save-all" onclick="submitComposeStackModal()">Create</button>
+                    <button class="editor-btn editor-btn-save-all" id="compose-stack-create-btn" onclick="submitComposeStackModal()" disabled>Create</button>
                 </div>
             </div>
         </div>
@@ -2933,13 +3553,14 @@ function addStack() {
         var defaultUseDefaultComposeFiles = pluginCfg && pluginCfg.NEW_STACK_USE_DEFAULT_COMPOSE_FILES === 'true';
         var defaultOverrideAutomatic = !(pluginCfg && pluginCfg.NEW_STACK_OVERRIDE_MANAGEMENT_AUTOMATIC === 'false');
         $('#compose-stack-use-default-compose-files').prop('checked', defaultUseDefaultComposeFiles);
-        $('#compose-stack-override-management-automatic').prop('checked', defaultOverrideAutomatic);
+        var overrideMode = defaultOverrideAutomatic ? 'automatic' : 'manual';
+        $('input[name="compose-stack-override-management"][value="' + overrideMode + '"]').prop('checked', true);
         updateAddStackDefaultComposeDiscoveryState();
     });
 
     // The add-stack modal is created dynamically, so attach the picker after insertion.
     if ($.fn.fileTreeAttach) {
-        var $indirectInputs = $('#compose-stack-indirect, #compose-stack-indirect-file, #compose-stack-env-path');
+        var $indirectInputs = $('#compose-stack-external-path, #compose-stack-external-file, #compose-stack-env-path');
         composeBindFileTreeInputs($indirectInputs, {
             zIndex: 100010,
             minWidth: 320,
@@ -2947,9 +3568,39 @@ function addStack() {
         });
     }
 
-    $('#compose-stack-indirect, #compose-stack-indirect-file, #compose-stack-env-path').off('input.defaultComposeDiscovery').on('input.defaultComposeDiscovery', function() {
+    $('#compose-stack-external-path, #compose-stack-external-file, #compose-stack-env-path').off('input.defaultComposeDiscovery').on('input.defaultComposeDiscovery', function() {
         updateAddStackDefaultComposeDiscoveryState();
     });
+
+    // Progressive disclosure between the three Compose Source modes.
+    $('input[name="compose-stack-compose-source"]').off('change.addStackComposeSource').on('change.addStackComposeSource', function() {
+        setComposeSourceForScope('add-stack', $(this).val(), false);
+    });
+    setComposeSourceForScope('add-stack', 'project', true);
+
+    // Discovery mode toggle button flips the hidden source-of-truth checkbox.
+    $('#compose-stack-discovery-mode-toggle').off('click.addStackDiscovery').on('click.addStackDiscovery', function(e) {
+        e.preventDefault();
+        var $checkbox = $('#compose-stack-use-default-compose-files');
+        if ($checkbox.is(':disabled')) return;
+        $checkbox.prop('checked', !$checkbox.is(':checked')).trigger('change');
+        updateAddStackDefaultComposeDiscoveryState();
+    });
+    updateAddStackDefaultComposeDiscoveryState();
+
+    // Inline validation + slug preview.
+    $('#compose-stack-name').off('input.addStackValidate').on('input.addStackValidate', function() {
+        updateAddStackSlugPreview();
+        updateAddStackValidity();
+    });
+    $('#compose-stack-external-path, #compose-stack-external-file').off('input.addStackValidate').on('input.addStackValidate', function() {
+        updateAddStackValidity();
+    });
+    $('input[name="compose-stack-compose-source"]').off('change.addStackValidate').on('change.addStackValidate', function() {
+        updateAddStackValidity();
+    });
+    updateAddStackSlugPreview();
+    updateAddStackValidity();
 
     window.closeComposeStackModal = function() {
         var overlay = document.getElementById('compose-stack-modal-overlay');
@@ -2961,22 +3612,20 @@ function addStack() {
     window.submitComposeStackModal = function() {
         var name = document.getElementById('compose-stack-name').value.trim();
         var desc = document.getElementById('compose-stack-desc').value.trim();
-        var indirect = document.getElementById('compose-stack-indirect').value.trim();
-        var indirectFile = document.getElementById('compose-stack-indirect-file').value.trim();
+        var externalPath = document.getElementById('compose-stack-external-path').value.trim();
+        var externalFile = document.getElementById('compose-stack-external-file').value.trim();
         var envPath = document.getElementById('compose-stack-env-path').value.trim();
         var useDefaultComposeFiles = document.getElementById('compose-stack-use-default-compose-files').checked ? 'true' : 'false';
-        var overrideManagementAutomatic = document.getElementById('compose-stack-override-management-automatic').checked ? 'true' : 'false';
+        var overrideRadio = document.querySelector('input[name="compose-stack-override-management"]:checked');
+        var overrideManagementAutomatic = (overrideRadio && overrideRadio.value === 'manual') ? 'false' : 'true';
         var errorDiv = document.getElementById('compose-stack-modal-error');
         if (!name) {
             errorDiv.textContent = "Please enter a stack name.";
             errorDiv.style.display = "block";
             return;
         }
-        if (indirect && indirectFile) {
-            errorDiv.textContent = "Set either Indirect Path or Indirect Compose File, not both.";
-            errorDiv.style.display = "block";
-            return;
-        }
+        // Mutual exclusion is enforced structurally by the Compose Source radio
+        // group. Backend still guards defensively.
         errorDiv.style.display = "none";
         // Disable all buttons in the modal
         var modal = document.getElementById('compose-stack-modal-overlay');
@@ -2991,8 +3640,8 @@ function addStack() {
                 action: 'addStack',
                 stackName: name,
                 stackDesc: desc,
-                stackPath: indirect,
-                stackFilePath: indirectFile,
+                stackPath: externalPath,
+                stackFilePath: externalFile,
                 envPath: envPath,
                 useDefaultComposeFiles: useDefaultComposeFiles,
                 overrideManagementAutomatic: overrideManagementAutomatic
@@ -3404,6 +4053,21 @@ function notifyBackgroundStarted(label, shouldNotify = true) {
     });
 }
 
+function queuePendingComposeReload(stackName) {
+    if (!stackName) return;
+    if (pendingComposeReloadStacks.indexOf(stackName) === -1) {
+        pendingComposeReloadStacks.push(stackName);
+    }
+}
+
+function queuePendingComposeReloads(stackNames, delayMs) {
+    if (!stackNames || stackNames.length === 0) return;
+    stackNames.forEach(function(stackName) {
+        queuePendingComposeReload(stackName);
+    });
+    schedulePendingComposeReloads(delayMs || 500);
+}
+
 // Poll for background operation completion by checking if stack lock is released
 // Once lock is released, refresh the stack and clear the checking state
 function pollBackgroundCompletion(stackName, refreshDelayMs = 0) {
@@ -3434,7 +4098,9 @@ function pollBackgroundCompletion(stackName, refreshDelayMs = 0) {
                     setStackActionInProgress(stackName, false);
                     setTimeout(function() {
                         refreshStackByProject(stackName);
-                        processPendingUpdateChecks();
+                        // Sync from server pending file (authoritative). This
+                        // populates the queue and sweeps any already-rendered rows.
+                        checkPendingRechecks();
                     }, refreshDelayMs);
                     return; // stop scheduling
                 }
@@ -3488,13 +4154,6 @@ function performComposeAction(opts) {
     var actionStateText = opts.actionStateText || composeActionStateText(actionName);
     var onComplete = opts.onComplete;
 
-    if (pendingReload && stackName) {
-        if (pendingComposeReloadStacks.indexOf(stackName) === -1) {
-            pendingComposeReloadStacks.push(stackName);
-            schedulePendingComposeReloads();
-        }
-    }
-
     if (stackName) {
         setStackActionInProgress(stackName, true, actionStateText);
     }
@@ -3507,9 +4166,6 @@ function performComposeAction(opts) {
     $.post(requestUrl, payload, function(data) {
         var parsed = tryParseJson(data);
         if (parsed && parsed.background) {
-            if (stackName && !pendingReload) {
-                setStackActionInProgress(stackName, true, actionStateText);
-            }
             if (!suppressBackgroundNotification) {
                 notifyBackgroundStarted(title, true);
             }
@@ -3517,8 +4173,11 @@ function performComposeAction(opts) {
                 pollBackgroundCompletion(stackName, opts.refreshDelayMs || 0);
             }
         } else if (data) {
-            if (stackName && !pendingReload) {
+            if (stackName) {
                 setStackActionInProgress(stackName, false);
+            }
+            if (pendingReload && stackName) {
+                queuePendingComposeReloads([stackName], opts.refreshDelayMs || 0);
             }
             openBox(data, title, 800, 1200, true);
         }
@@ -3689,9 +4348,10 @@ function ComposeRestart(path, profile = "") {
 function ForceUpdateStackConfirmed(path, opts) {
     opts = opts || {};
     var stackName = basename(path);
-    if (pendingUpdateCheckStacks.indexOf(stackName) === -1) {
-        pendingUpdateCheckStacks.push(stackName);
-    }
+
+    // Do NOT push to pendingUpdateCheckStacks here. See UpdateStackConfirmed
+    // for the reasoning — the server-side mark is authoritative and the
+    // client queue is populated from it on reload / background completion.
 
     confirmedComposeAction(path, {
         preAction: function(done) {
@@ -3810,6 +4470,22 @@ showConfirmButton: false
 // Using array to support Update All Stacks operation
 var pendingUpdateCheckStacks = [];
 
+function processPendingUpdateCheckForStack(stackName) {
+    if (!stackName || !pendingUpdateCheckStacks || pendingUpdateCheckStacks.length === 0) {
+        return;
+    }
+
+    var pendingIndex = pendingUpdateCheckStacks.indexOf(stackName);
+    if (pendingIndex === -1) {
+        return;
+    }
+
+    pendingUpdateCheckStacks.splice(pendingIndex, 1);
+    setTimeout(function() {
+        checkStackUpdates(stackName);
+    }, 0);
+}
+
 // Process the queued stacks from pending update checks.
 // This is called from refreshStackRow and processPendingComposeReloads.
 function processPendingUpdateChecks() {
@@ -3914,9 +4590,6 @@ function processPendingComposeReloads() {
             }, 'user', 'error', 'ui-render');
         }
     });
-
-    // After reload sequence, process any pending update checks.
-    processPendingUpdateChecks();
 }
 
 // Helper to refresh a single stack by project name (wrapper for refreshStackRow)
@@ -3976,12 +4649,16 @@ function refreshStackRow(stackId, project) {
             }
         }
         pendingComposeRefreshCount = Math.max(0, pendingComposeRefreshCount - 1);
-        processPendingUpdateChecks();
+        if (pendingComposeRefreshCount === 0) {
+            processPendingUpdateChecks();
+        }
     }).fail(function() {
         // On network failure, fall back to cache-based update
         updateParentStackFromContainers(stackId, project);
         pendingComposeRefreshCount = Math.max(0, pendingComposeRefreshCount - 1);
-        processPendingUpdateChecks();
+        if (pendingComposeRefreshCount === 0) {
+            processPendingUpdateChecks();
+        }
     });
 }
 
@@ -4037,9 +4714,11 @@ function setStackActionInProgress(stackName, inProgress, text) {
 function UpdateStackConfirmed(path, opts) {
     opts = opts || {};
     var stackName = basename(path);
-    if (pendingUpdateCheckStacks.indexOf(stackName) === -1) {
-        pendingUpdateCheckStacks.push(stackName);
-    }
+
+    // Do NOT push to pendingUpdateCheckStacks here. Server-side
+    // markStackForRecheck is authoritative; an incidental row refresh
+    // during the action would otherwise drain the queue and run the
+    // check while the update is still in progress.
 
     confirmedComposeAction(path, {
         preAction: function(done) {
@@ -4628,9 +5307,8 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             var localSha = container.localSha || '';
             var remoteSha = container.remoteSha || '';
 
-            var iconSrc = (container.icon && isValidIconSrc(container.icon)) ?
-                composeEscapeAttr(container.icon) :
-                '/plugins/dynamix.docker.manager/images/question.png';
+            var iconSrc = composeIconSrc(container.icon);
+            iconSrc = composeEscapeAttr(iconSrc);
 
             // Grey out containers without updates when showing update dialog
             var rowOpacity = (cfg.showVersionArrow && !hasUpdate && updateStatus === 'up-to-date') ? '0.5' : '1';
@@ -4638,7 +5316,7 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             var borderStyle = isLast ? '' : 'border-bottom:1px solid var(--dynamix-box-inner-div-border-color);';
 
             html += '<div style="display:flex;align-items:center;padding:8px 4px;' + borderStyle + 'opacity:' + rowOpacity + ';">';
-            html += '<img src="' + iconSrc + '" style="width:28px;height:28px;margin-right:10px;border-radius:4px;" onerror="this.src=\'/plugins/dynamix.docker.manager/images/question.png\'">';
+            html += '<img src="' + iconSrc + '" style="width:28px;height:28px;margin-right:10px;border-radius:4px;" onerror="composeIconFallback(this)">';
             html += '<div style="flex:1;">';
             html += '<div style="font-weight:bold;">' + composeEscapeHtml(shortName);
             // Show update badge if update is available (for update action)
@@ -4700,6 +5378,7 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
         var bgDefault = pluginCfg && pluginCfg.RUN_IN_BACKGROUND_DEFAULT === 'true';
         removeOrphansDefault = pluginCfg && pluginCfg.REMOVE_ORPHANS_DEFAULT === 'true';
         var disableWarnings = pluginCfg && pluginCfg.DISABLE_ACTION_WARNINGS === 'true';
+        var stackMismatchDetected = !!showRemoveOrphans;
 
         if (disableWarnings) {
             // In default background mode (warnings disabled and background enabled), don't show toast if background is used
@@ -4712,8 +5391,8 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             return;
         }
 
-        var removeOrphansChecked = removeOrphansDefault || showRemoveOrphans;
-        var showRemoveOrphansOption = cfg.showRemoveOrphans && (removeOrphansChecked || showRemoveOrphans);
+        var removeOrphansChecked = removeOrphansDefault || stackMismatchDetected;
+        var showRemoveOrphansOption = !!cfg.showRemoveOrphans || stackMismatchDetected;
 
         // Use native swal (SweetAlert 1.x) with callback style
         swal({
@@ -4791,20 +5470,19 @@ function ViewLastCmdLog(project, displayName) {
     });
 }
 
-function ComposePullConfirmed(path, profile = "", background = false, suppressBackgroundNotification = false) {
-    var stackName = basename(path);
-    performComposeAction({
-        stackName: stackName,
+function ComposePullConfirmed(path, opts) {
+    opts = opts || {};
+    confirmedComposeAction(path, {
         actionName: 'pull',
-        title: 'Compose Pull: ' + stackName,
+        titlePrefix: 'Compose Pull',
         requestUrl: compURL,
         payload: {
             action: 'composePull',
             path: path,
-            profile: profile
+            profile: opts.profile || ''
         },
-        background: background,
-        suppressBackgroundNotification: suppressBackgroundNotification,
+        background: !!opts.background,
+        suppressBackgroundNotification: !!opts.suppressBackgroundNotification,
         pendingReload: true
     });
 }
@@ -5139,6 +5817,7 @@ function openEditorModalByProject(project, projectName, initialTab) {
     editorModal.modifiedTabs = new Set();
     editorModal.modifiedSettings = new Set();
     editorModal.modifiedLabels = new Set();
+    editorModal.settingsValidationErrors = new Set();
     editorModal.originalContent = {};
     editorModal.originalSettings = {};
     editorModal.originalLabels = {};
@@ -5152,6 +5831,8 @@ function openEditorModalByProject(project, projectName, initialTab) {
         projectOverride: compose_root + '/' + project + '/compose.override.yaml',
         effectiveOverride: ''
     };
+    // Clear any lingering inline error slots from a previous open.
+    $('[id^="settings-"][id$="-error"]').hide().text('');
     $('#settings-override-management').prop('checked', true);
     $('#settings-override-management-label').text('Automatic');
 
@@ -5439,12 +6120,14 @@ function loadSettingsData(project, projectName) {
                     }, 'user', 'debug', 'stack-settings');
                     // Pre-populate with the broken path so the user can fix it
                     if (indirectMode === 'file') {
+                        setComposeSource('file', true);
                         $('#settings-external-compose-path').val('');
                         $('#settings-external-compose-file').val(invalidIndirectPath);
                         editorModal.originalSettings['external-compose-path'] = '';
                         editorModal.originalSettings['external-compose-file'] = '';
                         editorModal.modifiedSettings.add('external-compose-file');
                     } else {
+                        setComposeSource('folder', true);
                         $('#settings-external-compose-path').val(invalidIndirectPath);
                         $('#settings-external-compose-file').val('');
                         editorModal.originalSettings['external-compose-path'] = '';
@@ -5462,6 +6145,8 @@ function loadSettingsData(project, projectName) {
                             externalComposeFilePath: externalComposeFilePath
                         }, 'user', 'debug', 'stack-settings');
                     }
+                    var loadedMode = externalComposeFilePath ? 'file' : (externalComposePath ? 'folder' : 'project');
+                    setComposeSource(loadedMode, true);
                     $('#settings-external-compose-path').val(externalComposePath);
                     $('#settings-external-compose-file').val(externalComposeFilePath);
                     editorModal.originalSettings['external-compose-path'] = externalComposePath;
@@ -5489,6 +6174,9 @@ function loadSettingsData(project, projectName) {
                 editorModal.filePaths.projectOverride = response.projectOverridePath || (compose_root + '/' + project + '/compose.override.yaml');
                 editorModal.filePaths.effectiveOverride = response.effectiveOverridePath || editorModal.filePaths.projectOverride;
                 updateEditorFileInfo();
+                updateEffectiveOverridePathReadout();
+                loadEffectiveCommandPreview(project);
+                updateEffectiveCommandDirtyIndicator();
 
                 // Labels editor mode (per-stack)
                 var labelsViewMode = response.labelsViewMode === 'advanced' ? 'advanced' : 'basic';
@@ -5545,8 +6233,12 @@ function loadSettingsData(project, projectName) {
         $('#settings-icon-preview').hide();
         $('#settings-available-profiles').hide();
         updateEditorFileInfo();
+        updateEffectiveOverridePathReadout();
+        setComposeSource('project', true);
         $('#settings-external-compose-info').hide();
         $('#settings-invalid-indirect-warning').hide();
+        $('#settings-effective-command').text('Preview unavailable.');
+        $('#settings-effective-command-dirty').hide();
     });
 }
 
@@ -5805,10 +6497,22 @@ function createEnvTemplate() {
 
 // Render the WebUI Labels UI
 function renderLabelsUI(mainDoc, overrideDoc) {
-    var html = '';
-    var deletedHtml = '';
+    var $container = $('#labels-services-container');
     var hasServices = false;
     var hasDeletedServices = false;
+    var $deletedServices = $('<div>', { 'class': 'labels-deleted-services' });
+
+    $container.empty();
+
+    function buildLabeledInput(iconClass, labelText, inputAttrs) {
+        var $field = $('<div>', { 'class': 'labels-field' });
+        var $label = $('<label>');
+        $label.append($('<i>', { 'class': iconClass }));
+        $label.append(document.createTextNode(' ' + labelText));
+        $field.append($label);
+        $field.append($('<input>').attr(inputAttrs));
+        return $field;
+    }
 
     // Process services from main compose file
     for (var serviceKey in mainDoc.services) {
@@ -5827,7 +6531,7 @@ function renderLabelsUI(mainDoc, overrideDoc) {
         }
 
         var containerName = service.container_name || serviceKey;
-        var iconValue = findLabelValue(overrideService, service, icon_label);
+        var iconValue = stripLocalIconScheme(findLabelValue(overrideService, service, icon_label));
         var webuiValue = findLabelValue(overrideService, service, webui_label);
         var shellValue = findLabelValue(overrideService, service, shell_label);
 
@@ -5836,27 +6540,52 @@ function renderLabelsUI(mainDoc, overrideDoc) {
         editorModal.originalLabels[serviceKey + '_webui'] = webuiValue;
         editorModal.originalLabels[serviceKey + '_shell'] = shellValue;
 
-        var iconSrc = iconValue || '/plugins/dynamix.docker.manager/images/question.png';
-        html += '<div class="labels-service" data-service="' + composeEscapeAttr(serviceKey) + '">';
-        html += '<div class="labels-service-header">';
-        html += '<img class="labels-service-icon" id="label-icon-preview-' + composeEscapeAttr(serviceKey) + '" src="' + composeEscapeAttr(iconSrc) + '" alt="" onerror="this.src=\'/plugins/dynamix.docker.manager/images/question.png\'">';
-        html += '<span class="labels-service-name">' + composeEscapeHtml(containerName) + '</span>';
-        html += '</div>';
-        html += '<div class="labels-service-fields">';
-        html += '<div class="labels-field">';
-        html += '<label><i class="fa fa-picture-o"></i> Icon URL / Path</label>';
-        html += '<input type="text" id="label-' + composeEscapeAttr(serviceKey) + '-icon" value="' + composeEscapeAttr(iconValue) + '" placeholder="https://example.com/icon.png or /path/to/icon.png" data-service="' + composeEscapeAttr(serviceKey) + '" data-field="icon" data-pickroot="/" data-picktop="/boot/config/plugins/compose.manager/projects" data-pickcloseonfile="true" data-pickfilter="png,jpg,jpeg,gif,svg,ico,webp">';
-        html += '</div>';
-        html += '<div class="labels-field">';
-        html += '<label><i class="fa fa-globe"></i> WebUI URL</label>';
-        html += '<input type="text" id="label-' + composeEscapeAttr(serviceKey) + '-webui" value="' + composeEscapeAttr(webuiValue) + '" placeholder="http://[IP]:[PORT:8080]/" data-service="' + composeEscapeAttr(serviceKey) + '" data-field="webui">';
-        html += '</div>';
-        html += '<div class="labels-field">';
-        html += '<label><i class="fa fa-terminal"></i> Shell</label>';
-        html += '<input type="text" id="label-' + composeEscapeAttr(serviceKey) + '-shell" value="' + composeEscapeAttr(shellValue) + '" placeholder="/bin/bash" data-service="' + composeEscapeAttr(serviceKey) + '" data-field="shell">';
-        html += '</div>';
-        html += '</div>';
-        html += '</div>';
+        var iconSrc = composeIconSrc(iconValue);
+        var $serviceRow = $('<div>', { 'class': 'labels-service' }).attr('data-service', serviceKey);
+        var $header = $('<div>', { 'class': 'labels-service-header' });
+        var $fields = $('<div>', { 'class': 'labels-service-fields' });
+
+        $header.append(
+            $('<img>', {
+                'class': 'labels-service-icon',
+                id: 'label-icon-preview-' + serviceKey,
+                src: iconSrc,
+                alt: ''
+            }).attr('onerror', 'composeIconFallback(this)')
+        );
+        $header.append($('<span>', { 'class': 'labels-service-name' }).text(containerName));
+
+        $fields.append(buildLabeledInput('fa fa-picture-o', 'Icon URL / Path', {
+            type: 'text',
+            id: 'label-' + serviceKey + '-icon',
+            value: iconValue,
+            placeholder: 'https://example.com/icon.png or /path/to/icon.png',
+            'data-service': serviceKey,
+            'data-field': 'icon',
+            'data-pickroot': '/',
+            'data-picktop': '/boot/config/plugins/compose.manager/projects',
+            'data-pickcloseonfile': 'true',
+            'data-pickfilter': 'png,jpg,jpeg,gif,svg,ico,webp'
+        }));
+        $fields.append(buildLabeledInput('fa fa-globe', 'WebUI URL', {
+            type: 'text',
+            id: 'label-' + serviceKey + '-webui',
+            value: webuiValue,
+            placeholder: 'http://[IP]:[PORT:8080]/',
+            'data-service': serviceKey,
+            'data-field': 'webui'
+        }));
+        $fields.append(buildLabeledInput('fa fa-terminal', 'Shell', {
+            type: 'text',
+            id: 'label-' + serviceKey + '-shell',
+            value: shellValue,
+            placeholder: '/bin/bash',
+            'data-service': serviceKey,
+            'data-field': 'shell'
+        }));
+
+        $serviceRow.append($header).append($fields);
+        $container.append($serviceRow);
     }
 
     // Check for orphaned services in override that aren't in main (e.g., after rename)
@@ -5865,37 +6594,70 @@ function renderLabelsUI(mainDoc, overrideDoc) {
             hasDeletedServices = true;
             var overrideService = overrideDoc.services[serviceKey];
             var containerName = (overrideService && overrideService.container_name) || serviceKey;
-            var iconValue = findLabelValue(overrideService, {}, icon_label);
+            var iconValue = stripLocalIconScheme(findLabelValue(overrideService, {}, icon_label));
             var webuiValue = findLabelValue(overrideService, {}, webui_label);
             var shellValue = findLabelValue(overrideService, {}, shell_label);
 
-            var deletedIconSrc = iconValue || '/plugins/dynamix.docker.manager/images/question.png';
-            deletedHtml += '<div class="labels-service deleted" data-service="' + composeEscapeAttr(serviceKey) + '" data-deleted="true">';
-            deletedHtml += '<div class="labels-service-header">';
-            deletedHtml += '<img class="labels-service-icon" src="' + composeEscapeAttr(deletedIconSrc) + '" alt="" onerror="this.src=\'/plugins/dynamix.docker.manager/images/question.png\'">';
-            deletedHtml += '<span class="labels-service-name">' + composeEscapeHtml(containerName) + ' <span class="compose-status-danger" style="font-size:0.8em;">(will be removed on save)</span></span>';
-            deletedHtml += '</div>';
-            deletedHtml += '<div class="labels-service-fields">';
-            deletedHtml += '<div class="labels-field"><label><i class="fa fa-picture-o"></i> Icon</label><input type="text" id="orphan-' + composeEscapeAttr(serviceKey) + '-icon" value="' + composeEscapeAttr(iconValue) + '" readonly></div>';
-            deletedHtml += '<div class="labels-field"><label><i class="fa fa-globe"></i> WebUI</label><input type="text" id="orphan-' + composeEscapeAttr(serviceKey) + '-webui" value="' + composeEscapeAttr(webuiValue) + '" readonly></div>';
-            deletedHtml += '<div class="labels-field"><label><i class="fa fa-terminal"></i> Shell</label><input type="text" id="orphan-' + composeEscapeAttr(serviceKey) + '-shell" value="' + composeEscapeAttr(shellValue) + '" readonly></div>';
-            deletedHtml += '</div>';
-            deletedHtml += '</div>';
+            var deletedIconSrc = composeIconSrc(iconValue);
+            var $deletedRow = $('<div>', { 'class': 'labels-service deleted' })
+                .attr('data-service', serviceKey)
+                .attr('data-deleted', 'true');
+            var $deletedHeader = $('<div>', { 'class': 'labels-service-header' });
+            var $deletedName = $('<span>', { 'class': 'labels-service-name' }).text(containerName + ' ');
+            var $deletedFields = $('<div>', { 'class': 'labels-service-fields' });
+
+            $deletedHeader.append(
+                $('<img>', {
+                    'class': 'labels-service-icon',
+                    src: deletedIconSrc,
+                    alt: ''
+                }).attr('onerror', 'composeIconFallback(this)')
+            );
+            $deletedName.append(
+                $('<span>', { 'class': 'compose-status-danger', style: 'font-size:0.8em;' })
+                    .text('(will be removed on save)')
+            );
+            $deletedHeader.append($deletedName);
+
+            $deletedFields.append(buildLabeledInput('fa fa-picture-o', 'Icon', {
+                type: 'text',
+                id: 'orphan-' + serviceKey + '-icon',
+                value: iconValue,
+                readonly: 'readonly'
+            }));
+            $deletedFields.append(buildLabeledInput('fa fa-globe', 'WebUI', {
+                type: 'text',
+                id: 'orphan-' + serviceKey + '-webui',
+                value: webuiValue,
+                readonly: 'readonly'
+            }));
+            $deletedFields.append(buildLabeledInput('fa fa-terminal', 'Shell', {
+                type: 'text',
+                id: 'orphan-' + serviceKey + '-shell',
+                value: shellValue,
+                readonly: 'readonly'
+            }));
+
+            $deletedRow.append($deletedHeader).append($deletedFields);
+            $deletedServices.append($deletedRow);
         }
     }
 
     if (!hasServices) {
-        html = '<div class="labels-empty-state"><i class="fa fa-cubes"></i> No services defined in compose file</div>';
+        var $empty = $('<div>', { 'class': 'labels-empty-state' });
+        $empty.append($('<i>', { 'class': 'fa fa-cubes' }));
+        $empty.append(document.createTextNode(' No services defined in compose file'));
+        $container.append($empty);
     }
 
     if (hasDeletedServices) {
-        html += '<div class="labels-deleted-section">';
-        html += '<div class="labels-deleted-title" onclick="toggleDeletedServices(this)"><i class="fa fa-chevron-right"></i> Orphaned Services (copy values before saving)</div>';
-        html += '<div class="labels-deleted-services">' + deletedHtml + '</div>';
-        html += '</div>';
+        var $deletedSection = $('<div>', { 'class': 'labels-deleted-section' });
+        var $deletedTitle = $('<div>', { 'class': 'labels-deleted-title' }).attr('onclick', 'toggleDeletedServices(this)');
+        $deletedTitle.append($('<i>', { 'class': 'fa fa-chevron-right' }));
+        $deletedTitle.append(document.createTextNode(' Orphaned Services (copy values before saving)'));
+        $deletedSection.append($deletedTitle).append($deletedServices);
+        $container.append($deletedSection);
     }
-
-    $('#labels-services-container').html(html);
 
     // Attach file tree picker to container icon inputs
     if ($.fn.fileTreeAttach && typeof composeBindFileTreeInputs === 'function') {
@@ -5928,11 +6690,7 @@ function renderLabelsUI(mainDoc, overrideDoc) {
             $input.data('iconDebounce', setTimeout(function() {
                 var iconUrl = $input.val().trim();
                 var $preview = $('#label-icon-preview-' + service);
-                if (iconUrl && isValidIconSrc(iconUrl)) {
-                    $preview.attr('src', iconUrl);
-                } else {
-                    $preview.attr('src', '/plugins/dynamix.docker.manager/images/question.png');
-                }
+                $preview.attr('src', sanitizeIconPreviewSrc(iconUrl));
             }, 300));
         }
 
@@ -5950,6 +6708,18 @@ function findLabelValue(overrideService, mainService, labelKey) {
         return mainService.labels[labelKey];
     }
     return '';
+}
+
+// The plugin writes bare local paths (never file://) into compose.override.yaml
+// and only ever injects a file:// form transiently at compose-run time (see
+// StackInfo::getIconNormalizationOverridePath() server-side). Strip it back off
+// here so the Labels editor's icon field and file-browser widget always operate
+// on a plain path, regardless of how the value ended up file://-prefixed.
+function stripLocalIconScheme(value) {
+    if (typeof value !== 'string') {
+        return value;
+    }
+    return value.indexOf('file://') === 0 ? value.slice('file://'.length) : value;
 }
 
 // Toggle deleted services visibility
@@ -6012,8 +6782,42 @@ function updateValidation(type, content, isValid, errorMsg) {
 function updateSaveButtonState() {
     var totalChanges = editorModal.modifiedTabs.size + editorModal.modifiedSettings.size + editorModal.modifiedLabels.size;
     var hasChanges = totalChanges > 0;
-    $('#editor-btn-apply').prop('disabled', !hasChanges);
+    var hasErrors = editorModal.settingsValidationErrors && editorModal.settingsValidationErrors.size > 0;
+    $('#editor-btn-apply').prop('disabled', !hasChanges || hasErrors);
     $('#editor-change-count').text(totalChanges + (totalChanges === 1 ? ' change' : ' changes'));
+}
+
+// Inline settings validation — errors block Apply until cleared.
+// Each fieldId maps to an inline error slot #settings-<fieldId>-error.
+function setSettingsFieldError(fieldId, message) {
+    if (!editorModal.settingsValidationErrors) {
+        editorModal.settingsValidationErrors = new Set();
+    }
+    editorModal.settingsValidationErrors.add(fieldId);
+    var $slot = $('#settings-' + fieldId + '-error');
+    if ($slot.length) {
+        $slot.text(message).show();
+    }
+    updateSaveButtonState();
+}
+
+function clearSettingsFieldError(fieldId) {
+    if (editorModal.settingsValidationErrors) {
+        editorModal.settingsValidationErrors.delete(fieldId);
+    }
+    var $slot = $('#settings-' + fieldId + '-error');
+    if ($slot.length) {
+        $slot.hide().text('');
+    }
+    updateSaveButtonState();
+}
+
+function clearAllSettingsValidationErrors() {
+    if (editorModal.settingsValidationErrors) {
+        editorModal.settingsValidationErrors.clear();
+    }
+    $('[id^="settings-"][id$="-error"]').hide().text('');
+    updateSaveButtonState();
 }
 
 function hasPathSensitiveSettingsChanges() {
@@ -6037,11 +6841,11 @@ function enforcePathSettingsExclusivity(actionLabel) {
     }
 
     swal({
-        title: 'Save Settings First',
-        text: 'Path/discovery settings changed. Save settings and reload the editor before ' + actionLabel + '.',
+        title: 'Save Sources First',
+        text: 'Compose Sources changed. Save the Sources tab and reload the editor before ' + actionLabel + '.',
         type: 'warning',
         showCancelButton: true,
-        confirmButtonText: 'Save Settings & Reload',
+        confirmButtonText: 'Save Sources & Reload',
         cancelButtonText: 'Cancel'
     }, function(confirmed) {
         if (confirmed) {
@@ -6151,7 +6955,7 @@ function saveCurrentTab() {
     if (!currentTab) return;
     var saveErrors = [];
 
-    if (currentTab !== 'settings' && enforcePathSettingsExclusivity('saving files')) {
+    if (currentTab !== 'sources' && enforcePathSettingsExclusivity('saving files')) {
         return;
     }
 
@@ -6346,46 +7150,15 @@ function saveSettings(saveErrors) {
 
     // Save icon URL, webui URL, env path, default profile, and external compose settings if any are modified
     if (editorModal.modifiedSettings.has('icon-url') || editorModal.modifiedSettings.has('webui-url') || editorModal.modifiedSettings.has('env-path') || editorModal.modifiedSettings.has('extra-compose-files') || editorModal.modifiedSettings.has('default-profile') || editorModal.modifiedSettings.has('external-compose-path') || editorModal.modifiedSettings.has('external-compose-file') || editorModal.modifiedSettings.has('use-default-compose-files')) {
+        // Inline validation blocks Apply when errors are present, so by the
+        // time we reach saveSettings the visible form state is valid.
         var iconUrl = $('#settings-icon-url').val();
         var webuiUrl = $('#settings-webui-url').val();
-        if (webuiUrl && !isValidWebUIUrl(webuiUrl)) {
-            swal({
-                type: 'error',
-                title: 'Save Failed',
-                text: 'Invalid WebUI URL. Must be http:// or https:// (supports [IP] and [PORT:xxxx] placeholders).'
-            });
-            return $.Deferred().resolve(false).promise();
-        }
-        if (webuiUrl && /\[PORT\]/i.test(webuiUrl)) {
-            swal({
-                type: 'error',
-                title: 'Save Failed',
-                text: 'Bare [PORT] placeholder is not supported at stack level. Use [PORT:xxxx] with a default port instead (e.g. [PORT:8080]).'
-            });
-            return $.Deferred().resolve(false).promise();
-        }
         var envPath = $('#settings-env-path').val();
         var extraComposeFiles = getExtraComposeFilesValue();
         var defaultProfile = $('#settings-default-profile').val();
         var externalComposePath = $('#settings-external-compose-path').val();
         var externalComposeFilePath = $('#settings-external-compose-file').val();
-        if (externalComposePath && externalComposeFilePath) {
-            swal({
-                type: 'error',
-                title: 'Save Failed',
-                text: 'Set either External Compose Path or External Compose File, not both.'
-            });
-            return $.Deferred().resolve(false).promise();
-        }
-        var stackPath = (editorModal.filePaths.stackMeta || '').replace(/\/$/, '');
-        if (externalComposeFilePath && stackPath && externalComposeFilePath.startsWith(stackPath + '/')) {
-            swal({
-                type: 'error',
-                title: 'Save Failed',
-                text: 'External Compose File cannot be inside the stack project folder. Use a path that is external to this stack.'
-            });
-            return $.Deferred().resolve(false).promise();
-        }
         var useDefaultComposeFiles = $('#settings-use-default-compose-files').is(':checked') ? 'true' : 'false';
         savePromises.push(
             $.post(caURL, {
@@ -6544,6 +7317,10 @@ function saveAllChanges(closeAfterSave) {
                     });
                     updateTabModifiedState();
                     updateSaveButtonState();
+                    updateEffectiveCommandDirtyIndicator();
+                    if (editorModal.currentProject) {
+                        loadEffectiveCommandPreview(editorModal.currentProject);
+                    }
                     return;
                 }
 
@@ -6567,6 +7344,10 @@ function saveAllChanges(closeAfterSave) {
                             refreshStackByProject(saveProject);
                         }
                     }, 1500);
+                }
+                updateEffectiveCommandDirtyIndicator();
+                if (editorModal.currentProject) {
+                    loadEffectiveCommandPreview(editorModal.currentProject);
                 }
             } else {
                 var filteredErrors = saveErrors.filter(function(message) {
@@ -6761,6 +7542,7 @@ function doCloseEditorModal() {
     editorModal.modifiedTabs = new Set();
     editorModal.modifiedSettings = new Set();
     editorModal.modifiedLabels = new Set();
+    editorModal.settingsValidationErrors = new Set();
     editorModal.originalContent = {};
     editorModal.originalSettings = {};
     editorModal.originalLabels = {};
@@ -6801,6 +7583,12 @@ function doCloseEditorModal() {
     $('#settings-available-profiles').hide();
     $('#settings-external-compose-info').hide();
     $('#settings-invalid-indirect-warning').hide();
+    $('#settings-effective-override-path').hide();
+    $('#settings-effective-override-path-value').text('');
+    $('#settings-effective-command').text('Loading…');
+    $('#settings-effective-command-dirty').hide();
+    clearAllSettingsValidationErrors();
+    setComposeSource('project', true);
 
     // Hide any open file-tree pickers (so they don't float outside the modal)
     $('.fileTree').slideUp('fast');
@@ -6830,35 +7618,139 @@ function deleteStackByProject(project, projectName) {
                 stackName: project
             }, function(data) {
                 try {
-                    if (data) {
-                        var response = JSON.parse(data);
-                        if (response.result == "warning") {
-                            setTimeout(function() {
-                                swal({
-                                    title: "Files remain on disk.",
-                                    text: response.message,
-                                    type: "warning"
-                                }, function() {
-                                    composeLoadlist();
-                                });
-                            }, 100);
-                            return;
-                        }
+                    if (!data) {
+                        setStackActionInProgress(project, false);
+                        swal({
+                            title: 'Delete Failed',
+                            text: 'Empty response from server while deleting stack.',
+                            type: 'error'
+                        });
+                        return;
                     }
+
+                    var response = JSON.parse(data);
+                    if (!response || !response.result) {
+                        setStackActionInProgress(project, false);
+                        swal({
+                            title: 'Delete Failed',
+                            text: 'Unexpected delete response from server.',
+                            type: 'error'
+                        });
+                        return;
+                    }
+
+                    if (response.result === 'error') {
+                        setStackActionInProgress(project, false);
+                        swal({
+                            title: 'Delete Failed',
+                            text: response.message || 'Unable to delete stack.',
+                            type: 'error'
+                        });
+                        return;
+                    }
+
+                    removeStackFromUiByProject(project);
+
+                    if (response.result === 'warning') {
+                        setTimeout(function() {
+                            swal({
+                                title: 'Stack deleted. Files remain on disk.',
+                                text: response.message || 'Some external files were not removed.',
+                                type: 'warning'
+                            });
+                        }, 100);
+                        return;
+                    }
+
+                    setTimeout(function() {
+                        swal({
+                            title: 'Stack deleted',
+                            text: composeEscapeHtml(projectName) + ' was removed successfully.',
+                            type: 'success',
+                            showConfirmButton: false
+                        });
+                        setTimeout(function() {
+                            swal.close();
+                        }, 1200);
+                    }, 100);
                 } catch (e) {
+                    setStackActionInProgress(project, false);
                     composeLogger('Delete response parse error', {
                         project: project,
                         error: e
                     }, 'user', 'error', 'stack-action');
+                    swal({
+                        title: 'Delete Failed',
+                        text: 'Could not parse delete response.',
+                        type: 'error'
+                    });
                 }
             }).fail(function() {
+                setStackActionInProgress(project, false);
                 composeLogger('Delete request failed for project', {
                     project: project
                 }, 'user', 'error', 'stack-action');
+                swal({
+                    title: 'Delete Failed',
+                    text: 'Network error while deleting stack.',
+                    type: 'error'
+                });
             });
-            composeLoadlist();
         }
     });
+}
+
+function purgeDeletedStackCaches(project, stackId) {
+    if (!project) {
+        return;
+    }
+
+    if (stackId !== '') {
+        delete expandedStacks[stackId];
+        delete stackDetailsDesiredExpanded[stackId];
+        delete stackDetailsLoading[stackId];
+        delete stackContainersCache[stackId];
+    }
+
+    delete composeStackActionInProgress[project];
+    delete stackDetailsPrefetchCache[project];
+    delete stackDetailsPrefetchPromises[project];
+    delete persistentContainerCache[project];
+    delete stackUpdateStatus[project];
+
+    pendingUpdateCheckStacks = (pendingUpdateCheckStacks || []).filter(function(stackName) {
+        return stackName !== project;
+    });
+    pendingComposeReloadStacks = (pendingComposeReloadStacks || []).filter(function(stackName) {
+        return stackName !== project;
+    });
+}
+
+function removeStackFromUiByProject(project) {
+    var $stackRow = $('#compose_stacks tr.compose-sortable[data-project="' + project + '"]');
+    var stackId = '';
+    if ($stackRow.length > 0) {
+        stackId = ($stackRow.attr('id') || '').replace('stack-row-', '');
+    }
+
+    if (stackId !== '') {
+        $('#details-row-' + stackId).remove();
+    }
+
+    purgeDeletedStackCaches(project, stackId);
+
+    if ($stackRow.length === 0) {
+        return;
+    }
+
+    $stackRow.remove();
+    syncComposeStackRowStriping();
+    updateStackToggleAllButtonState();
+
+    var remainingRows = $('#compose_stacks tr.compose-sortable').length;
+    if (remainingRows === 0) {
+        $('#compose_list').html('<tr><td colspan="14" style="text-align:center;padding:20px;color:var(--alt-text-color);">No Docker Compose stacks found. Click "Add New Stack" to create one.</td></tr>');
+    }
 }
 
 // ============================================
@@ -7153,14 +8045,14 @@ function renderContainerDetails(stackId, containers, project) {
     html += '<th class="ct-col-name">Container</th>';
     html += '<th class="ct-col-update">Update</th>';
     html += '<th class="ct-col-health">Health</th>';
-    html += '<th class="cm-advanced ct-col-source">Source</th>';
-    html += '<th class="cm-advanced ct-col-tag">Tag</th>';
-    html += '<th class="cm-advanced ct-col-net">Network</th>';
-    html += '<th class="cm-advanced ct-col-ip">Container IP</th>';
-    html += '<th class="cm-advanced ct-col-cpu">CPU</th>';
-    html += '<th class="cm-advanced ct-col-memory">Memory</th>';
-    html += '<th class="cm-advanced ct-col-net_io">Net I/O</th>';
-    html += '<th class="cm-advanced ct-col-block_io">Disk I/O</th>';
+    html += '<th class="ct-col-source">Source</th>';
+    html += '<th class="ct-col-tag">Tag</th>';
+    html += '<th class="ct-col-net">Network</th>';
+    html += '<th class="ct-col-ip">Container IP</th>';
+    html += '<th class="ct-col-cpu">CPU</th>';
+    html += '<th class="ct-col-memory">Memory</th>';
+    html += '<th class="ct-col-net_io">Net I/O</th>';
+    html += '<th class="ct-col-block_io">Disk I/O</th>';
     html += '<th class="ct-col-cport">Container Port</th>';
     html += '<th class="ct-col-lport">LAN IP:Port</th>';
     html += '</tr></thead>';
@@ -7248,10 +8140,8 @@ function renderContainerDetails(stackId, containers, project) {
         var containerShell = container.shell || '/bin/sh';
         html += '<span id="' + uniqueId + '" class="hand" data-name="' + composeEscapeAttr(containerName) + '" data-state="' + composeEscapeAttr(state) + '" data-webui="' + composeEscapeAttr(webui) + '" data-stackid="' + composeEscapeAttr(stackId) + '" data-shell="' + composeEscapeAttr(containerShell) + '">';
         // Use actual image like Docker tab - either container icon or default question.png
-        var iconSrc = (container.icon && isValidIconSrc(container.icon)) ?
-            container.icon :
-            '/plugins/dynamix.docker.manager/images/question.png';
-        html += '<img src="' + composeEscapeAttr(iconSrc) + '" class="img" onerror="this.src=\'/plugins/dynamix.docker.manager/images/question.png\'">';
+        var iconSrc = composeIconSrc(container.icon);
+        html += '<img src="' + composeEscapeAttr(iconSrc) + '" class="img" onerror="composeIconFallback(this)">';
         html += '</span>';
         html += '<span class="inner"><span class="appname">' + composeEscapeHtml(shortName) + '</span><br>';
         html += '<i class="fa fa-' + shape + ' ' + statusText + ' ' + color + '"></i><span class="state">' + statusText + '</span>';
@@ -7279,7 +8169,7 @@ function renderContainerDetails(stackId, containers, project) {
             html += '<span class="orange-text" style="white-space:nowrap;"><i class="fa fa-flash fa-fw"></i> update ready</span>';
             html += '</a>';
             if (ctLocalSha && ctRemoteSha) {
-                // Always show SHA diff (not just in advanced view)
+                // Always show SHA diff when available.
                 html += '<div style="font-family:var(--font-bitstream);font-size:0.85em;margin-top:2px;">';
                 html += '<span class="compose-status-warning" title="' + composeEscapeAttr(ctLocalSha) + '">' + composeEscapeHtml(ctLocalSha.substring(0, 8)) + '</span>';
                 html += ' <i class="fa fa-arrow-right compose-status-success" style="margin:0 4px;"></i> ';
@@ -7290,8 +8180,8 @@ function renderContainerDetails(stackId, containers, project) {
             // No update - green "up-to-date" style
             html += '<span class="green-text" style="white-space:nowrap;"><i class="fa fa-check fa-fw"></i> up-to-date</span>';
             if (ctLocalSha) {
-                // Show SHA in advanced view only for up-to-date containers (15 chars)
-                html += '<div class="cm-advanced" style="font-family:var(--font-bitstream);font-size:0.85em;" title="' + composeEscapeAttr(ctLocalSha) + '"><span class="compose-text-muted">' + composeEscapeHtml(ctLocalSha.substring(0, 15)) + '</span></div>';
+                // Show SHA snippet in toggleable detail area for up-to-date containers (15 chars).
+                html += '<div style="font-family:var(--font-bitstream);font-size:0.85em;" title="' + composeEscapeAttr(ctLocalSha) + '"><span class="compose-text-muted">' + composeEscapeHtml(ctLocalSha.substring(0, 15)) + '</span></div>';
             }
         } else {
             // Unknown/not checked
@@ -7303,28 +8193,28 @@ function renderContainerDetails(stackId, containers, project) {
         html += '<td class="ct-col-health">' + composeRenderHealthBadge(container.health || '', state) + '</td>';
 
         // Source (image name without tag)
-        html += '<td class="cm-advanced ct-col-source"><span class="docker_readmore compose-text-muted">' + composeEscapeHtml(imageSource) + '</span></td>';
+        html += '<td class="ct-col-source"><span class="docker_readmore compose-text-muted">' + composeEscapeHtml(imageSource) + '</span></td>';
 
         // Tag (image tag) — truncated with ellipsis via CSS if too long
-        html += '<td class="cm-advanced ct-col-tag ct-col-tag-cell"><span class="ct-tag" title="' + composeEscapeAttr(imageTag) + '">' + composeEscapeHtml(imageTag) + '</span></td>';
+        html += '<td class="ct-col-tag ct-col-tag-cell"><span class="ct-tag" title="' + composeEscapeAttr(imageTag) + '">' + composeEscapeHtml(imageTag) + '</span></td>';
 
         // Network
-        html += '<td class="cm-advanced ct-col-net" style="white-space:nowrap;"><span class="docker_readmore">' + networkNames.map(composeEscapeHtml).join('<br>') + '</span></td>';
+        html += '<td class="ct-col-net" style="white-space:nowrap;"><span class="docker_readmore">' + networkNames.map(composeEscapeHtml).join('<br>') + '</span></td>';
 
         // Container IP
-        html += '<td class="cm-advanced ct-col-ip" style="white-space:nowrap;"><span class="docker_readmore">' + ipAddresses.map(composeEscapeHtml).join('<br>') + '</span></td>';
+        html += '<td class="ct-col-ip" style="white-space:nowrap;"><span class="docker_readmore">' + ipAddresses.map(composeEscapeHtml).join('<br>') + '</span></td>';
 
-        html += '<td class="cm-advanced ct-col-cpu compose-load-cell">';
+        html += '<td class="ct-col-cpu compose-load-cell">';
         var normalizedContainerId = composeNormalizeContainerKey(containerId);
         html += '<span class="compose-cpu-' + normalizedContainerId + ' compose-text-muted">-</span>';
         html += '<div class="usage-disk mm"><span id="compose-cpu-bar-' + normalizedContainerId + '" style="width:0"></span><span></span></div>';
         html += '</td>';
-        html += '<td class="cm-advanced ct-col-memory compose-load-cell">';
+        html += '<td class="ct-col-memory compose-load-cell">';
         html += '<span class="compose-mem-' + normalizedContainerId + ' compose-text-muted">-</span>';
         html += '<div class="usage-disk mm"><span id="compose-mem-bar-' + normalizedContainerId + '" style="width:0"></span><span></span></div>';
         html += '</td>';
-        html += '<td class="cm-advanced ct-col-net_io"><span class="compose-netio-' + normalizedContainerId + ' compose-text-muted">-</span></td>';
-        html += '<td class="cm-advanced ct-col-block_io"><span class="compose-blockio-' + normalizedContainerId + ' compose-text-muted">-</span></td>';
+        html += '<td class="ct-col-net_io"><span class="compose-netio-' + normalizedContainerId + ' compose-text-muted">-</span></td>';
+        html += '<td class="ct-col-block_io"><span class="compose-blockio-' + normalizedContainerId + ' compose-text-muted">-</span></td>';
 
         // Container Port
         html += '<td class="ct-col-cport-cell" style="white-space:nowrap;"><span class="docker_readmore">' + containerPorts.map(composeEscapeHtml).join('<br>') + '</span></td>';
@@ -7555,8 +8445,8 @@ function updateParentStackFromContainers(stackId, project) {
             $healthCell.html(composeRenderHealthBadge(healthStatus, anyRunning ? 'running' : 'exited'));
         } catch (e) {}
 
-        // Re-apply view mode (advanced/basic) to ensure column content visibility
-        applyListView();
+        // Re-apply list helpers after row updates.
+        applyListEnhancements();
     } catch (e) {
         composeLogger('updateParentStackFromContainers error', {
             err: e.toString(),

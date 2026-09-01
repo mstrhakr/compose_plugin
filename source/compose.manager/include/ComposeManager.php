@@ -7,9 +7,29 @@
 
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Defines.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Util.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/ColumnLayout.php");
 
 // Load plugin config
 $cfg = parse_plugin_cfg($sName);
+
+// Resolve the saved column layout so the stack table renders in the user's
+// chosen order/visibility/widths on first paint (no client-side reorder snap).
+$columnLayout = compose_read_column_layout();
+$columnModel = compose_column_client_model();
+$stackColumnOrder = compose_stack_render_order($columnLayout);
+$stackColumnMeta = compose_stack_column_meta();
+$stackHiddenColumns = compose_stack_hidden_columns($columnLayout);
+$stackWidthFractions = compose_stack_width_fractions($columnLayout);
+composeLogger('Prepared column model bootstrap', [
+    'stackCols' => count($columnModel['stackCols'] ?? []),
+    'serviceCols' => count($columnModel['serviceCols'] ?? []),
+    'stackVisible' => count($columnLayout['stackOrder'] ?? []),
+    'serviceVisible' => count($columnLayout['serviceOrder'] ?? []),
+], 'user', 'debug', 'column-layout');
+$stackHideClass = '';
+foreach ($stackHiddenColumns as $hiddenCol) {
+    $stackHideClass .= ' hide-col-' . $hiddenCol;
+}
 $autoCheckUpdates = ($cfg['AUTO_CHECK_UPDATES'] ?? 'false') === 'true';
 $autoCheckDays = floatval($cfg['AUTO_CHECK_UPDATES_DAYS'] ?? '1');
 $showComposeOnTop = ($cfg['SHOW_COMPOSE_ON_TOP'] ?? 'false') === 'true';
@@ -65,34 +85,25 @@ if ($cpuCount <= 0) {
 // This improves page load time by deferring expensive docker commands
 ?>
 
-<?php /* ── Critical inline CSS ──────────────────────────────────────────────
-   Guarantees table-layout, column widths, and advanced/basic visibility
-   are applied synchronously BEFORE any HTML renders — prevents FOUC.
+<?php /* Critical inline CSS
+    Guarantees table-layout, column widths, and column visibility rules
+    are applied synchronously BEFORE any HTML renders to prevent FOUC.
    Non-critical styles remain in comboButton.css loaded via <link>. */ ?>
 <style>
     /* Table structure — always fixed layout */
     #compose_stacks {
         width: 100%;
         table-layout: fixed;
-        /* Single source of truth for stack-table column widths. */
+        /* Rendered width vars from ColumnLayout.php; keep runtime math here in sync with that model. */
         --cm-col-arrow-px: 24px;
         --cm-col-icon-px: 48px;
         --cm-col-fixed-px: calc(var(--cm-col-arrow-px) + var(--cm-col-icon-px));
-        --cm-col-name-frac: 0.188524590;
-        --cm-col-update-frac: 0.131147541;
-        --cm-col-containers-frac: 0.065573770;
-        --cm-col-uptime-frac: 0.073770492;
-        --cm-col-health-frac: 0.073770492;
-        --cm-col-cpu-frac: 0.081967213;
-        --cm-col-memory-frac: 0.106557377;
-        --cm-col-net-io-frac: 0.000000000;
-        --cm-col-block-io-frac: 0.000000000;
-        --cm-col-description-frac: 0.114754098;
-        --cm-col-path-frac: 0.098360656;
-        --cm-col-autostart-frac: 0.065573770;
+<?php foreach ($stackWidthFractions as $fracCol => $fracVal): ?>
+        --cm-col-<?php echo str_replace('_', '-', $fracCol); ?>-frac: <?php echo number_format($fracVal, 9, '.', ''); ?>;
+<?php endforeach; ?>
     }
 
-    /* Stabilize header row height across basic/advanced toggle transitions */
+    /* Stabilize header row height across column visibility changes */
     #compose_stacks thead tr th {
         font-weight: normal;
         font-size: 1.1rem;
@@ -116,8 +127,8 @@ if ($cpuCount <= 0) {
         text-overflow: ellipsis
     }
 
-    /* Basic-view column widths (7 visible columns)
-   Arrow + Icon are fixed px (small fixed content); rest are % of table. */
+    /* Stack-table column widths.
+   Arrow + Icon are fixed px (small fixed content); remaining columns use CSS vars. */
     #compose_stacks thead th.col-arrow {
         width: var(--cm-col-arrow-px);
         padding: 0;
@@ -356,7 +367,9 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         composeSystemMemBytes: <?php echo json_encode($composeSystemMemBytes); ?>,
         composeCpuCount: <?php echo json_encode($cpuCount); ?>,
         comboButtonCss: "<?php autov('/plugins/compose.manager/sheets/ComboButton.css'); ?>",
-        editorModalCss: "<?php autov('/plugins/compose.manager/sheets/EditorModal.css'); ?>"
+        editorModalCss: "<?php autov('/plugins/compose.manager/sheets/EditorModal.css'); ?>",
+        columnModel: <?php echo json_encode($columnModel); ?>,
+        columnLayout: <?php echo json_encode($columnLayout); ?>
     };
 
     var composeBootstrap = window.composeManagerBootstrap || {};
@@ -399,7 +412,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
     <span class='tipsterallowed' hidden></span>
     <div class="TableContainer">
-        <table id="compose_stacks" class="tablesorter shift" style="table-layout:fixed;width:100%">
+        <table id="compose_stacks" class="tablesorter shift<?php echo $stackHideClass; ?>" style="table-layout:fixed;width:100%">
             <thead>
                 <tr>
                     <th class="col-arrow">
@@ -409,16 +422,10 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                     </th>
                     <th class="col-icon"></th>
                     <th class="col-name">Stack</th>
-                    <th class="col-update">Update</th>
-                    <th class="col-containers">Containers</th>
-                    <th class="col-uptime">Uptime</th>
-                    <th class="col-health">Health</th>
-                    <th class="cm-advanced col-cpu">CPU</th>
-                    <th class="cm-advanced col-memory">Memory</th>
-                    <th class="cm-advanced col-net_io">Net I/O</th>
-                    <th class="cm-advanced col-block_io">Disk I/O</th>
-                    <th class="cm-advanced col-description">Description</th>
-                    <th class="cm-advanced col-path">Path</th>
+<?php foreach ($stackColumnOrder as $stackCol): ?>
+<?php if (!isset($stackColumnMeta[$stackCol])) continue; ?>
+                    <th class="<?php echo $stackColumnMeta[$stackCol]['thClass']; ?>"><?php echo htmlspecialchars($stackColumnMeta[$stackCol]['label'], ENT_QUOTES, 'UTF-8'); ?></th>
+<?php endforeach; ?>
                     <th class="nine col-autostart">Autostart</th>
                 </tr>
             </thead>
@@ -519,6 +526,11 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                     <span id="editor-tab-labels-text">Labels</span>
                     <span class="editor-tab-modified" aria-hidden="true"></span>
                 </button>
+                <button class="editor-tab" id="editor-tab-sources" onclick="switchTab('sources')" role="tab" aria-selected="false" aria-controls="editor-panel-sources">
+                    <i class="fa fa-files-o" aria-hidden="true"></i>
+                    Sources
+                    <span class="editor-tab-modified" aria-hidden="true"></span>
+                </button>
                 <button class="editor-tab" id="editor-tab-settings" onclick="switchTab('settings')" role="tab" aria-selected="false" aria-controls="editor-panel-settings">
                     <i class="fa fa-sliders" aria-hidden="true"></i>
                     Settings
@@ -599,6 +611,92 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 </div>
             </div>
 
+            <!-- ========== SOURCES PANEL ========== -->
+            <div class="editor-panel" id="editor-panel-sources" role="tabpanel" aria-labelledby="editor-tab-sources">
+                <div class="settings-panel">
+                    <!-- Compose Sources & Files -->
+                    <div class="settings-section">
+                        <div class="settings-section-title"><i class="fa fa-files-o"></i> Compose Sources &amp; Files</div>
+
+                        <div class="settings-field">
+                            <label>Compose Source</label>
+                            <div class="settings-field-help" style="margin-bottom:8px;">Where does this stack's compose file live?</div>
+                            <div id="settings-compose-source-radios" style="display:flex;flex-direction:column;gap:6px;">
+                                <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+                                    <input type="radio" name="settings-compose-source" value="project" checked>
+                                    <span>Project folder <span class="compose-text-muted" style="font-size:0.9em;">(default — file lives in the stack's project directory)</span></span>
+                                </label>
+                                <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+                                    <input type="radio" name="settings-compose-source" value="folder">
+                                    <span>External folder <span class="compose-text-muted" style="font-size:0.9em;">(choose a directory containing a compose file)</span></span>
+                                </label>
+                                <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+                                    <input type="radio" name="settings-compose-source" value="file">
+                                    <span>Specific compose file <span class="compose-text-muted" style="font-size:0.9em;">(point at one exact <code>.yml</code>/<code>.yaml</code>)</span></span>
+                                </label>
+                            </div>
+
+                            <div id="settings-external-compose-path-wrap" class="settings-compose-source-input" style="margin-top:10px;display:none;">
+                                <input type="text" id="settings-external-compose-path" placeholder="/mnt/user/appdata/myapp/" data-pickroot="/" data-picktop="/mnt" data-pickfolders="true" data-pickcloseonfile="true">
+                                <div class="settings-field-help">Folder must contain a file matching <code>*compose*.yml</code>. Leave the radio on Project folder to clear this.</div>
+                            </div>
+
+                            <div id="settings-external-compose-file-wrap" class="settings-compose-source-input" style="margin-top:10px;display:none;">
+                                <input type="text" id="settings-external-compose-file" placeholder="/mnt/user/appdata/myapp/custom.compose.yml" data-pickroot="/" data-picktop="/mnt" data-pickcloseonfile="true" data-pickfilter="yml,yaml">
+                                <div class="settings-field-help">Path must be outside this stack's project folder.</div>
+                            </div>
+
+                            <div id="settings-invalid-indirect-warning" class="compose-status-danger" style="margin-top:8px;display:none;padding:8px 12px;border-radius:4px;">
+                                <span class="compose-status-danger" style="font-size:0.9em;"><i class="fa fa-exclamation-triangle"></i> <strong>Invalid external path.</strong> The path shown above is broken or the target was not found. Correct the path and save to restore the stack, or switch back to Project folder.</span>
+                            </div>
+                            <div id="settings-external-compose-info" style="margin-top:8px;display:none;">
+                                <span class="compose-status-warning" style="font-size:0.9em;"><i class="fa fa-info-circle"></i> This stack uses an external compose source. The Compose editor tab loads and saves from that location.</span>
+                            </div>
+                            <div id="settings-external-compose-file-error" class="compose-status-danger" style="margin-top:6px;display:none;font-size:0.9em;"></div>
+                        </div>
+
+                        <div class="settings-field">
+                            <label for="settings-extra-compose-candidates">Additional Compose Files</label>
+                            <div id="settings-extra-compose-candidates" style="display:none;"></div>
+                            <div id="settings-extra-compose-none" class="settings-field-help" style="display:none;">No additional compose files found in the compose source folder (looking for <code>*compose*.yml</code> / <code>*compose*.yaml</code>).</div>
+                            <details id="settings-extra-compose-external-wrap" style="margin-top:8px;">
+                                <summary style="cursor:pointer;">Absolute paths (outside compose source folder)</summary>
+                                <textarea id="settings-extra-compose-external" rows="2" placeholder="One absolute path per line, e.g. /mnt/user/appdata/shared/gpu.compose.yml"></textarea>
+                            </details>
+                            <div class="settings-field-help">Selected files are appended as additional <code>-f</code> flags after the main compose and override files (e.g., GPU or environment overrides). Setting this disables default file discovery.</div>
+                        </div>
+
+                        <div class="settings-field">
+                            <label for="settings-env-path">External ENV File Path</label>
+                            <input type="text" id="settings-env-path" placeholder="Default (uses .env in compose source folder)" data-pickroot="/" data-picktop="/mnt" data-pickcloseonfile="true">
+                            <div class="settings-field-help">Path to an external .env file (e.g., /mnt/user/appdata/myapp/.env). Leave empty to use the default .env file in the compose source folder (project folder or indirect folder).</div>
+                        </div>
+
+                        <div class="settings-field">
+                            <label>Compose File Discovery</label>
+                            <div id="settings-discovery-mode-row" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                                <span id="settings-discovery-mode-badge" class="compose-status-info" style="padding:4px 10px;border:1px solid var(--dynamix-box-inner-div-border-color);border-radius:4px;font-size:0.9em;">Discovery mode: Explicit <code>-f</code> flags</span>
+                                <button type="button" id="settings-discovery-mode-toggle" class="btn btn-sm" style="padding:2px 12px;font-size:0.9em;">Use default discovery</button>
+                            </div>
+                            <div id="settings-default-compose-files-disabled-note" class="compose-status-warning" style="display:none;margin-top:8px;font-size:0.9em;"></div>
+                            <div class="settings-field-help"><strong>Default discovery</strong> lets Docker Compose auto-load <code>compose.override.*</code> and honor <code>COMPOSE_FILE</code> in <code>.env</code>. <strong>Explicit <code>-f</code> flags</strong> is used when the plugin passes each compose file directly. Overrides (external compose, additional files, external env path) require explicit mode.</div>
+                            <input type="checkbox" id="settings-use-default-compose-files" style="position:absolute;left:-9999px;" tabindex="-1" aria-hidden="true">
+                        </div>
+
+                        <div class="settings-field">
+                            <label>Effective Command</label>
+                            <div id="settings-effective-command-wrap" class="settings-effective-command-wrap">
+                                <pre id="settings-effective-command" class="settings-effective-command">Loading…</pre>
+                            </div>
+                            <div class="settings-field-help settings-effective-command-note">
+                                <span>Reflects the currently <strong>saved</strong> configuration.</span>
+                                <span id="settings-effective-command-dirty" class="compose-status-warning settings-effective-command-dirty"><i class="fa fa-pencil"></i> Unsaved changes — apply to refresh.</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- ========== SETTINGS PANEL ========== -->
             <div class="editor-panel" id="editor-panel-settings" role="tabpanel" aria-labelledby="editor-tab-settings">
                 <div class="settings-panel">
@@ -642,6 +740,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                             <label for="settings-webui-url">WebUI URL</label>
                             <input type="text" id="settings-webui-url" placeholder="http://tower.local:8080/">
                             <div class="settings-field-help">URL to the main WebUI for this stack. This adds a "WebUI" option to the stack's context menu. </div>
+                            <div id="settings-webui-url-error" class="compose-status-danger" style="margin-top:6px;display:none;font-size:0.9em;"></div>
                             <div id="settings-webui-suggestion" style="display:none; margin-top:4px; padding:6px 10px; background:rgba(255,255,255,0.05); border:1px solid rgba(255,165,0,0.3); border-radius:4px; font-size:0.9em;">
                                 <span style="color:#aaa;">Detected: </span><code id="settings-webui-detected-url" style="user-select:all;"></code>
                                 <span id="settings-webui-detected-source" style="color:#888; margin-left:6px; font-size:0.85em;"></span>
@@ -650,44 +749,9 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                         </div>
                     </div>
 
-                    <!-- Advanced -->
+                    <!-- Runtime Defaults -->
                     <div class="settings-section">
-                        <div class="settings-section-title"><i class="fa fa-sliders"></i> Advanced</div>
-
-                        <div class="settings-field">
-                            <label for="settings-external-compose-path">External Compose Path</label>
-                            <input type="text" id="settings-external-compose-path" placeholder="Default (uses compose file in project folder)" data-pickroot="/" data-picktop="/mnt" data-pickfolders="true" data-pickcloseonfile="true">
-                            <div class="settings-field-help">Path to an external folder containing your compose file(s) (e.g., /mnt/user/appdata/myapp/). The folder must contain a file matching *compose*.yml. Leave empty to use the compose file stored in the project folder.</div>
-                            <div id="settings-invalid-indirect-warning" class="compose-status-danger" style="margin-top:8px;display:none;padding:8px 12px;border-radius:4px;">
-                                <span class="compose-status-danger" style="font-size:0.9em;"><i class="fa fa-exclamation-triangle"></i> <strong>Invalid external path.</strong> The path shown above is broken or the directory was not found. Correct the path and save to restore the stack, or clear it to use a local compose file instead.</span>
-                            </div>
-                            <div id="settings-external-compose-info" style="margin-top:8px;display:none;">
-                                <span class="compose-status-warning" style="font-size:0.9em;"><i class="fa fa-info-circle"></i> This stack uses an external compose file. The Compose editor tab will load the file from the external path.</span>
-                            </div>
-                        </div>
-
-                        <div class="settings-field">
-                            <label for="settings-external-compose-file">External Compose File</label>
-                            <input type="text" id="settings-external-compose-file" placeholder="Optional specific compose file path" data-pickroot="/" data-picktop="/mnt" data-pickcloseonfile="true" data-pickfilter="yml,yaml">
-                            <div class="settings-field-help">Path to a specific external compose file (e.g., /mnt/user/appdata/myapp/custom.compose.yml). Leave empty to use folder mode or local project files.</div>
-                        </div>
-
-                        <div class="settings-field">
-                            <label for="settings-extra-compose-candidates">Additional Compose Files</label>
-                            <div id="settings-extra-compose-candidates" style="display:none;"></div>
-                            <div id="settings-extra-compose-none" class="settings-field-help" style="display:none;">No additional compose files found in the compose source folder (looking for <code>*compose*.yml</code> / <code>*compose*.yaml</code>).</div>
-                            <details id="settings-extra-compose-external-wrap" style="margin-top:8px;">
-                                <summary style="cursor:pointer;">External files (advanced)</summary>
-                                <textarea id="settings-extra-compose-external" rows="2" placeholder="One absolute path per line, e.g. /mnt/user/appdata/shared/gpu.compose.yml"></textarea>
-                            </details>
-                            <div class="settings-field-help">Selected files are appended as additional <code>-f</code> flags after the main compose and override files (e.g., GPU or environment overrides). Setting this disables default file discovery.</div>
-                        </div>
-
-                        <div class="settings-field">
-                            <label for="settings-env-path">External ENV File Path</label>
-                            <input type="text" id="settings-env-path" placeholder="Default (uses .env in compose source folder)" data-pickroot="/" data-picktop="/mnt" data-pickcloseonfile="true">
-                            <div class="settings-field-help">Path to an external .env file (e.g., /mnt/user/appdata/myapp/.env). Leave empty to use the default .env file in the compose source folder (project folder or indirect folder).</div>
-                        </div>
+                        <div class="settings-section-title"><i class="fa fa-cogs"></i> Runtime Defaults</div>
 
                         <div class="settings-field">
                             <label for="settings-default-profile">Default Profile(s)</label>
@@ -701,24 +765,11 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                                 <span id="settings-profiles-list" style="font-family:var(--font-bitstream);"></span>
                             </div>
                         </div>
+                    </div>
 
-                        <div class="settings-field">
-                            <label for="REMOVE_ORPHANS_DEFAULT">Remove Orphans by Default</label>
-                            <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
-                                <input type="checkbox" id="REMOVE_ORPHANS_DEFAULT" name="REMOVE_ORPHANS_DEFAULT" <?= ($cfg['REMOVE_ORPHANS_DEFAULT'] ?? 'false') == 'true' ? 'checked' : '' ?>>
-                                Enable <code>--remove-orphans</code> by default for Compose Up/Down actions
-                            </label>
-                            <div class="settings-field-help">When enabled, the Remove orphans option is pre-checked in Compose Up/Down dialogs and bulk start/stop dialogs. Useful when a stack is edited while containers still exist.</div>
-                        </div>
-
-                        <div class="settings-field">
-                            <label for="settings-use-default-compose-files">Compose File Selection</label>
-                            <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
-                                <input type="checkbox" id="settings-use-default-compose-files">
-                                Use Docker Compose default file discovery (no explicit <code>-f</code> flags)
-                            </label>
-                            <div class="settings-field-help">Enable this for projects that rely on auto-loaded <code>compose.override.*</code> and/or <code>COMPOSE_FILE</code> defined in <code>.env</code>. Leave disabled to keep explicit file selection behavior.</div>
-                        </div>
+                    <!-- Labels & Overrides -->
+                    <div class="settings-section">
+                        <div class="settings-section-title"><i class="fa fa-tags"></i> Labels &amp; Overrides</div>
 
                         <div class="settings-field">
                             <label for="settings-override-management">Override File Management</label>
@@ -726,7 +777,11 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                                 <input type="checkbox" id="settings-override-management">
                                 <span id="settings-override-management-label">Automatic</span>
                             </label>
-                            <div class="settings-field-help">When <strong>Automatic</strong>, the plugin manages the override file in the project directory — label edits and background maintenance are applied automatically. When <strong>Manual</strong>, you control the override file directly; all automated edits are blocked and the Labels tab opens the raw override editor instead of the form view.</div>
+                            <div class="settings-field-help"><strong>Automatic:</strong> plugin manages <code>compose.override.yaml</code> in the project directory and the Labels tab shows the form editor. <strong>Manual:</strong> you own the override file, automated edits are blocked, and the Labels tab shows the raw YAML editor.</div>
+                            <div id="settings-effective-override-path" style="margin-top:8px;display:none;">
+                                <span class="compose-text-muted" style="font-size:0.9em;">Effective override file: </span>
+                                <code id="settings-effective-override-path-value" style="font-size:0.9em;user-select:all;"></code>
+                            </div>
                         </div>
                     </div>
                 </div>

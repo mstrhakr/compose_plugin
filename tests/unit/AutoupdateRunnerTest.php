@@ -28,7 +28,6 @@ class AutoupdateRunnerTest extends TestCase
         $this->mockPluginConfig('compose.manager', [
             'PROJECTS_FOLDER' => $compose_root,
             'DEBUG_TO_LOG' => 'false',
-            'OUTPUTSTYLE' => 'nchan',
         ]);
 
         // Use writable temp files for test-only config and shell wrapper.

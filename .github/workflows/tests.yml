@@ -42,7 +42,7 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.3'
-          extensions: json, curl, mbstring
+          extensions: json, curl, mbstring, gd
           coverage: xdebug
       
       - name: Get Composer cache directory

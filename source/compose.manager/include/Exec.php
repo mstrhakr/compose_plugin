@@ -2,6 +2,7 @@
 
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Defines.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Util.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/ColumnLayout.php");
 require_once("/usr/local/emhttp/plugins/dynamix/include/Wrappers.php");
 require_once('/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php');
 
@@ -106,6 +107,77 @@ if (!function_exists('composeSavePersistentContainerCache')) {
     }
 }
 
+if (!function_exists('composeResolveDockerHostIp')) {
+    /**
+     * Resolve the Docker host IP across multiple Unraid WebUI versions.
+     */
+    function composeResolveDockerHostIp(): string
+    {
+        if (method_exists('DockerUtil', 'host')) {
+            return trim((string) DockerUtil::host());
+        }
+
+        global $host;
+        if (is_string($host) && $host !== '') {
+            return trim($host);
+        }
+
+        return '';
+    }
+}
+
+if (!function_exists('composePurgeDeletedStackCaches')) {
+    /**
+     * Remove deleted stack entries from persistent cache files.
+     *
+     * @return array<string,bool> Per-cache purge result flags.
+     */
+    function composePurgeDeletedStackCaches(string $stackName): array
+    {
+        $purged = [
+            'persistentContainerCache' => false,
+            'savedUpdateStatus' => false,
+            'pendingRecheck' => false,
+            'iconNormalizeOverride' => false,
+        ];
+
+        $persistentContainerCache = composeLoadPersistentContainerCache();
+        if (isset($persistentContainerCache[$stackName])) {
+            unset($persistentContainerCache[$stackName]);
+            composeSavePersistentContainerCache($persistentContainerCache);
+            $purged['persistentContainerCache'] = true;
+        }
+
+        if (defined('COMPOSE_ICON_NORMALIZE_DIR')) {
+            $projectName = StackInfo::sanitizeProjectString($stackName);
+            $iconOverridePath = rtrim(COMPOSE_ICON_NORMALIZE_DIR, '/') . '/' . $projectName . '.yaml';
+            if (is_file($iconOverridePath) && @unlink($iconOverridePath)) {
+                $purged['iconNormalizeOverride'] = true;
+            }
+        }
+
+        if (defined('COMPOSE_UPDATE_STATUS_FILE') && is_file(COMPOSE_UPDATE_STATUS_FILE)) {
+            $savedStatus = json_decode((string)file_get_contents(COMPOSE_UPDATE_STATUS_FILE), true);
+            if (is_array($savedStatus) && isset($savedStatus[$stackName])) {
+                unset($savedStatus[$stackName]);
+                file_put_contents(COMPOSE_UPDATE_STATUS_FILE, json_encode($savedStatus, JSON_PRETTY_PRINT));
+                $purged['savedUpdateStatus'] = true;
+            }
+        }
+
+        if (defined('PENDING_RECHECK_FILE') && is_file(PENDING_RECHECK_FILE)) {
+            $pending = json_decode((string)file_get_contents(PENDING_RECHECK_FILE), true);
+            if (is_array($pending) && isset($pending[$stackName])) {
+                unset($pending[$stackName]);
+                file_put_contents(PENDING_RECHECK_FILE, json_encode($pending, JSON_PRETTY_PRINT));
+                $purged['pendingRecheck'] = true;
+            }
+        }
+
+        return $purged;
+    }
+}
+
 if (!function_exists('composeResolveContainerIcon')) {
     /**
      * Resolve container icon using stack cache first, then docker inspect fallback.
@@ -160,165 +232,60 @@ switch ($_POST['action']) {
         echo json_encode(['result' => 'success', 'config' => $cfg]);
         break;
     case 'getColumnVisibility':
-        $prefFile = '/boot/config/plugins/compose.manager/column_visibility.json';
-        $defaults = [
-            'stack' => [
-                'update' => true,
-                'containers' => true,
-                'uptime' => true,
-                'health' => true,
-                'cpu' => true,
-                'memory' => true,
-                'net_io' => false,
-                'block_io' => false,
-                'description' => true,
-                'path' => true,
-            ],
-            'service' => [
-                'update' => true,
-                'health' => true,
-                'cpu' => true,
-                'memory' => true,
-                'net_io' => false,
-                'block_io' => false,
-                'source' => true,
-                'tag' => true,
-                'net' => true,
-                'ip' => true,
-                'cport' => true,
-                'lport' => true,
-            ],
-        ];
-        $defaultOrder = [
-            'stackOrder' => array_keys(array_filter($defaults['stack'])),
-            'serviceOrder' => array_keys(array_filter($defaults['service'])),
-        ];
-
-        $visibility = array_merge($defaults, $defaultOrder);
-        if (is_file($prefFile)) {
-            $raw = @file_get_contents($prefFile);
-            $saved = json_decode((string)$raw, true);
-            if (is_array($saved)) {
-                foreach (['stack', 'service'] as $scope) {
-                    if (!isset($saved[$scope]) || !is_array($saved[$scope])) continue;
-                    foreach ($defaults[$scope] as $key => $defaultVal) {
-                        if (array_key_exists($key, $saved[$scope])) {
-                            $visibility[$scope][$key] = (bool)$saved[$scope][$key];
-                        }
-                    }
-                }
-
-                foreach (['stackOrder', 'serviceOrder'] as $orderKey) {
-                    if (!isset($saved[$orderKey]) || !is_array($saved[$orderKey])) continue;
-
-                    $scope = $orderKey === 'stackOrder' ? 'stack' : 'service';
-                    $allowed = array_keys($defaults[$scope]);
-                    $normalizedOrder = [];
-
-                    foreach ($saved[$orderKey] as $col) {
-                        if (in_array($col, $allowed, true) && $visibility[$scope][$col] && !in_array($col, $normalizedOrder, true)) {
-                            $normalizedOrder[] = $col;
-                        }
-                    }
-
-                    foreach ($allowed as $col) {
-                        if ($visibility[$scope][$col] && !in_array($col, $normalizedOrder, true)) {
-                            $normalizedOrder[] = $col;
-                        }
-                    }
-
-                    $visibility[$orderKey] = $normalizedOrder;
-                }
-            }
-        }
+        $visibility = compose_read_column_layout();
+        composeLogger('Loaded column visibility layout', [
+            'stackVisible' => count($visibility['stackOrder'] ?? []),
+            'serviceVisible' => count($visibility['serviceOrder'] ?? []),
+        ], 'user', 'debug', 'column-layout');
         echo json_encode(['result' => 'success', 'visibility' => $visibility]);
         break;
     case 'saveColumnVisibility':
-        $prefFile = '/boot/config/plugins/compose.manager/column_visibility.json';
+        $prefFile = COMPOSE_COLUMN_PREF_FILE;
         $prefDir = dirname($prefFile);
-        $defaults = [
-            'stack' => [
-                'update' => true,
-                'containers' => true,
-                'uptime' => true,
-                'health' => true,
-                'cpu' => true,
-                'memory' => true,
-                'net_io' => false,
-                'block_io' => false,
-                'description' => true,
-                'path' => true,
-            ],
-            'service' => [
-                'update' => true,
-                'health' => true,
-                'cpu' => true,
-                'memory' => true,
-                'net_io' => false,
-                'block_io' => false,
-                'source' => true,
-                'tag' => true,
-                'net' => true,
-                'ip' => true,
-                'cport' => true,
-                'lport' => true,
-            ],
-        ];
-        $defaultOrder = [
-            'stackOrder' => array_keys(array_filter($defaults['stack'])),
-            'serviceOrder' => array_keys(array_filter($defaults['service'])),
-        ];
 
         $raw = $_POST['visibility'] ?? '';
         $parsed = json_decode((string)$raw, true);
         if (!is_array($parsed)) {
+            composeLogger('Rejected invalid column visibility payload', [
+                'jsonError' => json_last_error_msg(),
+                'payloadLength' => strlen((string)$raw),
+            ], 'user', 'warning', 'column-layout');
             echo json_encode(['result' => 'error', 'message' => 'Invalid visibility payload.']);
             break;
         }
 
-        $normalized = array_merge($defaults, $defaultOrder);
-        foreach (['stack', 'service'] as $scope) {
-            if (!isset($parsed[$scope]) || !is_array($parsed[$scope])) continue;
-            foreach ($defaults[$scope] as $key => $defaultVal) {
-                if (array_key_exists($key, $parsed[$scope])) {
-                    $normalized[$scope][$key] = (bool)$parsed[$scope][$key];
-                }
-            }
-        }
-
-        foreach (['stackOrder', 'serviceOrder'] as $orderKey) {
-            $scope = $orderKey === 'stackOrder' ? 'stack' : 'service';
-            $allowed = array_keys($defaults[$scope]);
-            $savedOrder = isset($parsed[$orderKey]) && is_array($parsed[$orderKey]) ? $parsed[$orderKey] : [];
-            $normalizedOrder = [];
-
-            foreach ($savedOrder as $col) {
-                if (in_array($col, $allowed, true) && $normalized[$scope][$col] && !in_array($col, $normalizedOrder, true)) {
-                    $normalizedOrder[] = $col;
-                }
-            }
-
-            foreach ($allowed as $col) {
-                if ($normalized[$scope][$col] && !in_array($col, $normalizedOrder, true)) {
-                    $normalizedOrder[] = $col;
-                }
-            }
-
-            $normalized[$orderKey] = $normalizedOrder;
-        }
+        $normalized = compose_normalize_column_visibility($parsed);
 
         if (!is_dir($prefDir)) {
-            @mkdir($prefDir, 0777, true);
+            if (!@mkdir($prefDir, 0777, true) && !is_dir($prefDir)) {
+                composeLogger('Failed to create column layout preference directory', [
+                    'dir' => $prefDir,
+                ], 'user', 'error', 'column-layout');
+                echo json_encode(['result' => 'error', 'message' => 'Failed to persist column visibility.']);
+                break;
+            }
         }
 
         $tmp = $prefFile . '.tmp';
         $ok = @file_put_contents($tmp, json_encode($normalized, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-        if ($ok === false || !@rename($tmp, $prefFile)) {
+        $renameOk = ($ok !== false) ? @rename($tmp, $prefFile) : false;
+        if ($ok === false || !$renameOk) {
+            composeLogger('Failed to persist column visibility', [
+                'prefFile' => $prefFile,
+                'tmpFile' => $tmp,
+                'writeOk' => ($ok !== false),
+                'renameOk' => $renameOk,
+            ], 'user', 'error', 'column-layout');
             @unlink($tmp);
             echo json_encode(['result' => 'error', 'message' => 'Failed to persist column visibility.']);
             break;
         }
 
+        composeLogger('Saved column visibility layout', [
+            'stackVisible' => count($normalized['stackOrder'] ?? []),
+            'serviceVisible' => count($normalized['serviceOrder'] ?? []),
+            'prefFile' => $prefFile,
+        ], 'user', 'debug', 'column-layout');
         echo json_encode(['result' => 'success', 'visibility' => $normalized]);
         break;
     case 'getPersistentContainerCache':
@@ -332,6 +299,32 @@ switch ($_POST['action']) {
         echo json_encode([
             'result' => 'success',
             'snapshot' => is_array($snapshot) ? $snapshot : [],
+        ]);
+        break;
+    case 'ensureComposeInfoPublisher':
+        // The composeinfo WebSocket can now be deliberately stopped/restarted
+        // client-side when a tab is hidden for a while (see #130 hidden-tab
+        // handling), without a full page reload. publish.php's own
+        // no-subscriber abort logic (see webGui/include/publish.php) will
+        // exit the compose_info publisher process ~10s after the last
+        // subscriber disconnects. Normally that process only gets respawned
+        // by DefaultPageLayout.php's pgrep+exec check on the next full page
+        // render -- so without this, resubscribing client-side would connect
+        // to a channel nothing is publishing to. Mirror that same pgrep+exec
+        // respawn check here, scoped to just our own publisher script, so
+        // the client can trigger it directly after reconnecting.
+        $composeInfoScript = '/usr/local/emhttp/plugins/compose.manager/nchan/compose_info';
+        $pgrepOutput = [];
+        $pgrepStatus = 0;
+        exec('pgrep --ns $$ -f ' . escapeshellarg($composeInfoScript), $pgrepOutput, $pgrepStatus);
+        $publisherWasRunning = ($pgrepStatus === 0);
+        if (!$publisherWasRunning) {
+            composeLogger('compose_info publisher was not running; starting it', null, 'user', 'debug', 'nchan');
+            exec(escapeshellarg($composeInfoScript) . ' >/dev/null 2>&1 &');
+        }
+        echo json_encode([
+            'result' => 'success',
+            'wasRunning' => $publisherWasRunning,
         ]);
         break;
     case 'addStack':
@@ -475,34 +468,47 @@ switch ($_POST['action']) {
             'filesRemain' => $filesRemain
         ], 'user', 'debug', 'stack');
 
-        $execOutput = [];
-        $execRc = 0;
-        exec("rm -rf " . escapeshellarg($folderName), $execOutput, $execRc);
-
+        $deleteError = '';
+        $deleteMeta = [];
+        $deleteSuccess = composeDeleteStackFolder($compose_root, $stackName, $deleteError, $deleteMeta);
         $folderStillExists = is_dir($folderName);
-        if ($execRc !== 0 || $folderStillExists) {
+        if (!$deleteSuccess || $folderStillExists) {
             composeLogger("Stack folder delete failed", [
                 'stackName' => $stackName,
                 'folderName' => $folderName,
-                'execRc' => $execRc,
-                'execOutput' => $execOutput,
+                'deleteError' => $deleteError,
+                'deleteMeta' => $deleteMeta,
                 'folderStillExists' => $folderStillExists,
                 'filesRemain' => $filesRemain
             ], 'user', 'error', 'stack');
             $msg = "Failed to delete stack folder. " .
-                ($execRc !== 0 ? "rm exit code: $execRc. " : "") .
-                ($folderStillExists ? "Folder still exists after rm. " : "") .
-                (count($execOutput) ? "Output: " . implode("; ", $execOutput) : "");
+                ($deleteError !== '' ? "$deleteError " : "") .
+                ($folderStillExists ? "Folder still exists after delete. " : "") .
+                (isset($deleteMeta['failedPath']) ? "Path: " . $deleteMeta['failedPath'] . ". " : "");
+            composeSendNotification("Stack delete failed: $stackName", trim($msg), 'warning');
             echo json_encode(['result' => 'error', 'message' => $msg]);
             break;
         }
 
+        $cachePurgeMeta = composePurgeDeletedStackCaches($stackName);
+
         if ($filesRemain == "") {
-            composeLogger("Deleted stack: $stackName", null, 'user', 'info', 'stack');
-            echo json_encode(['result' => 'success', 'message' => '']);
+            $message = "Stack '$stackName' was deleted successfully.";
+            composeLogger("Deleted stack: $stackName", [
+                'deleteMeta' => $deleteMeta,
+                'cachePurgeMeta' => $cachePurgeMeta,
+            ], 'user', 'info', 'stack');
+            composeSendNotification("Stack delete complete: $stackName", $message);
+            echo json_encode(['result' => 'success', 'message' => '', 'cachePurge' => $cachePurgeMeta]);
         } else {
-            composeLogger("Deleted stack: $stackName (indirect, external files remain at $filesRemain)", null, 'user', 'warning', 'stack');
-            echo json_encode(['result' => 'warning', 'message' => $filesRemain]);
+            $message = "Stack '$stackName' was deleted. Files remain on disk at '$filesRemain'.";
+            composeLogger("Deleted stack: $stackName (indirect, external files remain at $filesRemain)", [
+                'deleteMeta' => $deleteMeta,
+                'filesRemain' => $filesRemain,
+                'cachePurgeMeta' => $cachePurgeMeta,
+            ], 'user', 'warning', 'stack');
+            composeSendNotification("Stack delete complete: $stackName", $message, 'warning');
+            echo json_encode(['result' => 'warning', 'message' => $filesRemain, 'cachePurge' => $cachePurgeMeta]);
         }
         break;
     case 'changeName':
@@ -802,6 +808,15 @@ switch ($_POST['action']) {
             $cleared[] = $containerName;
         }
 
+        // Also drop the plugin-owned cache entry so the next resolve re-fetches
+        $iconUrl = $stackInfo->getIconUrl();
+        if ($iconUrl !== null) {
+            $pluginCachePath = compose_get_icon_cache_path($iconUrl);
+            if (@unlink($pluginCachePath)) {
+                composeLogger('Cleared plugin icon cache', ['project' => $script, 'cache' => $pluginCachePath], 'system', 'debug', 'icon-cache');
+            }
+        }
+
         echo json_encode(['result' => 'success', 'cleared' => $cleared]);
         break;
     case 'updateAutostart':
@@ -907,6 +922,19 @@ switch ($_POST['action']) {
             DockerUtil::saveJSON($unraidUpdateStatusFile, $cleaned);
         }
         echo json_encode(['result' => 'success', 'message' => 'Update cache cleared']);
+        break;
+    case 'clearAllIconCache':
+        $cleared = 0;
+        $cacheDir = rtrim(COMPOSE_ICON_CACHE_DIR, '/');
+        if (is_dir($cacheDir)) {
+            foreach (glob($cacheDir . '/*.png') ?: [] as $file) {
+                if (@unlink($file)) {
+                    $cleared++;
+                }
+            }
+        }
+        composeLogger('Cleared all plugin icon cache entries', ['count' => $cleared], 'user', 'debug', 'icon-cache');
+        echo json_encode(['result' => 'success', 'cleared' => $cleared]);
         break;
     case 'setEnvPath':
         $script = getPostScript();
@@ -1106,6 +1134,33 @@ switch ($_POST['action']) {
         }
 
         echo json_encode(['result' => 'success', 'labelsViewMode' => $labelsViewMode]);
+        break;
+    case 'previewComposeArgs':
+        $script = getPostScript();
+        if (!$script) {
+            echo json_encode(['result' => 'error', 'message' => 'Stack not specified.']);
+            break;
+        }
+
+        try {
+            $stackInfo = StackInfo::fromProject($compose_root, $script);
+        } catch (\Throwable $e) {
+            echo json_encode(['result' => 'error', 'message' => 'Unable to load stack.']);
+            break;
+        }
+
+        $args = $stackInfo->buildComposeArgs();
+        $profiles = $stackInfo->getDefaultProfiles();
+
+        echo json_encode([
+            'result' => 'success',
+            'projectName' => $args['projectName'],
+            'projectDirectory' => $args['projectDirectory'],
+            'useDefaultFileDiscovery' => !empty($args['useDefaultFileDiscovery']),
+            'filePaths' => $args['filePaths'],
+            'envFilePath' => $args['envFilePath'] ?? '',
+            'profiles' => $profiles,
+        ]);
         break;
     case 'detectWebui':
         $script = getPostScript();
@@ -1391,7 +1446,7 @@ switch ($_POST['action']) {
         $rows = $stackInfo->getContainerList();
         // Hard dependency on Docker manager: use shared helpers directly.
         $networkDrivers = DockerUtil::driver();
-        $hostIP = trim((string) DockerUtil::host());
+        $hostIP = composeResolveDockerHostIp();
 
         $containers = [];
         // Load update status once before the loop (static data, doesn't change per-container)
@@ -1635,8 +1690,12 @@ switch ($_POST['action']) {
             break;
         }
 
-        // Include Docker manager classes for update checking
-        require_once("/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php");
+        // Plugin-local update check: compares platform-specific image config
+        // digests (Docker .Id + resolved manifest.config.digest) rather than
+        // top-level index/manifest-list digests. This eliminates false
+        // "update-available" verdicts caused by registry index-only rewrites,
+        // and is scoped strictly to the images owned by this stack.
+        require_once("/usr/local/emhttp/plugins/compose.manager/include/UpdateCheck.php");
 
         // Resolve stack identity and compose CLI arguments via StackInfo
         $stackInfo = StackInfo::fromProject($compose_root, $script);
@@ -1646,7 +1705,6 @@ switch ($_POST['action']) {
         $rows = $stackInfo->getContainerList();
 
         $updateResults = [];
-        $DockerUpdate = new DockerUpdate();
         $persistentContainerCache = composeLoadPersistentContainerCache();
         $stackContainerCache = $persistentContainerCache[$script] ?? [];
         $iconByService = [];
@@ -1667,34 +1725,20 @@ switch ($_POST['action']) {
         $inspectIconCache = [];
         $stackCacheDirty = false;
 
-        // Load the update status file to get SHA values
-        $dockerManPaths = [
-            'update-status' => UNRAID_UPDATE_STATUS_FILE
-        ];
-
         if ($rows) {
-            // Load the update status data ONCE before the loop instead of per-container
-            $updateStatusData = DockerUtil::loadJSON($dockerManPaths['update-status']);
-            $statusDirty = false;
-
-            // First pass: clear cached local SHAs for all images that need checking
+            // Collect the compose-owned image set and batch-check in one call.
+            // ComposeUpdateCheck always re-inspects local and never touches
+            // status-file entries for non-compose images.
+            $imagesToCheck = [];
             foreach ($rows as $container) {
-                $image = $container['Image'] ?? '';
-                if ($image) {
-                    $image = ContainerInfo::normalizeImageForUpdateCheck($image);
-                    if (isset($updateStatusData[$image])) {
-                        $updateStatusData[$image]['local'] = null;
-                        $statusDirty = true;
-                    }
+                $img = trim((string) ($container['Image'] ?? ''));
+                if ($img !== '') {
+                    $imagesToCheck[] = $img;
                 }
             }
+            $updater = new ComposeUpdateCheck();
+            $checkResults = $updater->checkMany($imagesToCheck);
 
-            // Save once after clearing all cached SHAs
-            if ($statusDirty) {
-                DockerUtil::saveJSON($dockerManPaths['update-status'], $updateStatusData);
-            }
-
-            // Second pass: check updates and collect results
             foreach ($rows as $container) {
                 $containerLower = array_change_key_case($container, CASE_LOWER);
                 $containerName = trim((string) ($containerLower['name'] ?? $containerLower['names'] ?? ''));
@@ -1703,6 +1747,10 @@ switch ($_POST['action']) {
 
                 if ($containerName && $image) {
                     $icon = composeResolveContainerIcon($containerName, $service, $iconByService, $iconByName, $inspectIconCache);
+
+                    if ($icon !== '') {
+                        compose_seed_docker_manager_icon(compose_fetch_icon_to_cache($icon), $containerName);
+                    }
 
                     if ($service !== '' && $icon !== '') {
                         if (!isset($stackContainerCache[$service]) || !is_array($stackContainerCache[$service])) {
@@ -1725,38 +1773,27 @@ switch ($_POST['action']) {
                     // Normalize image name (strip docker.io/ prefix, @sha256: digest, add library/ for official images)
                     $image = ContainerInfo::normalizeImageForUpdateCheck($image);
 
-                    // Check update status using Unraid's DockerUpdate class
-                    $DockerUpdate->reloadUpdateStatus($image);
-                    $updateStatus = $DockerUpdate->getUpdateStatus($image);
+                    $result = $checkResults[$image] ?? [
+                        'local' => '', 'remote' => '', 'status' => 'unknown', 'hasUpdate' => false,
+                    ];
 
-                    // Re-read status data (may have been updated by reloadUpdateStatus)
-                    $updateStatusData = DockerUtil::loadJSON($dockerManPaths['update-status']);
-                    $localSha = '';
-                    $remoteSha = '';
-
-                    if (isset($updateStatusData[$image])) {
-                        $localSha = $updateStatusData[$image]['local'] ?? '';
-                        $remoteSha = $updateStatusData[$image]['remote'] ?? '';
-                        // Shorten SHA for display (first 12 chars after sha256:)
-                        if ($localSha && strpos($localSha, 'sha256:') === 0) {
-                            $localSha = substr($localSha, 7, 12);
-                        }
-                        if ($remoteSha && strpos($remoteSha, 'sha256:') === 0) {
-                            $remoteSha = substr($remoteSha, 7, 12);
-                        }
+                    // Shorten SHAs for display (first 12 chars after sha256:)
+                    $localSha  = (string) $result['local'];
+                    $remoteSha = (string) $result['remote'];
+                    if ($localSha && strpos($localSha, 'sha256:') === 0) {
+                        $localSha = substr($localSha, 7, 12);
                     }
-
-                    // null = unknown, true = up to date, false = update available
-                    $hasUpdate = ($updateStatus === false);
-                    $statusText = ($updateStatus === null) ? 'unknown' : ($updateStatus ? 'up-to-date' : 'update-available');
+                    if ($remoteSha && strpos($remoteSha, 'sha256:') === 0) {
+                        $remoteSha = substr($remoteSha, 7, 12);
+                    }
 
                     $updateResults[] = ContainerInfo::fromUpdateResponse([
                         'container' => $containerName,
                         'service' => $service,
                         'image' => $image,
                         'icon' => $icon,
-                        'hasUpdate' => $hasUpdate,
-                        'status' => $statusText,
+                        'hasUpdate' => $result['hasUpdate'],
+                        'status' => $result['status'],
                         'localSha' => $localSha,
                         'remoteSha' => $remoteSha
                     ])->toUpdateArray();
@@ -1788,21 +1825,17 @@ switch ($_POST['action']) {
         file_put_contents($composeUpdateStatusFile, json_encode($savedStatus, JSON_PRETTY_PRINT));
         break;
     case 'checkAllStacksUpdates':
-        // Check for updates for all compose stacks
-        require_once("/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php");
+        // Check for updates for all compose stacks. Uses the plugin-local
+        // ComposeUpdateCheck (see checkStackUpdates rationale).
+        require_once("/usr/local/emhttp/plugins/compose.manager/include/UpdateCheck.php");
 
         composeLogger('Starting update check for all stacks', null, 'user', 'debug', 'update-check');
 
         $allUpdates = [];
-        $DockerUpdate = new DockerUpdate();
+        $updater = new ComposeUpdateCheck();
         $persistentContainerCache = composeLoadPersistentContainerCache();
         $persistentCacheDirty = false;
         $inspectIconCache = [];
-
-        // Path to update status file
-        $dockerManPaths = [
-            'update-status' => UNRAID_UPDATE_STATUS_FILE
-        ];
 
         foreach (StackInfo::allFromRoot($compose_root) as $stackInfoItem) {
             $stackName = $stackInfoItem->projectFolder;
@@ -1831,31 +1864,18 @@ switch ($_POST['action']) {
             $hasStackUpdate = false;
 
             if ($rows) {
-                // Load once, batch-clear local SHAs, save once (avoid per-container I/O)
-                $updateStatusData = DockerUtil::loadJSON($dockerManPaths['update-status']);
-                $statusDirty = false;
-
-                // First pass: collect running images and clear cached local SHAs
+                // Collect images from running containers only (matches prior
+                // behavior of this handler) and batch-check via the plugin-
+                // local update checker.
+                $imagesToCheck = [];
                 foreach ($rows as $container) {
-                    $state = $container['State'] ?? '';
-                    if ($state === 'running') {
-                        $image = $container['Image'] ?? '';
-                        if ($image) {
-                            $image = ContainerInfo::normalizeImageForUpdateCheck($image);
-                            if (isset($updateStatusData[$image])) {
-                                $updateStatusData[$image]['local'] = null;
-                                $statusDirty = true;
-                            }
-                        }
-                    }
+                    $state = strtolower((string) ($container['State'] ?? ''));
+                    if ($state !== 'running') continue;
+                    $img = trim((string) ($container['Image'] ?? ''));
+                    if ($img !== '') $imagesToCheck[] = $img;
                 }
+                $checkResults = $imagesToCheck ? $updater->checkMany($imagesToCheck) : [];
 
-                // Save once after clearing all cached SHAs
-                if ($statusDirty) {
-                    DockerUtil::saveJSON($dockerManPaths['update-status'], $updateStatusData);
-                }
-
-                // Second pass: check updates for running containers
                 foreach ($rows as $container) {
                     $containerLower = array_change_key_case($container, CASE_LOWER);
                     $containerName = trim($containerLower['name'] ?? $containerLower['names'] ?? '');
@@ -1866,6 +1886,10 @@ switch ($_POST['action']) {
                     // Only check updates for running containers
                     if ($containerName && $image && $state === 'running') {
                         $icon = composeResolveContainerIcon($containerName, $service, $iconByService, $iconByName, $inspectIconCache);
+
+                        if ($icon !== '') {
+                            compose_seed_docker_manager_icon(compose_fetch_icon_to_cache($icon), $containerName);
+                        }
 
                         if ($service !== '' && $icon !== '') {
                             if (!isset($stackContainerCache[$service]) || !is_array($stackContainerCache[$service])) {
@@ -1887,37 +1911,29 @@ switch ($_POST['action']) {
 
                         $image = ContainerInfo::normalizeImageForUpdateCheck($image);
 
-                        $DockerUpdate->reloadUpdateStatus($image);
-                        $updateStatus = $DockerUpdate->getUpdateStatus($image);
+                        $result = $checkResults[$image] ?? [
+                            'local' => '', 'remote' => '', 'status' => 'unknown', 'hasUpdate' => false,
+                        ];
 
-                        // Re-read status data (may have been updated by reloadUpdateStatus)
-                        $updateStatusData = DockerUtil::loadJSON($dockerManPaths['update-status']);
-                        $localSha = '';
-                        $remoteSha = '';
-
-                        if (isset($updateStatusData[$image])) {
-                            $localSha = $updateStatusData[$image]['local'] ?? '';
-                            $remoteSha = $updateStatusData[$image]['remote'] ?? '';
-                            // Shorten SHA for display (first 12 chars after sha256:)
-                            if ($localSha && strpos($localSha, 'sha256:') === 0) {
-                                $localSha = substr($localSha, 7, 12);
-                            }
-                            if ($remoteSha && strpos($remoteSha, 'sha256:') === 0) {
-                                $remoteSha = substr($remoteSha, 7, 12);
-                            }
+                        // Shorten SHAs for display (first 12 chars after sha256:)
+                        $localSha  = (string) $result['local'];
+                        $remoteSha = (string) $result['remote'];
+                        if ($localSha && strpos($localSha, 'sha256:') === 0) {
+                            $localSha = substr($localSha, 7, 12);
+                        }
+                        if ($remoteSha && strpos($remoteSha, 'sha256:') === 0) {
+                            $remoteSha = substr($remoteSha, 7, 12);
                         }
 
-                        $hasUpdate = ($updateStatus === false);
-                        if ($hasUpdate)
-                            $hasStackUpdate = true;
+                        if ($result['hasUpdate']) $hasStackUpdate = true;
 
                         $stackUpdates[] = ContainerInfo::fromUpdateResponse([
                             'container' => $containerName,
                             'service' => $service,
                             'image' => $image,
                             'icon' => $icon,
-                            'hasUpdate' => $hasUpdate,
-                            'status' => ($updateStatus === null) ? 'unknown' : ($updateStatus ? 'up-to-date' : 'update-available'),
+                            'hasUpdate' => $result['hasUpdate'],
+                            'status' => $result['status'],
                             'localSha' => $localSha,
                             'remoteSha' => $remoteSha
                         ])->toUpdateArray();

@@ -132,43 +132,60 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         margin-left: 10px;
     }
 
-    /* Settings action bar stays visible near bottom while scrolling */
-    #compose-tab-settings dl.settings-actions {
+    .settings-actions-hidden {
+        display: none;
+    }
+
+    .compose-global-actions {
         position: fixed;
         bottom: 45px;
-        left: var(--compose-settings-anchor);
+        left: 50%;
         transform: translateX(-50%);
         width: max-content;
-        min-width: 280px;
+        min-width: 340px;
+        max-width: calc(100vw - 24px);
         background: var(--dynamix-jquery-ui-header-background);
         border: 2px solid var(--dynamix-tooltipster-sidetip-box-border-color);
         box-shadow: 0 2px 10px var(--dynamix-box-inner-div-border-color);
-        padding: 15px;
+        padding: 12px 14px;
         z-index: 9999;
         border-radius: 6px;
-        display: block;
     }
 
-    #compose-tab-settings dl.settings-actions dd {
-        display: block;
-        flex-wrap: nowrap;
-        justify-content: center;
-        gap: 8px;
+    .compose-global-actions.hidden {
+        display: none;
+    }
+
+    .compose-global-actions .settings-actions-row {
+        display: flex;
         align-items: center;
-        margin: 0;
+        gap: 10px;
+        flex-wrap: wrap;
+        justify-content: center;
     }
 
-    #compose-tab-settings dl.settings-actions dd input {
-        margin: 5px;
+    .compose-global-actions .settings-actions-meta {
+        font-size: 0.9em;
+        color: var(--dynamix-sb-title-text-color);
+        min-width: 90px;
+        text-align: center;
+    }
+
+    .compose-global-actions .settings-action-btn {
+        margin: 0;
         width: auto;
         min-width: 96px;
         padding: 10px 10px;
         line-height: 1.2;
     }
 
-    #compose-tab-settings form {
-        padding-bottom: 85px;
-        /* keep content from hiding under fixed action bar */
+    .compose-global-actions .settings-action-btn:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+    }
+
+    .compose-tab-content {
+        padding-bottom: 110px;
     }
 
     /* Disabled input styling */
@@ -565,7 +582,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
     }
 
     @media (max-width: 1200px) {
-        #compose-tab-settings dl.settings-actions {
+        .compose-global-actions {
             left: 50%;
         }
 
@@ -658,8 +675,29 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         })
     }
 
-    function clearUpdateCache() {
+    function clearAllIconCache() {
         swal({
+            title: 'Clear Icon Cache',
+            text: 'This will delete all locally cached icon files. Icons will be re-downloaded on next page load.',
+            type: 'warning',
+            showCancelButton: true,
+            confirmButtonText: 'Clear Cache'
+        }, function(confirmed) {
+            if (!confirmed) return;
+            $.post(caURL, {
+                action: 'clearAllIconCache'
+            }, function(data) {
+                var result = JSON.parse(data);
+                if (result.result === 'success') {
+                    swal('Success', 'Icon cache cleared (' + result.cleared + ' files removed).', 'success');
+                } else {
+                    swal('Error', result.message || 'Failed to clear icon cache', 'error');
+                }
+            });
+        });
+    }
+
+    function clearUpdateCache() {        swal({
             title: 'Clear Update Cache',
             text: 'This will clear the update status cache and remove stale entries. You will need to check for updates again.',
             type: 'warning',
@@ -693,7 +731,96 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
     function toggleAutoCheckInterval() {
         var autoCheckEnabled = $('#AUTO_CHECK_UPDATES').is(':checked');
-        $('#AUTO_CHECK_UPDATES_DAYS').prop('disabled', !autoCheckEnabled);
+        $('#AUTO_CHECK_UPDATES_MODE').prop('disabled', !autoCheckEnabled);
+
+        var mode = ($('#AUTO_CHECK_UPDATES_MODE').val() || 'daily').toLowerCase();
+        var showCustom = autoCheckEnabled && mode === 'custom';
+        $('#AUTO_CHECK_UPDATES_CUSTOM_WRAPPER').toggle(showCustom);
+        $('#AUTO_CHECK_UPDATES_DAYS_CUSTOM').prop('disabled', !showCustom);
+    }
+
+    function normalizeAutoCheckDaysValue(rawValue, fallback) {
+        var value = String(rawValue === undefined || rawValue === null ? '' : rawValue).trim();
+        if (value === '') {
+            return String(fallback || '1');
+        }
+
+        var parsed = parseFloat(value);
+        if (isNaN(parsed) || parsed < 0) {
+            return String(fallback || '1');
+        }
+
+        return String(parsed);
+    }
+
+    function resolveAutoCheckIntervalMode(daysRaw) {
+        var days = parseFloat(normalizeAutoCheckDaysValue(daysRaw, '1'));
+        if (Math.abs(days - 0) < 0.0001) return 'every_time';
+        if (Math.abs(days - 0.04) < 0.005 || Math.abs(days - (1 / 24)) < 0.005) return 'hourly';
+        if (Math.abs(days - 1) < 0.0001) return 'daily';
+        if (Math.abs(days - 7) < 0.0001) return 'weekly';
+        if (Math.abs(days - 30) < 0.0001) return 'monthly';
+        return 'custom';
+    }
+
+    function presetDaysForAutoCheckMode(mode) {
+        switch ((mode || '').toLowerCase()) {
+            case 'every_time':
+                return '0';
+            case 'hourly':
+                return '0.04';
+            case 'daily':
+                return '1';
+            case 'weekly':
+                return '7';
+            case 'monthly':
+                return '30';
+            default:
+                return null;
+        }
+    }
+
+    function setAutoCheckIntervalUIFromDays(daysRaw) {
+        var normalizedDays = normalizeAutoCheckDaysValue(daysRaw, '1');
+        var mode = resolveAutoCheckIntervalMode(normalizedDays);
+        $('#AUTO_CHECK_UPDATES_DAYS').val(normalizedDays);
+        $('#AUTO_CHECK_UPDATES_MODE').val(mode);
+
+        if (mode === 'custom') {
+            $('#AUTO_CHECK_UPDATES_DAYS_CUSTOM').val(normalizedDays);
+        } else {
+            var presetDays = presetDaysForAutoCheckMode(mode);
+            if (presetDays !== null) {
+                $('#AUTO_CHECK_UPDATES_DAYS_CUSTOM').val(presetDays);
+            }
+        }
+
+        toggleAutoCheckInterval();
+    }
+
+    function onAutoCheckModeChanged() {
+        var mode = ($('#AUTO_CHECK_UPDATES_MODE').val() || 'daily').toLowerCase();
+        var presetDays = presetDaysForAutoCheckMode(mode);
+
+        if (presetDays !== null) {
+            $('#AUTO_CHECK_UPDATES_DAYS').val(presetDays).trigger('change');
+        } else {
+            var customDays = normalizeAutoCheckDaysValue($('#AUTO_CHECK_UPDATES_DAYS_CUSTOM').val(), $('#AUTO_CHECK_UPDATES_DAYS').val() || '1');
+            $('#AUTO_CHECK_UPDATES_DAYS_CUSTOM').val(customDays);
+            $('#AUTO_CHECK_UPDATES_DAYS').val(customDays).trigger('change');
+        }
+
+        toggleAutoCheckInterval();
+    }
+
+    function onAutoCheckCustomDaysChanged() {
+        var customDays = normalizeAutoCheckDaysValue($('#AUTO_CHECK_UPDATES_DAYS_CUSTOM').val(), $('#AUTO_CHECK_UPDATES_DAYS').val() || '1');
+        $('#AUTO_CHECK_UPDATES_DAYS_CUSTOM').val(customDays);
+        $('#AUTO_CHECK_UPDATES_DAYS').val(customDays).trigger('change');
+    }
+
+    function onAutoCheckCustomDaysInput() {
+        $('#AUTO_CHECK_UPDATES_DAYS').val($('#AUTO_CHECK_UPDATES_DAYS_CUSTOM').val()).trigger('change');
     }
 
     function toggleComposeStatsCustomInterval() {
@@ -730,11 +857,22 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 try {
                     $cb.switchButton('destroy');
                 } catch (e) {}
-                $cb.switchButton({
+                
+                var options = {
                     labels_placement: 'right',
                     on_label: 'YES',
                     off_label: 'NO'
-                });
+                };
+                
+                // Use custom labels if data attributes are present
+                if ($cb.data('on-label')) {
+                    options.on_label = $cb.data('on-label');
+                }
+                if ($cb.data('off-label')) {
+                    options.off_label = $cb.data('off-label');
+                }
+                
+                $cb.switchButton(options);
             });
         }
 
@@ -750,27 +888,6 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             }
         }
 
-
-        // Handle dashboard tile toggle -> disable/enable hide containers option
-        function toggleHideContainers() {
-            var dashboardTileEnabled = $('#SHOW_DASHBOARD_TILE').is(':checked');
-            var $hide = $('#HIDE_DOCKER_COMPOSE_CONTAINERS');
-            var $wrapper = $hide.closest('dl');
-            if (!dashboardTileEnabled) {
-                if ($hide.is(':checked')) {
-                    $hide.prop('checked', false).change();
-                }
-                $wrapper.css({
-                    opacity: 0.4,
-                    pointerEvents: 'none'
-                });
-            } else {
-                $wrapper.css({
-                    opacity: 1,
-                    pointerEvents: ''
-                });
-            }
-        }
 
         // Patch UI toggle: confirm action and run patch.sh via server (uses existing ajax handlers)
         if (!skipPatchUI) {
@@ -811,10 +928,10 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         // the header menu on then off preserves the user's previous selections.
         function toggleComposeOnTop() {
             var headerMenuEnabled = $('#SHOW_COMPOSE_IN_HEADER_MENU').is(':checked');
-            var $onTop = $('#SHOW_COMPOSE_ON_TOP');
-            var $wrapper = $onTop.closest('dl');
+            var $wrapper = $('#docker-page-integration-wrapper');
             if (headerMenuEnabled) {
                 // Save current state before disabling
+                var $onTop = $('#SHOW_COMPOSE_ON_TOP');
                 if (typeof $onTop.data('saved-state') === 'undefined') {
                     $onTop.data('saved-state', $onTop.is(':checked'));
                 }
@@ -831,6 +948,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                     pointerEvents: ''
                 });
                 // Restore previously saved state
+                var $onTop = $('#SHOW_COMPOSE_ON_TOP');
                 var saved = $onTop.data('saved-state');
                 if (typeof saved !== 'undefined') {
                     $onTop.prop('checked', saved).change();
@@ -844,10 +962,10 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         // Handle header menu toggle -> disable/enable hide compose from docker tab
         function toggleHideFromDocker() {
             var headerMenuEnabled = $('#SHOW_COMPOSE_IN_HEADER_MENU').is(':checked');
-            var $hide = $('#HIDE_COMPOSE_FROM_DOCKER');
-            var $wrapper = $hide.closest('dl');
+            var $wrapper = $('#docker-page-hide-wrapper');
             if (headerMenuEnabled) {
                 // Save current state before disabling
+                var $hide = $('#HIDE_COMPOSE_FROM_DOCKER');
                 if (typeof $hide.data('saved-state') === 'undefined') {
                     $hide.data('saved-state', $hide.is(':checked'));
                 }
@@ -864,6 +982,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                     pointerEvents: ''
                 });
                 // Restore previously saved state
+                var $hide = $('#HIDE_COMPOSE_FROM_DOCKER');
                 var saved = $hide.data('saved-state');
                 if (typeof saved !== 'undefined') {
                     $hide.prop('checked', saved).change();
@@ -873,11 +992,14 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         }
 
         // Handle dashboard tile toggle -> disable/enable hide containers option
-        function toggleExpandByDefault() {
-            var stacksDefaultExpanded = $('#STACKS_DEFAULT_EXPANDED').is(':checked');
-            var $hide = $('#ONLY_EXPAND_RUNNING_STACKS');
-            var $wrapper = $hide.closest('dl');
-            if (!stacksDefaultExpanded) {
+        function toggleHideFromDashboard() {
+            var dashboardTileEnabled = $('#SHOW_DASHBOARD_TILE').is(':checked');
+            var $wrapper = $('#dashboard-hide-wrapper');
+            if (!dashboardTileEnabled) {
+                var $hide = $('#HIDE_DOCKER_COMPOSE_CONTAINERS');
+                if (typeof $hide.data('saved-state') === 'undefined') {
+                    $hide.data('saved-state', $hide.is(':checked'));
+                }
                 if ($hide.is(':checked')) {
                     $hide.prop('checked', false).change();
                 }
@@ -890,33 +1012,63 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                     opacity: 1,
                     pointerEvents: ''
                 });
+                // Restore previously saved state
+                var $hide = $('#HIDE_DOCKER_COMPOSE_CONTAINERS');
+                var saved = $hide.data('saved-state');
+                if (typeof saved !== 'undefined') {
+                    $hide.prop('checked', saved).change();
+                    $hide.removeData('saved-state');
+                }
             }
         }
 
         // Convert checkbox values to true/false strings before form submission
         function serializeSettingsForm($form) {
+            $form.find('input.compose-generated-hidden').remove();
             $('.compose-toggle').each(function() {
                 var $checkbox = $(this);
-                var name = $checkbox.attr('name');
-                // Remove any existing hidden field for this setting
-                $('input[type="hidden"][name="' + name + '"]').remove();
-                var value;
-                if (name === 'OUTPUTSTYLE') {
-                    value = $checkbox.is(':checked') ? 'ttyd' : 'basic';
-                } else {
-                    value = $checkbox.is(':checked') ? 'true' : 'false';
+                var name = $checkbox.attr('name') || $checkbox.data('compose-original-name');
+                if (!name) return;
+
+                if (!$checkbox.data('compose-original-name')) {
+                    $checkbox.data('compose-original-name', name);
                 }
-                $checkbox.before('<input type="hidden" name="' + name + '" value="' + value + '">');
+
+                var value = $checkbox.is(':checked') ? 'true' : 'false';
+
+                $('<input type="hidden" class="compose-generated-hidden">')
+                    .attr('name', name)
+                    .val(value)
+                    .insertBefore($checkbox);
+
                 $checkbox.removeAttr('name');
             });
+
+            window.setTimeout(function() {
+                $('.compose-toggle').each(function() {
+                    var $checkbox = $(this);
+                    var originalName = $checkbox.data('compose-original-name');
+                    if (originalName && !$checkbox.attr('name')) {
+                        $checkbox.attr('name', originalName);
+                    }
+                });
+                $form.find('input.compose-generated-hidden').remove();
+            }, 300);
         }
+
+        var bypassComposeSettingsSubmitGuard = false;
 
         $('form[name="compose_manager_settings"]').on('submit', function(e) {
             var $form = $(this);
+            if (bypassComposeSettingsSubmitGuard) {
+                bypassComposeSettingsSubmitGuard = false;
+                serializeSettingsForm($form);
+                return;
+            }
+
             var currentDisableActionWarnings = $('#DISABLE_ACTION_WARNINGS').is(':checked');
             var currentRunInBackgroundDefault = $('#RUN_IN_BACKGROUND_DEFAULT').is(':checked');
             var isCrossed = currentDisableActionWarnings && currentRunInBackgroundDefault;
-            var isOrigCrossed = origDisableActionWarnings && origRunInBackgroundDefault;
             var eitherChanged = (currentDisableActionWarnings !== origDisableActionWarnings) || (currentRunInBackgroundDefault !== origRunInBackgroundDefault);
 
             if (isCrossed && eitherChanged) {
@@ -932,15 +1084,534 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                         // do nothing; keep user on settings page
                         return;
                     }
-                    serializeSettingsForm($form);
-                    $form.off('submit');
-                    $form.submit();
+                    bypassComposeSettingsSubmitGuard = true;
+                    $form.trigger('submit');
                 });
                 return;
             }
 
             serializeSettingsForm($form);
         });
+
+        var settingsUnifiedState = {
+            activeTab: 'settings',
+            updatesInitialized: false,
+            debugReady: false,
+            baseline: {
+                settings: '',
+                updates: '',
+                imageCheck: '',
+                backup: ''
+            },
+            dirty: {
+                settings: false,
+                updates: false,
+                imageCheck: false,
+                backup: false
+            }
+        };
+
+        function safeStringify(value) {
+            return JSON.stringify(value);
+        }
+
+        function captureSettingsSnapshot() {
+            var data = {};
+            $('#compose-tab-settings').find('input, select, textarea').each(function() {
+                var $el = $(this);
+                var type = ($el.attr('type') || '').toLowerCase();
+                if (type === 'hidden' || type === 'submit' || type === 'button') return;
+                var key = $el.attr('id') || $el.attr('name');
+                if (!key) return;
+                if (type === 'checkbox' || type === 'radio') {
+                    data[key] = $el.is(':checked') ? 'true' : 'false';
+                } else {
+                    data[key] = $el.val();
+                }
+            });
+            return safeStringify(data);
+        }
+
+        function captureBackupSnapshot() {
+            var data = {
+                BACKUP_DESTINATION: $('#BACKUP_DESTINATION').val() || '',
+                BACKUP_RETENTION: $('#BACKUP_RETENTION').val() || '',
+                BACKUP_SCHEDULE_ENABLED: $('#BACKUP_SCHEDULE_ENABLED').is(':checked') ? 'true' : 'false',
+                BACKUP_SCHEDULE_FREQUENCY: $('#BACKUP_SCHEDULE_FREQUENCY').val() || '',
+                BACKUP_SCHEDULE_DAY: $('#BACKUP_SCHEDULE_DAY').val() || '',
+                BACKUP_SCHEDULE_TIME: $('#BACKUP_SCHEDULE_TIME').val() || ''
+            };
+            return safeStringify(data);
+        }
+
+        function captureUpdatesSnapshot() {
+            if (!settingsUnifiedState.updatesInitialized) {
+                return '';
+            }
+
+            var rows = [];
+            $('#updates-tbody tr').each(function() {
+                var $row = $(this);
+                var path = $row.data('path');
+                if (!path) return;
+                rows.push({
+                    path: path,
+                    enabled: $row.find('.au-enabled').is(':checked') ? 'true' : 'false',
+                    schedule: $row.find('.au-schedule').val() || '',
+                    time: $row.find('.au-time').val() || '',
+                    weekday: $row.find('.au-weekday').val() || '',
+                    monthday: $row.find('.au-monthday').val() || ''
+                });
+            });
+
+            rows.sort(function(a, b) {
+                return String(a.path).localeCompare(String(b.path));
+            });
+
+            var data = {
+                AUTOUPDATE_ENABLED: $('#AUTOUPDATE_ENABLED').is(':checked') ? 'true' : 'false',
+                default_schedule: $('#default-schedule').val() || '',
+                default_time: $('#default-time').val() || '',
+                rows: rows
+            };
+
+            return safeStringify(data);
+        }
+
+        function captureImageCheckSnapshot() {
+            return safeStringify({
+                AUTO_CHECK_UPDATES: $('#AUTO_CHECK_UPDATES').is(':checked') ? 'true' : 'false',
+                AUTO_CHECK_UPDATES_DAYS: $('#AUTO_CHECK_UPDATES_DAYS').val() || ''
+            });
+        }
+
+        function getCurrentSettingsTabFromDom() {
+            var tabId = $('.compose-tab.active').data('tab');
+            return tabId || settingsUnifiedState.activeTab || 'settings';
+        }
+
+        function parseSnapshot(snapshot) {
+            if (!snapshot) {
+                return null;
+            }
+
+            try {
+                return JSON.parse(snapshot);
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function isPlainObject(value) {
+            return Object.prototype.toString.call(value) === '[object Object]';
+        }
+
+        function countLeafValues(value) {
+            if (value === undefined || value === null) {
+                return 1;
+            }
+
+            if (Array.isArray(value)) {
+                if (value.length === 0) {
+                    return 1;
+                }
+
+                var totalArrayLeaves = 0;
+                for (var i = 0; i < value.length; i++) {
+                    totalArrayLeaves += countLeafValues(value[i]);
+                }
+
+                return totalArrayLeaves;
+            }
+
+            if (isPlainObject(value)) {
+                var keys = Object.keys(value);
+                if (keys.length === 0) {
+                    return 1;
+                }
+
+                var totalObjectLeaves = 0;
+                for (var j = 0; j < keys.length; j++) {
+                    totalObjectLeaves += countLeafValues(value[keys[j]]);
+                }
+
+                return totalObjectLeaves;
+            }
+
+            return 1;
+        }
+
+        function countChangedSettingsValues(currentValue, baselineValue) {
+            if (currentValue === baselineValue) {
+                return 0;
+            }
+
+            if (currentValue === undefined || baselineValue === undefined) {
+                return countLeafValues(currentValue === undefined ? baselineValue : currentValue);
+            }
+
+            if (Array.isArray(currentValue) && Array.isArray(baselineValue)) {
+                var arrayDiffCount = 0;
+                var maxLength = Math.max(currentValue.length, baselineValue.length);
+
+                for (var i = 0; i < maxLength; i++) {
+                    arrayDiffCount += countChangedSettingsValues(currentValue[i], baselineValue[i]);
+                }
+
+                return arrayDiffCount;
+            }
+
+            if (isPlainObject(currentValue) && isPlainObject(baselineValue)) {
+                var objectDiffCount = 0;
+                var seenKeys = {};
+                var currentKeys = Object.keys(currentValue);
+                var baselineKeys = Object.keys(baselineValue);
+                var k;
+
+                for (k = 0; k < currentKeys.length; k++) {
+                    seenKeys[currentKeys[k]] = true;
+                }
+                for (k = 0; k < baselineKeys.length; k++) {
+                    seenKeys[baselineKeys[k]] = true;
+                }
+
+                var keys = Object.keys(seenKeys);
+                for (k = 0; k < keys.length; k++) {
+                    var key = keys[k];
+                    objectDiffCount += countChangedSettingsValues(currentValue[key], baselineValue[key]);
+                }
+
+                return objectDiffCount;
+            }
+
+            return 1;
+        }
+
+        function countChangedSettings(snapshotCurrent, snapshotBaseline) {
+            if (snapshotCurrent === snapshotBaseline) {
+                return 0;
+            }
+
+            var currentData = parseSnapshot(snapshotCurrent);
+            var baselineData = parseSnapshot(snapshotBaseline);
+
+            if (currentData === null || baselineData === null) {
+                return snapshotCurrent === snapshotBaseline ? 0 : 1;
+            }
+
+            return countChangedSettingsValues(currentData, baselineData);
+        }
+
+        function computeChangedKeys(snapshotCurrent, snapshotBaseline) {
+            var currentData = parseSnapshot(snapshotCurrent);
+            var baselineData = parseSnapshot(snapshotBaseline);
+
+            if (currentData === null || baselineData === null || !isPlainObject(currentData) || !isPlainObject(baselineData)) {
+                return [];
+            }
+
+            var keys = {};
+            Object.keys(currentData).forEach(function(key) {
+                keys[key] = true;
+            });
+            Object.keys(baselineData).forEach(function(key) {
+                keys[key] = true;
+            });
+
+            return Object.keys(keys).filter(function(key) {
+                return countChangedSettingsValues(currentData[key], baselineData[key]) > 0;
+            });
+        }
+
+        function saveImageUpdateCheckSettings() {
+            var deferred = $.Deferred();
+            var $settingsForm = $('form[name="compose_manager_settings"]');
+            var filePath = $settingsForm.find('input[name="#file"]').val();
+            var section = $settingsForm.find('input[name="#section"]').val() || '';
+
+            $.post('/update.php', {
+                '#file': filePath,
+                '#section': section,
+                '#apply': 'Apply',
+                AUTO_CHECK_UPDATES: $('#AUTO_CHECK_UPDATES').is(':checked') ? 'true' : 'false',
+                AUTO_CHECK_UPDATES_DAYS: $('#AUTO_CHECK_UPDATES_DAYS').val() || '1'
+            }).done(function() {
+                if (window.composeSettingsUnifiedState && typeof window.composeSettingsUnifiedState.markImageCheckSaved === 'function') {
+                    window.composeSettingsUnifiedState.markImageCheckSaved();
+                }
+                deferred.resolve(true);
+            }).fail(function() {
+                showUpdatesStatus('Failed to save image update check settings.', 'error');
+                deferred.resolve(false);
+            });
+
+            return deferred.promise();
+        }
+
+        function updateUnifiedActionState() {
+            settingsUnifiedState.activeTab = getCurrentSettingsTabFromDom();
+            var settingsSnapshot = captureSettingsSnapshot();
+            var backupSnapshot = captureBackupSnapshot();
+            var updatesSnapshot = captureUpdatesSnapshot();
+            var imageCheckSnapshot = captureImageCheckSnapshot();
+            var updatesBaselineReady = settingsUnifiedState.baseline.updates !== '';
+
+            settingsUnifiedState.dirty.settings = settingsSnapshot !== settingsUnifiedState.baseline.settings;
+            settingsUnifiedState.dirty.backup = backupSnapshot !== settingsUnifiedState.baseline.backup;
+            settingsUnifiedState.dirty.updates = settingsUnifiedState.updatesInitialized && updatesBaselineReady && updatesSnapshot !== settingsUnifiedState.baseline.updates;
+            settingsUnifiedState.dirty.imageCheck = imageCheckSnapshot !== settingsUnifiedState.baseline.imageCheck;
+
+            var updatesDirty = settingsUnifiedState.dirty.updates || settingsUnifiedState.dirty.imageCheck;
+
+            var changedTabs = 0;
+            if (settingsUnifiedState.dirty.settings) changedTabs++;
+            if (updatesDirty) changedTabs++;
+            if (settingsUnifiedState.dirty.backup) changedTabs++;
+
+            var changedSettings = 0;
+            if (settingsUnifiedState.dirty.settings) {
+                changedSettings += countChangedSettings(settingsSnapshot, settingsUnifiedState.baseline.settings);
+            }
+            if (settingsUnifiedState.dirty.backup) {
+                changedSettings += countChangedSettings(backupSnapshot, settingsUnifiedState.baseline.backup);
+            }
+            if (settingsUnifiedState.dirty.updates) {
+                changedSettings += countChangedSettings(updatesSnapshot, settingsUnifiedState.baseline.updates);
+            }
+            if (settingsUnifiedState.dirty.imageCheck) {
+                changedSettings += countChangedSettings(imageCheckSnapshot, settingsUnifiedState.baseline.imageCheck);
+            }
+
+            var hasChanges = changedTabs > 0;
+            $('#global-settings-apply').prop('disabled', !hasChanges);
+            $('#global-settings-reset').prop('disabled', !hasChanges);
+            $('#global-settings-default').prop('disabled', settingsUnifiedState.activeTab !== 'settings');
+            var changedTabsText = changedTabs + (changedTabs === 1 ? ' tab changed' : ' tabs changed');
+            var changedSettingsText = changedSettings + (changedSettings === 1 ? ' setting changed' : ' settings changed');
+            $('#global-settings-change-count').text(changedTabsText + ' | ' + changedSettingsText);
+
+            var debugSignature = [
+                settingsUnifiedState.activeTab,
+                changedTabs,
+                changedSettings,
+                settingsUnifiedState.dirty.settings ? '1' : '0',
+                settingsUnifiedState.dirty.updates ? '1' : '0',
+                settingsUnifiedState.dirty.imageCheck ? '1' : '0',
+                settingsUnifiedState.dirty.backup ? '1' : '0'
+            ].join('|');
+            if (settingsUnifiedState.debugReady && settingsUnifiedState.lastDebugSignature !== debugSignature) {
+                settingsUnifiedState.lastDebugSignature = debugSignature;
+                composeLogger('Dirty state recalculated', {
+                    activeTab: settingsUnifiedState.activeTab,
+                    changedTabs: changedTabs,
+                    changedSettings: changedSettings,
+                    dirty: {
+                        settings: settingsUnifiedState.dirty.settings,
+                        updates: settingsUnifiedState.dirty.updates,
+                        imageCheck: settingsUnifiedState.dirty.imageCheck,
+                        backup: settingsUnifiedState.dirty.backup
+                    },
+                    changedKeys: {
+                        settings: computeChangedKeys(settingsSnapshot, settingsUnifiedState.baseline.settings),
+                        updates: settingsUnifiedState.updatesInitialized ? computeChangedKeys(updatesSnapshot, settingsUnifiedState.baseline.updates) : [],
+                        imageCheck: computeChangedKeys(imageCheckSnapshot, settingsUnifiedState.baseline.imageCheck),
+                        backup: computeChangedKeys(backupSnapshot, settingsUnifiedState.baseline.backup)
+                    }
+                }, 'user', 'debug', 'settings');
+            }
+
+            if (settingsUnifiedState.activeTab === 'credits' || settingsUnifiedState.activeTab === 'log') {
+                $('#global-settings-actions').addClass('hidden');
+            } else {
+                $('#global-settings-actions').removeClass('hidden');
+            }
+        }
+
+        function setActiveSettingsTab(tabId) {
+            settingsUnifiedState.activeTab = tabId;
+            updateUnifiedActionState();
+        }
+
+        function applySettingsDefault() {
+            var $defaultBtn = $('#settings-submit-default');
+            if (!$defaultBtn.length) return;
+            $defaultBtn.prop('disabled', false).trigger('click');
+            window.setTimeout(function() {
+                settingsUnifiedState.baseline.settings = captureSettingsSnapshot();
+                updateUnifiedActionState();
+            }, 500);
+        }
+
+        function applySettingsChanges() {
+            var $applyBtn = $('#settings-submit-apply');
+            if (!$applyBtn.length) return;
+            $applyBtn.prop('disabled', false).trigger('click');
+            window.setTimeout(function() {
+                settingsUnifiedState.baseline.settings = captureSettingsSnapshot();
+                updateUnifiedActionState();
+            }, 500);
+        }
+
+        function resetSettingsFromBaseline() {
+            var snapshot = settingsUnifiedState.baseline.settings;
+            if (!snapshot) return;
+            var data;
+            try {
+                data = JSON.parse(snapshot);
+            } catch (e) {
+                return;
+            }
+
+            $('#compose-tab-settings').find('input, select, textarea').each(function() {
+                var $el = $(this);
+                var type = ($el.attr('type') || '').toLowerCase();
+                if (type === 'hidden' || type === 'submit' || type === 'button') return;
+                var key = $el.attr('id') || $el.attr('name');
+                if (!key) return;
+                if (!Object.prototype.hasOwnProperty.call(data, key)) return;
+
+                if (type === 'checkbox' || type === 'radio') {
+                    $el.prop('checked', data[key] === 'true').trigger('change');
+                } else {
+                    $el.val(data[key]).trigger('change');
+                }
+            });
+        }
+
+        function clearDependentToggleSavedStateCache() {
+            $('#SHOW_COMPOSE_ON_TOP').removeData('saved-state');
+            $('#HIDE_COMPOSE_FROM_DOCKER').removeData('saved-state');
+            $('#HIDE_DOCKER_COMPOSE_CONTAINERS').removeData('saved-state');
+            $('#ONLY_EXPAND_RUNNING_STACKS').removeData('saved-state');
+        }
+
+        function resetBackupFromBaseline() {
+            var snapshot = settingsUnifiedState.baseline.backup;
+            if (!snapshot) return;
+            var data;
+            try {
+                data = JSON.parse(snapshot);
+            } catch (e) {
+                return;
+            }
+
+            $('#BACKUP_DESTINATION').val(data.BACKUP_DESTINATION || '').trigger('change');
+            $('#BACKUP_RETENTION').val(data.BACKUP_RETENTION || '').trigger('change');
+            $('#BACKUP_SCHEDULE_ENABLED').prop('checked', data.BACKUP_SCHEDULE_ENABLED === 'true').trigger('change');
+            $('#BACKUP_SCHEDULE_FREQUENCY').val(data.BACKUP_SCHEDULE_FREQUENCY || 'daily').trigger('change');
+            $('#BACKUP_SCHEDULE_DAY').val(data.BACKUP_SCHEDULE_DAY || '1').trigger('change');
+            $('#BACKUP_SCHEDULE_TIME').val(data.BACKUP_SCHEDULE_TIME || '03:00').trigger('change');
+            toggleBackupSchedule();
+        }
+
+        function resetImageCheckFromBaseline() {
+            var snapshot = settingsUnifiedState.baseline.imageCheck;
+            if (!snapshot) return;
+
+            var data;
+            try {
+                data = JSON.parse(snapshot);
+            } catch (e) {
+                return;
+            }
+
+            $('#AUTO_CHECK_UPDATES').prop('checked', data.AUTO_CHECK_UPDATES === 'true').trigger('change');
+            setAutoCheckIntervalUIFromDays(data.AUTO_CHECK_UPDATES_DAYS || '1');
+            $('#AUTO_CHECK_UPDATES_DAYS').trigger('change');
+            toggleAutoCheckInterval();
+        }
+
+        $('#global-settings-default').on('click', function() {
+            if (getCurrentSettingsTabFromDom() !== 'settings') return;
+            applySettingsDefault();
+        });
+
+        $('#global-settings-apply').on('click', function() {
+            if (settingsUnifiedState.dirty.settings) {
+                applySettingsChanges();
+            }
+            if (settingsUnifiedState.dirty.updates) {
+                $('#save-updates').trigger('click');
+            }
+            if (settingsUnifiedState.dirty.imageCheck) {
+                saveImageUpdateCheckSettings();
+            }
+            if (settingsUnifiedState.dirty.backup) {
+                saveBackupSettings();
+            }
+        });
+
+        $('#global-settings-reset').on('click', function() {
+            clearDependentToggleSavedStateCache();
+            resetSettingsFromBaseline();
+            resetBackupFromBaseline();
+            resetImageCheckFromBaseline();
+
+            if (settingsUnifiedState.updatesInitialized) {
+                var pendingResetOps = 2;
+                var finalizeResetState = function() {
+                    pendingResetOps--;
+                    if (pendingResetOps > 0) return;
+                    initSwitchToggles($('#compose-tab-settings, #compose-tab-updates, #compose-tab-backup'));
+                    updateUnifiedActionState();
+                };
+
+                loadUpdatesUI({
+                    updateBaseline: false,
+                    onComplete: finalizeResetState
+                });
+                refreshCronStatus(finalizeResetState);
+                return;
+            }
+
+            window.setTimeout(function() {
+                initSwitchToggles($('#compose-tab-settings, #compose-tab-updates, #compose-tab-backup'));
+                updateUnifiedActionState();
+            }, 200);
+        });
+
+        $('#compose-tab-settings').on('input change', 'input, select, textarea', function() {
+            updateUnifiedActionState();
+        });
+
+        $('#compose-tab-backup').on('input change', '#BACKUP_DESTINATION, #BACKUP_RETENTION, #BACKUP_SCHEDULE_ENABLED, #BACKUP_SCHEDULE_FREQUENCY, #BACKUP_SCHEDULE_DAY, #BACKUP_SCHEDULE_TIME', function() {
+            updateUnifiedActionState();
+        });
+
+        $('#compose-tab-updates').on('input change', '#AUTOUPDATE_ENABLED, #default-schedule, #default-time, #updates-tbody input, #updates-tbody select', function() {
+            settingsUnifiedState.updatesInitialized = true;
+            updateUnifiedActionState();
+        });
+
+        $('#compose-tab-updates').on('input change', '#AUTO_CHECK_UPDATES, #AUTO_CHECK_UPDATES_MODE, #AUTO_CHECK_UPDATES_DAYS, #AUTO_CHECK_UPDATES_DAYS_CUSTOM', function() {
+            updateUnifiedActionState();
+        });
+
+        window.composeSettingsUnifiedState = {
+            markUpdatesSaved: function() {
+                settingsUnifiedState.updatesInitialized = true;
+                settingsUnifiedState.baseline.updates = captureUpdatesSnapshot();
+                updateUnifiedActionState();
+            },
+            markImageCheckSaved: function() {
+                settingsUnifiedState.baseline.imageCheck = captureImageCheckSnapshot();
+                updateUnifiedActionState();
+            },
+            markBackupSaved: function() {
+                settingsUnifiedState.baseline.backup = captureBackupSnapshot();
+                updateUnifiedActionState();
+            },
+            markUpdatesLoaded: function() {
+                settingsUnifiedState.updatesInitialized = true;
+                settingsUnifiedState.baseline.updates = captureUpdatesSnapshot();
+                settingsUnifiedState.baseline.imageCheck = captureImageCheckSnapshot();
+                updateUnifiedActionState();
+            },
+            refreshDirtyState: function() {
+                settingsUnifiedState.updatesInitialized = true;
+                updateUnifiedActionState();
+            }
+        };
 
         // Tab switching
         $('.compose-tab').on('click', function() {
@@ -953,6 +1624,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             $(this).addClass('active');
             // Save tab preference
             localStorage.setItem('compose-settings-tab', tabId);
+            setActiveSettingsTab(tabId);
             // Start/stop log refresh based on tab
             if (tabId === 'log') {
                 loadLogs();
@@ -966,8 +1638,22 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             }
             // Always load updates UI when switching to updates tab
             if (tabId === 'updates') {
-                loadUpdatesUI();
-                refreshCronStatus();
+                if (!settingsUnifiedState.dirty.updates) {
+                    var pendingUpdatesInitOps = 2;
+                    var finalizeUpdatesInit = function() {
+                        pendingUpdatesInitOps--;
+                        if (pendingUpdatesInitOps > 0) return;
+                        if (window.composeSettingsUnifiedState && typeof window.composeSettingsUnifiedState.markUpdatesLoaded === 'function') {
+                            window.composeSettingsUnifiedState.markUpdatesLoaded();
+                        }
+                    };
+
+                    loadUpdatesUI({
+                        updateBaseline: false,
+                        onComplete: finalizeUpdatesInit
+                    });
+                    refreshCronStatus(finalizeUpdatesInit);
+                }
             }
         });
 
@@ -978,9 +1664,40 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         $('#DISABLE_ACTION_WARNINGS, #RUN_IN_BACKGROUND_DEFAULT').change(updateAggressiveModeWarning);
         updateAggressiveModeWarning();
 
-        // Apply hide containers on load and on change
-        toggleHideContainers();
-        $('#SHOW_DASHBOARD_TILE').change(toggleHideContainers);
+        // Apply dashboard hide from docker on load and on change
+        toggleHideFromDashboard();
+        $('#SHOW_DASHBOARD_TILE').change(toggleHideFromDashboard);
+
+        // Handle dashboard tile toggle -> disable/enable hide containers option
+        function toggleExpandByDefault() {
+            var stacksDefaultExpanded = $('#STACKS_DEFAULT_EXPANDED').is(':checked');
+            var $wrapper = $('#ONLY_EXPAND_RUNNING_STACKS').closest('dl');
+            if (!stacksDefaultExpanded) {
+                var $expand = $('#ONLY_EXPAND_RUNNING_STACKS');
+                if (typeof $expand.data('saved-state') === 'undefined') {
+                    $expand.data('saved-state', $expand.is(':checked'));
+                }
+                if ($expand.is(':checked')) {
+                    $expand.prop('checked', false).change();
+                }
+                $wrapper.css({
+                    opacity: 0.4,
+                    pointerEvents: 'none'
+                });
+            } else {
+                $wrapper.css({
+                    opacity: 1,
+                    pointerEvents: ''
+                });
+                // Restore previously saved state
+                var $expand = $('#ONLY_EXPAND_RUNNING_STACKS');
+                var saved = $expand.data('saved-state');
+                if (typeof saved !== 'undefined') {
+                    $expand.prop('checked', saved).change();
+                    $expand.removeData('saved-state');
+                }
+            }
+        }
 
         // Apply expand stacks by default on load and on change
         toggleExpandByDefault();
@@ -995,8 +1712,11 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         $('#SHOW_COMPOSE_IN_HEADER_MENU').change(toggleComposeOnTop);
 
         // Handle auto-check toggle state change
-        toggleAutoCheckInterval();
+        setAutoCheckIntervalUIFromDays($('#AUTO_CHECK_UPDATES_DAYS').val() || '1');
         $('#AUTO_CHECK_UPDATES').change(toggleAutoCheckInterval);
+        $('#AUTO_CHECK_UPDATES_MODE').on('change', onAutoCheckModeChanged);
+        $('#AUTO_CHECK_UPDATES_DAYS_CUSTOM').on('input', onAutoCheckCustomDaysInput);
+        $('#AUTO_CHECK_UPDATES_DAYS_CUSTOM').on('change', onAutoCheckCustomDaysChanged);
 
         // allow patch UI change handler to run now that switches are initialized
         _ignorePatchUIChange = false;
@@ -1006,6 +1726,13 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         // Set only the correct tab and content as active
         $('.compose-tab[data-tab="' + savedTab + '"]').addClass('active');
         $('#compose-tab-' + savedTab).addClass('active');
+        settingsUnifiedState.activeTab = savedTab;
+
+        settingsUnifiedState.baseline.settings = captureSettingsSnapshot();
+        settingsUnifiedState.baseline.backup = captureBackupSnapshot();
+        settingsUnifiedState.baseline.imageCheck = captureImageCheckSnapshot();
+        settingsUnifiedState.debugReady = true;
+        updateUnifiedActionState();
 
         // If the default tab is backup, load the backup list immediately
         if (savedTab === 'backup') {
@@ -1020,8 +1747,20 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
         // If the default tab is updates, load updates UI immediately
         if (savedTab === 'updates') {
-            loadUpdatesUI();
-            refreshCronStatus();
+            var pendingInitialUpdatesOps = 2;
+            var finalizeInitialUpdates = function() {
+                pendingInitialUpdatesOps--;
+                if (pendingInitialUpdatesOps > 0) return;
+                if (window.composeSettingsUnifiedState && typeof window.composeSettingsUnifiedState.markUpdatesLoaded === 'function') {
+                    window.composeSettingsUnifiedState.markUpdatesLoaded();
+                }
+            };
+
+            loadUpdatesUI({
+                updateBaseline: false,
+                onComplete: finalizeInitialUpdates
+            });
+            refreshCronStatus(finalizeInitialUpdates);
         }
     });
 
@@ -1438,6 +2177,9 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
             if (result.result === 'success') {
                 showBackupStatus('#backup-create-status', 'Backup settings saved.', 'success');
+                if (window.composeSettingsUnifiedState && typeof window.composeSettingsUnifiedState.markBackupSaved === 'function') {
+                    window.composeSettingsUnifiedState.markBackupSaved();
+                }
             } else {
                 showBackupStatus('#backup-create-status', result.message || 'Failed to save settings', 'error');
             }
@@ -1596,7 +2338,11 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         initUpdatesSortable();
     }
 
-    function loadUpdatesUI() {
+    function loadUpdatesUI(options) {
+        options = options || {};
+        var updateBaseline = options.updateBaseline !== false;
+        var onComplete = typeof options.onComplete === 'function' ? options.onComplete : null;
+
         $('#updates-tbody').html('<tr><td colspan="5" class="compose-text-muted" style="text-align:center;padding:12px;">_(Loading stacks...)_</td></tr>');
         $.post('/plugins/compose.manager/include/Exec.php', {
             action: 'listProjects'
@@ -1654,15 +2400,29 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 initUpdatesSortable();
                 // Sync toggle-all state
                 updateToggleAllState();
+                if (updateBaseline && window.composeSettingsUnifiedState && typeof window.composeSettingsUnifiedState.markUpdatesLoaded === 'function') {
+                    window.composeSettingsUnifiedState.markUpdatesLoaded();
+                } else if (!updateBaseline && window.composeSettingsUnifiedState && typeof window.composeSettingsUnifiedState.refreshDirtyState === 'function') {
+                    window.composeSettingsUnifiedState.refreshDirtyState();
+                }
+                if (onComplete) {
+                    onComplete();
+                }
             }, 'json').fail(function() {
                 $('#updates-tbody').html('<tr><td colspan="5" class="compose-status-danger" style="text-align:center;padding:12px;">_(Failed to load auto-update settings.)_</td></tr>');
+                if (onComplete) {
+                    onComplete();
+                }
             });
         }, 'json').fail(function() {
             $('#updates-tbody').html('<tr><td colspan="5" class="compose-status-danger" style="text-align:center;padding:12px;">_(Failed to load stacks.)_</td></tr>');
+            if (onComplete) {
+                onComplete();
+            }
         });
     }
 
-    function refreshCronStatus() {
+    function refreshCronStatus(onComplete) {
         $.post('/plugins/compose.manager/include/AutoUpdate.php', {
             action: 'getCronStatus'
         }, function(r) {
@@ -1670,6 +2430,11 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             var installed = r && r.installed;
             var $cb = $('#AUTOUPDATE_ENABLED');
             var currentState = $cb.is(':checked');
+            composeLogger('refreshCronStatus result', {
+                installed: !!installed,
+                currentState: currentState,
+                changed: currentState !== installed
+            }, 'user', 'debug', 'settings');
             // Only update if state changed to avoid flicker
             if (currentState !== installed) {
                 // Click the switch-button-background to toggle visual state
@@ -1681,6 +2446,9 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                     $cb.prop('checked', installed);
                 }
             }
+            if (typeof onComplete === 'function') {
+                onComplete();
+            }
         }, 'json').fail(function() {
             // On failure, leave checkbox unchecked
             var $cb = $('#AUTOUPDATE_ENABLED');
@@ -1691,6 +2459,9 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 } else {
                     $cb.prop('checked', false);
                 }
+            }
+            if (typeof onComplete === 'function') {
+                onComplete();
             }
         });
     }
@@ -1814,6 +2585,9 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                     setUpdatesSpinner(false);
                     refreshCronStatus();
                     showUpdatesStatus('Auto-update settings saved.', 'success');
+                    if (window.composeSettingsUnifiedState && typeof window.composeSettingsUnifiedState.markUpdatesSaved === 'function') {
+                        window.composeSettingsUnifiedState.markUpdatesSaved();
+                    }
                 }, 'json').fail(function() {
                     setUpdatesSpinner(false);
                     showUpdatesStatus('Settings saved but scheduler update failed.', 'error');
@@ -1857,7 +2631,9 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                     completed++;
                     runNext();
                 }, 'json').fail(function() {
-                    console.log('runNow failed for path', p);
+                    if (typeof composeLogger === 'function') {
+                        composeLogger('runNow failed for path', { path: p }, 'user', 'warn', 'settings');
+                    }
                     runNext();
                 });
             }
@@ -1883,7 +2659,12 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         <input type="hidden" name="#file" value="<?= $sName ?>/<?= $sName ?>.cfg">
         <input type="hidden" name="#section" value="">
 
+        <blockquote class="inline_help" style="margin-bottom:20px;">
+            <strong>Settings Tab</strong> — Configure general plugin behavior including where stacks are stored, how they start at boot, and how they appear in the webUI. Most settings take effect immediately.
+        </blockquote>
+
         <div class="title"><span class="left"><i class="fa fa-cog icon"></i>_(General Settings)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Core plugin configuration and project storage location.</p>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Compose Project Directory)_:</dt>
@@ -1900,16 +2681,8 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dd>
         </dl>
 
-        <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Rich Terminal Output)_:</dt>
-            <dd>
-                <input type="checkbox" name="OUTPUTSTYLE" id="OUTPUTSTYLE" class="compose-toggle" <?= $cfg['OUTPUTSTYLE'] == 'ttyd' ? 'checked' : '' ?>>
-                <blockquote class="inline_help">
-                    Display compose commands in a rich terminal with color output and live progress.<br>
-                    When disabled, uses simple text output.
-                </blockquote>
-            </dd>
-        </dl>
+        <div class="title"><span class="left"><i class="fa fa-bolt icon"></i>_(Stack Actions & Behavior)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Control how stack operations execute and display results.</p>
 
         <div id="aggressive-mode-wrapper">
 
@@ -1941,30 +2714,44 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
         </div>
 
-        <div class="title"><span class="left"><i class="fa fa-plus-square icon"></i>_(New Stack Defaults)_</span></div>
+        <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Remove Orphans by Default)_:</dt>
+            <dd>
+                <input type="checkbox" name="REMOVE_ORPHANS_DEFAULT" id="REMOVE_ORPHANS_DEFAULT" class="compose-toggle" <?= ($cfg['REMOVE_ORPHANS_DEFAULT'] ?? 'false') == 'true' ? 'checked' : '' ?>>
+                <blockquote class="inline_help">
+                    When enabled, the <em>Remove orphans</em> option is pre-checked in Compose Up/Down dialogs and bulk start/stop dialogs.
+                    Useful when a stack is edited while containers still exist. Adds <code>--remove-orphans</code> to the resulting docker compose command.
+                </blockquote>
+            </dd>
+        </dl>
+
+        <div class="title"><span class="left"><i class="fa fa-plus-square icon"></i>_(New Stack Configuration)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Default settings applied automatically when creating new compose stacks.</p>
 
         <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Default Compose File Selection)_:</dt>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Compose File Discovery)_:</dt>
             <dd>
-                <input type="checkbox" name="NEW_STACK_USE_DEFAULT_COMPOSE_FILES" id="NEW_STACK_USE_DEFAULT_COMPOSE_FILES" class="compose-toggle" <?= ($cfg['NEW_STACK_USE_DEFAULT_COMPOSE_FILES'] ?? 'false') == 'true' ? 'checked' : '' ?>>
+                <input type="checkbox" name="NEW_STACK_USE_DEFAULT_COMPOSE_FILES" id="NEW_STACK_USE_DEFAULT_COMPOSE_FILES" class="compose-toggle custom-toggle" data-on-label="Auto" data-off-label="Manual" <?= ($cfg['NEW_STACK_USE_DEFAULT_COMPOSE_FILES'] ?? 'false') == 'true' ? 'checked' : '' ?>>
                 <blockquote class="inline_help">
-                    Default for new stacks: use Docker Compose default file discovery (no explicit <code>-f</code> flags).<br>
-                    Useful for projects that rely on auto-loaded <code>compose.override.*</code> and/or <code>COMPOSE_FILE</code> from <code>.env</code>.
+                    <strong>Auto:</strong> Use Docker Compose default file discovery (no explicit <code>-f</code> flags). Useful for projects that rely on auto-loaded <code>compose.override.*</code> and/or <code>COMPOSE_FILE</code> from <code>.env</code>.<br>
+                    <strong>Manual:</strong> Explicitly specify which compose files to use.
                 </blockquote>
             </dd>
         </dl>
 
         <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Default Override File Management)_:</dt>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Override File Management)_:</dt>
             <dd>
-                <input type="checkbox" name="NEW_STACK_OVERRIDE_MANAGEMENT_AUTOMATIC" id="NEW_STACK_OVERRIDE_MANAGEMENT_AUTOMATIC" class="compose-toggle" <?= ($cfg['NEW_STACK_OVERRIDE_MANAGEMENT_AUTOMATIC'] ?? 'true') == 'true' ? 'checked' : '' ?>>
+                <input type="checkbox" name="NEW_STACK_OVERRIDE_MANAGEMENT_AUTOMATIC" id="NEW_STACK_OVERRIDE_MANAGEMENT_AUTOMATIC" class="compose-toggle custom-toggle" data-on-label="Auto" data-off-label="Manual" <?= ($cfg['NEW_STACK_OVERRIDE_MANAGEMENT_AUTOMATIC'] ?? 'true') == 'true' ? 'checked' : '' ?>>
                 <blockquote class="inline_help">
-                    Default for new stacks: <strong>Automatic</strong> when enabled, <strong>Manual</strong> when disabled.<br>
-                    Automatic lets the plugin manage the project override file; Manual blocks automated edits and uses raw override editing.
+                    <strong>Auto:</strong> Plugin automatically manages the project override file for automated edits.<br>
+                    <strong>Manual:</strong> Blocks automated edits and uses raw override editing mode.
                 </blockquote>
             </dd>
         </dl>
 
+        <div class="title"><span class="left"><i class="fa fa-power-off icon"></i>_(Boot Autostart)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Control how Compose stacks automatically start when Unraid boots up.</p>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Recreate During Autostart)_:</dt>
@@ -1990,7 +2777,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         </dl>
 
         <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Docker Wait Timeout)_:</dt>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Docker Autostart Wait Timeout)_:</dt>
             <dd>
                 <input type="number" name="AUTOSTART_DOCKER_WAIT_TIMEOUT" min="30" max="600" step="10" value="<?= $cfg['AUTOSTART_DOCKER_WAIT_TIMEOUT'] ?? '120' ?>" style="width:80px;"> _(seconds)_
                 <blockquote class="inline_help">
@@ -2011,37 +2798,39 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dd>
         </dl>
 
-        <div class="title"><span class="left"><i class="fa fa-desktop icon"></i>_(Display Options)_</span></div>
+        <div class="title"><span class="left"><i class="fa fa-desktop icon"></i>_(WebUI Display)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Configure where and how Compose stacks appear throughout the Unraid webUI.</p>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Show Compose in Header Menu)_:</dt>
             <dd>
                 <input type="checkbox" name="SHOW_COMPOSE_IN_HEADER_MENU" id="SHOW_COMPOSE_IN_HEADER_MENU" class="compose-toggle" <?= $cfg['SHOW_COMPOSE_IN_HEADER_MENU'] == 'true' ? 'checked' : '' ?>>
                 <blockquote class="inline_help">
-                    Add a Compose tab to the main Unraid header navigation bar for quick access.
+                    Add a Compose tab to the main Unraid header navigation bar for quick access.<br>
+                    <strong>When disabled:</strong> Compose stacks appear on the Docker page (see options below).
                 </blockquote>
             </dd>
         </dl>
 
-        <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Show Compose Stacks Above Docker)_:</dt>
+        <dl style="opacity:0.7;pointer-events:none;" id="docker-page-integration-wrapper">
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Show Compose Stacks Above Docker Containers)_:</dt>
             <dd>
                 <input type="checkbox" name="SHOW_COMPOSE_ON_TOP" id="SHOW_COMPOSE_ON_TOP" class="compose-toggle" <?= ($cfg['SHOW_COMPOSE_ON_TOP'] ?? 'false') == 'true' ? 'checked' : '' ?>>
                 <blockquote class="inline_help">
                     When the Docker page is displayed without tabs, move the Compose Stacks section above the built-in Docker Containers section.<br>
-                    This option is only available when "Show Compose in Header Menu" is set to No (non-tabbed mode).
+                    <em>Only available when "Show Compose in Header Menu" is disabled (inline mode).</em>
                 </blockquote>
             </dd>
         </dl>
 
-        <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Hide Compose Containers from Docker)_:</dt>
+        <dl style="opacity:0.7;pointer-events:none;" id="docker-page-hide-wrapper">
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Hide Compose Containers from Docker Page)_:</dt>
             <dd>
                 <input type="checkbox" name="HIDE_COMPOSE_FROM_DOCKER" id="HIDE_COMPOSE_FROM_DOCKER" class="compose-toggle" <?= ($cfg['HIDE_COMPOSE_FROM_DOCKER'] ?? 'false') == 'true' ? 'checked' : '' ?>>
                 <blockquote class="inline_help">
-                    When enabled, containers managed by Compose stacks will be hidden from the Docker Containers table on the Docker tab.<br>
-                    This avoids duplicate display when Compose stacks are shown on the same page.<br>
-                    This option is only available when "Show Compose in Header Menu" is set to No (non-tabbed mode).
+                    When enabled, containers managed by Compose stacks will be hidden from the Docker Containers table on the Docker page.<br>
+                    This avoids duplicate display when Compose stacks are shown on the same page (inline mode).<br>
+                    <em>Only available when "Show Compose in Header Menu" is disabled (inline mode).</em>
                 </blockquote>
             </dd>
         </dl>
@@ -2056,17 +2845,20 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dd>
         </dl>
 
-        <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Hide Compose Containers from Docker Tile on Dashboard)_:</dt>
+        <dl style="opacity:0.7;pointer-events:none;" id="dashboard-hide-wrapper">
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Hide Compose Containers from Docker Dashboard Tile)_:</dt>
             <dd>
                 <input type="checkbox" name="HIDE_DOCKER_COMPOSE_CONTAINERS" id="HIDE_DOCKER_COMPOSE_CONTAINERS" class="compose-toggle" <?= ($cfg['HIDE_DOCKER_COMPOSE_CONTAINERS'] ?? 'false') == 'true' ? 'checked' : '' ?>>
                 <blockquote class="inline_help">
                     Hide containers managed by Compose stacks from Unraid's Docker Containers dashboard tile.<br>
                     This avoids duplicate entries when both the Compose Stacks tile and Docker Containers tile are visible on the Dashboard.<br>
-                    This option requires "Show Dashboard Tile" to be enabled.
+                    <em>Only available when "Show Dashboard Tile" is enabled.</em>
                 </blockquote>
             </dd>
         </dl>
+
+        <div class="title"><span class="left"><i class="fa fa-eye icon"></i>_(Compose Page Display)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Customize how stack details are displayed on the Compose page.</p>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Expand Stacks by Default)_:</dt>
@@ -2083,52 +2875,22 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             <dd>
                 <input type="checkbox" id="ONLY_EXPAND_RUNNING_STACKS" name="ONLY_EXPAND_RUNNING_STACKS" class="compose-toggle" <?= ($cfg['ONLY_EXPAND_RUNNING_STACKS'] ?? 'false') == 'true' ? 'checked' : '' ?>>
                 <blockquote class="inline_help">
-                    When enabled, only running stacks will be expanded by default.
+                    When enabled, only running stacks will be expanded by default. Stopped/paused stacks remain collapsed.<br>
+                    <em>Only applies when "Expand Stacks by Default" is enabled.</em>
                 </blockquote>
             </dd>
         </dl>
 
-        <div class="title"><span class="left"><i class="fa fa-refresh icon"></i>_(Update Checking)_</span></div>
-
-        <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Auto Check for Updates)_:</dt>
-            <dd>
-                <input type="checkbox" name="AUTO_CHECK_UPDATES" id="AUTO_CHECK_UPDATES" class="compose-toggle" <?= $cfg['AUTO_CHECK_UPDATES'] == 'true' ? 'checked' : '' ?>>
-                <blockquote class="inline_help">
-                    Automatically check for container image updates when the Compose page loads.
-                </blockquote>
-            </dd>
-        </dl>
-
-        <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Auto Check Interval (days))_:</dt>
-            <dd>
-                <input type="number" name="AUTO_CHECK_UPDATES_DAYS" id="AUTO_CHECK_UPDATES_DAYS" min="0.04" max="30" step="0.01" value="<?= $cfg['AUTO_CHECK_UPDATES_DAYS'] ?? '1' ?>" style="width:80px;" <?= $cfg['AUTO_CHECK_UPDATES'] != 'true' ? 'disabled' : '' ?>>
-                <blockquote class="inline_help">
-                    How often to check for updates.<br>
-                    Examples: 0.04 (hourly), 1 (daily), 7 (weekly).
-                </blockquote>
-            </dd>
-        </dl>
-
-        <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Clear Update Cache)_:</dt>
-            <dd>
-                <input type="button" value="_(Clear Cache)_" onclick="clearUpdateCache()" class="orange-button">
-                <blockquote class="inline_help">
-                    Clear cached update status. Use if update checks show incorrect results.
-                </blockquote>
-            </dd>
-        </dl>
-
-        <div class="title"><span class="left"><i class="fa fa-wrench icon"></i>_(Advanced)_</span></div>
+        <div class="title"><span class="left"><i class="fa fa-sliders icon"></i>_(Advanced Options)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Performance tuning and troubleshooting options for advanced users.</p>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Debug Logging)_:</dt>
             <dd>
                 <input type="checkbox" name="DEBUG_TO_LOG" id="DEBUG_TO_LOG" class="compose-toggle" <?= $cfg['DEBUG_TO_LOG'] == 'true' ? 'checked' : '' ?>>
                 <blockquote class="inline_help">
-                    Log detailed compose command information to syslog. View logs in the Log tab.
+                    Log detailed compose command information to syslog. View logs in the Log tab.<br>
+                    Useful for troubleshooting and understanding what commands are being executed.
                 </blockquote>
             </dd>
         </dl>
@@ -2150,8 +2912,12 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                     <input type="number" name="COMPOSE_STATS_CUSTOM_INTERVAL_MS" id="COMPOSE_STATS_CUSTOM_INTERVAL_MS" min="100" max="10000" step="50" value="<?= intval($cfg['COMPOSE_STATS_CUSTOM_INTERVAL_MS'] ?? '1000') ?>" style="width:90px;"> _(ms)_
                 </label>
                 <blockquote class="inline_help">
-                    Controls how often Compose live metrics are published.<br>
-                    Live publishes each stream update, Medium uses ~2 seconds, Slow uses ~5 seconds, and Custom uses the interval in milliseconds.
+                    Controls how often Compose live metrics (CPU, memory, etc.) are updated on the UI.<br>
+                    Metrics are only collected for compose-managed containers, and only one update is
+                    published per interval regardless of container count.<br>
+                    <strong>Live:</strong> ~250ms updates (most responsive, still rate-limited).<br>
+                    <strong>Medium/Slow:</strong> Batches updates (~2s or ~5s intervals, lower CPU).<br>
+                    <strong>Custom:</strong> Use the interval in milliseconds.
                 </blockquote>
             </dd>
         </dl>
@@ -2170,115 +2936,25 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dl>
         <?php endif; ?>
 
-        <dl class="settings-actions">
-            <dd><input type="submit" name="#default" value="_(Default)_"><input type="submit" name="#apply" value="_(Apply)_" disabled><input type="button" value="_(Done)_" onclick="done()"></dd>
+        <dl class="settings-actions settings-actions-hidden">
+            <dd>
+                <input type="submit" id="settings-submit-default" name="#default" value="_(Default)_">
+                <input type="submit" id="settings-submit-apply" name="#apply" value="_(Apply)_">
+            </dd>
         </dl>
     </form>
 </div>
 
-<script>
-    (function() {
-        var cookieName = 'compose_manager_settings_return';
-
-        function getSafeReturnPath(existingPath) {
-            if (!document.referrer || document.referrer === window.location.href) {
-                return null;
-            }
-            try {
-                var ref = new URL(document.referrer, window.location.origin);
-                if (ref.origin !== window.location.origin) return null;
-                var p = ref.pathname.replace(/\/+$/, '');
-                if (p === '' || p === '/') return '/Settings';
-
-                var allowed = [
-                    '/Settings',
-                    '/Plugins',
-                    '/Docker',
-                    '/Compose',
-                    '/Dashboard',
-                    '/Favorites',
-                ];
-
-                for (var i = 0; i < allowed.length; i++) {
-                    var cfg = <?= json_encode($cfg); ?>;
-                    var showCompose = (cfg['SHOW_COMPOSE_IN_HEADER_MENU'] || '').toString().toLowerCase();
-                    if (existingPath && existingPath.toLowerCase() === '/docker' && showCompose === 'true') {
-                        composeLogger('Referrer is /Docker and showCompose is true, returning /Compose', null, 'user', 'warn', 'settings');
-                        return '/Compose' + (ref.search || '');
-                    } else if (existingPath && existingPath.toLowerCase() === '/compose' && showCompose === 'false') {
-                        composeLogger('Referrer is /Compose and showCompose is false, returning /Docker', null, 'user', 'warn', 'settings');
-                        return '/Docker' + (ref.search || '');
-                    }
-                    if (p.toLowerCase() === allowed[i].toLowerCase()) {
-                        composeLogger('Referrer matches allowed path ' + allowed[i], null, 'user', 'debug', 'settings');
-                        return ref.pathname + (ref.search || '');
-                    }
-                    if (allowed[i].toLowerCase().endsWith('/') && p.toLowerCase().startsWith(allowed[i].toLowerCase())) {
-                        composeLogger('Referrer matches allowed path prefix ' + allowed[i], null, 'user', 'debug', 'settings');
-                        return ref.pathname + (ref.search || '');
-                    }
-                }
-                composeLogger('Referrer path ' + ref.pathname + ' does not match any allowed paths', null, 'user', 'warn', 'settings');
-                return null;
-            } catch (e) {
-                composeLogger('Error parsing referrer URL: ' + e.message, null, 'user', 'error', 'settings');
-                return null;
-            }
-        }
-
-        var existingPath = $.cookie(cookieName);
-        var safePath = getSafeReturnPath(existingPath);
-        var returnPath;
-
-        if (safePath) {
-            returnPath = safePath;
-        } else if (existingPath) {
-            returnPath = existingPath;
-        } else {
-            returnPath = '/Settings';
-        }
-
-        $.cookie(cookieName, returnPath, {
-            path: '/'
-        });
-
-        var originalDone = window.done;
-        window.done = function(k) {
-            var saved = $.cookie(cookieName);
-            if (saved) {
-                $.removeCookie(cookieName, {
-                    path: '/'
-                });
-                if (saved !== '' && saved !== window.location.pathname) {
-                    location.replace(saved);
-                    return;
-                }
-            }
-            if (typeof originalDone === 'function') {
-                originalDone(k);
-            } else if (k) {
-                var url = location.pathname.split('/');
-                var path = '/' + url[1];
-                for (var i = 2; i < url.length; i++) {
-                    if (url[i] == k) break;
-                    path += '/' + url[i];
-                }
-                $.removeCookie('one');
-                location.replace(path);
-            } else {
-                $.removeCookie('one');
-                location.replace('/Settings');
-            }
-        };
-    })();
-</script>
-
 <!-- Updates Tab -->
 <div id="compose-tab-updates" class="compose-tab-content">
+    <blockquote class="inline_help" style="margin-bottom:20px;">
+        <strong>Updates Tab</strong> — Manage automatic stack updates and container image checking. Define global auto-update schedules and per-stack update policies. Changes save independently from Settings.
+    </blockquote>
 
     <!-- Auto-Update Settings Section -->
     <div class="backup-section">
-        <div class="title"><span class="left"><i class="fa fa-clock-o icon"></i>_(Auto-Update Settings)_</span></div>
+        <div class="title"><span class="left"><i class="fa fa-clock-o icon"></i>_(Global Auto-Update Settings)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Enable scheduled updates and set default schedules for all stacks.</p>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Enable Auto-Updates)_:</dt>
@@ -2318,7 +2994,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             <dt>&nbsp;</dt>
             <dd>
                 <div class="backup-actions">
-                    <input type="button" id="save-updates" value="_(Save Settings)_" class="orange-button">
+                    <input type="button" id="save-updates" value="_(Save Settings)_" class="orange-button settings-actions-hidden">
                     <input type="button" id="run-now" value="_(Update Now)_" title="_(Run auto-update now for all enabled stacks)_">
                     <i class="fa fa-spinner fa-spin spinner" id="updates-spinner"></i>
                 </div>
@@ -2327,9 +3003,68 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         </dl>
     </div>
 
+    <!-- Check for Updates Section -->
+    <div class="backup-section">
+        <div class="title"><span class="left"><i class="fa fa-search icon"></i>_(Check for Image Updates)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Configure how often to scan for available container image updates.</p>
+
+        <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Auto Check for Updates)_:</dt>
+            <dd>
+                <input type="checkbox" name="AUTO_CHECK_UPDATES" id="AUTO_CHECK_UPDATES" class="compose-toggle" <?= $cfg['AUTO_CHECK_UPDATES'] == 'true' ? 'checked' : '' ?>>
+                <blockquote class="inline_help">
+                    Automatically check for container image updates when the Compose page loads.
+                </blockquote>
+            </dd>
+        </dl>
+
+        <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Check Interval)_:</dt>
+            <dd>
+                <select id="AUTO_CHECK_UPDATES_MODE" style="width:180px;" <?= $cfg['AUTO_CHECK_UPDATES'] != 'true' ? 'disabled' : '' ?>>
+                    <option value="every_time">_(Every Time)_</option>
+                    <option value="hourly">_(Hourly)_</option>
+                    <option value="daily">_(Daily)_</option>
+                    <option value="weekly">_(Weekly)_</option>
+                    <option value="monthly">_(Monthly)_</option>
+                    <option value="custom">_(Custom)_</option>
+                </select>
+                <span id="AUTO_CHECK_UPDATES_CUSTOM_WRAPPER" style="margin-left:8px;display:none;">
+                    <input type="number" id="AUTO_CHECK_UPDATES_DAYS_CUSTOM" min="0" max="30" step="0.01" value="<?= $cfg['AUTO_CHECK_UPDATES_DAYS'] ?? '1' ?>" style="width:80px;" <?= $cfg['AUTO_CHECK_UPDATES'] != 'true' ? 'disabled' : '' ?>> _(days)_
+                </span>
+                <input type="hidden" name="AUTO_CHECK_UPDATES_DAYS" id="AUTO_CHECK_UPDATES_DAYS" value="<?= $cfg['AUTO_CHECK_UPDATES_DAYS'] ?? '1' ?>">
+                <blockquote class="inline_help">
+                    How often to check for updates. Only used if "Auto Check for Updates" is enabled.<br>
+                    Use presets for common intervals, or choose Custom to enter days manually.
+                </blockquote>
+            </dd>
+        </dl>
+
+        <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Clear Icon Cache)_:</dt>
+            <dd>
+                <input type="button" value="_(Clear Cache)_" onclick="clearAllIconCache()" class="orange-button">
+                <blockquote class="inline_help">
+                    Delete all locally cached icon files. Icons are re-downloaded and re-converted on next page load.
+                </blockquote>
+            </dd>
+        </dl>
+
+        <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Clear Update Cache)_:</dt>
+            <dd>
+                <input type="button" value="_(Clear Cache)_" onclick="clearUpdateCache()" class="orange-button">
+                <blockquote class="inline_help">
+                    Clear cached update status. Use if update checks show incorrect results.
+                </blockquote>
+            </dd>
+        </dl>
+    </div>
+
     <!-- Per-Stack Configuration Section -->
     <div class="backup-section">
-        <div class="title"><span class="left"><i class="fa fa-cubes icon"></i>_(Stack Configuration)_</span></div>
+        <div class="title"><span class="left"><i class="fa fa-cubes icon"></i>_(Per-Stack Auto-Update Settings)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Enable or disable auto-updates for individual stacks and set their specific schedules.</p>
 
         <dl>
             <dt>_(Stacks)_:</dt>
@@ -2357,10 +3092,14 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
 <!-- Backup / Restore Tab -->
 <div id="compose-tab-backup" class="compose-tab-content">
+    <blockquote class="inline_help" style="margin-bottom:20px;">
+        <strong>Backup Tab</strong> — Create, schedule, and restore backups of your Compose stack configurations and override files. Backups are independent from docker container data and volumes.
+    </blockquote>
 
     <!-- Backup Settings Section -->
     <div class="backup-section">
-        <div class="title"><span class="left"><i class="fa fa-download icon"></i>_(Backup Settings)_</span></div>
+        <div class="title"><span class="left"><i class="fa fa-download icon"></i>_(Backup Configuration)_</span></div>
+        <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Configure backup storage location, retention policy, and create scheduled backups.</p>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Backup Destination)_:</dt>
@@ -2430,7 +3169,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             <dt>&nbsp;</dt>
             <dd>
                 <div class="backup-actions">
-                    <input type="button" id="btn-save-backup-settings" value="_(Save Settings)_" onclick="saveBackupSettings()" class="orange-button">
+                    <input type="button" id="btn-save-backup-settings" value="_(Save Settings)_" onclick="saveBackupSettings()" class="orange-button settings-actions-hidden">
                     <input type="button" id="btn-create-backup" value="_(Backup Now)_" onclick="createBackupNow()">
                     <i class="fa fa-spinner fa-spin spinner"></i>
                 </div>
@@ -2496,8 +3235,21 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
 </div>
 
+<div id="global-settings-actions" class="compose-global-actions">
+    <div class="settings-actions-row">
+        <input type="button" id="global-settings-default" class="settings-action-btn" value="_(Default)_">
+        <input type="button" id="global-settings-apply" class="settings-action-btn" value="_(Apply)_" disabled>
+        <input type="button" id="global-settings-reset" class="settings-action-btn" value="_(Reset)_" disabled>
+        <span class="settings-actions-meta" id="global-settings-change-count">0 tabs changed | 0 settings changed</span>
+    </div>
+</div>
+
 <!-- Log Tab -->
 <div id="compose-tab-log" class="compose-tab-content">
+    <blockquote class="inline_help" style="margin-bottom:20px;">
+        <strong>Log Tab</strong> — View system log entries generated by Compose Manager. Enable "Debug Logging" in the Settings tab to capture detailed command information. Logs help troubleshoot issues and verify operations.
+    </blockquote>
+
     <div class="log-controls">
         <label>_(Lines)_:
             <select id="log-lines" onchange="loadLogs()">
@@ -2539,7 +3291,11 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
 <!-- Credits Tab -->
 <div id="compose-tab-credits" class="compose-tab-content">
-    <div class="title"><span class="left"><i class="fa fa-star icon"></i>_(Credits)_</span></div>
+    <blockquote class="inline_help" style="margin-bottom:20px;">
+        <strong>Credits Tab</strong> — View plugin version information, acknowledgments of upstream projects, included libraries, and contributors. Links to GitHub repositories and project homepages.
+    </blockquote>
+
+    <div class="title"><span class="left"><i class="fa fa-star icon"></i>_(About Compose Manager)_</span></div>
 
     <div class="credits-section" style="padding:16px 12px;border-bottom:1px solid var(--dynamix-sb-border-color, #ccc);">
         <span style="font-size:1.2em;font-weight:bold;">Plugin Version: <?= htmlspecialchars($pluginVersion) ?></span><br>

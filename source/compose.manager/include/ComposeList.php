@@ -7,8 +7,14 @@
 
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Defines.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Util.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/ColumnLayout.php");
 
 $cfg = parse_plugin_cfg($sName);
+
+// Resolve saved column order so rows render in the user's chosen order on first
+// paint. Hidden columns are still emitted (hide-col-* on the table controls
+// visibility); the client customizer's reapply() becomes a no-op on load.
+$stackColumnOrder = compose_stack_render_order(compose_read_column_layout());
 
 $mode = isset($_GET['mode']) ? trim((string)$_GET['mode']) : 'html';
 if ($mode === 'list') {
@@ -20,6 +26,145 @@ if ($mode === 'list') {
     exit;
 }
 
+/**
+ * Resolve first compose file found in a directory.
+ *
+ * @param string $path
+ * @return string|null
+ */
+if (!function_exists('composeRowFindComposeFile')) {
+    function composeRowFindComposeFile(string $path): ?string
+    {
+        foreach (COMPOSE_FILE_NAMES as $filename) {
+            $candidate = rtrim($path, '/') . '/' . $filename;
+            if (is_file($candidate)) {
+                return $candidate;
+            }
+        }
+        return null;
+    }
+}
+
+/**
+ * Read a metadata value from a stack directory.
+ *
+ * @param string $path
+ * @param string $name
+ * @return string|null
+ */
+if (!function_exists('composeRowReadMetadataValue')) {
+    function composeRowReadMetadataValue(string $path, string $name): ?string
+    {
+        $metadataPath = rtrim($path, '/') . '/' . $name;
+        if (!is_file($metadataPath)) {
+            return null;
+        }
+
+        $raw = @file_get_contents($metadataPath);
+        if ($raw === false) {
+            return null;
+        }
+
+        $value = trim($raw);
+        return ($value === '') ? null : $value;
+    }
+}
+
+/**
+ * Build a structured error payload for progressive row load failures.
+ *
+ * @param string $composeRoot
+ * @param string $project
+ * @param string $exceptionMessage
+ * @return array<string,mixed>
+ */
+if (!function_exists('composeRowBuildFailurePayload')) {
+    function composeRowBuildFailurePayload(string $composeRoot, string $project, string $exceptionMessage = ''): array
+    {
+        $projectPath = rtrim($composeRoot, '/') . '/' . $project;
+        $reason = 'project_load_failed';
+        $message = 'Project failed to load.';
+        $details = [];
+        $checkedComposePaths = [];
+        $missingMetadataFiles = [];
+
+        if ($project === '') {
+            $reason = 'project_not_specified';
+            $message = 'Project not specified.';
+        } elseif (!file_exists($projectPath)) {
+            $reason = 'project_not_found';
+            $message = 'Project folder does not exist.';
+            $details[] = "Missing project path: $projectPath";
+        } elseif (!is_dir($projectPath)) {
+            $reason = 'invalid_project_path';
+            $message = 'Project path is not a directory.';
+            $details[] = "Path is not a directory: $projectPath";
+        } else {
+            foreach (['name', 'description', 'indirect', 'indirect_mode'] as $metadataFile) {
+                if (!is_file($projectPath . '/' . $metadataFile)) {
+                    $missingMetadataFiles[] = $metadataFile;
+                }
+            }
+
+            $indirectPath = composeRowReadMetadataValue($projectPath, 'indirect');
+            $indirectMode = composeRowReadMetadataValue($projectPath, 'indirect_mode') ?? 'auto';
+
+            if ($indirectPath !== null) {
+                $details[] = "indirect metadata points to: $indirectPath";
+                $details[] = "indirect_mode metadata: $indirectMode";
+
+                if ($indirectMode === 'file' || is_file($indirectPath)) {
+                    $checkedComposePaths[] = $indirectPath;
+                    if (!is_file($indirectPath)) {
+                        $reason = 'missing_indirect_compose_file';
+                        $message = 'Indirect compose file is missing.';
+                        $details[] = "Missing indirect compose file: $indirectPath";
+                    }
+                } elseif (is_dir($indirectPath)) {
+                    foreach (COMPOSE_FILE_NAMES as $filename) {
+                        $checkedComposePaths[] = rtrim($indirectPath, '/') . '/' . $filename;
+                    }
+                    $composeFile = composeRowFindComposeFile($indirectPath);
+                    if ($composeFile === null) {
+                        $reason = 'missing_compose_file';
+                        $message = 'No compose file found in indirect source directory.';
+                        $details[] = "No compose file found under indirect path: $indirectPath";
+                    }
+                } else {
+                    $reason = 'missing_indirect_path';
+                    $message = 'Indirect source path does not exist.';
+                    $details[] = "Missing indirect source path: $indirectPath";
+                }
+            } else {
+                foreach (COMPOSE_FILE_NAMES as $filename) {
+                    $checkedComposePaths[] = rtrim($projectPath, '/') . '/' . $filename;
+                }
+                $composeFile = composeRowFindComposeFile($projectPath);
+                if ($composeFile === null) {
+                    $reason = 'missing_compose_file';
+                    $message = 'No compose file found in stack directory.';
+                    $details[] = "No compose file found under project path: $projectPath";
+                }
+            }
+        }
+
+        if ($exceptionMessage !== '') {
+            $details[] = "StackInfo error: $exceptionMessage";
+        }
+
+        return [
+            'result' => 'error',
+            'reason' => $reason,
+            'message' => $message,
+            'project' => $project,
+            'projectPath' => $projectPath,
+            'checkedComposePaths' => $checkedComposePaths,
+            'missingMetadataFiles' => $missingMetadataFiles,
+            'details' => $details,
+        ];
+    }
+}
+
 $o = "";
 $stackCount = 0;
 
@@ -27,13 +172,13 @@ $stackInfos = [];
 if ($mode === 'row') {
     $project = isset($_GET['project']) ? basename(trim((string)$_GET['project'])) : '';
     if ($project === '') {
-        echo json_encode(['result' => 'error', 'message' => 'Project not specified.']);
+        echo json_encode(composeRowBuildFailurePayload($compose_root, $project));
         exit;
     }
     try {
         $stackInfos = [StackInfo::fromProject($compose_root, $project)];
     } catch (\Throwable $e) {
-        echo json_encode(['result' => 'error', 'message' => 'Project not found.']);
+        echo json_encode(composeRowBuildFailurePayload($compose_root, $project, $e->getMessage()));
         exit;
     }
 } else {
@@ -206,11 +351,13 @@ foreach ($stackInfos as $stackInfo) {
     $o .= "</td>";
 
     // Icon column
-    $imgSrc = $projectIconUrl ?: '/plugins/dynamix.docker.manager/images/question.png';
+    $imgSrc = $projectIconUrl
+        ? compose_icon_browser_url($projectIconUrl)
+        : '/plugins/compose.manager/images/question.png';
     $o .= "<td class='col-icon'>";
     $o .= "<span class='outer $outerClass'>";
     $o .= "<span id='stack-$id' class='hand' data-stackid='$id' data-project='$projectHtml' data-projectname='$projectNameHtml' data-isup='$isup' data-running='" . ($isrunning ? '1' : '0') . "'>";
-    $o .= "<img src='$imgSrc' class='img' onerror=\"this.src='/plugins/dynamix.docker.manager/images/question.png';\">";
+    $o .= "<img src='$imgSrc' class='img' onerror=\"composeIconFallback(this)\">";
     $o .= "</span>";
     $o .= "</span>";
     $o .= "</td>";
@@ -229,59 +376,75 @@ foreach ($stackInfos as $stackInfo) {
         ], 'user', 'debug', 'stack-list');
         $o .= " <i class='fa fa-warning orange-text' title='External compose path is invalid or unavailable: $invalidIndirectPathHtml'></i>";
     }
-    $o .= "<div class='cm-advanced compose-text-muted' style='margin-top:4px;font-size:0.85em;'>";
+    $o .= "<div class='compose-text-muted' style='margin-top:4px;font-size:0.85em;'>";
     $o .= "Project: $projectHtml";
     $o .= "</div>";
     $o .= "</span>";
     $o .= "</td>";
 
+    // Toggleable columns are built into a keyed map and emitted below in the
+    // user's saved order, so rows render correctly on first paint.
+    $stackCells = [];
+
     // Update column (like Docker tab) - default to "not checked" until update check runs
-    $o .= "<td class='col-update compose-updatecolumn'>";
+    $updateCell = "<td class='col-update compose-updatecolumn'>";
     if ($isrunning) {
-        $o .= "<span class='grey-text' style='white-space:nowrap;cursor:default;' title='Click Check for Updates to check'><i class='fa fa-question-circle fa-fw'></i> not checked</span>";
+        $updateCell .= "<span class='grey-text' style='white-space:nowrap;cursor:default;' title='Click Check for Updates to check'><i class='fa fa-question-circle fa-fw'></i> not checked</span>";
     } else {
-        $o .= "<span class='grey-text' style='white-space:nowrap;'><i class='fa fa-stop fa-fw'></i> stopped</span>";
+        $updateCell .= "<span class='grey-text' style='white-space:nowrap;'><i class='fa fa-stop fa-fw'></i> stopped</span>";
     }
-    $o .= "</td>";
+    $updateCell .= "</td>";
+    $stackCells['update'] = $updateCell;
 
     // Containers column (shows running/total)
     $containersDisplay = $isrunning ? "$runningCount / $containerCount" : "0 / $containerCount";
     $containersClass = ($runningCount == $containerCount && $runningCount > 0) ? 'green-text' : ($runningCount > 0 ? 'orange-text' : 'grey-text');
-    $o .= "<td class='col-containers'><span class='$containersClass'>$containersDisplay</span></td>";
+    $stackCells['containers'] = "<td class='col-containers'><span class='$containersClass'>$containersDisplay</span></td>";
 
-    // Uptime column (both basic and advanced views)
+    // Uptime column (always visible)
     $uptimeDisplay = $stackUptime;
     $uptimeClass = $isrunning ? 'green-text' : 'grey-text';
-    $o .= "<td class='col-uptime'><span class='$uptimeClass'>$uptimeDisplay</span></td>";
+    $stackCells['uptime'] = "<td class='col-uptime'><span class='$uptimeClass'>$uptimeDisplay</span></td>";
 
     // Health column (updated from detailed inspect data by frontend; initial fallback here)
     $healthDisplay = $isrunning ? 'n/a' : 'stopped';
     $healthClass = $isrunning ? 'compose-text-muted' : 'grey-text';
-    $o .= "<td class='col-health'><span class='$healthClass'>$healthDisplay</span></td>";
+    $stackCells['health'] = "<td class='col-health'><span class='$healthClass'>$healthDisplay</span></td>";
 
-    // Metric columns (advanced only)
-    $o .= "<td class='cm-advanced col-cpu compose-load-cell'>";
-    $o .= "<span class='compose-stack-cpu-$id compose-text-muted'>-</span>";
-    $o .= "<div class='usage-disk mm'><span id='compose-stack-cpu-bar-$id' style='width:0'></span><span></span></div>";
-    $o .= "</td>";
+    // Metric columns (toggleable via column customizer)
+    $cpuCell = "<td class='col-cpu compose-load-cell'>";
+    $cpuCell .= "<span class='compose-stack-cpu-$id compose-text-muted'>-</span>";
+    $cpuCell .= "<div class='usage-disk mm'><span id='compose-stack-cpu-bar-$id' style='width:0'></span><span></span></div>";
+    $cpuCell .= "</td>";
+    $stackCells['cpu'] = $cpuCell;
 
-    $o .= "<td class='cm-advanced col-memory compose-load-cell'>";
-    $o .= "<span class='compose-stack-mem-$id compose-text-muted'>-</span>";
-    $o .= "<div class='usage-disk mm'><span id='compose-stack-mem-bar-$id' style='width:0'></span><span></span></div>";
-    $o .= "</td>";
+    $memCell = "<td class='col-memory compose-load-cell'>";
+    $memCell .= "<span class='compose-stack-mem-$id compose-text-muted'>-</span>";
+    $memCell .= "<div class='usage-disk mm'><span id='compose-stack-mem-bar-$id' style='width:0'></span><span></span></div>";
+    $memCell .= "</td>";
+    $stackCells['memory'] = $memCell;
 
-    $o .= "<td class='cm-advanced col-net_io'><span class='compose-stack-netio-$id compose-text-muted'>-</span></td>";
-    $o .= "<td class='cm-advanced col-block_io'><span class='compose-stack-blockio-$id compose-text-muted'>-</span></td>";
+    $stackCells['net_io'] = "<td class='col-net_io'><span class='compose-stack-netio-$id compose-text-muted'>-</span></td>";
+    $stackCells['block_io'] = "<td class='col-block_io'><span class='compose-stack-blockio-$id compose-text-muted'>-</span></td>";
 
-    // Description column (advanced only)
-    $o .= "<td class='cm-advanced col-description' style='overflow-wrap:break-word;word-wrap:break-word;'>";
+    // Description column (toggleable via column customizer)
+    $descriptionCell = "<td class='col-description' style='overflow-wrap:break-word;word-wrap:break-word;'>";
     if ($hasInvalidIndirect) {
-        $o .= "<div class='orange-text' style='margin-bottom:4px;font-size:0.85em;'><i class='fa fa-warning'></i> External compose path unavailable, using local stack path.</div>";
+        $descriptionCell .= "<div class='orange-text' style='margin-bottom:4px;font-size:0.85em;'><i class='fa fa-warning'></i> External compose path unavailable, using local stack path.</div>";
     }
-    $o .= "<span class='docker_readmore'>$descriptionHtml</span></td>";
+    $descriptionCell .= "<span class='docker_readmore'>$descriptionHtml</span></td>";
+    $stackCells['description'] = $descriptionCell;
 
-    // Path column (advanced only)
-    $o .= "<td class='cm-advanced col-path compose-text-muted' style='font-size:12px;'>$pathHtml</td>";
+    // Path column (toggleable via column customizer)
+    $stackCells['path'] = "<td class='col-path compose-text-muted' style='font-size:12px;'>$pathHtml</td>";
+
+    // Emit toggleable columns in the saved order (hidden columns still render;
+    // hide-col-* classes on the table control their visibility).
+    foreach ($stackColumnOrder as $stackCol) {
+        if (isset($stackCells[$stackCol])) {
+            $o .= $stackCells[$stackCol];
+        }
+    }
 
     // Auto Start toggle
     $o .= "<td class='nine col-autostart'>";

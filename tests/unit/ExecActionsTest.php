@@ -705,12 +705,11 @@ class ExecActionsTest extends TestCase
     // ===========================================
 
     /**
-     * Test deleteStack returns success response
-     * Note: Directory deletion uses shell 'rm -rf' command which we can't reliably test
+     * Test deleteStack returns success response and removes the stack folder
      */
     public function testDeleteStackReturnsSuccess(): void
     {
-        $this->createTestStack('test-stack');
+        $stackPath = $this->createTestStack('test-stack');
         
         $output = $this->executeAction('deleteStack', [
             'stackName' => 'test-stack',
@@ -719,6 +718,7 @@ class ExecActionsTest extends TestCase
         $result = json_decode($output, true);
         // Will be 'success' if no indirect file, or 'warning' if indirect exists
         $this->assertContains($result['result'], ['success', 'warning']);
+        $this->assertDirectoryDoesNotExist($stackPath);
     }
 
     /**
@@ -751,6 +751,21 @@ class ExecActionsTest extends TestCase
         $result = json_decode($output, true);
         $this->assertEquals('error', $result['result']);
         $this->assertStringContainsString('not specified', $result['message']);
+    }
+
+    /**
+     * Test deleteStack rejects traversal-like stack names
+     */
+    public function testDeleteStackRejectsTraversalName(): void
+    {
+        $output = $this->executeAction('deleteStack', [
+            'stackName' => '..',
+        ]);
+
+        $result = json_decode($output, true);
+        $this->assertEquals('error', $result['result']);
+        $this->assertStringContainsString('Failed to delete stack folder', $result['message']);
+        $this->assertStringContainsString('Invalid stack name', $result['message']);
     }
 
     // ===========================================

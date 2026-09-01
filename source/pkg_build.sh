@@ -1,6 +1,7 @@
 #!/bin/bash
 [ -z "$OUTPUT_FOLDER" ] && echo "Output Folder not set" && exit 1
 [ -z "$COMPOSE_VERSION" ] && echo "Compose Version not set" && exit 2
+[ -z "$RESVG_VERSION" ]  && echo "RESVG Version not set"   && exit 2
 [ -z "$PKG_VERSION" ] && echo "Package Version not set" && exit 5
 [ -z "$PKG_BUILD" ] && PKG_BUILD=$(date +%H%M)
 tmpdir=/tmp/tmp.$((RANDOM * 19318203981230 + 40))
@@ -72,17 +73,21 @@ download_with_sha_cache() {
   local artifact_url="$1"
   local checksum_url="$2"
   local artifact_name="$3"
+  local expected_sha="${4:-}"
   local checksum_name="${artifact_name}.sha256"
-  local expected_sha=""
   local cache_file=""
 
-  # Always refresh checksum so cache validation tracks upstream updates.
-  echo "Fetching checksum for $artifact_name..." | tee -a "$LOG_FILE"
-  download_file_quiet "$checksum_url" "$checksum_name" "$artifact_name checksum"
-  expected_sha="$(awk 'NF {print $1; exit}' "$checksum_name")"
   if [[ -z "$expected_sha" ]]; then
-    echo "Failed to parse SHA256 from $checksum_name" | tee -a "$LOG_FILE"
-    exit 7
+    # Always refresh checksum so cache validation tracks upstream updates.
+    echo "Fetching checksum for $artifact_name..." | tee -a "$LOG_FILE"
+    download_file_quiet "$checksum_url" "$checksum_name" "$artifact_name checksum"
+    expected_sha="$(awk 'NF {print $1; exit}' "$checksum_name")"
+    if [[ -z "$expected_sha" ]]; then
+      echo "Failed to parse SHA256 from $checksum_name" | tee -a "$LOG_FILE"
+      exit 7
+    fi
+  else
+    echo "Using pinned checksum for $artifact_name..." | tee -a "$LOG_FILE"
   fi
 
   cache_file="${DOWNLOAD_CACHE_DIR%/}/${artifact_name}"
@@ -128,10 +133,10 @@ wget_args() {
 echo "Installing unzip dependency..."
 INFOZIP_PKG="infozip-6.0-x86_64-8.txz"
 download_with_sha_cache \
-  "https://mirrors.slackware.com/slackware/slackware64-current/slackware64/a/${INFOZIP_PKG}" \
-  "https://mirrors.slackware.com/slackware/slackware64-current/slackware64/a/${INFOZIP_PKG}.sha256" \
-  "$INFOZIP_PKG"
-run_quiet rm -f "${INFOZIP_PKG}.sha256"
+  "https://slackware.osuosl.org/slackware64-current/slackware64/a/${INFOZIP_PKG}" \
+  "" \
+  "$INFOZIP_PKG" \
+  "2df6d72a3662be939fb533564b1b1e6d4fedd1e2cbddaa8d39627509a397d4d3"
 run_quiet upgradepkg --install-new "${INFOZIP_PKG}"
 
 echo "Creating temporary package structure at $tmpdir..."
@@ -162,6 +167,20 @@ run_quiet mkdir -p "$tmpdir/usr/lib/docker/cli-plugins/"
 run_quiet cp docker-compose-linux-x86_64 "$tmpdir/usr/lib/docker/cli-plugins/docker-compose"
 run_quiet chmod -R +x "$tmpdir/usr/lib/docker/cli-plugins/"
 run_quiet rm docker-compose-linux-x86_64
+
+echo "Downloading resvg v${RESVG_VERSION}..."
+download_with_sha_cache \
+  "https://github.com/linebender/resvg/releases/download/v${RESVG_VERSION}/resvg-linux-x86_64.tar.gz" \
+  "" \
+  "resvg-linux-x86_64.tar.gz" \
+  "${RESVG_SHA256:-}"
+
+echo "Installing resvg v${RESVG_VERSION}..."
+run_quiet mkdir -p "$tmpdir/usr/local/emhttp/plugins/compose.manager/bin/"
+tar -xzf resvg-linux-x86_64.tar.gz resvg
+run_quiet cp resvg "$tmpdir/usr/local/emhttp/plugins/compose.manager/bin/resvg"
+run_quiet chmod +x "$tmpdir/usr/local/emhttp/plugins/compose.manager/bin/resvg"
+run_quiet rm resvg resvg-linux-x86_64.tar.gz
 
 
 echo "Creating package description (slack-desc)..."
@@ -199,6 +218,7 @@ MD5=$(md5sum "$OUTPUT_FOLDER/compose.manager-${version}-noarch-${build}.txz")
 {
   echo "MD5: $MD5"
   echo "Compose v${COMPOSE_VERSION}"
+  echo "resvg v${RESVG_VERSION}"
   echo ""
   echo "MD5: $(echo "$MD5" | head -n1 | awk '{print $1;}')"
 } >> "$OUTPUT_FOLDER/release_info"

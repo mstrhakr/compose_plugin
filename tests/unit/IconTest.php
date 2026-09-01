@@ -1,368 +1,142 @@
 <?php
 
-/**
- * Unit Tests for icon.php (REAL SOURCE)
- * 
- * Tests the icon serving endpoint: source/compose.manager/include/Icon.php
- * This file serves project icons via GET requests.
- */
-
 declare(strict_types=1);
 
 namespace ComposeManager\Tests;
 
-use PluginTests\TestCase;
 use PluginTests\Mocks\FunctionMocks;
+use PluginTests\TestCase;
 
 class IconTest extends TestCase
 {
     private string $testComposeRoot;
-    private string $testProjectPath;
+    private string $projectName = 'icon-test-stack';
+    private string $projectPath;
 
     protected function setUp(): void
     {
         parent::setUp();
-        
-        // Create test compose root
+
         $this->testComposeRoot = sys_get_temp_dir() . '/compose_icon_test_' . getmypid();
-        if (!is_dir($this->testComposeRoot)) {
-            mkdir($this->testComposeRoot, 0755, true);
+        $this->projectPath = $this->testComposeRoot . '/' . $this->projectName;
+
+        if (!is_dir($this->projectPath)) {
+            mkdir($this->projectPath, 0755, true);
         }
-        
-        // Create a test project
-        $this->testProjectPath = $this->testComposeRoot . '/test-project';
-        mkdir($this->testProjectPath, 0755, true);
-        
-        // Set up the compose root for getComposeRoot()
+
         FunctionMocks::setPluginConfig('compose.manager', [
             'PROJECTS_FOLDER' => $this->testComposeRoot,
         ]);
-        
-        // Clear GET params
+
         $_GET = [];
+        $_SERVER['DOCUMENT_ROOT'] = '/usr/local/emhttp';
+        if (function_exists('header_remove')) {
+            header_remove();
+        }
     }
 
     protected function tearDown(): void
     {
-        // Clean up test directories
         if (is_dir($this->testComposeRoot)) {
             $this->recursiveDelete($this->testComposeRoot);
         }
         $_GET = [];
-        
+        if (function_exists('header_remove')) {
+            header_remove();
+        }
         parent::tearDown();
     }
 
     private function recursiveDelete(string $dir): void
     {
-        if (is_dir($dir)) {
-            $objects = scandir($dir);
-            foreach ($objects as $object) {
-                if ($object != "." && $object != "..") {
-                    if (is_dir($dir . "/" . $object)) {
-                        $this->recursiveDelete($dir . "/" . $object);
-                    } else {
-                        unlink($dir . "/" . $object);
-                    }
-                }
+        foreach ((array)scandir($dir) as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
             }
-            rmdir($dir);
+            $path = $dir . '/' . $entry;
+            if (is_dir($path)) {
+                $this->recursiveDelete($path);
+            } else {
+                unlink($path);
+            }
         }
+        rmdir($dir);
     }
 
-    /**
-     * Create minimal PNG content
-     */
-    private function createFakePng(): string
+    private function runEndpoint(string $project): array
     {
-        return "\x89PNG\r\n\x1a\n" . str_repeat("\x00", 100);
-    }
-
-    /**
-     * Create minimal JPG content
-     */
-    private function createFakeJpg(): string
-    {
-        return "\xFF\xD8\xFF\xE0" . str_repeat("\x00", 100);
-    }
-
-    /**
-     * Create minimal GIF content
-     */
-    private function createFakeGif(): string
-    {
-        return "GIF89a" . str_repeat("\x00", 100);
-    }
-
-    /**
-     * Execute icon.php with specific GET params and capture output
-     */
-    private function executeIconPhp(array $getParams = []): array
-    {
-        $_GET = $getParams;
+        $_GET = ['project' => $project];
         $_SERVER['DOCUMENT_ROOT'] = '/usr/local/emhttp';
-        
-        // We need to use include (not require_once) to re-execute
-        ob_start();
-        $httpCode = 200;
-        
-        // Mock http_response_code
-        $originalHeaders = [];
-        
-        try {
-            include '/usr/local/emhttp/plugins/compose.manager/include/Icon.php';
-        } catch (\Throwable $e) {
-            // Icon.php uses exit(), catch any issues
+
+        if (function_exists('header_remove')) {
+            header_remove();
         }
-        
-        $output = ob_get_clean();
-        
+
+        ob_start();
+        include '/usr/local/emhttp/plugins/compose.manager/include/Icon.php';
+        $output = (string)ob_get_clean();
+
+        $headers = function_exists('xdebug_get_headers') ? xdebug_get_headers() : headers_list();
+
         return [
             'output' => $output,
-            'length' => strlen($output),
+            'headers' => $headers,
         ];
     }
 
-    // ===========================================
-    // Icon Discovery Tests (test file detection logic)
-    // ===========================================
-
-    /**
-     * Test that PNG icon files are properly detected by extension
-     */
-    public function testPngIconExtensionDetection(): void
+    private function hasHeader(array $headers, string $needle): bool
     {
-        $iconPath = $this->testProjectPath . '/icon.png';
-        file_put_contents($iconPath, $this->createFakePng());
-        
-        $ext = strtolower(pathinfo($iconPath, PATHINFO_EXTENSION));
-        $this->assertEquals('png', $ext);
-        
-        // Test mime type mapping
-        $mimeType = match($ext) {
-            'jpg', 'jpeg' => 'image/jpeg',
-            'gif' => 'image/gif',
-            'svg' => 'image/svg+xml',
-            default => 'image/png',
-        };
-        $this->assertEquals('image/png', $mimeType);
-    }
-
-    /**
-     * Test that JPG icon files are properly detected by extension
-     */
-    public function testJpgIconExtensionDetection(): void
-    {
-        $iconPath = $this->testProjectPath . '/icon.jpg';
-        file_put_contents($iconPath, $this->createFakeJpg());
-        
-        $ext = strtolower(pathinfo($iconPath, PATHINFO_EXTENSION));
-        $this->assertEquals('jpg', $ext);
-        
-        $mimeType = match($ext) {
-            'jpg', 'jpeg' => 'image/jpeg',
-            'gif' => 'image/gif',
-            'svg' => 'image/svg+xml',
-            default => 'image/png',
-        };
-        $this->assertEquals('image/jpeg', $mimeType);
-    }
-
-    /**
-     * Test that GIF icon files are properly detected by extension
-     */
-    public function testGifIconExtensionDetection(): void
-    {
-        $iconPath = $this->testProjectPath . '/icon.gif';
-        file_put_contents($iconPath, $this->createFakeGif());
-        
-        $ext = strtolower(pathinfo($iconPath, PATHINFO_EXTENSION));
-        $this->assertEquals('gif', $ext);
-        
-        $mimeType = match($ext) {
-            'jpg', 'jpeg' => 'image/jpeg',
-            'gif' => 'image/gif',
-            'svg' => 'image/svg+xml',
-            default => 'image/png',
-        };
-        $this->assertEquals('image/gif', $mimeType);
-    }
-
-    /**
-     * Test that SVG icon files are properly detected by extension
-     */
-    public function testSvgIconExtensionDetection(): void
-    {
-        $iconPath = $this->testProjectPath . '/icon.svg';
-        file_put_contents($iconPath, '<svg xmlns="http://www.w3.org/2000/svg"></svg>');
-        
-        $ext = strtolower(pathinfo($iconPath, PATHINFO_EXTENSION));
-        $this->assertEquals('svg', $ext);
-        
-        $mimeType = match($ext) {
-            'jpg', 'jpeg' => 'image/jpeg',
-            'gif' => 'image/gif',
-            'svg' => 'image/svg+xml',
-            default => 'image/png',
-        };
-        $this->assertEquals('image/svg+xml', $mimeType);
-    }
-
-    /**
-     * Test JPEG extension (alternate spelling)
-     */
-    public function testJpegIconExtensionDetection(): void
-    {
-        $iconPath = $this->testProjectPath . '/icon.jpeg';
-        file_put_contents($iconPath, $this->createFakeJpg());
-        
-        $ext = strtolower(pathinfo($iconPath, PATHINFO_EXTENSION));
-        $this->assertEquals('jpeg', $ext);
-        
-        $mimeType = match($ext) {
-            'jpg', 'jpeg' => 'image/jpeg',
-            'gif' => 'image/gif',
-            'svg' => 'image/svg+xml',
-            default => 'image/png',
-        };
-        $this->assertEquals('image/jpeg', $mimeType);
-    }
-
-    // ===========================================
-    // Icon File Search Priority Tests
-    // ===========================================
-
-    /**
-     * Test icon file search order (PNG should be found first)
-     */
-    public function testIconSearchPriorityPngFirst(): void
-    {
-        // icon.php searches in this order: png, jpg, gif, svg, icon
-        $iconFiles = ['icon.png', 'icon.jpg', 'icon.gif', 'icon.svg', 'icon'];
-        
-        // Create all icon files
-        file_put_contents($this->testProjectPath . '/icon.png', $this->createFakePng());
-        file_put_contents($this->testProjectPath . '/icon.jpg', $this->createFakeJpg());
-        
-        // Search for first match
-        $foundIcon = null;
-        foreach ($iconFiles as $iconFile) {
-            $testPath = $this->testProjectPath . '/' . $iconFile;
-            if (is_file($testPath)) {
-                $foundIcon = $testPath;
-                break;
+        foreach ($headers as $header) {
+            if (stripos((string)$header, $needle) !== false) {
+                return true;
             }
         }
-        
-        $this->assertNotNull($foundIcon);
-        $this->assertStringEndsWith('icon.png', $foundIcon);
+        return false;
     }
 
-    /**
-     * Test icon file search falls back to JPG when PNG missing
-     */
-    public function testIconSearchFallbackToJpg(): void
+    public function testEndpointServesPngIconBytes(): void
     {
-        $iconFiles = ['icon.png', 'icon.jpg', 'icon.gif', 'icon.svg', 'icon'];
-        
-        // Create only JPG
-        file_put_contents($this->testProjectPath . '/icon.jpg', $this->createFakeJpg());
-        
-        $foundIcon = null;
-        foreach ($iconFiles as $iconFile) {
-            $testPath = $this->testProjectPath . '/' . $iconFile;
-            if (is_file($testPath)) {
-                $foundIcon = $testPath;
-                break;
-            }
-        }
-        
-        $this->assertNotNull($foundIcon);
-        $this->assertStringEndsWith('icon.jpg', $foundIcon);
+        $png = "\x89PNG\r\n\x1a\n" . str_repeat("\x00", 64);
+        file_put_contents($this->projectPath . '/icon.png', $png);
+
+        $result = $this->runEndpoint($this->projectName);
+
+        $this->assertSame($png, $result['output']);
+        $this->assertTrue($this->hasHeader($result['headers'], 'Content-Type: image/png'));
     }
 
-    /**
-     * Test icon file search returns null when no icon exists
-     */
-    public function testIconSearchReturnsNullWhenNoIcon(): void
+    public function testEndpointServesJpgMimeType(): void
     {
-        $iconFiles = ['icon.png', 'icon.jpg', 'icon.gif', 'icon.svg', 'icon'];
-        
-        // Don't create any icon files
-        
-        $foundIcon = null;
-        foreach ($iconFiles as $iconFile) {
-            $testPath = $this->testProjectPath . '/' . $iconFile;
-            if (is_file($testPath)) {
-                $foundIcon = $testPath;
-                break;
-            }
-        }
-        
-        $this->assertNull($foundIcon);
+        $jpg = "\xFF\xD8\xFF\xE0" . str_repeat("\x00", 64);
+        file_put_contents($this->projectPath . '/icon.jpg', $jpg);
+
+        $result = $this->runEndpoint($this->projectName);
+
+        $this->assertSame($jpg, $result['output']);
+        $this->assertTrue($this->hasHeader($result['headers'], 'Content-Type: image/jpeg'));
     }
 
-    // ===========================================
-    // Project Name Sanitization Tests
-    // ===========================================
-
-    /**
-     * Test basename() sanitizes path traversal attempts
-     */
-    public function testProjectNameSanitizesPathTraversal(): void
+    public function testEndpointPrefersIconPngOverOtherIconFiles(): void
     {
-        $maliciousProject = '../../../etc/passwd';
-        $sanitized = basename($maliciousProject);
-        
-        $this->assertEquals('passwd', $sanitized);
-        $this->assertStringNotContainsString('..', $sanitized);
+        $png = "\x89PNG\r\n\x1a\n" . str_repeat("\x11", 32);
+        $jpg = "\xFF\xD8\xFF\xE0" . str_repeat("\x22", 32);
+
+        file_put_contents($this->projectPath . '/icon.jpg', $jpg);
+        file_put_contents($this->projectPath . '/icon.png', $png);
+
+        $result = $this->runEndpoint($this->projectName);
+
+        $this->assertSame($png, $result['output']);
     }
 
-    /**
-     * Test basename() handles project with slashes
-     */
-    public function testProjectNameSanitizesSlashes(): void
+    public function testEndpointSupportsBareIconFilename(): void
     {
-        $project = 'some/nested/project';
-        $sanitized = basename($project);
-        
-        $this->assertEquals('project', $sanitized);
-    }
+        $bytes = "GIF89a" . str_repeat("\x01", 32);
+        file_put_contents($this->projectPath . '/icon', $bytes);
 
-    /**
-     * Test empty project name
-     */
-    public function testEmptyProjectNameHandled(): void
-    {
-        $project = '';
-        
-        // icon.php checks for empty project and returns 404
-        $this->assertTrue(empty($project));
-    }
+        $result = $this->runEndpoint($this->projectName);
 
-    // ===========================================
-    // Directory Validation Tests
-    // ===========================================
-
-    /**
-     * Test project directory must exist
-     */
-    public function testProjectDirectoryMustExist(): void
-    {
-        $nonExistentPath = $this->testComposeRoot . '/nonexistent-project';
-        
-        $this->assertFalse(is_dir($nonExistentPath));
-    }
-
-    /**
-     * Test project path construction
-     */
-    public function testProjectPathConstruction(): void
-    {
-        $project = 'test-project';
-        $projectPath = $this->testComposeRoot . '/' . $project;
-        
-        $this->assertEquals($this->testProjectPath, $projectPath);
-        $this->assertTrue(is_dir($projectPath));
+        $this->assertSame($bytes, $result['output']);
+        $this->assertTrue($this->hasHeader($result['headers'], 'Content-Type: image/png'));
     }
 }

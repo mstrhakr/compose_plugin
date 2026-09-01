@@ -30,6 +30,36 @@ php vendor/bin/phpunit --coverage-html tests/coverage/html
 docker run --rm -v "${PWD}:/code" -w /code bats/bats:latest tests/unit/*.bats
 ```
 
+### Running Playwright E2E (Live Server, Read-Only)
+
+The E2E suite is intentionally designed for non-destructive smoke checks against a real Unraid server.
+
+```bash
+cd tests/e2e
+npm install
+npx playwright install chromium firefox
+```
+
+Create or refresh auth state:
+
+```bash
+cd tests/e2e
+E2E_BASE_URL="https://your-unraid-host" npx playwright codegen "$E2E_BASE_URL" --save-storage=.auth/storage-state.json
+```
+
+Run the suite:
+
+```bash
+cd tests/e2e
+E2E_BASE_URL="https://your-unraid-host" \
+E2E_STORAGE_STATE=".auth/storage-state.json" \
+E2E_COMPOSE_PATH="/Docker/Compose" \
+E2E_IGNORE_HTTPS_ERRORS="1" \
+npm test
+```
+
+See `tests/e2e/README.md` for details and safety guardrails.
+
 ## VS Code Integration
 
 The workspace is configured with PHPUnit Test Explorer. After opening the project:
@@ -41,7 +71,7 @@ The workspace is configured with PHPUnit Test Explorer. After opening the projec
 
 ## Test Structure
 
-```
+```text
 tests/
 ├── framework/          # Submodule: plugin-tests framework
 │   └── src/

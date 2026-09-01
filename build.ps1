@@ -31,7 +31,9 @@ param(
     [string]$Version,
     [switch]$Dev,
     [switch]$SkipTests,
-    [string]$ComposeVersion
+    [string]$ComposeVersion,
+    [string]$ResvgVersion,
+    [string]$ResvgSha256
 )
 
 $ErrorActionPreference = "Stop"
@@ -56,9 +58,12 @@ $versionsFile = Join-Path $ScriptDir "versions.env"
 if (Test-Path $versionsFile) {
     Get-Content $versionsFile | ForEach-Object {
         if ($_ -match '^COMPOSE_VERSION=(.+)$' -and -not $ComposeVersion) { $ComposeVersion = $Matches[1].Trim() }
+        if ($_ -match '^RESVG_VERSION=(.+)$'   -and -not $ResvgVersion)   { $ResvgVersion   = $Matches[1].Trim() }
+        if ($_ -match '^RESVG_SHA256=(.+)$'    -and -not $ResvgSha256)    { $ResvgSha256    = $Matches[1].Trim() }
     }
 }
 if (-not $ComposeVersion) { $ComposeVersion = "5.1.2" }
+if (-not $ResvgVersion)   { $ResvgVersion   = "0.48.1" }
 
 # Generate dev version with timestamp if -Dev flag is used
 if ($Dev) {
@@ -154,6 +159,8 @@ $dockerArgs = @(
     "-v", "${HostCACert}:${ContainerCACert}:ro"
     "-e", "TZ=America/New_York"
     "-e", "COMPOSE_VERSION=$ComposeVersion"
+    "-e", "RESVG_VERSION=$ResvgVersion"
+    "-e", "RESVG_SHA256=$ResvgSha256"
     "-e", "OUTPUT_FOLDER=/mnt/output"
     "-e", "PKG_VERSION=$Version"
     "-e", "PKG_BUILD=$BuildNum"

@@ -80,7 +80,7 @@ jobs:
 
           if [[ "$CURRENT_URL_BRANCH" != "$BRANCH" ]]; then
             echo "Branch mismatch - fixing pluginURL..."
-            sed -i -E "s#^<!ENTITY pluginURL \"https://raw.githubusercontent.com/&github;/[^/]*/&name;\\.plg\">#<!ENTITY pluginURL \"https://raw.githubusercontent.com/&github;/${BRANCH}/&name;.plg\">#" "$PLG_FILE"
+            sed -i -E "s#^<!ENTITY pluginURL \"https://raw.githubusercontent.com/&github;/[^/]*/&name;\\.plg\">#<!ENTITY pluginURL \"https://raw.githubusercontent.com/\\&github;/${BRANCH}/\\&name;.plg\">#" "$PLG_FILE"
 
             EXPECTED_LINE="<!ENTITY pluginURL \"https://raw.githubusercontent.com/&github;/${BRANCH}/&name;.plg\">"
             if ! grep -Fxq "$EXPECTED_LINE" "$PLG_FILE"; then
