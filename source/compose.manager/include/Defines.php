@@ -28,6 +28,10 @@ defined('COMPOSE_TTYD_SOCKET_DIR')    || define('COMPOSE_TTYD_SOCKET_DIR',    '/
 defined('COMPOSE_ICON_NORMALIZE_DIR') || define('COMPOSE_ICON_NORMALIZE_DIR', '/var/tmp/compose-icon-normalize');
 defined('COMPOSE_ICON_CACHE_DIR')     || define('COMPOSE_ICON_CACHE_DIR',     '/boot/config/plugins/compose.manager/icon-cache');
 defined('COMPOSE_RESVG_BIN')          || define('COMPOSE_RESVG_BIN',          '/usr/local/emhttp/plugins/compose.manager/bin/resvg');
+defined('COMPOSE_DM_ICON_RAM_DIR')     || define('COMPOSE_DM_ICON_RAM_DIR',     '/usr/local/emhttp/state/plugins/dynamix.docker.manager/images');
+defined('COMPOSE_DM_ICON_PERSIST_DIR') || define('COMPOSE_DM_ICON_PERSIST_DIR', '/var/lib/docker/unraid/images');
+defined('COMPOSE_DM_WEBUI_INFO_FILE')  || define('COMPOSE_DM_WEBUI_INFO_FILE',  '/usr/local/emhttp/state/plugins/dynamix.docker.manager/docker.json');
+defined('COMPOSE_DOCKER_LABEL_ICON')   || define('COMPOSE_DOCKER_LABEL_ICON',   'net.unraid.docker.icon');
 
 /**
  * Reserved filename at the compose root level used by the plugin installer

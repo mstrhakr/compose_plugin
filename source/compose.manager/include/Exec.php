@@ -1523,6 +1523,13 @@ switch ($_POST['action']) {
                         $rawContainer['Icon'] = $labels[$docker_label_icon] ?? '';
                         $rawContainer['Shell'] = $labels[$docker_label_shell] ?? '/bin/bash';
 
+                        if ($ctName !== '' && trim((string) $rawContainer['Icon']) !== '') {
+                            compose_seed_docker_manager_icon(
+                                compose_fetch_icon_to_cache((string) $rawContainer['Icon']),
+                                $ctName
+                            );
+                        }
+
                         // Resolve WebUI URL server-side (matching Unraid's DockerClient logic)
                         $networkMode = $inspect['HostConfig']['NetworkMode'] ?? 'bridge';
                         if (strpos($networkMode, ':') !== false) {
