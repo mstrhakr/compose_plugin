@@ -103,7 +103,9 @@
 - Bug Fixes (menu): centralize header menu visibility condition
 - Bug Fixes (compose-pull): refactor ComposePullConfirmed function to use options object for parameters
 - Bug Fixes (sync-plugin-url): correct escaping in sed command for pluginURL update
-- Refactoring (build): reorganize cache path definitions in build scripts refactor(Exec): remove null coalescing for project name and directory refactor(pkg_build): enhance checksum handling in download function
+- Refactoring (build): reorganize cache path definitions in build scripts
+- Refactoring (Exec): remove null coalescing for project name and directory
+- Refactoring (pkg_build): enhance checksum handling in download function
 - Refactoring (add-stack): section-based layout with editor vocabulary
 - Refactoring (editor): split per-stack Advanced section into three subsections
 - Refactoring (settings): move REMOVE_ORPHANS_DEFAULT to global settings page
