@@ -104,6 +104,16 @@ foreach ($data as $path => $entry) {
         // because docker compose requires lowercase alphanumeric project names.
         $stackInfo = StackInfo::fromComposePath($compose_root, $path);
         if ($stackInfo !== null) {
+            if (!$stackInfo->hasResolvedIdentity()) {
+                composeLogger(
+                    "Skipped scheduled auto-update for '{$stackInfo->projectFolder}': compose project identity is unresolved",
+                    ['identity' => $stackInfo->identity->toArray()],
+                    'daemon',
+                    'warning',
+                    'identity'
+                );
+                continue;
+            }
             $projectName = $stackInfo->projectName;
         } else {
             $projectName = StackInfo::sanitizeProjectString(basename($path));

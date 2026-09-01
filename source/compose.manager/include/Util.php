@@ -1,6 +1,7 @@
 <?php
 
 require_once(__DIR__ . '/ProjectNameSanitizer.php');
+require_once(__DIR__ . '/ProjectIdentity.php');
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Defines.php");
 require_once("/usr/local/emhttp/plugins/dynamix/include/Wrappers.php");
 
@@ -2077,6 +2078,8 @@ class StackInfo
     public string $projectFolder;
     /** @var string Sanitized Docker Compose project name (always lowercase, valid for -p flag) */
     public string $projectName;
+    /** @var ProjectIdentity Resolved (and pinned) runtime project identity */
+    public ProjectIdentity $identity;
     /** @var string Display name (from ./name) */
     public string $displayName;
     /** @var string Full path to the stack directory ($composeRoot/$project) */
@@ -2152,6 +2155,12 @@ class StackInfo
 
         // Resolve display name from metadata (or default to folder name).
         $this->displayName = $this->getDisplayName();
+
+        // Stacks imported from the original compose plugin may still run under a
+        // `name`-derived project identity; resolve (and pin) it before anything
+        // builds a `docker compose -p` argument from $this->projectName.
+        $this->identity = ProjectIdentity::resolve($this->path, $this->projectFolder, $this->displayName);
+        $this->projectName = $this->identity->projectName;
 
         // Resolve indirect path and compose source (indirect if present, else direct)
         $this->isIndirect = $this->isIndirect();
@@ -2421,6 +2430,39 @@ class StackInfo
     public function getName(): string
     {
         return $this->displayName;
+    }
+
+    /**
+     * Whether the effective `docker compose -p` identity has been proven.
+     *
+     * Returns false for imported stacks whose runtime project name is still
+     * ambiguous. Callers that mutate Docker state must refuse to run.
+     */
+    public function hasResolvedIdentity(): bool
+    {
+        return $this->identity->resolved;
+    }
+
+    /**
+     * Reason the stack is blocked from mutating actions, or null when it is not.
+     */
+    public function getIdentityBlockReason(): ?string
+    {
+        return $this->identity->resolved ? null : $this->identity->getMessage();
+    }
+
+    /**
+     * Pin an owner-selected runtime project identity.
+     *
+     * @param string $projectName One of the identity's candidates
+     * @throws \RuntimeException When the choice is not a candidate
+     */
+    public function applyIdentityChoice(string $projectName): void
+    {
+        $this->identity->chooseIdentity($this->path, $projectName);
+        $this->projectName = $this->identity->projectName;
+        $this->cachedContainerList = null;
+        $this->cachedContainerCounts = null;
     }
 
     /**
@@ -3646,6 +3688,13 @@ class StackInfo
 
         // Write metadata
         file_put_contents("$path/name", $projectName);
+        // Pin the runtime identity up front. Without this a collision-suffixed
+        // folder (my-stack-001) would look like a legacy stack whose display
+        // name resolves to an existing project (my-stack) and could adopt it.
+        file_put_contents(
+            $path . '/' . ProjectIdentity::METADATA_FILE,
+            self::sanitizeProjectString(basename($path))
+        );
         if ($description !== '') {
             file_put_contents("$path/description", $description);
         }

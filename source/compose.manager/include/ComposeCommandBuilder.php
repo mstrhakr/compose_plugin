@@ -24,6 +24,7 @@ class ComposeCommandBuilder
     {
         $action = strtolower(trim($action));
         self::assertSupportedAction($action);
+        self::assertResolvedIdentity($stackInfo, $action);
 
         $args = $stackInfo->buildComposeArgs();
 
@@ -84,5 +85,21 @@ class ComposeCommandBuilder
         if (!in_array($action, $allowed, true)) {
             throw new \InvalidArgumentException('Unsupported compose action: ' . $action);
         }
+    }
+
+    /**
+     * Refuse to build mutating arguments for a stack whose runtime project
+     * identity could not be proven (see {@see ProjectIdentity}).
+     */
+    private static function assertResolvedIdentity(StackInfo $stackInfo, string $action): void
+    {
+        if ($action === 'logs' || $stackInfo->hasResolvedIdentity()) {
+            return;
+        }
+
+        throw new \RuntimeException(
+            "Compose project identity for '{$stackInfo->projectFolder}' is unresolved: "
+            . (string) $stackInfo->getIdentityBlockReason()
+        );
     }
 }
