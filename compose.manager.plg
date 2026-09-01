@@ -2,15 +2,15 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "compose.manager">
 <!ENTITY author "mstrhakr">
-<!ENTITY version     "2026.08.31.1552">
+<!ENTITY version     "2026.08.31">
 <!ENTITY launch "Settings/&name;.settings">
 <!ENTITY packageVER "&version;">
-<!ENTITY packageMD5  "19f6203e4025b11daeb9d8951526ded2">
-<!ENTITY pkgBUILD    "1552">
+<!ENTITY packageMD5  "c0154198766fba55fb422b88db6382f6">
+<!ENTITY pkgBUILD    "2148">
 <!ENTITY packageName "&name;-&packageVER;-noarch-&pkgBUILD;">
 <!ENTITY packagefile "&packageName;.txz">
 <!ENTITY github "mstrhakr/compose_plugin">
-<!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/dev/&name;.plg">
+<!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/main/&name;.plg">
 <!ENTITY packageURL "https://github.com/&github;/releases/download/v&version;/&packagefile;">
 <!ENTITY pluginsPATH "/boot/config/plugins">
 <!ENTITY pluginLOC "&pluginsPATH;/&name;">
@@ -36,10 +36,98 @@
 >
 
 <CHANGES>
-###2026.08.31.1552
+###2026.08.31
+- Features (icon): cache and normalize icons, seed Docker Manager cache (#141)
+- Features (icon): add debug logging for icon cache operations (#141)
+- Features (icon): bundle resvg for SVG → PNG conversion, add GD to CI (#141)
+- Features (tests): add GD extension to PHP setup in workflow
+- Features (icon): seed Docker Manager cache during container icon resolution (#141)
+- Features (icon): add fetch, convert, and DM-seed helpers (#141)
+- Features (icon): add plugin icon cache path helper (#141)
+- Features (settings): enhance effective command display with improved styling and structure
+- Features (add-stack): inline validation, slug preview, gated Create button
+- Features (add-stack): Automatic/Manual radio for Override File Management
+- Features (add-stack): shared discovery-mode badge + toggle
+- Features (add-stack): Compose Source radio group via shared helper
+- Features (editor): promote Compose Sources &amp; Files to its own tab
+- Features (editor): inline settings validation blocks Apply until resolved
+- Features (editor): live effective docker compose command preview
+- Features (editor): status badge + explicit toggle for compose file discovery
+- Features (editor): merge External Compose Path &amp; File into Compose Source radio
+- Features: enhance error handling and metadata retrieval in compose loading process
+- Features: implement client-side control for compose_info publisher and enhance WebSocket management for hidden tabs
+- Features: add additional ignored error messages for PHPStan analysis
+- Features: implement plugin-local update check for Compose Manager to enhance image update accuracy
+- Features (tests): enhance foreground operation tests for Compose Manager with modal interactions and image validation
+- Features (tests): add UI operation flow tests for Compose Manager and extract shared helpers
+- Features (notification): add composeSendNotification function for stack delete notifications
+- Features (e2e): add Playwright end-to-end tests for Compose Manager
+- Features (cache): add function to purge deleted stack caches and update UI accordingly
+- Features (settings): enhance auto-check updates functionality with mode selection and custom intervals
+- Features (settings-page): add functions to count changed settings and update UI accordingly
+- Features (settings-page): enhance global actions and settings form handling
+- Features (settings-page): enhance defaults with auto/manual verbage
+- Features (settings-page): enhance settings tab with descriptive help text and rephrase section titles
+- Features (settings-page): reorganize and enhance update checking section
+- Features (column-layout): implement shared column layout and visibility helpers
 - Bug Fixes (codeql): add sanitization for user-entered icon values in live preview
-- [PR #139](https://github.com/mstrhakr/compose_plugin/pull/139)
-- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.07.02...v2026.08.31.1552)
+- Bug Fixes (codeql): avoid html sink in labels renderer
+- Bug Fixes (build): add environment variables for RESVG version and SHA256 in Docker build
+- Bug Fixes (icon): simplify PNG detection logic and enhance test environment setup for Docker Manager RAM icons
+- Bug Fixes (icon): enhance PNG handling in icon processing functions and simplify tests by removing GD dependency checks
+- Bug Fixes (stack): update orphan removal logic to handle stack mismatches
+- Bug Fixes (icon): fix alpha transparency in GD PNG conversion; add global Clear Icon Cache button (#141)
+- Bug Fixes (icon): serve icons through local cache proxy instead of remote URLs (#141)
+- Bug Fixes (icon): clear plugin icon cache on clearIconCache action (#141)
+- Bug Fixes (icon): guard fallback loop for invalid icons (#141)
+- Bug Fixes: trim Bearer auth challenge keys and limit explode
+- Bug Fixes: allow symlink deletion in composeDeleteStackFolder
+- Bug Fixes: enhance WebSocket subscriber management to prevent stale connections and messages
+- Bug Fixes: add composeResolveDockerHostIp function to retrieve Docker host IP across Unraid WebUI versions fixes #127
+- Bug Fixes (tests): use PATH_SEPARATOR for COMPOSE_FILE in env file to support Windows development
+- Bug Fixes (icons): resolve native Docker tab/Dashboard icons for local paths (#129)
+- Bug Fixes: add missing Playwright dependencies installation step in E2E test setup
+- Bug Fixes: ensure function definitions are wrapped in function_exists checks to prevent redeclaration errors
+- Bug Fixes: remove HTML coverage report generation from PHPUnit configuration
+- Bug Fixes: enhance image digest retrieval and add running container check in auto-update script to match manual update path Fixes #132
+- Bug Fixes: ensure new stacks create app-managed project override templates and update tests accordingly Fixes #134
+- Bug Fixes: ensure proper exit code propagation for compose commands and record operation exit status
+- Bug Fixes (nchan): optimize docker stats publishing and address shared-memory exhaustion
+- Bug Fixes: enhance stack update handling with improved reload queue management
+- Bug Fixes (tests): ensure tests remove containers each time
+- Bug Fixes (settings): remove unused referrer handling script for cleaner settings page
+- Bug Fixes (settings): add debug logging functions for settings changes and state tracking
+- Bug Fixes (stack): simplify removal logic in composeDeleteStackFolder function
+- Bug Fixes (ui): make stack deletion dynamic without full reload
+- Bug Fixes (stack): guard and harden deleteStack folder removal
+- Bug Fixes (menu): centralize header menu visibility condition
+- Bug Fixes (compose-pull): refactor ComposePullConfirmed function to use options object for parameters
+- Bug Fixes (sync-plugin-url): correct escaping in sed command for pluginURL update
+- Refactoring (build): reorganize cache path definitions in build scripts
+- Refactoring (Exec): remove null coalescing for project name and directory
+- Refactoring (pkg_build): enhance checksum handling in download function
+- Refactoring (add-stack): section-based layout with editor vocabulary
+- Refactoring (editor): split per-stack Advanced section into three subsections
+- Refactoring (settings): move REMOVE_ORPHANS_DEFAULT to global settings page
+- Refactoring: remove basic output style handling
+- Refactoring (settings-page): reorganize settings and update help funcs
+- Documentation: clarify registry authentication section in UpdateCheck
+- Tests (icon): fix hardcoded cache path expectation to use COMPOSE_ICON_CACHE_DIR constant
+- Tests (icon): add IconCacheTest and bootstrap COMPOSE_ICON_CACHE_DIR temp path (#141)
+- Chores: update changelog for v2026.08.31.1552 [skip ci]
+- Chores: update changelog for v2026.08.31.1513 [skip ci]
+- Chores: update changelog for v2026.08.31.1142 [skip ci]
+- Chores: update changelog for v2026.08.30.1848 [skip ci]
+- Chores: update changelog for v2026.08.30.1823 [skip ci]
+- Chores: update changelog for v2026.08.30.1818 [skip ci]
+- Chores: update changelog for v2026.08.27.2133 [skip ci]
+- Chores: update changelog for v2026.08.27.2113 [skip ci]
+- Chores: update COMPOSE_VERSION to 5.5.0
+- Chores: update changelog for v2026.08.23.2252 [skip ci]
+- Chores: sync pluginURL+README for dev branch [skip ci]
+- Chores (columns): cleanup advanced/basic view mode references and legacy logic
+- Refactor IconTest and remove redundant tests; add ComposeListEndpointTest
+- [View all changes](https://github.com/mstrhakr/compose_plugin/compare/v2026.07.02...v2026.08.31)
 </CHANGES>
 
 <!-- The 'pre-install' script. -->

@@ -737,8 +737,8 @@ class StackInfoTest extends TestCase
         }
 
         $name    = 'test-compose-icon-seed';
-        $ramDir  = '/usr/local/emhttp/state/plugins/dynamix.docker.manager/images';
-        $ramPath = '/usr/local/emhttp/state/plugins/dynamix.docker.manager/images/' . $name . '-icon.png';
+        $ramDir  = COMPOSE_DM_ICON_RAM_DIR;
+        $ramPath = $ramDir . '/' . $name . '-icon.png';
 
         if (!is_dir($ramDir) && !@mkdir($ramDir, 0755, true)) {
             $this->markTestSkipped('Docker Manager RAM icon dir is not creatable in this environment');
@@ -752,7 +752,70 @@ class StackInfoTest extends TestCase
         compose_seed_docker_manager_icon($cached, $name);
 
         $this->assertFileExists($ramPath, 'seeding must copy PNG into Docker Manager RAM cache');
-        @unlink($ramPath);
+        $this->removeSeededDockerManagerIcons($name);
+    }
+
+    public function testSeedDockerManagerIconReplacesNonPngFile(): void
+    {
+        $source = 'data:image/png;base64,' . base64_encode($this->minimalPngBytes());
+        $cached = compose_fetch_icon_to_cache($source);
+
+        if ($cached === '') {
+            $this->markTestSkipped('Cache write failed; cannot test DM seeding');
+        }
+
+        $name    = 'test-compose-icon-repair';
+        $ramDir  = COMPOSE_DM_ICON_RAM_DIR;
+        $ramPath = $ramDir . '/' . $name . '-icon.png';
+
+        if (!is_dir($ramDir) && !@mkdir($ramDir, 0755, true)) {
+            $this->markTestSkipped('Docker Manager RAM icon dir is not creatable in this environment');
+        }
+
+        // Mimic Docker Manager storing raw SVG bytes under a .png filename.
+        file_put_contents($ramPath, '<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+
+        compose_seed_docker_manager_icon($cached, $name);
+
+        $this->assertTrue(compose_file_is_png($ramPath), 'corrupt Docker Manager icon must be replaced with real PNG');
+        $this->removeSeededDockerManagerIcons($name);
+    }
+
+    public function testSeedDockerManagerIconRepairsQuestionIconMetadata(): void
+    {
+        $source = 'data:image/png;base64,' . base64_encode($this->minimalPngBytes());
+        $cached = compose_fetch_icon_to_cache($source);
+
+        if ($cached === '') {
+            $this->markTestSkipped('Cache write failed; cannot test DM seeding');
+        }
+
+        $name = 'test-compose-icon-metadata';
+        if (!is_dir(COMPOSE_DM_ICON_RAM_DIR) && !@mkdir(COMPOSE_DM_ICON_RAM_DIR, 0755, true)) {
+            $this->markTestSkipped('Docker Manager RAM icon dir is not creatable in this environment');
+        }
+
+        file_put_contents(COMPOSE_DM_WEBUI_INFO_FILE, json_encode([
+            $name => ['icon' => '/plugins/dynamix.docker.manager/images/question.png'],
+        ]));
+
+        compose_seed_docker_manager_icon($cached, $name);
+
+        $info = json_decode((string) file_get_contents(COMPOSE_DM_WEBUI_INFO_FILE), true);
+        $this->assertSame(
+            '/state/plugins/dynamix.docker.manager/images/' . $name . '-icon.png',
+            $info[$name]['icon'] ?? '',
+            'docker.json must stop pointing at question.png once a cached icon exists'
+        );
+
+        @unlink(COMPOSE_DM_WEBUI_INFO_FILE);
+        $this->removeSeededDockerManagerIcons($name);
+    }
+
+    private function removeSeededDockerManagerIcons(string $containerName): void
+    {
+        @unlink(COMPOSE_DM_ICON_RAM_DIR . '/' . $containerName . '-icon.png');
+        @unlink(COMPOSE_DM_ICON_PERSIST_DIR . '/' . $containerName . '-icon.png');
     }
 
     public function testGetWebUIUrl(): void

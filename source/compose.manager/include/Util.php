@@ -94,6 +94,53 @@ if (!function_exists('compose_get_icon_cache_path')) {
     }
 }
 
+if (!function_exists('compose_bytes_are_png')) {
+    function compose_bytes_are_png(string $bytes): bool
+    {
+        return substr($bytes, 0, 8) === "\x89PNG\r\n\x1a\n";
+    }
+}
+
+if (!function_exists('compose_file_is_png')) {
+    function compose_file_is_png(string $path): bool
+    {
+        if ($path === '' || !is_file($path)) {
+            return false;
+        }
+        $fh = @fopen($path, 'rb');
+        if ($fh === false) {
+            return false;
+        }
+        $head = (string) fread($fh, 8);
+        fclose($fh);
+        return compose_bytes_are_png($head);
+    }
+}
+
+if (!function_exists('compose_icon_cache_is_stale')) {
+    /** Cached icons revalidate once per TTL window; local sources follow mtime. */
+    function compose_icon_cache_is_stale(string $source, string $cachePath, int $ttlSeconds = 86400): bool
+    {
+        if (!is_file($cachePath)) {
+            return true;
+        }
+        if (!compose_file_is_png($cachePath)) {
+            return true;
+        }
+
+        $cachedAt = (int) @filemtime($cachePath);
+        if ($cachedAt <= 0) {
+            return true;
+        }
+
+        if (strpos($source, '/') === 0 && is_file($source)) {
+            return (int) @filemtime($source) > $cachedAt;
+        }
+
+        return (time() - $cachedAt) > $ttlSeconds;
+    }
+}
+
 if (!function_exists('compose_icon_ext_to_mime')) {
     function compose_icon_ext_to_mime(string $ext): string
     {
@@ -117,9 +164,21 @@ if (!function_exists('compose_icon_browser_url')) {
         if ($src === '') {
             return '';
         }
-        if (strncasecmp($src, 'http://', 7) === 0 || strncasecmp($src, 'https://', 8) === 0) {
+        if (str_starts_with($src, '/plugins/compose.manager/IconCache.php?')) {
+            return $src;
+        }
+        if (str_starts_with($src, '/plugins/compose.manager/images/question.png')) {
+            return $src;
+        }
+
+        $isRemote = strncasecmp($src, 'http://', 7) === 0 || strncasecmp($src, 'https://', 8) === 0;
+        $isData = strncasecmp($src, 'data:image/', 11) === 0;
+        $isCacheableLocal = str_starts_with($src, '/mnt/') || str_starts_with($src, '/boot/config/plugins/compose.manager/');
+
+        if ($isRemote || $isData || $isCacheableLocal) {
             return '/plugins/compose.manager/IconCache.php?src=' . urlencode($src);
         }
+
         return $src;
     }
 }
@@ -231,7 +290,7 @@ if (!function_exists('compose_fetch_icon_to_cache')) {
 
         $cachePath = compose_get_icon_cache_path($source);
 
-        if (!$forceRefresh && file_exists($cachePath)) {
+        if (!$forceRefresh && compose_file_is_png($cachePath)) {
             composeLogger('Icon cache hit', ['source' => $source, 'cache' => $cachePath], 'system', 'debug', 'icon-cache');
             return $cachePath;
         }
@@ -331,41 +390,172 @@ if (!function_exists('compose_fetch_icon_to_cache')) {
             return '';
         }
 
-        $written = file_put_contents($cachePath, $pngBytes) !== false;
-        if ($written) {
-            composeLogger('Icon cached', ['source' => $source, 'cache' => $cachePath, 'bytes' => strlen($pngBytes)], 'system', 'debug', 'icon-cache');
+        // Docker Manager renders cache files as PNG by extension, so never
+        // store non-PNG bytes even if conversion silently passed them through.
+        if (!compose_bytes_are_png($pngBytes)) {
+            composeLogger('Icon conversion did not produce PNG; not caching', ['source' => $source, 'mime' => $mimeHint], 'system', 'warning', 'icon-cache');
+            return '';
         }
-        return $written ? $cachePath : '';
+
+        $written = false;
+        $tmpPath = @tempnam($cacheDir, 'icon_');
+        if ($tmpPath !== false) {
+            // Publish atomically so a failed refresh never truncates a good icon.
+            if (file_put_contents($tmpPath, $pngBytes) !== false && @chmod($tmpPath, 0644) && @rename($tmpPath, $cachePath)) {
+                $written = true;
+            } else {
+                @unlink($tmpPath);
+            }
+        }
+        if (!$written) {
+            return '';
+        }
+
+        composeLogger('Icon cached', ['source' => $source, 'cache' => $cachePath, 'bytes' => strlen($pngBytes)], 'system', 'debug', 'icon-cache');
+        compose_sync_docker_manager_icons_for_source($source, $cachePath);
+
+        return $cachePath;
     }
 }
 
 if (!function_exists('compose_seed_docker_manager_icon')) {
-    /** Copy a cached PNG into both Docker Manager icon cache locations. */
+    /**
+     * Mirror a cached PNG into both Docker Manager icon cache locations.
+     *
+     * Docker Manager downloads icon label URLs verbatim, so an SVG (or any
+     * non-PNG) source leaves a corrupt `<container>-icon.png` behind that the
+     * browser cannot render. Existing files are therefore replaced whenever
+     * they are not byte-identical PNG copies of our converted cache entry.
+     */
     function compose_seed_docker_manager_icon(string $cachedPngPath, string $containerName): void
     {
-        if ($cachedPngPath === '' || !file_exists($cachedPngPath)) {
+        if ($cachedPngPath === '' || !compose_file_is_png($cachedPngPath)) {
             return;
         }
         if (!preg_match('#^[a-zA-Z0-9][a-zA-Z0-9._-]*$#', $containerName)) {
             return;
         }
 
-        $destName = $containerName . '-icon.png';
-        $targets  = [
-            '/usr/local/emhttp/state/plugins/dynamix.docker.manager/images/' . $destName,
-            '/var/lib/docker/unraid/images/' . $destName,
-        ];
+        $iconName = $containerName . '-icon.png';
+        $ramPath  = COMPOSE_DM_ICON_RAM_DIR . '/' . $iconName;
+        $targets  = [$ramPath, COMPOSE_DM_ICON_PERSIST_DIR . '/' . $iconName];
+
+        $sourceHash = @md5_file($cachedPngPath);
+        $seeded = false;
 
         foreach ($targets as $dest) {
-            if (file_exists($dest)) {
-                continue; // DM already has it; don't overwrite
+            if (is_file($dest) && compose_file_is_png($dest) && @md5_file($dest) === $sourceHash) {
+                continue;
             }
+
             $dir = dirname($dest);
-            if (!is_dir($dir)) {
-                @mkdir($dir, 0755, true);
+            if (!is_dir($dir) && !@mkdir($dir, 0755, true) && !is_dir($dir)) {
+                continue;
             }
-            if (@copy($cachedPngPath, $dest)) {
+
+            $tmp = @tempnam($dir, 'dmicon_');
+            if ($tmp === false) {
+                continue;
+            }
+            if (@copy($cachedPngPath, $tmp) && @chmod($tmp, 0644) && @rename($tmp, $dest)) {
+                $seeded = true;
                 composeLogger('Seeded Docker Manager icon cache', ['container' => $containerName, 'dest' => $dest], 'system', 'debug', 'icon-cache');
+            } else {
+                @unlink($tmp);
+            }
+        }
+
+        if ($seeded || is_file($ramPath)) {
+            compose_point_docker_manager_metadata_at_icon($containerName);
+        }
+    }
+}
+
+if (!function_exists('compose_point_docker_manager_metadata_at_icon')) {
+    /**
+     * Repair Docker Manager's docker.json entry for a container.
+     *
+     * Docker Manager only re-resolves an icon when the recorded path is
+     * missing, so a stored question.png fallback sticks permanently. Pointing
+     * the entry at the seeded file makes the Docker page use our cached PNG
+     * instead of re-fetching the label URL.
+     */
+    function compose_point_docker_manager_metadata_at_icon(string $containerName): void
+    {
+        $metadataFile = COMPOSE_DM_WEBUI_INFO_FILE;
+        if (!is_file($metadataFile)) {
+            return;
+        }
+
+        $webPath = '/state/plugins/dynamix.docker.manager/images/' . $containerName . '-icon.png';
+
+        $fh = @fopen($metadataFile, 'r+');
+        if ($fh === false) {
+            return;
+        }
+        if (!flock($fh, LOCK_EX)) {
+            fclose($fh);
+            return;
+        }
+
+        $raw = stream_get_contents($fh);
+        $info = is_string($raw) ? json_decode($raw, true) : null;
+
+        if (
+            is_array($info)
+            && isset($info[$containerName])
+            && is_array($info[$containerName])
+            && ($info[$containerName]['icon'] ?? '') !== $webPath
+        ) {
+            $info[$containerName]['icon'] = $webPath;
+            $encoded = json_encode($info);
+            if ($encoded !== false) {
+                rewind($fh);
+                ftruncate($fh, 0);
+                fwrite($fh, $encoded);
+                fflush($fh);
+                composeLogger('Repaired Docker Manager icon metadata', ['container' => $containerName, 'icon' => $webPath], 'system', 'debug', 'icon-cache');
+            }
+        }
+
+        flock($fh, LOCK_UN);
+        fclose($fh);
+    }
+}
+
+if (!function_exists('compose_sync_docker_manager_icons_for_source')) {
+    /**
+     * Seed every container whose icon label matches a freshly cached source.
+     *
+     * Keeps the Docker Manager cache aligned with ours even when the icon was
+     * cached from a page that did not know the owning container names.
+     */
+    function compose_sync_docker_manager_icons_for_source(string $source, string $cachedPngPath): void
+    {
+        static $syncedSources = [];
+
+        $source = trim($source);
+        if ($source === '' || isset($syncedSources[$source]) || !compose_file_is_png($cachedPngPath)) {
+            return;
+        }
+        if (!is_dir(COMPOSE_DM_ICON_RAM_DIR)) {
+            return; // Docker Manager not present (CI/test environments)
+        }
+        $syncedSources[$source] = true;
+
+        $format = '{{.Names}}\t{{index .Config.Labels "' . COMPOSE_DOCKER_LABEL_ICON . '"}}';
+        $output = shell_exec('docker ps -a --no-trunc --format ' . escapeshellarg($format) . ' 2>/dev/null');
+        if (!is_string($output) || trim($output) === '') {
+            return;
+        }
+
+        foreach (preg_split('/\R/', trim($output)) as $line) {
+            if (strpos($line, "\t") === false) {
+                continue;
+            }
+            [$name, $label] = explode("\t", $line, 2);
+            if (trim($label) === $source) {
+                compose_seed_docker_manager_icon($cachedPngPath, trim($name));
             }
         }
     }

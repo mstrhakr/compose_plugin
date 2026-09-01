@@ -2469,15 +2469,32 @@ function isValidIconSrc(src) {
         s.indexOf('data:image/') === 0 || s.indexOf('/') === 0;
 }
 
-/** Route remote http(s) icons through the local cache proxy; passthrough otherwise. */
-function composeIconSrc(src) {
+function isCacheEligibleLocalIconPath(src) {
+    if (!src) return false;
+    var s = src.trim();
+    return s.indexOf('/mnt/') === 0 || s.indexOf('/boot/config/plugins/compose.manager/') === 0;
+}
+
+/** Route cache-eligible icons through the local cache proxy; passthrough otherwise. */
+function composeIconSrc(src, containerName) {
     if (!src || !isValidIconSrc(src)) {
         return '/plugins/compose.manager/images/question.png';
     }
     var s = src.trim();
-    if (s.indexOf('http://') === 0 || s.indexOf('https://') === 0) {
-        return '/plugins/compose.manager/IconCache.php?src=' + encodeURIComponent(s);
+    if (s.indexOf('/plugins/compose.manager/IconCache.php?') === 0) {
+        return s;
     }
+
+    var cacheable = s.indexOf('http://') === 0 || s.indexOf('https://') === 0 ||
+        s.indexOf('data:image/') === 0 || isCacheEligibleLocalIconPath(s);
+    if (cacheable) {
+        var proxied = '/plugins/compose.manager/IconCache.php?src=' + encodeURIComponent(s);
+        if (containerName && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(containerName)) {
+            proxied += '&ct=' + encodeURIComponent(containerName);
+        }
+        return proxied;
+    }
+
     return s;
 }
 
@@ -5307,7 +5324,7 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             var localSha = container.localSha || '';
             var remoteSha = container.remoteSha || '';
 
-            var iconSrc = composeIconSrc(container.icon);
+            var iconSrc = composeIconSrc(container.icon, containerName);
             iconSrc = composeEscapeAttr(iconSrc);
 
             // Grey out containers without updates when showing update dialog
@@ -8140,7 +8157,7 @@ function renderContainerDetails(stackId, containers, project) {
         var containerShell = container.shell || '/bin/sh';
         html += '<span id="' + uniqueId + '" class="hand" data-name="' + composeEscapeAttr(containerName) + '" data-state="' + composeEscapeAttr(state) + '" data-webui="' + composeEscapeAttr(webui) + '" data-stackid="' + composeEscapeAttr(stackId) + '" data-shell="' + composeEscapeAttr(containerShell) + '">';
         // Use actual image like Docker tab - either container icon or default question.png
-        var iconSrc = composeIconSrc(container.icon);
+        var iconSrc = composeIconSrc(container.icon, containerName);
         html += '<img src="' + composeEscapeAttr(iconSrc) + '" class="img" onerror="composeIconFallback(this)">';
         html += '</span>';
         html += '<span class="inner"><span class="appname">' + composeEscapeHtml(shortName) + '</span><br>';
