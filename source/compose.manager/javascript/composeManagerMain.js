@@ -4142,6 +4142,19 @@ function composeShowIdentityChooser(info) {
     });
 }
 
+function composeHandleIdentityError(info) {
+    var hasChoices = info && info.project && info.legacyCandidate && info.folderCandidate;
+    if (hasChoices) {
+        composeShowIdentityChooser(info);
+        return;
+    }
+
+    var message = (info && info.message)
+        ? String(info.message)
+        : 'Compose project identity is unresolved. Resolve each affected stack before retrying.';
+    swal('Compose project identity required', message, 'warning');
+}
+
 $(document).on('click', '.compose-identity-warning', function (event) {
     event.stopPropagation();
     var $row = $(this).closest('tr.compose-sortable');
@@ -4214,7 +4227,7 @@ function performComposeAction(opts) {
             if (stackName) {
                 setStackActionInProgress(stackName, false);
             }
-            composeShowIdentityChooser(parsed);
+            composeHandleIdentityError(parsed);
             if (typeof onComplete === 'function') {
                 onComplete(parsed, data);
             }
