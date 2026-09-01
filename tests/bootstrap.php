@@ -101,3 +101,9 @@ if (!is_dir($testComposeRoot)) {
 
 // Set compose_root global (used by plugin)
 $GLOBALS['compose_root'] = $testComposeRoot;
+
+// Legacy project-identity migration must never shell out to the host's Docker
+// during tests. Default to "Docker reachable, no compose resources"; individual
+// tests override this with ProjectIdentity::setProbe().
+require_once '/usr/local/emhttp/plugins/compose.manager/include/ProjectIdentity.php';
+ProjectIdentity::setProbe(static fn(): array => []);
