@@ -2428,4 +2428,44 @@ switch ($_POST['action']) {
         }
         echo json_encode($out);
         break;
+
+    case 'getProjectIdentities':
+        // Read-only migration preview: folder, display name, effective runtime
+        // project, live-container match, and whether owner input is required.
+        $identities = [];
+        foreach (StackInfo::allFromRoot($compose_root, true) as $stackInfo) {
+            $identity = $stackInfo->identity->toArray();
+            $identity['displayName'] = $stackInfo->getName();
+            $identities[] = $identity;
+        }
+        echo json_encode([
+            'result' => 'success',
+            'identities' => $identities,
+            'blocked' => count(array_filter($identities, static fn(array $i): bool => !$i['resolved'])),
+        ]);
+        break;
+
+    case 'setProjectIdentity':
+        // Owner decision for a stack whose runtime identity could not be proven.
+        $stackName = isset($_POST['stackName']) ? basename(trim($_POST['stackName'])) : '';
+        $chosen = isset($_POST['projectName']) ? trim($_POST['projectName']) : '';
+        if ($stackName === '' || $chosen === '') {
+            echo json_encode(['result' => 'error', 'message' => 'Stack and project name are required.']);
+            break;
+        }
+        try {
+            $stackInfo = StackInfo::fromProject($compose_root, $stackName);
+            $stackInfo->applyIdentityChoice($chosen);
+        } catch (\Throwable $e) {
+            composeLogger('Failed to apply project identity choice', [
+                'stackName' => $stackName,
+                'projectName' => $chosen,
+                'error' => $e->getMessage(),
+            ], 'user', 'error', 'identity');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
+            break;
+        }
+        composeLogger("Owner pinned compose project identity '$chosen' for '$stackName'", null, 'user', 'info', 'identity');
+        echo json_encode(['result' => 'success', 'identity' => $stackInfo->identity->toArray()]);
+        break;
 }

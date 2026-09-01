@@ -174,6 +174,26 @@ function echoComposeCommand($action, array $options = [])
             echo '';
             return;
         }
+
+        // Fail closed: never hand Docker Compose a project name we could not prove.
+        if (!$stackInfo->hasResolvedIdentity()) {
+            composeLogger(
+                "Blocked '$action' for '{$stackInfo->projectFolder}': compose project identity is unresolved",
+                ['action' => $action, 'path' => $path, 'identity' => $stackInfo->identity->toArray()],
+                'user',
+                'warning',
+                'identity'
+            );
+            echo json_encode([
+                'error' => 'identity',
+                'project' => $stackInfo->projectFolder,
+                'folderCandidate' => $stackInfo->identity->folderCandidate,
+                'legacyCandidate' => $stackInfo->identity->legacyCandidate,
+                'message' => $stackInfo->getIdentityBlockReason(),
+            ]);
+            return;
+        }
+
         $args = $stackInfo->buildComposeArgs();
 
         $composeCommand[] = "-c" . $action;
@@ -278,6 +298,7 @@ function echoComposeCommandMultiple($action, array $options = [])
     // Build a combined command that runs compose up/down for each stack sequentially
     $commands = array();
     $stackNames = array();
+    $blockedStacks = array();
 
     foreach ($paths as $path) {
         composeLogger("Processing stack for multi-compose action: " . $path, ['path' => $path, 'action' => $action], 'user', 'debug', 'compose-multi');
@@ -292,6 +313,20 @@ function echoComposeCommandMultiple($action, array $options = [])
             composeLogger("Skipping invalid stack during multi-compose action", ['action' => $action, 'path' => $path, 'error' => $e->getMessage()], 'user', 'warning', 'compose-multi');
             continue;
         }
+
+        // Fail closed: never hand Docker Compose a project name we could not prove.
+        if (!$stackInfo->hasResolvedIdentity()) {
+            composeLogger(
+                "Skipping '{$stackInfo->projectFolder}' during multi-compose action: compose project identity is unresolved",
+                ['action' => $action, 'path' => $path, 'identity' => $stackInfo->identity->toArray()],
+                'user',
+                'warning',
+                'identity'
+            );
+            $blockedStacks[] = $stackInfo->getName();
+            continue;
+        }
+
         $stackNames[] = $stackInfo->getName();
         $args = $stackInfo->buildComposeArgs();
 
@@ -345,7 +380,15 @@ function echoComposeCommandMultiple($action, array $options = [])
     }
 
     if (empty($commands)) {
-        composeLogger("Multi Compose operation aborted: no valid stacks resolved", ['action' => $action], 'user', 'warning', 'compose-multi');
+        composeLogger("Multi Compose operation aborted: no valid stacks resolved", ['action' => $action, 'blocked' => $blockedStacks], 'user', 'warning', 'compose-multi');
+        if (!empty($blockedStacks)) {
+            echo json_encode([
+                'error' => 'identity',
+                'stacks' => $blockedStacks,
+                'message' => 'Compose project identity is unresolved for: ' . implode(', ', $blockedStacks),
+            ]);
+            return;
+        }
         echo '';
         return;
     }
@@ -385,6 +428,11 @@ function echoComposeCommandMultiple($action, array $options = [])
     $tmpScript = "/tmp/compose_multi_" . uniqid() . ".sh";
     $scriptContent = "#!/bin/bash\n";
     $scriptContent .= "# Multi-stack compose script (ttyd) - auto-generated\n\n";
+
+    foreach ($blockedStacks as $blocked) {
+        $blockedTitle = str_replace(['\\', '"'], ['\\\\', '\\"'], $blocked);
+        $scriptContent .= "echo \"! Skipped " . $blockedTitle . ": compose project identity is unresolved\"\n";
+    }
 
     foreach ($commands as $idx => $cmd) {
         $cmdStr = implode(" ", array_map('escapeshellarg', $cmd));

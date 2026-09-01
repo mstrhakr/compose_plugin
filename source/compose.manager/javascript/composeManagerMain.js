@@ -4115,6 +4115,77 @@ function composeActionStateText(actionName) {
     return map[actionName] || 'checking...';
 }
 
+// Stacks imported from the original compose plugin can have two plausible
+// `docker compose -p` identities. The backend refuses to act until the owner
+// picks one; this prompt is how they do it.
+function composeShowIdentityChooser(info) {
+    var project = info.project || '';
+    var legacy = info.legacyCandidate || '';
+    var folder = info.folderCandidate || '';
+    var html = composeEscapeHtml(info.message || 'This stack has an ambiguous Docker Compose project name.');
+
+    if (project && legacy && folder) {
+        html += "<br><br><button type='button' class='compose-identity-choice' data-project='" + composeEscapeHtml(project) +
+            "' data-choice='" + composeEscapeHtml(legacy) + "'>Keep imported: " + composeEscapeHtml(legacy) + "</button>" +
+            " <button type='button' class='compose-identity-choice' data-project='" + composeEscapeHtml(project) +
+            "' data-choice='" + composeEscapeHtml(folder) + "'>Use folder: " + composeEscapeHtml(folder) + "</button>";
+    }
+
+    swal({
+        title: 'Compose project identity required',
+        text: html,
+        html: true,
+        type: 'warning',
+        showConfirmButton: false,
+        showCancelButton: true,
+        cancelButtonText: 'Cancel'
+    });
+}
+
+$(document).on('click', '.compose-identity-warning', function (event) {
+    event.stopPropagation();
+    var $row = $(this).closest('tr.compose-sortable');
+    composeShowIdentityChooser({
+        project: $row.data('project'),
+        message: $row.data('identity-message'),
+        folderCandidate: $row.data('identity-folder'),
+        legacyCandidate: $row.data('identity-legacy')
+    });
+});
+
+$(document).on('click', '.compose-identity-choice', function () {
+    var project = $(this).data('project');
+    var choice = $(this).data('choice');
+    $.post(compURL, { action: 'setProjectIdentity', stackName: project, projectName: choice }, function (data) {
+        var parsed = tryParseJson(data);
+        if (parsed && parsed.result === 'success') {
+            swal({ title: 'Identity pinned', text: 'Using project name "' + choice + '".', type: 'success' }, function () {
+                location.reload();
+            });
+        } else {
+            swal('Error', (parsed && parsed.message) || 'Failed to pin project identity.', 'error');
+        }
+    });
+});
+
+// Returns true (and prompts) when the stack's runtime project identity is
+// unproven, so no compose action should be dispatched.
+function composeIdentityBlocked(path) {
+    var $row = $('tr.compose-sortable').filter(function () {
+        return String($(this).data('path')) === String(path);
+    }).first();
+    if (!$row.length || String($row.data('identity-blocked')) !== '1') {
+        return false;
+    }
+    composeShowIdentityChooser({
+        project: $row.data('project'),
+        message: $row.data('identity-message'),
+        folderCandidate: $row.data('identity-folder'),
+        legacyCandidate: $row.data('identity-legacy')
+    });
+    return true;
+}
+
 function performComposeAction(opts) {
     opts = opts || {};
     var stackName = opts.stackName;
@@ -4139,6 +4210,16 @@ function performComposeAction(opts) {
 
     $.post(requestUrl, payload, function(data) {
         var parsed = tryParseJson(data);
+        if (parsed && parsed.error === 'identity') {
+            if (stackName) {
+                setStackActionInProgress(stackName, false);
+            }
+            composeShowIdentityChooser(parsed);
+            if (typeof onComplete === 'function') {
+                onComplete(parsed, data);
+            }
+            return;
+        }
         if (parsed && parsed.background) {
             if (!suppressBackgroundNotification) {
                 notifyBackgroundStarted(title, true);
@@ -4171,6 +4252,11 @@ function performComposeAction(opts) {
 function confirmedComposeAction(path, opts) {
     opts = opts || {};
     var stackName = basename(path);
+
+    if (composeIdentityBlocked(path)) {
+        return;
+    }
+
     opts = $.extend(true, {
         actionName: '',
         titlePrefix: '',
