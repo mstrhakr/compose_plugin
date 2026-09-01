@@ -752,7 +752,7 @@ class StackInfoTest extends TestCase
         compose_seed_docker_manager_icon($cached, $name);
 
         $this->assertFileExists($ramPath, 'seeding must copy PNG into Docker Manager RAM cache');
-        @unlink($ramPath);
+        $this->removeSeededDockerManagerIcons($name);
     }
 
     public function testSeedDockerManagerIconReplacesNonPngFile(): void
@@ -778,7 +778,7 @@ class StackInfoTest extends TestCase
         compose_seed_docker_manager_icon($cached, $name);
 
         $this->assertTrue(compose_file_is_png($ramPath), 'corrupt Docker Manager icon must be replaced with real PNG');
-        @unlink($ramPath);
+        $this->removeSeededDockerManagerIcons($name);
     }
 
     public function testSeedDockerManagerIconRepairsQuestionIconMetadata(): void
@@ -808,8 +808,14 @@ class StackInfoTest extends TestCase
             'docker.json must stop pointing at question.png once a cached icon exists'
         );
 
-        @unlink(COMPOSE_DM_ICON_RAM_DIR . '/' . $name . '-icon.png');
         @unlink(COMPOSE_DM_WEBUI_INFO_FILE);
+        $this->removeSeededDockerManagerIcons($name);
+    }
+
+    private function removeSeededDockerManagerIcons(string $containerName): void
+    {
+        @unlink(COMPOSE_DM_ICON_RAM_DIR . '/' . $containerName . '-icon.png');
+        @unlink(COMPOSE_DM_ICON_PERSIST_DIR . '/' . $containerName . '-icon.png');
     }
 
     public function testGetWebUIUrl(): void
