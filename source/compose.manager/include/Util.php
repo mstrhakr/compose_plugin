@@ -397,7 +397,16 @@ if (!function_exists('compose_fetch_icon_to_cache')) {
             return '';
         }
 
-        $written = file_put_contents($cachePath, $pngBytes) !== false;
+        $written = false;
+        $tmpPath = @tempnam($cacheDir, 'icon_');
+        if ($tmpPath !== false) {
+            // Publish atomically so a failed refresh never truncates a good icon.
+            if (file_put_contents($tmpPath, $pngBytes) !== false && @chmod($tmpPath, 0644) && @rename($tmpPath, $cachePath)) {
+                $written = true;
+            } else {
+                @unlink($tmpPath);
+            }
+        }
         if (!$written) {
             return '';
         }
@@ -444,8 +453,11 @@ if (!function_exists('compose_seed_docker_manager_icon')) {
                 continue;
             }
 
-            $tmp = $dest . '.tmp';
-            if (@copy($cachedPngPath, $tmp) && @rename($tmp, $dest)) {
+            $tmp = @tempnam($dir, 'dmicon_');
+            if ($tmp === false) {
+                continue;
+            }
+            if (@copy($cachedPngPath, $tmp) && @chmod($tmp, 0644) && @rename($tmp, $dest)) {
                 $seeded = true;
                 composeLogger('Seeded Docker Manager icon cache', ['container' => $containerName, 'dest' => $dest], 'system', 'debug', 'icon-cache');
             } else {
