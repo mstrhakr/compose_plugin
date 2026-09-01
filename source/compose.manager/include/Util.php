@@ -157,7 +157,10 @@ if (!function_exists('compose_icon_ext_to_mime')) {
 }
 
 if (!function_exists('compose_icon_browser_url')) {
-    /** Return the URL the browser should use: proxy for http(s), passthrough otherwise. */
+    /**
+     * Return the URL the browser should use: proxy for http(s), passthrough otherwise.
+     * Data URIs are never proxied — the base64 payload would blow past URL length limits.
+     */
     function compose_icon_browser_url(string $src): string
     {
         $src = trim($src);
@@ -172,10 +175,9 @@ if (!function_exists('compose_icon_browser_url')) {
         }
 
         $isRemote = strncasecmp($src, 'http://', 7) === 0 || strncasecmp($src, 'https://', 8) === 0;
-        $isData = strncasecmp($src, 'data:image/', 11) === 0;
         $isCacheableLocal = str_starts_with($src, '/mnt/') || str_starts_with($src, '/boot/config/plugins/compose.manager/');
 
-        if ($isRemote || $isData || $isCacheableLocal) {
+        if ($isRemote || $isCacheableLocal) {
             return '/plugins/compose.manager/IconCache.php?src=' . urlencode($src);
         }
 

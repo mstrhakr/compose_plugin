@@ -80,8 +80,13 @@ EOT;
 // Debug setting from config
 $debugEnabled = isset($cfg['DEBUG_TO_LOG']) && $cfg['DEBUG_TO_LOG'] === 'true' ? 'true' : 'false';
 $hideComposeContainersJs = $hideDockerComposeContainers ? 'true' : 'false';
+// Icon helpers live in their own file because composeManagerMain.js is not loaded on the Dashboard
+$iconsJsSrc = '/plugins/compose.manager/javascript/composeIcons.js';
+$iconsJsVer = @filemtime('/usr/local/emhttp' . $iconsJsSrc);
+if ($iconsJsVer) $iconsJsSrc .= '?v=' . $iconsJsVer;
 // CSS and JavaScript
 $configScript = <<<EOT
+<script src="$iconsJsSrc"></script>
 <script>
 window.composeDashDebug = $debugEnabled;
 window.hideDockerComposeContainers = $hideComposeContainersJs;
@@ -547,6 +552,12 @@ $script .= <<<'EOT'
             if (data.partial > 0) statusText += ', Partial: ' + data.partial;
             $('#compose_stacks_status').text(statusText);
 
+            // Hide compose-managed containers from the Docker Containers dashboard tile.
+            // Done before rendering so a render failure can't disable hiding.
+            if (window.hideDockerComposeContainers && data.composeContainerNames && data.composeContainerNames.length > 0) {
+                setupComposeContainerHiding(data.composeContainerNames);
+            }
+
             // Clear container cache since DOM will be rebuilt
             stackContainerCache = {};
 
@@ -654,11 +665,6 @@ $script .= <<<'EOT'
             }
             noStacks();
 
-            // Hide compose-managed containers from the Docker Containers dashboard tile
-            if (window.hideDockerComposeContainers && data.composeContainerNames && data.composeContainerNames.length > 0) {
-                setupComposeContainerHiding(data.composeContainerNames);
-            }
-
             debugLog('Loaded', data.stacks.length, 'stacks, context menus attached via onclick');
         }, 'json').fail(function() {
             $('#compose_stacks_status').text('Stacks -- Error loading');
@@ -740,7 +746,6 @@ $script .= <<<'EOT'
         if (!containerNames || containerNames.length === 0) return;
 
         debugLog('Setting up compose container hiding for:', containerNames);
-        console.log('[ComposeManager] Container names to hide:', containerNames);
 
         // Build a lookup object for fast case-insensitive matching
         composeContainerNameSet = {};
@@ -790,7 +795,6 @@ $script .= <<<'EOT'
             var name = extractContainerName($el);
             if (name && composeContainerNameSet[name.toLowerCase()]) {
                 debugLog('Hiding Docker tile container:', name);
-                console.log('[ComposeManager] Hiding:', name);
                 $el.addClass('compose-hidden-container');
                 hiddenCount++;
             }
