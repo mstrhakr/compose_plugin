@@ -404,8 +404,15 @@ if (!function_exists('compose_fetch_icon_to_cache')) {
         $tmpPath = @tempnam($cacheDir, 'icon_');
         if ($tmpPath !== false) {
             // Publish atomically so a failed refresh never truncates a good icon.
-            if (file_put_contents($tmpPath, $pngBytes) !== false && @chmod($tmpPath, 0644) && @rename($tmpPath, $cachePath)) {
-                $written = true;
+            // chmod is best-effort on some filesystems; the rename is the real
+            // success gate for the published cache entry.
+            if (file_put_contents($tmpPath, $pngBytes) !== false) {
+                @chmod($tmpPath, 0644);
+                if (@rename($tmpPath, $cachePath)) {
+                    $written = true;
+                } else {
+                    @unlink($tmpPath);
+                }
             } else {
                 @unlink($tmpPath);
             }
@@ -460,9 +467,14 @@ if (!function_exists('compose_seed_docker_manager_icon')) {
             if ($tmp === false) {
                 continue;
             }
-            if (@copy($cachedPngPath, $tmp) && @chmod($tmp, 0644) && @rename($tmp, $dest)) {
-                $seeded = true;
-                composeLogger('Seeded Docker Manager icon cache', ['container' => $containerName, 'dest' => $dest], 'system', 'debug', 'icon-cache');
+            if (@copy($cachedPngPath, $tmp)) {
+                @chmod($tmp, 0644);
+                if (@rename($tmp, $dest)) {
+                    $seeded = true;
+                    composeLogger('Seeded Docker Manager icon cache', ['container' => $containerName, 'dest' => $dest], 'system', 'debug', 'icon-cache');
+                } else {
+                    @unlink($tmp);
+                }
             } else {
                 @unlink($tmp);
             }
@@ -536,6 +548,7 @@ if (!function_exists('compose_sync_docker_manager_icons_for_source')) {
     function compose_sync_docker_manager_icons_for_source(string $source, string $cachedPngPath): void
     {
         static $syncedSources = [];
+        static $dockerLabelRows = null;
 
         $source = trim($source);
         if ($source === '' || isset($syncedSources[$source]) || !compose_file_is_png($cachedPngPath)) {
@@ -546,13 +559,13 @@ if (!function_exists('compose_sync_docker_manager_icons_for_source')) {
         }
         $syncedSources[$source] = true;
 
-        $format = '{{.Names}}\t{{index .Config.Labels "' . COMPOSE_DOCKER_LABEL_ICON . '"}}';
-        $output = shell_exec('docker ps -a --no-trunc --format ' . escapeshellarg($format) . ' 2>/dev/null');
-        if (!is_string($output) || trim($output) === '') {
-            return;
+        if ($dockerLabelRows === null) {
+            $format = '{{.Names}}\t{{index .Config.Labels "' . COMPOSE_DOCKER_LABEL_ICON . '"}}';
+            $output = shell_exec('docker ps -a --no-trunc --format ' . escapeshellarg($format) . ' 2>/dev/null');
+            $dockerLabelRows = is_string($output) ? preg_split('/\R/', trim($output)) : [];
         }
 
-        foreach (preg_split('/\R/', trim($output)) as $line) {
+        foreach ($dockerLabelRows as $line) {
             if (strpos($line, "\t") === false) {
                 continue;
             }
