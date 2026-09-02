@@ -8,6 +8,7 @@ if (!empty($_GET['socket'])) {
     $active_socket = preg_replace('/[^a-zA-Z0-9_-]/', '', $_GET['socket']);
 }
 $showDone = !empty($_GET['done']);
+$stackPath = isset($_GET['path']) ? trim($_GET['path']) : '';
 
 $url = "/logterminal/$active_socket/";
 
@@ -161,6 +162,15 @@ $themeSheetJson = json_encode("themes/{$themeFile}.css");
         window.addEventListener('load', function() {
             <?php if ($showDone): ?>
                 document.getElementById('done-btn').addEventListener('click', function() {
+                    try {
+                        var stackPath = <?= json_encode($stackPath) ?>;
+                        if (stackPath) {
+                            var xhr = new XMLHttpRequest();
+                            xhr.open('POST', '/plugins/compose.manager/include/ComposeUtil.php', true);
+                            xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
+                            xhr.send('action=composeDetachFollow&path=' + encodeURIComponent(stackPath));
+                        }
+                    } catch (e) {}
                     try {
                         top.Shadowbox.close();
                     } catch (e) {}

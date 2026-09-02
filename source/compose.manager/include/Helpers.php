@@ -89,6 +89,35 @@ function getLastCmdLogFileForComposeAction($action, $path)
 }
 
 /**
+ * Suspend a live follow-logs compose session by process group so the stack keeps running
+ * after the ttyd client is detached.
+ *
+ * @param string $path Stack path
+ * @return bool True when a follow session was suspended, false otherwise
+ */
+function suspendComposeFollowProcess(string $path): bool
+{
+    $pidFile = rtrim($path, '/') . '/.compose_follow.pid';
+    if (!is_file($pidFile)) {
+        return false;
+    }
+
+    $pid = trim((string) file_get_contents($pidFile));
+    if ($pid === '' || !ctype_digit($pid)) {
+        return false;
+    }
+
+    $pgid = trim((string) shell_exec('ps -o pgid= -p ' . escapeshellarg($pid) . ' 2>/dev/null | tr -d " "'));
+    if ($pgid === '' || !ctype_digit($pgid)) {
+        return false;
+    }
+
+    exec('kill -TSTP -- -' . escapeshellarg($pgid) . ' 2>/dev/null');
+    composeLogger('Suspended live follow session for stack', ['path' => $path, 'pid' => $pid, 'pgid' => $pgid], 'user', 'info', 'compose');
+    return true;
+}
+
+/**
  * Append compose file discovery arguments to compose.sh command args.
  *
  * @param array<int, string> $composeCommand
@@ -158,6 +187,7 @@ function echoComposeCommand($action, array $options = [])
     $recreate = !empty($options['recreate']);
     $background = !empty($options['background']);
     $removeOrphans = !empty($options['removeOrphans']);
+    $followLogs = !empty($options['followLogs']);
     $unRaidVars = parse_ini_file("/var/local/emhttp/var.ini");
     if ($unRaidVars['mdState'] != "STARTED") {
         echo $plugin_root . "/scripts/arrayNotStarted.sh";
@@ -233,6 +263,10 @@ function echoComposeCommand($action, array $options = [])
             $composeCommand[] = "--debug";
         }
 
+        if ($action === 'up' && $followLogs) {
+            $composeCommand[] = "--follow-logs";
+        }
+
         if ($background) {
             // Run fully in the background using compose_background.sh.
             // Output is captured to last_cmd.log; notification sent on completion.
@@ -264,6 +298,9 @@ function echoComposeCommand($action, array $options = [])
                 $composeCommand = "/plugins/compose.manager/include/ShowTtyd.php?socket=" . urlencode($logsSocket);
             } else {
                 $composeCommand = "/plugins/compose.manager/include/ShowTtyd.php?done=1";
+                if ($action === 'up' && $followLogs) {
+                    $composeCommand .= '&path=' . urlencode($path);
+                }
             }
             echo $composeCommand;
         }

@@ -4220,6 +4220,9 @@ function performComposeAction(opts) {
     if (Object.prototype.hasOwnProperty.call(payload, 'removeOrphans')) {
         payload.removeOrphans = payload.removeOrphans ? 1 : 0;
     }
+    if (Object.prototype.hasOwnProperty.call(payload, 'followLogs')) {
+        payload.followLogs = payload.followLogs ? 1 : 0;
+    }
 
     $.post(requestUrl, payload, function(data) {
         var parsed = tryParseJson(data);
@@ -4322,7 +4325,8 @@ function ComposeUpConfirmed(path, opts) {
             action: 'composeUp',
             path: path,
             profile: opts.profile || '',
-            removeOrphans: !!opts.removeOrphans
+            removeOrphans: !!opts.removeOrphans,
+            followLogs: !!opts.followLogs
         },
         background: !!opts.background,
         suppressBackgroundNotification: !!opts.suppressBackgroundNotification,
@@ -5438,12 +5442,20 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             '</div>';
     }
 
+    var followLogsHtml = '';
+    if (action === 'up') {
+        followLogsHtml = '<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--dynamix-box-inner-div-border-color);display:flex;align-items:center;gap:8px;">' +
+            '<input type="checkbox" id="swal-follow-logs-checkbox" style="width:16px;height:16px;cursor:pointer;">' +
+            '<label for="swal-follow-logs-checkbox" style="cursor:pointer;user-select:none;margin:0;font-size:0.95em;">Follow stack logs</label>' +
+            '</div>';
+    }
+
     // Run-in-background checkbox (appended after config is fetched below)
     var bgCheckboxHtml = '<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--dynamix-box-inner-div-border-color);display:flex;align-items:center;gap:8px;">' +
         '<input type="checkbox" id="swal-run-bg-checkbox" style="width:16px;height:16px;cursor:pointer;">' +
         '<label for="swal-run-bg-checkbox" style="cursor:pointer;user-select:none;margin:0;font-size:0.95em;">Run in background</label>' +
         '</div>';
-    html += bgCheckboxHtml;
+    html += followLogsHtml + bgCheckboxHtml;
     html += '</div>';
 
     // Fetch config to determine default checkbox state, then show swal (or skip warnings)
@@ -5481,12 +5493,14 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
                 // Capture checkbox state before swal destroys the DOM
                 var runInBackground = $('#swal-run-bg-checkbox').is(':checked');
                 var removeOrphans = $('#swal-remove-orphans-checkbox').is(':checked');
+                var followLogs = action === 'up' && $('#swal-follow-logs-checkbox').is(':checked');
                 // when running in background, suppress the extra notifyBackgroundStarted popup
                 cfg.confirmedFn(path, {
                     profile: profile,
                     background: runInBackground,
                     suppressBackgroundNotification: runInBackground,
-                    removeOrphans: removeOrphans
+                    removeOrphans: removeOrphans,
+                    followLogs: followLogs
                 });
             }
         });
@@ -5501,6 +5515,10 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             if ($orphanCb.length) {
                 $orphanCb.prop('checked', removeOrphansChecked);
                 $('#swal-remove-orphans-wrap').toggle(showRemoveOrphansOption);
+            }
+            var $followCb = $('#swal-follow-logs-checkbox');
+            if ($followCb.length) {
+                $followCb.prop('checked', false);
             }
         }, 50);
     });

@@ -104,6 +104,25 @@ test_setup() {
     assert_success
 }
 
+@test "compose.sh accept the follow-logs flag at the wrapper layer" {
+    run grep -F 'follow-logs' "$COMPOSE_SCRIPT"
+    assert_success
+}
+
+@test "compose.sh follow mode keeps the compose command in foreground" {
+    # Follow mode is a wrapper behavior: isolate the follow_logs branch and verify it runs
+    # the foreground compose up path without -d, while the normal detached path remains elsewhere.
+    run sed -n '/if \[ "\$follow_logs" = true \]; then/,/else/ p' "$COMPOSE_SCRIPT"
+    assert_success
+    [[ "$output" == *'"${compose_base[@]}" -p "$name" up "${cmd_args[@]}"'* ]]
+    [[ "$output" != *'"${compose_base[@]}" -p "$name" up "${cmd_args[@]}" -d'* ]]
+}
+
+@test "compose.sh does not forward a docker --follow-logs flag" {
+    run grep -E 'docker compose .*--follow-logs' "$COMPOSE_SCRIPT"
+    [ "$status" -ne 0 ] || false
+}
+
 @test "compose.sh update action pull step uses --ignore-buildable" {
     # The update action pulls before 'up -d --build'; buildable services are handled by --build
     run grep -E 'pull --ignore-buildable' "$COMPOSE_SCRIPT"

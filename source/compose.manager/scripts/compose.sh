@@ -12,7 +12,7 @@ LOCK_TIMEOUT=${COMPOSE_LOCK_TIMEOUT:-30}
 LOCK_DIR="/var/run/compose.manager"
 
 SHORT=e:,c:,f:,p:,d:,o:,g:,s:,w:
-LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:
+LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:,follow-logs
 OPTS=$(getopt -a -n compose --options $SHORT --longoptions $LONG -- "$@")
 
 eval set -- "$OPTS"
@@ -26,6 +26,7 @@ project_dir_args=()
 cmd_args=()
 stack_path=""
 debug=false
+follow_logs=false
 lock_fd=""
 operation_exit_code=0
 
@@ -86,6 +87,7 @@ release_lock() {
 
 # Ensure lock is released on exit
 trap release_lock EXIT
+trap clear_follow_pid EXIT
 
 # Save operation result to stack directory
 save_result() {
@@ -95,6 +97,19 @@ save_result() {
     
     if [ -n "$stack_path" ] && [ -d "$stack_path" ]; then
         echo "{\"result\":\"$result\",\"exit_code\":$exit_code,\"operation\":\"$operation\",\"timestamp\":\"$(date -Iseconds)\"}" > "$stack_path/last_result.json"
+    fi
+}
+
+save_follow_pid() {
+    local pid="$1"
+    if [ -n "$stack_path" ] && [ -d "$stack_path" ]; then
+        echo "$pid" > "$stack_path/.compose_follow.pid"
+    fi
+}
+
+clear_follow_pid() {
+    if [ -n "$stack_path" ] && [ -d "$stack_path" ]; then
+        rm -f "$stack_path/.compose_follow.pid"
     fi
 }
 
@@ -176,6 +191,10 @@ do
       debug=true
       shift;
       ;;
+    --follow-logs )
+      follow_logs=true
+      shift;
+      ;;
     --)
       shift;
       break
@@ -215,11 +234,18 @@ esac
 case $command in
 
   up)
-    if [ "$debug" = true ]; then
-      log_msg "DEBUG" "${compose_base[*]} -p $name up ${cmd_args[*]} -d"
+    if [ "$follow_logs" = true ]; then
+      save_follow_pid "$$"
+      if [ "$debug" = true ]; then
+        log_msg "DEBUG" "${compose_base[*]} -p $name up ${cmd_args[*]}"
+      fi
+      "${compose_base[@]}" -p "$name" up "${cmd_args[@]}"
+    else
+      if [ "$debug" = true ]; then
+        log_msg "DEBUG" "${compose_base[*]} -p $name up ${cmd_args[*]} -d"
+      fi
+      "${compose_base[@]}" -p "$name" up "${cmd_args[@]}" -d
     fi
-    
-    "${compose_base[@]}" -p "$name" up "${cmd_args[@]}" -d
     exit_code=$?
     operation_exit_code=$exit_code
     
