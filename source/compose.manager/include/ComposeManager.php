@@ -766,6 +766,21 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                                 <span id="settings-profiles-list" style="font-family:var(--font-bitstream);"></span>
                             </div>
                         </div>
+
+                        <div class="settings-field">
+                            <label for="settings-wait-for-healthy">Wait for Healthy</label>
+                            <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+                                <input type="checkbox" id="settings-wait-for-healthy">
+                                <span>Use <code>docker compose up --wait</code> for this stack</span>
+                            </label>
+                            <div class="settings-field-help">Enable stack-level wait-for-healthy behavior. Leave unchecked to inherit the global default. This cannot be combined with Follow stack logs in the same command.</div>
+                        </div>
+
+                        <div class="settings-field">
+                            <label for="settings-wait-timeout">Wait Timeout</label>
+                            <input type="number" id="settings-wait-timeout" min="10" max="1800" step="10" placeholder="300">
+                            <div class="settings-field-help">Seconds to wait for the stack to become healthy. Leave empty to use the global default timeout.</div>
+                        </div>
                     </div>
 
                     <!-- Labels & Overrides -->

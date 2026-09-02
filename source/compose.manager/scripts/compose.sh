@@ -12,7 +12,7 @@ LOCK_TIMEOUT=${COMPOSE_LOCK_TIMEOUT:-30}
 LOCK_DIR="/var/run/compose.manager"
 
 SHORT=e:,c:,f:,p:,d:,o:,g:,s:,w:
-LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:,follow-logs
+LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:,wait,wait-timeout:
 OPTS=$(getopt -a -n compose --options $SHORT --longoptions $LONG -- "$@")
 
 eval set -- "$OPTS"
@@ -27,6 +27,8 @@ cmd_args=()
 stack_path=""
 debug=false
 follow_logs=false
+wait_for_healthy=false
+wait_timeout=""
 lock_fd=""
 operation_exit_code=0
 
@@ -195,6 +197,14 @@ do
       follow_logs=true
       shift;
       ;;
+    --wait )
+      wait_for_healthy=true
+      shift;
+      ;;
+    --wait-timeout )
+      wait_timeout="$2"
+      shift 2
+      ;;
     --)
       shift;
       break
@@ -234,6 +244,19 @@ esac
 case $command in
 
   up)
+    if [ "$follow_logs" = true ] && [ "$wait_for_healthy" = true ]; then
+      log_msg "ERROR" "Follow logs and wait-for-healthy cannot be used together for the same compose up command"
+      echo "✗ Follow stack logs and wait-for-healthy cannot be enabled at the same time."
+      exit 1
+    fi
+
+    if [ "$wait_for_healthy" = true ]; then
+      cmd_args+=("--wait")
+      if [ -n "$wait_timeout" ]; then
+        cmd_args+=("--wait-timeout" "$wait_timeout")
+      fi
+    fi
+
     if [ "$follow_logs" = true ]; then
       save_follow_pid "$$"
       if [ "$debug" = true ]; then

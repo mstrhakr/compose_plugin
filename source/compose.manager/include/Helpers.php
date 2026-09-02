@@ -159,6 +159,38 @@ function appendComposeEnvFileArg(array &$composeCommand, array $args): void
     }
 }
 
+function resolveStackWaitSettings(string $stackPath, array $cfg): array
+{
+    $stackName = basename($stackPath);
+    $stackBase = rtrim($stackPath, '/');
+    $waitFile = $stackBase . '/wait_for_healthy';
+    $timeoutFile = $stackBase . '/wait_timeout';
+
+    $globalEnabled = (($cfg['WAIT_FOR_HEALTHY_DEFAULT'] ?? 'false') === 'true');
+    $globalTimeout = (string) ($cfg['WAIT_FOR_HEALTHY_TIMEOUT_DEFAULT'] ?? '300');
+
+    $stackEnabled = null;
+    if (is_file($waitFile)) {
+        $raw = trim((string) file_get_contents($waitFile));
+        if ($raw !== '') {
+            $stackEnabled = ($raw === 'true' || $raw === '1');
+        }
+    }
+
+    $stackTimeout = null;
+    if (is_file($timeoutFile)) {
+        $raw = trim((string) file_get_contents($timeoutFile));
+        if ($raw !== '') {
+            $stackTimeout = $raw;
+        }
+    }
+
+    $enabled = $stackEnabled !== null ? $stackEnabled : $globalEnabled;
+    $timeout = $stackTimeout !== null && $stackTimeout !== '' ? $stackTimeout : $globalTimeout;
+
+    return ['enabled' => $enabled, 'timeout' => $timeout, 'stackName' => $stackName];
+}
+
 /**
  * Build and echo a compose command for a single stack.
  *
@@ -188,6 +220,17 @@ function echoComposeCommand($action, array $options = [])
     $background = !empty($options['background']);
     $removeOrphans = !empty($options['removeOrphans']);
     $followLogs = !empty($options['followLogs']);
+    $waitForHealthy = false;
+    $waitTimeout = (string) ($cfg['WAIT_FOR_HEALTHY_TIMEOUT_DEFAULT'] ?? '300');
+    if ($action === 'up') {
+        $resolvedWait = resolveStackWaitSettings($path, $cfg);
+        $waitForHealthy = !empty($resolvedWait['enabled']);
+        $waitTimeout = (string) ($resolvedWait['timeout'] ?? $waitTimeout);
+        $waitForHealthy = isset($_POST['waitForHealthy']) ? ((string) $_POST['waitForHealthy'] === '1' || strtolower((string) $_POST['waitForHealthy']) === 'true') : $waitForHealthy;
+        if (isset($_POST['waitTimeout']) && trim((string) $_POST['waitTimeout']) !== '') {
+            $waitTimeout = trim((string) $_POST['waitTimeout']);
+        }
+    }
     $unRaidVars = parse_ini_file("/var/local/emhttp/var.ini");
     if ($unRaidVars['mdState'] != "STARTED") {
         echo $plugin_root . "/scripts/arrayNotStarted.sh";
@@ -265,6 +308,17 @@ function echoComposeCommand($action, array $options = [])
 
         if ($action === 'up' && $followLogs) {
             $composeCommand[] = "--follow-logs";
+        }
+
+        if ($action === 'up' && $waitForHealthy) {
+            if ($followLogs) {
+                composeLogger("Blocked wait-for-healthy with follow logs enabled", ['action' => $action, 'path' => $path], 'user', 'warning', 'compose');
+                echo json_encode(['error' => 'wait_conflict', 'message' => 'Follow stack logs and wait-for-healthy cannot be enabled at the same time.']);
+                return;
+            }
+            $composeCommand[] = "--wait";
+            $composeCommand[] = "--wait-timeout";
+            $composeCommand[] = (string) $waitTimeout;
         }
 
         if ($background) {

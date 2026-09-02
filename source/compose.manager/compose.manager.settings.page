@@ -2725,6 +2725,27 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dd>
         </dl>
 
+        <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Wait for Healthy by Default)_:</dt>
+            <dd>
+                <input type="checkbox" name="WAIT_FOR_HEALTHY_DEFAULT" id="WAIT_FOR_HEALTHY_DEFAULT" class="compose-toggle" <?= ($cfg['WAIT_FOR_HEALTHY_DEFAULT'] ?? 'false') == 'true' ? 'checked' : '' ?>>
+                <blockquote class="inline_help">
+                    Default behavior for stack <code>docker compose up</code> calls: when enabled, compose waits for the stack to report healthy before returning.
+                    This is a global default and can still be overridden per stack. <strong>Follow stack logs</strong> and <strong>wait for healthy</strong> are mutually exclusive in one command.
+                </blockquote>
+            </dd>
+        </dl>
+
+        <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Healthy Wait Timeout Default)_:</dt>
+            <dd>
+                <input type="number" name="WAIT_FOR_HEALTHY_TIMEOUT_DEFAULT" min="10" max="1800" step="10" value="<?= $cfg['WAIT_FOR_HEALTHY_TIMEOUT_DEFAULT'] ?? '300' ?>" style="width:90px;"> _(seconds)_
+                <blockquote class="inline_help">
+                    Timeout used with the default wait-for-healthy behavior. Each stack can override this value if needed.
+                </blockquote>
+            </dd>
+        </dl>
+
         <div class="title"><span class="left"><i class="fa fa-plus-square icon"></i>_(New Stack Configuration)_</span></div>
         <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Default settings applied automatically when creating new compose stacks.</p>
 

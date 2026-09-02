@@ -123,6 +123,26 @@ test_setup() {
     [ "$status" -ne 0 ] || false
 }
 
+@test "compose.sh wait-for-healthy adds --wait and --wait-timeout" {
+    run grep -E -- '--wait|--wait-timeout' "$COMPOSE_SCRIPT"
+    assert_success
+    [[ "$output" == *'cmd_args+=("--wait")'* ]]
+    [[ "$output" == *'cmd_args+=("--wait-timeout" "$wait_timeout")'* ]]
+}
+
+@test "compose.sh rejects combining follow logs and wait-for-healthy" {
+    run grep -F 'Follow logs and wait-for-healthy cannot be used together' "$COMPOSE_SCRIPT"
+    assert_success
+}
+
+@test "autostart script honors wait-for-healthy defaults and stack overrides" {
+    local autostart_script="$BATS_TEST_DIRNAME/../../source/compose.manager/event/docker_started"
+    run grep -F 'resolve_stack_wait_settings' "$autostart_script"
+    assert_success
+    run grep -F 'cmd_args+=(--wait --wait-timeout "$wait_timeout_value")' "$autostart_script"
+    assert_success
+}
+
 @test "compose.sh update action pull step uses --ignore-buildable" {
     # The update action pulls before 'up -d --build'; buildable services are handled by --build
     run grep -E 'pull --ignore-buildable' "$COMPOSE_SCRIPT"
