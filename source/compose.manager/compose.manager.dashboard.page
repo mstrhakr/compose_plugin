@@ -552,10 +552,11 @@ $script .= <<<'EOT'
             if (data.partial > 0) statusText += ', Partial: ' + data.partial;
             $('#compose_stacks_status').text(statusText);
 
-            // Hide compose-managed containers from the Docker Containers dashboard tile.
-            // Done before rendering so a render failure can't disable hiding.
+            // Render the Compose stacks independently from the Docker widget hide logic.
+            // The hiding pass is secondary and best-effort; it must never block the tile
+            // from loading when the Docker tile is slow or unavailable.
             if (window.hideDockerComposeContainers && data.composeContainerNames && data.composeContainerNames.length > 0) {
-                setupComposeContainerHiding(data.composeContainerNames);
+                scheduleComposeContainerHiding(data.composeContainerNames);
             }
 
             // Clear container cache since DOM will be rebuilt
@@ -742,6 +743,30 @@ $script .= <<<'EOT'
     var composeContainerNameSet = null;
     var hideContainersSetup = false;
 
+    function scheduleComposeContainerHiding(containerNames) {
+        if (!containerNames || containerNames.length === 0) return;
+
+        var names = containerNames.slice();
+        var attempts = 0;
+        var maxAttempts = 120;
+
+        function tryHide() {
+            if (!window.hideDockerComposeContainers) return;
+            if ($('#docker_view').length) {
+                setupComposeContainerHiding(names);
+            }
+        }
+
+        tryHide();
+        var poller = setInterval(function() {
+            attempts += 1;
+            tryHide();
+            if (attempts >= maxAttempts) {
+                clearInterval(poller);
+            }
+        }, 1000);
+    }
+
     function setupComposeContainerHiding(containerNames) {
         if (!containerNames || containerNames.length === 0) return;
 
@@ -760,7 +785,8 @@ $script .= <<<'EOT'
         if (!hideContainersSetup) {
             hideContainersSetup = true;
             // Primary trigger: jQuery ajaxComplete catches DashboardApps.php AJAX loads
-            // This fires AFTER the success callback, so DOM is already updated
+            // This fires AFTER the success callback, so DOM is already updated.
+            // We keep it as a best-effort hook; it never blocks the main Compose tile.
             $(document).ajaxComplete(function(event, xhr, settings) {
                 if (settings && settings.url && settings.url.indexOf('DashboardApps') !== -1) {
                     debugLog('DashboardApps.php AJAX complete, scheduling container hiding');
