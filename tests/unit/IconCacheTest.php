@@ -33,6 +33,48 @@ class IconCacheTest extends TestCase
         parent::tearDown();
     }
 
+    public function testSyncDockerManagerIconsReusesSingleDockerPsInvocation(): void
+    {
+        $stubDir = sys_get_temp_dir() . '/compose-docker-stub-' . bin2hex(random_bytes(6));
+        $counterFile = $stubDir . '/docker-call-count';
+        $pngPath = $stubDir . '/docker-sync.png';
+
+        mkdir($stubDir, 0755, true);
+        mkdir(COMPOSE_DM_ICON_RAM_DIR, 0755, true);
+
+        file_put_contents($stubDir . '/docker', <<<'SH'
+#!/bin/sh
+count_file="${COMPOSE_DOCKER_COUNT_FILE:-/tmp/compose-docker-call-count}"
+count=0
+if [ -f "$count_file" ]; then
+    count=$(cat "$count_file" 2>/dev/null || echo 0)
+fi
+count=$((count + 1))
+printf '%s' "$count" > "$count_file"
+printf '%s\n' 'ct-a	https://example.com/a.png'
+printf '%s\n' 'ct-b	https://example.com/b.png'
+SH
+        );
+        chmod($stubDir . '/docker', 0755);
+        file_put_contents($pngPath, base64_decode(self::TINY_PNG_BASE64));
+
+        putenv('COMPOSE_DOCKER_COUNT_FILE=' . $counterFile);
+        $oldPath = getenv('PATH');
+        putenv('PATH=' . $stubDir . ':' . ($oldPath !== false ? $oldPath : ''));
+
+        compose_sync_docker_manager_icons_for_source('https://example.com/a.png', $pngPath);
+        compose_sync_docker_manager_icons_for_source('https://example.com/b.png', $pngPath);
+
+        $this->assertSame('1', trim((string) file_get_contents($counterFile)));
+
+        putenv('PATH=' . ($oldPath !== false ? $oldPath : ''));
+        putenv('COMPOSE_DOCKER_COUNT_FILE');
+        @unlink($counterFile);
+        @unlink($pngPath);
+        @unlink($stubDir . '/docker');
+        @rmdir($stubDir);
+    }
+
     private function removeDir(string $dir): void
     {
         foreach (scandir($dir) ?: [] as $entry) {
