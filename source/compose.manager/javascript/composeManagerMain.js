@@ -4125,10 +4125,10 @@ function composeShowIdentityChooser(info) {
     var html = composeEscapeHtml(info.message || 'This stack has an ambiguous Docker Compose project name.');
 
     if (project && legacy && folder) {
-        html += "<br><br><button type='button' class='compose-identity-choice' data-project='" + composeEscapeHtml(project) +
-            "' data-choice='" + composeEscapeHtml(legacy) + "'>Keep imported: " + composeEscapeHtml(legacy) + "</button>" +
-            " <button type='button' class='compose-identity-choice' data-project='" + composeEscapeHtml(project) +
-            "' data-choice='" + composeEscapeHtml(folder) + "'>Use folder: " + composeEscapeHtml(folder) + "</button>";
+        html += "<br><br><button type='button' class='compose-identity-choice' data-project='" + composeEscapeAttr(project) +
+            "' data-choice='" + composeEscapeAttr(legacy) + "'>Keep imported: " + composeEscapeHtml(legacy) + "</button>" +
+            " <button type='button' class='compose-identity-choice' data-project='" + composeEscapeAttr(project) +
+            "' data-choice='" + composeEscapeAttr(folder) + "'>Use folder: " + composeEscapeHtml(folder) + "</button>";
     }
 
     swal({
