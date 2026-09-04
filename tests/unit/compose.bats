@@ -105,9 +105,9 @@ test_setup() {
 }
 
 @test "compose.sh accepts the follow-logs long option" {
-    run grep -F 'follow-logs' "$COMPOSE_SCRIPT"
+    run grep -F -- '--follow-logs )' "$COMPOSE_SCRIPT"
     assert_success
-    run grep -F 'follow-logs)' "$COMPOSE_SCRIPT"
+    run grep -F 'follow_logs=true' "$COMPOSE_SCRIPT"
     assert_success
 }
 
