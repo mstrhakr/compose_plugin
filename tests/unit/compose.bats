@@ -104,8 +104,15 @@ test_setup() {
     assert_success
 }
 
-@test "compose.sh accept the follow-logs flag at the wrapper layer" {
+@test "compose.sh accepts the follow-logs long option" {
     run grep -F 'follow-logs' "$COMPOSE_SCRIPT"
+    assert_success
+    run grep -F 'follow-logs)' "$COMPOSE_SCRIPT"
+    assert_success
+}
+
+@test "compose.sh combines exit cleanup handlers into one trap" {
+    run grep -F "trap 'release_lock; clear_follow_pid' EXIT" "$COMPOSE_SCRIPT"
     assert_success
 }
 

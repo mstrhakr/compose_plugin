@@ -97,7 +97,23 @@ function getLastCmdLogFileForComposeAction($action, $path)
  */
 function suspendComposeFollowProcess(string $path): bool
 {
-    $pidFile = rtrim($path, '/') . '/.compose_follow.pid';
+    $stackRoot = rtrim($path, '/');
+    if ($stackRoot === '' || !is_dir($stackRoot)) {
+        return false;
+    }
+
+    $realStackRoot = realpath($stackRoot);
+    if ($realStackRoot === false) {
+        return false;
+    }
+
+    global $compose_root;
+    $realComposeRoot = realpath($compose_root ?? '');
+    if ($realComposeRoot !== false && strncmp($realStackRoot, $realComposeRoot . '/', strlen($realComposeRoot) + 1) !== 0 && $realStackRoot !== $realComposeRoot) {
+        return false;
+    }
+
+    $pidFile = $realStackRoot . '/.compose_follow.pid';
     if (!is_file($pidFile)) {
         return false;
     }
@@ -113,7 +129,7 @@ function suspendComposeFollowProcess(string $path): bool
     }
 
     exec('kill -TSTP -- -' . escapeshellarg($pgid) . ' 2>/dev/null');
-    composeLogger('Suspended live follow session for stack', ['path' => $path, 'pid' => $pid, 'pgid' => $pgid], 'user', 'info', 'compose');
+    composeLogger('Suspended live follow session for stack', ['path' => $realStackRoot, 'pid' => $pid, 'pgid' => $pgid], 'user', 'info', 'compose');
     return true;
 }
 
