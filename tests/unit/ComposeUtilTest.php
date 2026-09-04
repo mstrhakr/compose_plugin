@@ -167,6 +167,42 @@ class ComposeUtilTest extends TestCase
     }
 
     /**
+     * Test echoComposeCommand can launch a live follow-logs session without detach.
+     */
+    public function testEchoComposeCommandFollowLogsUpUsesLiveLogSocket(): void
+    {
+        global $compose_root;
+        $tempDir = $this->createTempDir();
+        $compose_root = $tempDir;
+
+        $stackName = 'test-stack';
+        $stackDir = "$tempDir/$stackName";
+        mkdir($stackDir, 0755, true);
+        file_put_contents("$stackDir/" . COMPOSE_FILE_NAMES[0], "services:\n  web:\n    image: nginx\n");
+        file_put_contents("$stackDir/name", $stackName);
+
+        $varIniDir = sys_get_temp_dir() . '/emhttp_test_' . uniqid();
+        mkdir($varIniDir, 0755, true);
+        file_put_contents("$varIniDir/var.ini", "mdState=STARTED\nfsState=Started\n");
+        \PluginTests\StreamWrapper\UnraidStreamWrapper::addMapping('/var/local/emhttp/var.ini', "$varIniDir/var.ini");
+
+        $_POST['path'] = $stackDir;
+        $_POST['profile'] = '';
+
+        ob_start();
+        echoComposeCommand('up', ['followLogs' => true]);
+        $output = ob_get_clean();
+
+        $this->assertStringContainsString('/plugins/compose.manager/include/ShowTtyd.php?done=1', $output);
+        $this->assertStringContainsString('path=', $output);
+        $this->assertStringNotContainsString('/plugins/compose.manager/include/ShowTtyd.php?socket=', $output);
+
+        unlink("$varIniDir/var.ini");
+        rmdir($varIniDir);
+        unset($_POST['path'], $_POST['profile']);
+    }
+
+    /**
      * Test echoComposeCommand with profile
      */
     public function testEchoComposeCommandWithProfile(): void

@@ -1009,6 +1009,12 @@ switch ($_POST['action']) {
         $defaultProfileFile = "$compose_root/$script/default_profile";
         $defaultProfile = is_file($defaultProfileFile) ? trim(file_get_contents($defaultProfileFile)) : "";
 
+        // Get wait-for-healthy settings
+        $waitForHealthyFile = "$compose_root/$script/wait_for_healthy";
+        $waitForHealthy = is_file($waitForHealthyFile) ? trim(file_get_contents($waitForHealthyFile)) : "";
+        $waitTimeoutFile = "$compose_root/$script/wait_timeout";
+        $waitTimeout = is_file($waitTimeoutFile) ? trim(file_get_contents($waitTimeoutFile)) : "";
+
         // Get additional compose files (one path per line)
         $extraComposeFilesFile = "$compose_root/$script/extra_compose_files";
         $extraComposeFiles = is_file($extraComposeFilesFile) ? trim(file_get_contents($extraComposeFilesFile)) : "";
@@ -1096,6 +1102,8 @@ switch ($_POST['action']) {
             'iconUrl' => $iconUrl,
             'webuiUrl' => $webuiUrl,
             'defaultProfile' => $defaultProfile,
+            'waitForHealthy' => ($waitForHealthy === 'true' || $waitForHealthy === '1'),
+            'waitTimeout' => $waitTimeout,
             'extraComposeFiles' => $extraComposeFiles,
             'composeFileCandidates' => $composeFileCandidates,
             'editableComposeFiles' => $stackInfo->getEditableComposeFiles(),
@@ -1207,6 +1215,8 @@ switch ($_POST['action']) {
 
         $envPath = isset($_POST['envPath']) ? trim($_POST['envPath']) : "";
         $defaultProfile = isset($_POST['defaultProfile']) ? trim($_POST['defaultProfile']) : "";
+        $waitForHealthy = isset($_POST['waitForHealthy']) ? strtolower(trim((string) $_POST['waitForHealthy'])) : "false";
+        $waitTimeout = isset($_POST['waitTimeout']) ? trim((string) $_POST['waitTimeout']) : "";
         $useDefaultComposeFiles = isset($_POST['useDefaultComposeFiles'])
             && strtolower(trim((string) $_POST['useDefaultComposeFiles'])) === 'true';
 
@@ -1332,6 +1342,36 @@ switch ($_POST['action']) {
                 @unlink($defaultProfileFile);
         } else {
             file_put_contents($defaultProfileFile, $defaultProfile);
+        }
+
+        // Set stack wait-for-healthy override
+        $waitForHealthyFile = "$compose_root/$script/wait_for_healthy";
+        if ($waitForHealthy === 'true' || $waitForHealthy === '1') {
+            file_put_contents($waitForHealthyFile, 'true');
+        } elseif ($waitForHealthy === 'false' || $waitForHealthy === '0' || $waitForHealthy === '') {
+            if (is_file($waitForHealthyFile)) {
+                @unlink($waitForHealthyFile);
+            }
+        }
+
+        // Set stack wait timeout override
+        $waitTimeoutFile = "$compose_root/$script/wait_timeout";
+        if (trim((string) $waitTimeout) === '') {
+            if (is_file($waitTimeoutFile)) {
+                @unlink($waitTimeoutFile);
+            }
+        } else {
+            $waitTimeoutValue = (string) $waitTimeout;
+            if (!ctype_digit($waitTimeoutValue)) {
+                $waitTimeoutValue = preg_replace('/[^0-9]/', '', $waitTimeoutValue);
+            }
+            if ($waitTimeoutValue === '') {
+                if (is_file($waitTimeoutFile)) {
+                    @unlink($waitTimeoutFile);
+                }
+            } else {
+                file_put_contents($waitTimeoutFile, $waitTimeoutValue);
+            }
         }
 
         // Set additional compose files (skipped entirely when the field was not sent)
@@ -1522,6 +1562,13 @@ switch ($_POST['action']) {
                         $webUITemplate = $labels[$docker_label_webui] ?? '';
                         $rawContainer['Icon'] = $labels[$docker_label_icon] ?? '';
                         $rawContainer['Shell'] = $labels[$docker_label_shell] ?? '/bin/bash';
+
+                        if ($ctName !== '' && trim((string) $rawContainer['Icon']) !== '') {
+                            compose_seed_docker_manager_icon(
+                                compose_fetch_icon_to_cache((string) $rawContainer['Icon']),
+                                $ctName
+                            );
+                        }
 
                         // Resolve WebUI URL server-side (matching Unraid's DockerClient logic)
                         $networkMode = $inspect['HostConfig']['NetworkMode'] ?? 'bridge';
@@ -2420,5 +2467,45 @@ switch ($_POST['action']) {
             ];
         }
         echo json_encode($out);
+        break;
+
+    case 'getProjectIdentities':
+        // Read-only migration preview: folder, display name, effective runtime
+        // project, live-container match, and whether owner input is required.
+        $identities = [];
+        foreach (StackInfo::allFromRoot($compose_root, true) as $stackInfo) {
+            $identity = $stackInfo->identity->toArray();
+            $identity['displayName'] = $stackInfo->getName();
+            $identities[] = $identity;
+        }
+        echo json_encode([
+            'result' => 'success',
+            'identities' => $identities,
+            'blocked' => count(array_filter($identities, static fn(array $i): bool => !$i['resolved'])),
+        ]);
+        break;
+
+    case 'setProjectIdentity':
+        // Owner decision for a stack whose runtime identity could not be proven.
+        $stackName = isset($_POST['stackName']) ? basename(trim($_POST['stackName'])) : '';
+        $chosen = isset($_POST['projectName']) ? trim($_POST['projectName']) : '';
+        if ($stackName === '' || $chosen === '') {
+            echo json_encode(['result' => 'error', 'message' => 'Stack and project name are required.']);
+            break;
+        }
+        try {
+            $stackInfo = StackInfo::fromProject($compose_root, $stackName);
+            $stackInfo->applyIdentityChoice($chosen);
+        } catch (\Throwable $e) {
+            composeLogger('Failed to apply project identity choice', [
+                'stackName' => $stackName,
+                'projectName' => $chosen,
+                'error' => $e->getMessage(),
+            ], 'user', 'error', 'identity');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
+            break;
+        }
+        composeLogger("Owner pinned compose project identity '$chosen' for '$stackName'", null, 'user', 'info', 'identity');
+        echo json_encode(['result' => 'success', 'identity' => $stackInfo->identity->toArray()]);
         break;
 }

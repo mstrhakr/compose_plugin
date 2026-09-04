@@ -40,6 +40,9 @@ define('PENDING_RECHECK_FILE',       $_bootConfigTemp . '/pending-recheck.json')
 define('COMPOSE_TTYD_SOCKET_DIR',    sys_get_temp_dir());
 define('COMPOSE_SKIP_TTYD_EXEC',     true);
 define('COMPOSE_ICON_CACHE_DIR',     sys_get_temp_dir() . '/compose_manager_icon_cache_test');
+define('COMPOSE_DM_ICON_RAM_DIR',     sys_get_temp_dir() . '/compose_manager_dm_images_ram');
+define('COMPOSE_DM_ICON_PERSIST_DIR', sys_get_temp_dir() . '/compose_manager_dm_images');
+define('COMPOSE_DM_WEBUI_INFO_FILE',  sys_get_temp_dir() . '/compose_manager_dm_docker.json');
 // Point to the dev-env resvg binary when present; plugin path used on real Unraid
 define('COMPOSE_RESVG_BIN',          is_executable('/tmp/resvg') ? '/tmp/resvg'
     : '/usr/local/emhttp/plugins/compose.manager/bin/resvg');
@@ -98,3 +101,9 @@ if (!is_dir($testComposeRoot)) {
 
 // Set compose_root global (used by plugin)
 $GLOBALS['compose_root'] = $testComposeRoot;
+
+// Legacy project-identity migration must never shell out to the host's Docker
+// during tests. Default to "Docker reachable, no compose resources"; individual
+// tests override this with ProjectIdentity::setProbe().
+require_once '/usr/local/emhttp/plugins/compose.manager/include/ProjectIdentity.php';
+ProjectIdentity::setProbe(static fn(): array => []);

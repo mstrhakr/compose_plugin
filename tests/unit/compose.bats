@@ -104,6 +104,52 @@ test_setup() {
     assert_success
 }
 
+@test "compose.sh accepts the follow-logs long option" {
+    run grep -F -- '--follow-logs )' "$COMPOSE_SCRIPT"
+    assert_success
+    run grep -F 'follow_logs=true' "$COMPOSE_SCRIPT"
+    assert_success
+}
+
+@test "compose.sh combines exit cleanup handlers into one trap" {
+    run grep -F "trap 'release_lock; clear_follow_pid' EXIT" "$COMPOSE_SCRIPT"
+    assert_success
+}
+
+@test "compose.sh follow mode keeps the compose command in foreground" {
+    # Follow mode is a wrapper behavior: isolate the follow_logs branch and verify it runs
+    # the foreground compose up path without -d, while the normal detached path remains elsewhere.
+    run sed -n '/if \[ "\$follow_logs" = true \]; then/,/else/ p' "$COMPOSE_SCRIPT"
+    assert_success
+    [[ "$output" == *'"${compose_base[@]}" -p "$name" up "${cmd_args[@]}"'* ]]
+    [[ "$output" != *'"${compose_base[@]}" -p "$name" up "${cmd_args[@]}" -d'* ]]
+}
+
+@test "compose.sh does not forward a docker --follow-logs flag" {
+    run grep -E 'docker compose .*--follow-logs' "$COMPOSE_SCRIPT"
+    [ "$status" -ne 0 ] || false
+}
+
+@test "compose.sh wait-for-healthy adds --wait and --wait-timeout" {
+    run grep -E -- '--wait|--wait-timeout' "$COMPOSE_SCRIPT"
+    assert_success
+    [[ "$output" == *'cmd_args+=("--wait")'* ]]
+    [[ "$output" == *'cmd_args+=("--wait-timeout" "$wait_timeout")'* ]]
+}
+
+@test "compose.sh rejects combining follow logs and wait-for-healthy" {
+    run grep -F 'Follow logs and wait-for-healthy cannot be used together' "$COMPOSE_SCRIPT"
+    assert_success
+}
+
+@test "autostart script honors wait-for-healthy defaults and stack overrides" {
+    local autostart_script="$BATS_TEST_DIRNAME/../../source/compose.manager/event/docker_started"
+    run grep -F 'resolve_stack_wait_settings' "$autostart_script"
+    assert_success
+    run grep -F 'cmd_args+=(--wait --wait-timeout "$wait_timeout_value")' "$autostart_script"
+    assert_success
+}
+
 @test "compose.sh update action pull step uses --ignore-buildable" {
     # The update action pulls before 'up -d --build'; buildable services are handled by --build
     run grep -E 'pull --ignore-buildable' "$COMPOSE_SCRIPT"

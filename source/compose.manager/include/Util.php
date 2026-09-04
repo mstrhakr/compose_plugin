@@ -1,6 +1,7 @@
 <?php
 
 require_once(__DIR__ . '/ProjectNameSanitizer.php');
+require_once(__DIR__ . '/ProjectIdentity.php');
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Defines.php");
 require_once("/usr/local/emhttp/plugins/dynamix/include/Wrappers.php");
 
@@ -94,6 +95,53 @@ if (!function_exists('compose_get_icon_cache_path')) {
     }
 }
 
+if (!function_exists('compose_bytes_are_png')) {
+    function compose_bytes_are_png(string $bytes): bool
+    {
+        return substr($bytes, 0, 8) === "\x89PNG\r\n\x1a\n";
+    }
+}
+
+if (!function_exists('compose_file_is_png')) {
+    function compose_file_is_png(string $path): bool
+    {
+        if ($path === '' || !is_file($path)) {
+            return false;
+        }
+        $fh = @fopen($path, 'rb');
+        if ($fh === false) {
+            return false;
+        }
+        $head = (string) fread($fh, 8);
+        fclose($fh);
+        return compose_bytes_are_png($head);
+    }
+}
+
+if (!function_exists('compose_icon_cache_is_stale')) {
+    /** Cached icons revalidate once per TTL window; local sources follow mtime. */
+    function compose_icon_cache_is_stale(string $source, string $cachePath, int $ttlSeconds = 86400): bool
+    {
+        if (!is_file($cachePath)) {
+            return true;
+        }
+        if (!compose_file_is_png($cachePath)) {
+            return true;
+        }
+
+        $cachedAt = (int) @filemtime($cachePath);
+        if ($cachedAt <= 0) {
+            return true;
+        }
+
+        if (strpos($source, '/') === 0 && is_file($source)) {
+            return (int) @filemtime($source) > $cachedAt;
+        }
+
+        return (time() - $cachedAt) > $ttlSeconds;
+    }
+}
+
 if (!function_exists('compose_icon_ext_to_mime')) {
     function compose_icon_ext_to_mime(string $ext): string
     {
@@ -110,16 +158,30 @@ if (!function_exists('compose_icon_ext_to_mime')) {
 }
 
 if (!function_exists('compose_icon_browser_url')) {
-    /** Return the URL the browser should use: proxy for http(s), passthrough otherwise. */
+    /**
+     * Return the URL the browser should use: proxy for http(s), passthrough otherwise.
+     * Data URIs are never proxied — the base64 payload would blow past URL length limits.
+     */
     function compose_icon_browser_url(string $src): string
     {
         $src = trim($src);
         if ($src === '') {
             return '';
         }
-        if (strncasecmp($src, 'http://', 7) === 0 || strncasecmp($src, 'https://', 8) === 0) {
+        if (str_starts_with($src, '/plugins/compose.manager/IconCache.php?')) {
+            return $src;
+        }
+        if (str_starts_with($src, '/plugins/compose.manager/images/question.png')) {
+            return $src;
+        }
+
+        $isRemote = strncasecmp($src, 'http://', 7) === 0 || strncasecmp($src, 'https://', 8) === 0;
+        $isCacheableLocal = str_starts_with($src, '/mnt/') || str_starts_with($src, '/boot/config/plugins/compose.manager/');
+
+        if ($isRemote || $isCacheableLocal) {
             return '/plugins/compose.manager/IconCache.php?src=' . urlencode($src);
         }
+
         return $src;
     }
 }
@@ -231,7 +293,7 @@ if (!function_exists('compose_fetch_icon_to_cache')) {
 
         $cachePath = compose_get_icon_cache_path($source);
 
-        if (!$forceRefresh && file_exists($cachePath)) {
+        if (!$forceRefresh && compose_file_is_png($cachePath)) {
             composeLogger('Icon cache hit', ['source' => $source, 'cache' => $cachePath], 'system', 'debug', 'icon-cache');
             return $cachePath;
         }
@@ -331,41 +393,185 @@ if (!function_exists('compose_fetch_icon_to_cache')) {
             return '';
         }
 
-        $written = file_put_contents($cachePath, $pngBytes) !== false;
-        if ($written) {
-            composeLogger('Icon cached', ['source' => $source, 'cache' => $cachePath, 'bytes' => strlen($pngBytes)], 'system', 'debug', 'icon-cache');
+        // Docker Manager renders cache files as PNG by extension, so never
+        // store non-PNG bytes even if conversion silently passed them through.
+        if (!compose_bytes_are_png($pngBytes)) {
+            composeLogger('Icon conversion did not produce PNG; not caching', ['source' => $source, 'mime' => $mimeHint], 'system', 'warning', 'icon-cache');
+            return '';
         }
-        return $written ? $cachePath : '';
+
+        $written = false;
+        $tmpPath = @tempnam($cacheDir, 'icon_');
+        if ($tmpPath !== false) {
+            // Publish atomically so a failed refresh never truncates a good icon.
+            // chmod is best-effort on some filesystems; the rename is the real
+            // success gate for the published cache entry.
+            if (file_put_contents($tmpPath, $pngBytes) !== false) {
+                @chmod($tmpPath, 0644);
+                if (@rename($tmpPath, $cachePath)) {
+                    $written = true;
+                } else {
+                    @unlink($tmpPath);
+                }
+            } else {
+                @unlink($tmpPath);
+            }
+        }
+        if (!$written) {
+            return '';
+        }
+
+        composeLogger('Icon cached', ['source' => $source, 'cache' => $cachePath, 'bytes' => strlen($pngBytes)], 'system', 'debug', 'icon-cache');
+        compose_sync_docker_manager_icons_for_source($source, $cachePath);
+
+        return $cachePath;
     }
 }
 
 if (!function_exists('compose_seed_docker_manager_icon')) {
-    /** Copy a cached PNG into both Docker Manager icon cache locations. */
+    /**
+     * Mirror a cached PNG into both Docker Manager icon cache locations.
+     *
+     * Docker Manager downloads icon label URLs verbatim, so an SVG (or any
+     * non-PNG) source leaves a corrupt `<container>-icon.png` behind that the
+     * browser cannot render. Existing files are therefore replaced whenever
+     * they are not byte-identical PNG copies of our converted cache entry.
+     */
     function compose_seed_docker_manager_icon(string $cachedPngPath, string $containerName): void
     {
-        if ($cachedPngPath === '' || !file_exists($cachedPngPath)) {
+        if ($cachedPngPath === '' || !compose_file_is_png($cachedPngPath)) {
             return;
         }
         if (!preg_match('#^[a-zA-Z0-9][a-zA-Z0-9._-]*$#', $containerName)) {
             return;
         }
 
-        $destName = $containerName . '-icon.png';
-        $targets  = [
-            '/usr/local/emhttp/state/plugins/dynamix.docker.manager/images/' . $destName,
-            '/var/lib/docker/unraid/images/' . $destName,
-        ];
+        $iconName = $containerName . '-icon.png';
+        $ramPath  = COMPOSE_DM_ICON_RAM_DIR . '/' . $iconName;
+        $targets  = [$ramPath, COMPOSE_DM_ICON_PERSIST_DIR . '/' . $iconName];
+
+        $sourceHash = @md5_file($cachedPngPath);
+        $seeded = false;
 
         foreach ($targets as $dest) {
-            if (file_exists($dest)) {
-                continue; // DM already has it; don't overwrite
+            if (is_file($dest) && compose_file_is_png($dest) && @md5_file($dest) === $sourceHash) {
+                continue;
             }
+
             $dir = dirname($dest);
-            if (!is_dir($dir)) {
-                @mkdir($dir, 0755, true);
+            if (!is_dir($dir) && !@mkdir($dir, 0755, true) && !is_dir($dir)) {
+                continue;
             }
-            if (@copy($cachedPngPath, $dest)) {
-                composeLogger('Seeded Docker Manager icon cache', ['container' => $containerName, 'dest' => $dest], 'system', 'debug', 'icon-cache');
+
+            $tmp = @tempnam($dir, 'dmicon_');
+            if ($tmp === false) {
+                continue;
+            }
+            if (@copy($cachedPngPath, $tmp)) {
+                @chmod($tmp, 0644);
+                if (@rename($tmp, $dest)) {
+                    $seeded = true;
+                    composeLogger('Seeded Docker Manager icon cache', ['container' => $containerName, 'dest' => $dest], 'system', 'debug', 'icon-cache');
+                } else {
+                    @unlink($tmp);
+                }
+            } else {
+                @unlink($tmp);
+            }
+        }
+
+        if ($seeded || is_file($ramPath)) {
+            compose_point_docker_manager_metadata_at_icon($containerName);
+        }
+    }
+}
+
+if (!function_exists('compose_point_docker_manager_metadata_at_icon')) {
+    /**
+     * Repair Docker Manager's docker.json entry for a container.
+     *
+     * Docker Manager only re-resolves an icon when the recorded path is
+     * missing, so a stored question.png fallback sticks permanently. Pointing
+     * the entry at the seeded file makes the Docker page use our cached PNG
+     * instead of re-fetching the label URL.
+     */
+    function compose_point_docker_manager_metadata_at_icon(string $containerName): void
+    {
+        $metadataFile = COMPOSE_DM_WEBUI_INFO_FILE;
+        if (!is_file($metadataFile)) {
+            return;
+        }
+
+        $webPath = '/state/plugins/dynamix.docker.manager/images/' . $containerName . '-icon.png';
+
+        $fh = @fopen($metadataFile, 'r+');
+        if ($fh === false) {
+            return;
+        }
+        if (!flock($fh, LOCK_EX)) {
+            fclose($fh);
+            return;
+        }
+
+        $raw = stream_get_contents($fh);
+        $info = is_string($raw) ? json_decode($raw, true) : null;
+
+        if (
+            is_array($info)
+            && isset($info[$containerName])
+            && is_array($info[$containerName])
+            && ($info[$containerName]['icon'] ?? '') !== $webPath
+        ) {
+            $info[$containerName]['icon'] = $webPath;
+            $encoded = json_encode($info);
+            if ($encoded !== false) {
+                rewind($fh);
+                ftruncate($fh, 0);
+                fwrite($fh, $encoded);
+                fflush($fh);
+                composeLogger('Repaired Docker Manager icon metadata', ['container' => $containerName, 'icon' => $webPath], 'system', 'debug', 'icon-cache');
+            }
+        }
+
+        flock($fh, LOCK_UN);
+        fclose($fh);
+    }
+}
+
+if (!function_exists('compose_sync_docker_manager_icons_for_source')) {
+    /**
+     * Seed every container whose icon label matches a freshly cached source.
+     *
+     * Keeps the Docker Manager cache aligned with ours even when the icon was
+     * cached from a page that did not know the owning container names.
+     */
+    function compose_sync_docker_manager_icons_for_source(string $source, string $cachedPngPath): void
+    {
+        static $syncedSources = [];
+        static $dockerLabelRows = null;
+
+        $source = trim($source);
+        if ($source === '' || isset($syncedSources[$source]) || !compose_file_is_png($cachedPngPath)) {
+            return;
+        }
+        if (!is_dir(COMPOSE_DM_ICON_RAM_DIR)) {
+            return; // Docker Manager not present (CI/test environments)
+        }
+        $syncedSources[$source] = true;
+
+        if ($dockerLabelRows === null) {
+            $format = '{{.Names}}\t{{index .Config.Labels "' . COMPOSE_DOCKER_LABEL_ICON . '"}}';
+            $output = shell_exec('docker ps -a --no-trunc --format ' . escapeshellarg($format) . ' 2>/dev/null');
+            $dockerLabelRows = is_string($output) ? preg_split('/\R/', trim($output)) : [];
+        }
+
+        foreach ($dockerLabelRows as $line) {
+            if (strpos($line, "\t") === false) {
+                continue;
+            }
+            [$name, $label] = explode("\t", $line, 2);
+            if (trim($label) === $source) {
+                compose_seed_docker_manager_icon($cachedPngPath, trim($name));
             }
         }
     }
@@ -1885,6 +2091,8 @@ class StackInfo
     public string $projectFolder;
     /** @var string Sanitized Docker Compose project name (always lowercase, valid for -p flag) */
     public string $projectName;
+    /** @var ProjectIdentity Resolved (and pinned) runtime project identity */
+    public ProjectIdentity $identity;
     /** @var string Display name (from ./name) */
     public string $displayName;
     /** @var string Full path to the stack directory ($composeRoot/$project) */
@@ -1960,6 +2168,12 @@ class StackInfo
 
         // Resolve display name from metadata (or default to folder name).
         $this->displayName = $this->getDisplayName();
+
+        // Stacks imported from the original compose plugin may still run under a
+        // `name`-derived project identity; resolve (and pin) it before anything
+        // builds a `docker compose -p` argument from $this->projectName.
+        $this->identity = ProjectIdentity::resolve($this->path, $this->projectFolder, $this->displayName);
+        $this->projectName = $this->identity->projectName;
 
         // Resolve indirect path and compose source (indirect if present, else direct)
         $this->isIndirect = $this->isIndirect();
@@ -2229,6 +2443,39 @@ class StackInfo
     public function getName(): string
     {
         return $this->displayName;
+    }
+
+    /**
+     * Whether the effective `docker compose -p` identity has been proven.
+     *
+     * Returns false for imported stacks whose runtime project name is still
+     * ambiguous. Callers that mutate Docker state must refuse to run.
+     */
+    public function hasResolvedIdentity(): bool
+    {
+        return $this->identity->resolved;
+    }
+
+    /**
+     * Reason the stack is blocked from mutating actions, or null when it is not.
+     */
+    public function getIdentityBlockReason(): ?string
+    {
+        return $this->identity->resolved ? null : $this->identity->getMessage();
+    }
+
+    /**
+     * Pin an owner-selected runtime project identity.
+     *
+     * @param string $projectName One of the identity's candidates
+     * @throws \RuntimeException When the choice is not a candidate
+     */
+    public function applyIdentityChoice(string $projectName): void
+    {
+        $this->identity->chooseIdentity($this->path, $projectName);
+        $this->projectName = $this->identity->projectName;
+        $this->cachedContainerList = null;
+        $this->cachedContainerCounts = null;
     }
 
     /**
@@ -3454,6 +3701,13 @@ class StackInfo
 
         // Write metadata
         file_put_contents("$path/name", $projectName);
+        // Pin the runtime identity up front. Without this a collision-suffixed
+        // folder (my-stack-001) would look like a legacy stack whose display
+        // name resolves to an existing project (my-stack) and could adopt it.
+        file_put_contents(
+            $path . '/' . ProjectIdentity::METADATA_FILE,
+            self::sanitizeProjectString(basename($path))
+        );
         if ($description !== '') {
             file_put_contents("$path/description", $description);
         }

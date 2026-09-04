@@ -1277,7 +1277,7 @@ function initEditorModal() {
     editorModal.editors['override'] = overrideEditor;
 
     // Initialize settings field change tracking
-    $('#settings-name, #settings-description, #settings-icon-url, #settings-webui-url, #settings-env-path, #settings-default-profile, #settings-external-compose-path, #settings-external-compose-file, #settings-use-default-compose-files').on('input change', function() {
+    $('#settings-name, #settings-description, #settings-icon-url, #settings-webui-url, #settings-env-path, #settings-default-profile, #settings-wait-for-healthy, #settings-wait-timeout, #settings-external-compose-path, #settings-external-compose-file, #settings-use-default-compose-files').on('input change', function() {
         var fieldId = this.id.replace('settings-', '');
         var isCheckbox = this.type === 'checkbox';
         var currentValue = isCheckbox ? ($(this).is(':checked') ? 'true' : 'false') : $(this).val();
@@ -2452,34 +2452,8 @@ function isValidWebUIUrl(url) {
     }
 }
 
-function composeIconFallback(img) {
-    if (!img || img.dataset.composeFallbackApplied === 'true') {
-        return;
-    }
-    img.dataset.composeFallbackApplied = 'true';
-    img.onerror = null;
-    img.src = '/plugins/compose.manager/images/question.png';
-}
-
-// Validate an icon source: http(s) URL, data URI, or local server path
-function isValidIconSrc(src) {
-    if (!src) return false;
-    var s = src.trim();
-    return s.indexOf('http://') === 0 || s.indexOf('https://') === 0 ||
-        s.indexOf('data:image/') === 0 || s.indexOf('/') === 0;
-}
-
-/** Route remote http(s) icons through the local cache proxy; passthrough otherwise. */
-function composeIconSrc(src) {
-    if (!src || !isValidIconSrc(src)) {
-        return '/plugins/compose.manager/images/question.png';
-    }
-    var s = src.trim();
-    if (s.indexOf('http://') === 0 || s.indexOf('https://') === 0) {
-        return '/plugins/compose.manager/IconCache.php?src=' + encodeURIComponent(s);
-    }
-    return s;
-}
+// composeIconFallback/isValidIconSrc/isCacheEligibleLocalIconPath/composeIconSrc
+// live in composeIcons.js (shared with the dashboard tile).
 
 // Sanitize user-entered icon values before assigning to image src in live preview.
 function sanitizeIconPreviewSrc(raw) {
@@ -4141,6 +4115,90 @@ function composeActionStateText(actionName) {
     return map[actionName] || 'checking...';
 }
 
+// Stacks imported from the original compose plugin can have two plausible
+// `docker compose -p` identities. The backend refuses to act until the owner
+// picks one; this prompt is how they do it.
+function composeShowIdentityChooser(info) {
+    var project = info.project || '';
+    var legacy = info.legacyCandidate || '';
+    var folder = info.folderCandidate || '';
+    var html = composeEscapeHtml(info.message || 'This stack has an ambiguous Docker Compose project name.');
+
+    if (project && legacy && folder) {
+        html += "<br><br><button type='button' class='compose-identity-choice' data-project='" + composeEscapeAttr(project) +
+            "' data-choice='" + composeEscapeAttr(legacy) + "'>Keep imported: " + composeEscapeHtml(legacy) + "</button>" +
+            " <button type='button' class='compose-identity-choice' data-project='" + composeEscapeAttr(project) +
+            "' data-choice='" + composeEscapeAttr(folder) + "'>Use folder: " + composeEscapeHtml(folder) + "</button>";
+    }
+
+    swal({
+        title: 'Compose project identity required',
+        text: html,
+        html: true,
+        type: 'warning',
+        showConfirmButton: false,
+        showCancelButton: true,
+        cancelButtonText: 'Cancel'
+    });
+}
+
+function composeHandleIdentityError(info) {
+    var hasChoices = info && info.project && info.legacyCandidate && info.folderCandidate;
+    if (hasChoices) {
+        composeShowIdentityChooser(info);
+        return;
+    }
+
+    var message = (info && info.message)
+        ? String(info.message)
+        : 'Compose project identity is unresolved. Resolve each affected stack before retrying.';
+    swal('Compose project identity required', message, 'warning');
+}
+
+$(document).on('click', '.compose-identity-warning', function (event) {
+    event.stopPropagation();
+    var $row = $(this).closest('tr.compose-sortable');
+    composeShowIdentityChooser({
+        project: $row.data('project'),
+        message: $row.data('identity-message'),
+        folderCandidate: $row.data('identity-folder'),
+        legacyCandidate: $row.data('identity-legacy')
+    });
+});
+
+$(document).on('click', '.compose-identity-choice', function () {
+    var project = $(this).data('project');
+    var choice = $(this).data('choice');
+    $.post(compURL, { action: 'setProjectIdentity', stackName: project, projectName: choice }, function (data) {
+        var parsed = tryParseJson(data);
+        if (parsed && parsed.result === 'success') {
+            swal({ title: 'Identity pinned', text: 'Using project name "' + choice + '".', type: 'success' }, function () {
+                location.reload();
+            });
+        } else {
+            swal('Error', (parsed && parsed.message) || 'Failed to pin project identity.', 'error');
+        }
+    });
+});
+
+// Returns true (and prompts) when the stack's runtime project identity is
+// unproven, so no compose action should be dispatched.
+function composeIdentityBlocked(path) {
+    var $row = $('tr.compose-sortable').filter(function () {
+        return String($(this).data('path')) === String(path);
+    }).first();
+    if (!$row.length || String($row.data('identity-blocked')) !== '1') {
+        return false;
+    }
+    composeShowIdentityChooser({
+        project: $row.data('project'),
+        message: $row.data('identity-message'),
+        folderCandidate: $row.data('identity-folder'),
+        legacyCandidate: $row.data('identity-legacy')
+    });
+    return true;
+}
+
 function performComposeAction(opts) {
     opts = opts || {};
     var stackName = opts.stackName;
@@ -4162,9 +4220,22 @@ function performComposeAction(opts) {
     if (Object.prototype.hasOwnProperty.call(payload, 'removeOrphans')) {
         payload.removeOrphans = payload.removeOrphans ? 1 : 0;
     }
+    if (Object.prototype.hasOwnProperty.call(payload, 'followLogs')) {
+        payload.followLogs = payload.followLogs ? 1 : 0;
+    }
 
     $.post(requestUrl, payload, function(data) {
         var parsed = tryParseJson(data);
+        if (parsed && parsed.error === 'identity') {
+            if (stackName) {
+                setStackActionInProgress(stackName, false);
+            }
+            composeHandleIdentityError(parsed);
+            if (typeof onComplete === 'function') {
+                onComplete(parsed, data);
+            }
+            return;
+        }
         if (parsed && parsed.background) {
             if (!suppressBackgroundNotification) {
                 notifyBackgroundStarted(title, true);
@@ -4197,6 +4268,11 @@ function performComposeAction(opts) {
 function confirmedComposeAction(path, opts) {
     opts = opts || {};
     var stackName = basename(path);
+
+    if (composeIdentityBlocked(path)) {
+        return;
+    }
+
     opts = $.extend(true, {
         actionName: '',
         titlePrefix: '',
@@ -4249,7 +4325,8 @@ function ComposeUpConfirmed(path, opts) {
             action: 'composeUp',
             path: path,
             profile: opts.profile || '',
-            removeOrphans: !!opts.removeOrphans
+            removeOrphans: !!opts.removeOrphans,
+            followLogs: !!opts.followLogs
         },
         background: !!opts.background,
         suppressBackgroundNotification: !!opts.suppressBackgroundNotification,
@@ -5307,7 +5384,7 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             var localSha = container.localSha || '';
             var remoteSha = container.remoteSha || '';
 
-            var iconSrc = composeIconSrc(container.icon);
+            var iconSrc = composeIconSrc(container.icon, containerName);
             iconSrc = composeEscapeAttr(iconSrc);
 
             // Grey out containers without updates when showing update dialog
@@ -5365,12 +5442,20 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             '</div>';
     }
 
+    var followLogsHtml = '';
+    if (action === 'up') {
+        followLogsHtml = '<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--dynamix-box-inner-div-border-color);display:flex;align-items:center;gap:8px;">' +
+            '<input type="checkbox" id="swal-follow-logs-checkbox" style="width:16px;height:16px;cursor:pointer;">' +
+            '<label for="swal-follow-logs-checkbox" style="cursor:pointer;user-select:none;margin:0;font-size:0.95em;">Follow stack logs</label>' +
+            '</div>';
+    }
+
     // Run-in-background checkbox (appended after config is fetched below)
     var bgCheckboxHtml = '<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--dynamix-box-inner-div-border-color);display:flex;align-items:center;gap:8px;">' +
         '<input type="checkbox" id="swal-run-bg-checkbox" style="width:16px;height:16px;cursor:pointer;">' +
         '<label for="swal-run-bg-checkbox" style="cursor:pointer;user-select:none;margin:0;font-size:0.95em;">Run in background</label>' +
         '</div>';
-    html += bgCheckboxHtml;
+    html += followLogsHtml + bgCheckboxHtml;
     html += '</div>';
 
     // Fetch config to determine default checkbox state, then show swal (or skip warnings)
@@ -5408,12 +5493,14 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
                 // Capture checkbox state before swal destroys the DOM
                 var runInBackground = $('#swal-run-bg-checkbox').is(':checked');
                 var removeOrphans = $('#swal-remove-orphans-checkbox').is(':checked');
+                var followLogs = action === 'up' && $('#swal-follow-logs-checkbox').is(':checked');
                 // when running in background, suppress the extra notifyBackgroundStarted popup
                 cfg.confirmedFn(path, {
                     profile: profile,
                     background: runInBackground,
                     suppressBackgroundNotification: runInBackground,
-                    removeOrphans: removeOrphans
+                    removeOrphans: removeOrphans,
+                    followLogs: followLogs
                 });
             }
         });
@@ -5428,6 +5515,10 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             if ($orphanCb.length) {
                 $orphanCb.prop('checked', removeOrphansChecked);
                 $('#swal-remove-orphans-wrap').toggle(showRemoveOrphansOption);
+            }
+            var $followCb = $('#swal-follow-logs-checkbox');
+            if ($followCb.length) {
+                $followCb.prop('checked', false);
             }
         }, 50);
     });
@@ -6164,6 +6255,15 @@ function loadSettingsData(project, projectName) {
                 $('#settings-default-profile').val(defaultProfile);
                 editorModal.originalSettings['default-profile'] = defaultProfile;
 
+                // Wait-for-healthy settings
+                var waitForHealthy = response.waitForHealthy === true || response.waitForHealthy === 'true' || response.waitForHealthy === '1';
+                $('#settings-wait-for-healthy').prop('checked', waitForHealthy);
+                editorModal.originalSettings['wait-for-healthy'] = waitForHealthy ? 'true' : 'false';
+
+                var waitTimeout = response.waitTimeout || '';
+                $('#settings-wait-timeout').val(waitTimeout);
+                editorModal.originalSettings['wait-timeout'] = waitTimeout;
+
                 // Compose file discovery mode
                 var useDefaultComposeFiles = response.useDefaultComposeFiles === true;
                 $('#settings-use-default-compose-files').prop('checked', useDefaultComposeFiles);
@@ -6209,6 +6309,8 @@ function loadSettingsData(project, projectName) {
         $('#settings-env-path').val('');
         resetExtraComposeFilesUI();
         $('#settings-default-profile').val('');
+        $('#settings-wait-for-healthy').prop('checked', false);
+        $('#settings-wait-timeout').val('');
         $('#settings-external-compose-path').val('');
         $('#settings-external-compose-file').val('');
         $('#settings-use-default-compose-files').prop('checked', false);
@@ -6218,6 +6320,8 @@ function loadSettingsData(project, projectName) {
         editorModal.originalSettings['env-path'] = '';
         editorModal.originalSettings['extra-compose-files'] = '';
         editorModal.originalSettings['default-profile'] = '';
+        editorModal.originalSettings['wait-for-healthy'] = 'false';
+        editorModal.originalSettings['wait-timeout'] = '';
         editorModal.originalSettings['external-compose-path'] = '';
         editorModal.originalSettings['external-compose-file'] = '';
         editorModal.originalSettings['use-default-compose-files'] = 'false';
@@ -7149,7 +7253,7 @@ function saveSettings(saveErrors) {
     }
 
     // Save icon URL, webui URL, env path, default profile, and external compose settings if any are modified
-    if (editorModal.modifiedSettings.has('icon-url') || editorModal.modifiedSettings.has('webui-url') || editorModal.modifiedSettings.has('env-path') || editorModal.modifiedSettings.has('extra-compose-files') || editorModal.modifiedSettings.has('default-profile') || editorModal.modifiedSettings.has('external-compose-path') || editorModal.modifiedSettings.has('external-compose-file') || editorModal.modifiedSettings.has('use-default-compose-files')) {
+    if (editorModal.modifiedSettings.has('icon-url') || editorModal.modifiedSettings.has('webui-url') || editorModal.modifiedSettings.has('env-path') || editorModal.modifiedSettings.has('extra-compose-files') || editorModal.modifiedSettings.has('default-profile') || editorModal.modifiedSettings.has('wait-for-healthy') || editorModal.modifiedSettings.has('wait-timeout') || editorModal.modifiedSettings.has('external-compose-path') || editorModal.modifiedSettings.has('external-compose-file') || editorModal.modifiedSettings.has('use-default-compose-files')) {
         // Inline validation blocks Apply when errors are present, so by the
         // time we reach saveSettings the visible form state is valid.
         var iconUrl = $('#settings-icon-url').val();
@@ -7157,6 +7261,8 @@ function saveSettings(saveErrors) {
         var envPath = $('#settings-env-path').val();
         var extraComposeFiles = getExtraComposeFilesValue();
         var defaultProfile = $('#settings-default-profile').val();
+        var waitForHealthy = $('#settings-wait-for-healthy').is(':checked') ? 'true' : 'false';
+        var waitTimeout = $('#settings-wait-timeout').val();
         var externalComposePath = $('#settings-external-compose-path').val();
         var externalComposeFilePath = $('#settings-external-compose-file').val();
         var useDefaultComposeFiles = $('#settings-use-default-compose-files').is(':checked') ? 'true' : 'false';
@@ -7169,6 +7275,8 @@ function saveSettings(saveErrors) {
                 envPath: envPath,
                 extraComposeFiles: extraComposeFiles,
                 defaultProfile: defaultProfile,
+                waitForHealthy: waitForHealthy,
+                waitTimeout: waitTimeout,
                 externalComposePath: externalComposePath,
                 externalComposeFilePath: externalComposeFilePath,
                 useDefaultComposeFiles: useDefaultComposeFiles
@@ -7186,6 +7294,8 @@ function saveSettings(saveErrors) {
                         editorModal.originalSettings['env-path'] = envPath;
                         editorModal.originalSettings['extra-compose-files'] = extraComposeFiles;
                         editorModal.originalSettings['default-profile'] = defaultProfile;
+                        editorModal.originalSettings['wait-for-healthy'] = waitForHealthy;
+                        editorModal.originalSettings['wait-timeout'] = waitTimeout;
                         editorModal.originalSettings['external-compose-path'] = externalComposePath;
                         editorModal.originalSettings['external-compose-file'] = externalComposeFilePath;
                         editorModal.originalSettings['use-default-compose-files'] = useDefaultComposeFiles;
@@ -7194,6 +7304,8 @@ function saveSettings(saveErrors) {
                         editorModal.modifiedSettings.delete('env-path');
                         editorModal.modifiedSettings.delete('extra-compose-files');
                         editorModal.modifiedSettings.delete('default-profile');
+                        editorModal.modifiedSettings.delete('wait-for-healthy');
+                        editorModal.modifiedSettings.delete('wait-timeout');
                         editorModal.modifiedSettings.delete('external-compose-path');
                         editorModal.modifiedSettings.delete('external-compose-file');
                         editorModal.modifiedSettings.delete('use-default-compose-files');
@@ -8140,7 +8252,7 @@ function renderContainerDetails(stackId, containers, project) {
         var containerShell = container.shell || '/bin/sh';
         html += '<span id="' + uniqueId + '" class="hand" data-name="' + composeEscapeAttr(containerName) + '" data-state="' + composeEscapeAttr(state) + '" data-webui="' + composeEscapeAttr(webui) + '" data-stackid="' + composeEscapeAttr(stackId) + '" data-shell="' + composeEscapeAttr(containerShell) + '">';
         // Use actual image like Docker tab - either container icon or default question.png
-        var iconSrc = composeIconSrc(container.icon);
+        var iconSrc = composeIconSrc(container.icon, containerName);
         html += '<img src="' + composeEscapeAttr(iconSrc) + '" class="img" onerror="composeIconFallback(this)">';
         html += '</span>';
         html += '<span class="inner"><span class="appname">' + composeEscapeHtml(shortName) + '</span><br>';

@@ -114,6 +114,18 @@ switch ($action) {
         // Resolve project name - always use compose-safe sanitized projectName.
         $stackInfo = StackInfo::fromComposePath($compose_root, $path);
         if ($stackInfo !== null) {
+            if (!$stackInfo->hasResolvedIdentity()) {
+                composeLogger(
+                    "Blocked manual auto-update for '{$stackInfo->projectFolder}': compose project identity is unresolved",
+                    ['identity' => $stackInfo->identity->toArray()],
+                    'user',
+                    'warning',
+                    'identity'
+                );
+                http_response_code(409);
+                echo json_encode(array('error' => $stackInfo->getIdentityBlockReason()));
+                break;
+            }
             $projectName = $stackInfo->projectName;
         } else {
             $projectName = basename($path);

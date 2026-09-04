@@ -89,6 +89,51 @@ function getLastCmdLogFileForComposeAction($action, $path)
 }
 
 /**
+ * Suspend a live follow-logs compose session by process group so the stack keeps running
+ * after the ttyd client is detached.
+ *
+ * @param string $path Stack path
+ * @return bool True when a follow session was suspended, false otherwise
+ */
+function suspendComposeFollowProcess(string $path): bool
+{
+    $stackRoot = rtrim($path, '/');
+    if ($stackRoot === '' || !is_dir($stackRoot)) {
+        return false;
+    }
+
+    $realStackRoot = realpath($stackRoot);
+    if ($realStackRoot === false) {
+        return false;
+    }
+
+    global $compose_root;
+    $realComposeRoot = realpath($compose_root ?? '');
+    if ($realComposeRoot !== false && strncmp($realStackRoot, $realComposeRoot . '/', strlen($realComposeRoot) + 1) !== 0 && $realStackRoot !== $realComposeRoot) {
+        return false;
+    }
+
+    $pidFile = $realStackRoot . '/.compose_follow.pid';
+    if (!is_file($pidFile)) {
+        return false;
+    }
+
+    $pid = trim((string) file_get_contents($pidFile));
+    if ($pid === '' || !ctype_digit($pid)) {
+        return false;
+    }
+
+    $pgid = trim((string) shell_exec('ps -o pgid= -p ' . escapeshellarg($pid) . ' 2>/dev/null | tr -d " "'));
+    if ($pgid === '' || !ctype_digit($pgid)) {
+        return false;
+    }
+
+    exec('kill -TSTP -- -' . escapeshellarg($pgid) . ' 2>/dev/null');
+    composeLogger('Suspended live follow session for stack', ['path' => $realStackRoot, 'pid' => $pid, 'pgid' => $pgid], 'user', 'info', 'compose');
+    return true;
+}
+
+/**
  * Append compose file discovery arguments to compose.sh command args.
  *
  * @param array<int, string> $composeCommand
@@ -130,6 +175,38 @@ function appendComposeEnvFileArg(array &$composeCommand, array $args): void
     }
 }
 
+function resolveStackWaitSettings(string $stackPath, array $cfg): array
+{
+    $stackName = basename($stackPath);
+    $stackBase = rtrim($stackPath, '/');
+    $waitFile = $stackBase . '/wait_for_healthy';
+    $timeoutFile = $stackBase . '/wait_timeout';
+
+    $globalEnabled = (($cfg['WAIT_FOR_HEALTHY_DEFAULT'] ?? 'false') === 'true');
+    $globalTimeout = (string) ($cfg['WAIT_FOR_HEALTHY_TIMEOUT_DEFAULT'] ?? '300');
+
+    $stackEnabled = null;
+    if (is_file($waitFile)) {
+        $raw = trim((string) file_get_contents($waitFile));
+        if ($raw !== '') {
+            $stackEnabled = ($raw === 'true' || $raw === '1');
+        }
+    }
+
+    $stackTimeout = null;
+    if (is_file($timeoutFile)) {
+        $raw = trim((string) file_get_contents($timeoutFile));
+        if ($raw !== '') {
+            $stackTimeout = $raw;
+        }
+    }
+
+    $enabled = $stackEnabled !== null ? $stackEnabled : $globalEnabled;
+    $timeout = $stackTimeout !== null && $stackTimeout !== '' ? $stackTimeout : $globalTimeout;
+
+    return ['enabled' => $enabled, 'timeout' => $timeout, 'stackName' => $stackName];
+}
+
 /**
  * Build and echo a compose command for a single stack.
  *
@@ -158,6 +235,18 @@ function echoComposeCommand($action, array $options = [])
     $recreate = !empty($options['recreate']);
     $background = !empty($options['background']);
     $removeOrphans = !empty($options['removeOrphans']);
+    $followLogs = !empty($options['followLogs']);
+    $waitForHealthy = false;
+    $waitTimeout = (string) ($cfg['WAIT_FOR_HEALTHY_TIMEOUT_DEFAULT'] ?? '300');
+    if ($action === 'up') {
+        $resolvedWait = resolveStackWaitSettings($path, $cfg);
+        $waitForHealthy = !empty($resolvedWait['enabled']);
+        $waitTimeout = (string) ($resolvedWait['timeout'] ?? $waitTimeout);
+        $waitForHealthy = isset($_POST['waitForHealthy']) ? ((string) $_POST['waitForHealthy'] === '1' || strtolower((string) $_POST['waitForHealthy']) === 'true') : $waitForHealthy;
+        if (isset($_POST['waitTimeout']) && trim((string) $_POST['waitTimeout']) !== '') {
+            $waitTimeout = trim((string) $_POST['waitTimeout']);
+        }
+    }
     $unRaidVars = parse_ini_file("/var/local/emhttp/var.ini");
     if ($unRaidVars['mdState'] != "STARTED") {
         echo $plugin_root . "/scripts/arrayNotStarted.sh";
@@ -174,6 +263,26 @@ function echoComposeCommand($action, array $options = [])
             echo '';
             return;
         }
+
+        // Fail closed for mutating actions only; logs remains read-only.
+        if ($action !== 'logs' && !$stackInfo->hasResolvedIdentity()) {
+            composeLogger(
+                "Blocked '$action' for '{$stackInfo->projectFolder}': compose project identity is unresolved",
+                ['action' => $action, 'path' => $path, 'identity' => $stackInfo->identity->toArray()],
+                'user',
+                'warning',
+                'identity'
+            );
+            echo json_encode([
+                'error' => 'identity',
+                'project' => $stackInfo->projectFolder,
+                'folderCandidate' => $stackInfo->identity->folderCandidate,
+                'legacyCandidate' => $stackInfo->identity->legacyCandidate,
+                'message' => $stackInfo->getIdentityBlockReason(),
+            ]);
+            return;
+        }
+
         $args = $stackInfo->buildComposeArgs();
 
         $composeCommand[] = "-c" . $action;
@@ -213,6 +322,21 @@ function echoComposeCommand($action, array $options = [])
             $composeCommand[] = "--debug";
         }
 
+        if ($action === 'up' && $followLogs) {
+            $composeCommand[] = "--follow-logs";
+        }
+
+        if ($action === 'up' && $waitForHealthy) {
+            if ($followLogs) {
+                composeLogger("Blocked wait-for-healthy with follow logs enabled", ['action' => $action, 'path' => $path], 'user', 'warning', 'compose');
+                echo json_encode(['error' => 'wait_conflict', 'message' => 'Follow stack logs and wait-for-healthy cannot be enabled at the same time.']);
+                return;
+            }
+            $composeCommand[] = "--wait";
+            $composeCommand[] = "--wait-timeout";
+            $composeCommand[] = (string) $waitTimeout;
+        }
+
         if ($background) {
             // Run fully in the background using compose_background.sh.
             // Output is captured to last_cmd.log; notification sent on completion.
@@ -244,6 +368,9 @@ function echoComposeCommand($action, array $options = [])
                 $composeCommand = "/plugins/compose.manager/include/ShowTtyd.php?socket=" . urlencode($logsSocket);
             } else {
                 $composeCommand = "/plugins/compose.manager/include/ShowTtyd.php?done=1";
+                if ($action === 'up' && $followLogs) {
+                    $composeCommand .= '&path=' . urlencode($path);
+                }
             }
             echo $composeCommand;
         }
@@ -278,6 +405,7 @@ function echoComposeCommandMultiple($action, array $options = [])
     // Build a combined command that runs compose up/down for each stack sequentially
     $commands = array();
     $stackNames = array();
+    $blockedStacks = array();
 
     foreach ($paths as $path) {
         composeLogger("Processing stack for multi-compose action: " . $path, ['path' => $path, 'action' => $action], 'user', 'debug', 'compose-multi');
@@ -292,6 +420,20 @@ function echoComposeCommandMultiple($action, array $options = [])
             composeLogger("Skipping invalid stack during multi-compose action", ['action' => $action, 'path' => $path, 'error' => $e->getMessage()], 'user', 'warning', 'compose-multi');
             continue;
         }
+
+        // Fail closed: never hand Docker Compose a project name we could not prove.
+        if (!$stackInfo->hasResolvedIdentity()) {
+            composeLogger(
+                "Skipping '{$stackInfo->projectFolder}' during multi-compose action: compose project identity is unresolved",
+                ['action' => $action, 'path' => $path, 'identity' => $stackInfo->identity->toArray()],
+                'user',
+                'warning',
+                'identity'
+            );
+            $blockedStacks[] = $stackInfo->getName();
+            continue;
+        }
+
         $stackNames[] = $stackInfo->getName();
         $args = $stackInfo->buildComposeArgs();
 
@@ -345,7 +487,15 @@ function echoComposeCommandMultiple($action, array $options = [])
     }
 
     if (empty($commands)) {
-        composeLogger("Multi Compose operation aborted: no valid stacks resolved", ['action' => $action], 'user', 'warning', 'compose-multi');
+        composeLogger("Multi Compose operation aborted: no valid stacks resolved", ['action' => $action, 'blocked' => $blockedStacks], 'user', 'warning', 'compose-multi');
+        if (!empty($blockedStacks)) {
+            echo json_encode([
+                'error' => 'identity',
+                'stacks' => $blockedStacks,
+                'message' => 'Compose project identity is unresolved for: ' . implode(', ', $blockedStacks),
+            ]);
+            return;
+        }
         echo '';
         return;
     }
@@ -385,6 +535,11 @@ function echoComposeCommandMultiple($action, array $options = [])
     $tmpScript = "/tmp/compose_multi_" . uniqid() . ".sh";
     $scriptContent = "#!/bin/bash\n";
     $scriptContent .= "# Multi-stack compose script (ttyd) - auto-generated\n\n";
+
+    foreach ($blockedStacks as $blocked) {
+        $blockedTitle = str_replace(['\\', '"'], ['\\\\', '\\"'], $blocked);
+        $scriptContent .= "echo \"! Skipped " . $blockedTitle . ": compose project identity is unresolved\"\n";
+    }
 
     foreach ($commands as $idx => $cmd) {
         $cmdStr = implode(" ", array_map('escapeshellarg', $cmd));

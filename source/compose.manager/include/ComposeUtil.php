@@ -11,12 +11,21 @@ require_once("/usr/local/emhttp/plugins/compose.manager/include/Helpers.php");
 
 $background = isset($_POST['background']) && $_POST['background'] == '1';
 $removeOrphans = isset($_POST['removeOrphans']) && $_POST['removeOrphans'] == '1';
+$followLogs = isset($_POST['followLogs']) && $_POST['followLogs'] == '1';
 
 switch ($_POST['action']) {
     case 'composeUp':
         echoComposeCommand('up', [
             'background' => $background,
-            'removeOrphans' => $removeOrphans
+            'removeOrphans' => $removeOrphans,
+            'followLogs' => $followLogs
+        ]);
+        break;
+    case 'composeDetachFollow':
+        $path = $_POST['path'] ?? '';
+        echo json_encode([
+            'result' => suspendComposeFollowProcess($path) ? 'success' : 'not_found',
+            'path' => $path,
         ]);
         break;
     case 'composeUpRecreate':

@@ -130,6 +130,40 @@ wait_for_docker_autostart() {
     return 1
 }
 
+resolve_stack_wait_settings() {
+    local dir="$1"
+    local enabled="${WAIT_FOR_HEALTHY_DEFAULT:-false}"
+    local timeout="${WAIT_FOR_HEALTHY_TIMEOUT_DEFAULT:-300}"
+
+    if [ -f "$dir/wait_for_healthy" ]; then
+        local raw
+        raw=$(tr -d '\r' < "$dir/wait_for_healthy" 2>/dev/null)
+        if [ -n "$raw" ]; then
+            enabled="$raw"
+        fi
+    fi
+
+    if [ -f "$dir/wait_timeout" ]; then
+        local raw
+        raw=$(tr -d '\r' < "$dir/wait_timeout" 2>/dev/null)
+        if [ -n "$raw" ]; then
+            timeout="$raw"
+        fi
+    fi
+
+    case "$enabled" in
+        true|1|yes|on) enabled="true" ;;
+        false|0|no|off|"") enabled="false" ;;
+    esac
+
+    timeout="${timeout//[^0-9]/}"
+    if [ -z "$timeout" ]; then
+        timeout="${WAIT_FOR_HEALTHY_TIMEOUT_DEFAULT:-300}"
+    fi
+
+    printf '%s\t%s\n' "$enabled" "$timeout"
+}
+
 # Start a single stack with timeout and logging
 start_stack() {
     local dir="$1"
@@ -164,6 +198,17 @@ start_stack() {
         cmd_args+=(-g "$profile")
     done
     cmd_args+=(-s "$COMPOSE_SPEC_STACK_PATH")
+
+    local wait_resolution
+    local wait_enabled="false"
+    local wait_timeout_value="${WAIT_FOR_HEALTHY_TIMEOUT_DEFAULT:-300}"
+    wait_resolution=$(resolve_stack_wait_settings "$dir")
+    wait_enabled="${wait_resolution%%$'\t'*}"
+    wait_timeout_value="${wait_resolution#*$'\t'}"
+
+    if [ "$wait_enabled" = "true" ]; then
+        cmd_args+=(--wait --wait-timeout "$wait_timeout_value")
+    fi
 
     if [ "$AUTOSTART_FORCE_RECREATE" = "true" ]; then
         cmd_args+=(--recreate)

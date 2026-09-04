@@ -12,7 +12,7 @@ LOCK_TIMEOUT=${COMPOSE_LOCK_TIMEOUT:-30}
 LOCK_DIR="/var/run/compose.manager"
 
 SHORT=e:,c:,f:,p:,d:,o:,g:,s:,w:
-LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:
+LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:,follow-logs,wait,wait-timeout:
 OPTS=$(getopt -a -n compose --options $SHORT --longoptions $LONG -- "$@")
 
 eval set -- "$OPTS"
@@ -26,6 +26,9 @@ project_dir_args=()
 cmd_args=()
 stack_path=""
 debug=false
+follow_logs=false
+wait_for_healthy=false
+wait_timeout=""
 lock_fd=""
 operation_exit_code=0
 
@@ -84,8 +87,8 @@ release_lock() {
     fi
 }
 
-# Ensure lock is released on exit
-trap release_lock EXIT
+# Ensure lock is released and follow state is cleared on exit.
+trap 'release_lock; clear_follow_pid' EXIT
 
 # Save operation result to stack directory
 save_result() {
@@ -95,6 +98,19 @@ save_result() {
     
     if [ -n "$stack_path" ] && [ -d "$stack_path" ]; then
         echo "{\"result\":\"$result\",\"exit_code\":$exit_code,\"operation\":\"$operation\",\"timestamp\":\"$(date -Iseconds)\"}" > "$stack_path/last_result.json"
+    fi
+}
+
+save_follow_pid() {
+    local pid="$1"
+    if [ -n "$stack_path" ] && [ -d "$stack_path" ]; then
+        echo "$pid" > "$stack_path/.compose_follow.pid"
+    fi
+}
+
+clear_follow_pid() {
+    if [ -n "$stack_path" ] && [ -d "$stack_path" ]; then
+        rm -f "$stack_path/.compose_follow.pid"
     fi
 }
 
@@ -176,6 +192,18 @@ do
       debug=true
       shift;
       ;;
+    --follow-logs )
+      follow_logs=true
+      shift;
+      ;;
+    --wait )
+      wait_for_healthy=true
+      shift;
+      ;;
+    --wait-timeout )
+      wait_timeout="$2"
+      shift 2
+      ;;
     --)
       shift;
       break
@@ -215,11 +243,31 @@ esac
 case $command in
 
   up)
-    if [ "$debug" = true ]; then
-      log_msg "DEBUG" "${compose_base[*]} -p $name up ${cmd_args[*]} -d"
+    if [ "$follow_logs" = true ] && [ "$wait_for_healthy" = true ]; then
+      log_msg "ERROR" "Follow logs and wait-for-healthy cannot be used together for the same compose up command"
+      echo "✗ Follow stack logs and wait-for-healthy cannot be enabled at the same time."
+      exit 1
     fi
-    
-    "${compose_base[@]}" -p "$name" up "${cmd_args[@]}" -d
+
+    if [ "$wait_for_healthy" = true ]; then
+      cmd_args+=("--wait")
+      if [ -n "$wait_timeout" ]; then
+        cmd_args+=("--wait-timeout" "$wait_timeout")
+      fi
+    fi
+
+    if [ "$follow_logs" = true ]; then
+      save_follow_pid "$$"
+      if [ "$debug" = true ]; then
+        log_msg "DEBUG" "${compose_base[*]} -p $name up ${cmd_args[*]}"
+      fi
+      "${compose_base[@]}" -p "$name" up "${cmd_args[@]}"
+    else
+      if [ "$debug" = true ]; then
+        log_msg "DEBUG" "${compose_base[*]} -p $name up ${cmd_args[*]} -d"
+      fi
+      "${compose_base[@]}" -p "$name" up "${cmd_args[@]}" -d
+    fi
     exit_code=$?
     operation_exit_code=$exit_code
     
