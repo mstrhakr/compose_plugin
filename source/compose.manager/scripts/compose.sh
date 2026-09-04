@@ -12,7 +12,7 @@ LOCK_TIMEOUT=${COMPOSE_LOCK_TIMEOUT:-30}
 LOCK_DIR="/var/run/compose.manager"
 
 SHORT=e:,c:,f:,p:,d:,o:,g:,s:,w:
-LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:,wait,wait-timeout:
+LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:,follow-logs,wait,wait-timeout:
 OPTS=$(getopt -a -n compose --options $SHORT --longoptions $LONG -- "$@")
 
 eval set -- "$OPTS"
@@ -87,9 +87,8 @@ release_lock() {
     fi
 }
 
-# Ensure lock is released on exit
-trap release_lock EXIT
-trap clear_follow_pid EXIT
+# Ensure lock is released and follow state is cleared on exit.
+trap 'release_lock; clear_follow_pid' EXIT
 
 # Save operation result to stack directory
 save_result() {
