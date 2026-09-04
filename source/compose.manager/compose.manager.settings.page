@@ -2906,6 +2906,16 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Performance tuning and troubleshooting options for advanced users.</p>
 
         <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Don't close editor modal on outside click)_:</dt>
+            <dd>
+                <input type="checkbox" name="DONT_CLOSE_EDITOR_MODAL_ON_OUTSIDE_CLICK" id="DONT_CLOSE_EDITOR_MODAL_ON_OUTSIDE_CLICK" class="compose-toggle" <?= ($cfg['DONT_CLOSE_EDITOR_MODAL_ON_OUTSIDE_CLICK'] ?? 'false') == 'true' ? 'checked' : '' ?>>
+                <blockquote class="inline_help">
+                    When enabled, the Compose editor stays open when you click or drag on the backdrop outside the modal. This keeps editing from being interrupted while selecting or moving large blocks of text.
+                </blockquote>
+            </dd>
+        </dl>
+
+        <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Debug Logging)_:</dt>
             <dd>
                 <input type="checkbox" name="DEBUG_TO_LOG" id="DEBUG_TO_LOG" class="compose-toggle" <?= $cfg['DEBUG_TO_LOG'] == 'true' ? 'checked' : '' ?>>

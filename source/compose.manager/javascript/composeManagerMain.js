@@ -1460,9 +1460,15 @@ function initEditorModal() {
 
     // Close modal when clicking on the overlay background (not the inner modal content)
     $('#editor-modal-overlay').off('click.editorModal').on('click.editorModal', function(e) {
-        if (e.target === this) {
-            closeEditorModal();
+        if (e.target !== this) {
+            return;
         }
+        getConfig().then(function(cfg) {
+            if (cfg.DONT_CLOSE_EDITOR_MODAL_ON_OUTSIDE_CLICK === 'true') {
+                return;
+            }
+            closeEditorModal();
+        });
     });
 }
 
