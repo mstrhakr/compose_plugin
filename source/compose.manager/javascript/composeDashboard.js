@@ -397,9 +397,9 @@
                     var uptimeText = formatUptime(stack.startedAt, isRunning);
                     var webui = (stack.webui || '');
                     var stateClass = state === 'stopped' ? 'stopped' : 'started';
-                    html += '<div class="compose-dash-stack outer stacks ' + stateClass + '" data-stackid="' + stackId + '" data-folder="' + stack.folder + '">';
+                    html += '<div class="compose-dash-stack outer stacks ' + stateClass + '" data-stackid="' + stackId + '" data-folder="' + composeEscapeAttr(stack.folder) + '">';
                     html += '<i class="fa fa-chevron-right compose-dash-expand" id="compose-dash-exp-' + stackId + '"></i>';
-                    html += '<span class="compose-dash-icon" id="compose-dash-icon-' + stackId + '" data-stack-folder="' + stack.folder + '" data-stack-running="' + (isRunning ? '1' : '0') + '" data-stack-webui="' + composeEscapeAttr(webui) + '"><img src="' + composeEscapeAttr(imgSrc) + '" onerror="composeIconFallback(this)"></span>';
+                    html += '<span class="compose-dash-icon" id="compose-dash-icon-' + stackId + '" data-stack-folder="' + composeEscapeAttr(stack.folder) + '" data-stack-running="' + (isRunning ? '1' : '0') + '" data-stack-webui="' + composeEscapeAttr(webui) + '"><img src="' + composeEscapeAttr(imgSrc) + '" onerror="composeIconFallback(this)"></span>';
                     html += '<span class="compose-dash-info">';
                     html += '<div class="compose-dash-name">' + $('<div>').text(stack.name).html() + '</div>';
                     html += '<div class="compose-dash-state ' + stateColor + '"><i class="fa ' + stateIcon + '"></i> ' + stateText + '</div>';
