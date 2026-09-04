@@ -22,7 +22,7 @@ env_args=()
 file_args=()
 profile_names=()
 profile_args=()
-project_dir_args=()
+project_directory=""
 cmd_args=()
 stack_path=""
 debug=false
@@ -169,7 +169,7 @@ do
       ;;
     -w | --workdir )
       if [ -d "$2" ]; then
-        project_dir_args=("--project-directory" "$2")
+        project_directory="$2"
       else
         log_msg "ERROR" "Project directory does not exist: $2"
         exit 1
@@ -220,8 +220,18 @@ for profile_name in "${profile_names[@]}"; do
   profile_args+=("--profile" "$profile_name")
 done
 
-# Build the compose base command as an array (no eval needed)
-compose_base=(docker compose "${project_dir_args[@]}" "${env_args[@]}" "${file_args[@]}" "${profile_args[@]}")
+if [ -n "$project_directory" ]; then
+  if ! cd "$project_directory" 2>/dev/null; then
+    log_msg "ERROR" "Failed to cd into project directory: $project_directory"
+    exit 1
+  fi
+fi
+
+# Build the compose base command as an array (no eval needed).
+# When we need Docker Compose default discovery we intentionally run from the
+# project directory itself so it matches plain `cd <dir> && docker compose ...`,
+# which is the behavior the project was validated against.
+compose_base=(docker compose "${env_args[@]}" "${file_args[@]}" "${profile_args[@]}")
 
 # Canonicalize project name through shared PHP sanitizer.
 if ! name=$(canonicalize_project_name "$name"); then

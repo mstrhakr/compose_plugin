@@ -1113,6 +1113,21 @@ class StackInfoTest extends TestCase
         $this->assertContains($stackDir . '/compose.debug.yaml', $args['filePaths']);
     }
 
+    public function testProjectLoadsWhenComposeFileIsOnlyDeclaredInDotEnv(): void
+    {
+        $stack = 'env-compose-file-only';
+        $stackDir = $this->tempRoot . '/' . $stack;
+        mkdir($stackDir . '/docker', 0755, true);
+        file_put_contents("$stackDir/.env", "COMPOSE_FILE=docker/docker-compose.yml\n");
+        file_put_contents("$stackDir/docker/docker-compose.yml", "services:\n  web:\n    image: nginx\n");
+
+        $info = \StackInfo::fromProject($this->tempRoot, $stack);
+
+        $this->assertSame($stackDir . '/docker/docker-compose.yml', $info->composeFilePath);
+        $this->assertContains($stackDir . '/docker/docker-compose.yml', $info->getEditableComposeFiles());
+        $this->assertStringContainsString('docker-compose.yml', $info->buildComposeArgs()['files']);
+    }
+
     public function testBuildComposeArgsWithQuotedComposeFileInEnv(): void
     {
         $stack = 'env-compose-file-quoted';

@@ -2282,7 +2282,88 @@ class StackInfo
                 break;
             }
         }
-        return $composeFilePath;
+        if ($composeFilePath !== null) {
+            return $composeFilePath;
+        }
+
+        $envFilePath = self::resolveProjectEnvFilePath($path);
+        if ($envFilePath === null) {
+            return null;
+        }
+
+        return self::resolveComposeFileFromEnvFile($envFilePath);
+    }
+
+    /**
+     * Resolve the active env file for a project root, respecting explicit
+     * envpath metadata before falling back to the local .env file.
+     *
+     * @param string $path Project directory path
+     * @return string|null Resolved env file path or null if none is usable
+     */
+    private static function resolveProjectEnvFilePath(string $path): ?string
+    {
+        $stackDir = rtrim($path, '/');
+        $envPathMetadata = $stackDir . '/envpath';
+        if (is_file($envPathMetadata)) {
+            $raw = @file_get_contents($envPathMetadata);
+            $candidate = $raw === false ? '' : trim($raw);
+            if ($candidate !== '') {
+                $resolved = $candidate;
+                if (!Path::isAbsolutePath($resolved)) {
+                    $resolved = $stackDir . '/' . $resolved;
+                }
+                if (is_file($resolved)) {
+                    return realpath($resolved) ?: $resolved;
+                }
+            }
+        }
+
+        $defaultEnvPath = $stackDir . '/.env';
+        return is_file($defaultEnvPath) ? $defaultEnvPath : null;
+    }
+
+    /**
+     * Resolve the first valid compose file declared by COMPOSE_FILE in an env file.
+     *
+     * @param string $envFilePath
+     * @return string|null
+     */
+    private static function resolveComposeFileFromEnvFile(string $envFilePath): ?string
+    {
+        $content = @file_get_contents($envFilePath);
+        if ($content === false) {
+            return null;
+        }
+
+        $envDir = dirname($envFilePath);
+        foreach (preg_split('/\R/', $content) as $line) {
+            $line = trim($line);
+            if ($line === '' || str_starts_with($line, '#') || str_starts_with($line, ';')) {
+                continue;
+            }
+            if (!str_contains($line, '=')) {
+                continue;
+            }
+            [$key, $value] = explode('=', $line, 2);
+            if (trim($key) !== 'COMPOSE_FILE') {
+                continue;
+            }
+
+            foreach (self::splitComposeFileValue(trim($value)) as $entry) {
+                $entry = Strings::stripQuotes(trim($entry));
+                if ($entry === '') {
+                    continue;
+                }
+                $candidate = Path::isAbsolutePath($entry) ? $entry : $envDir . '/' . $entry;
+                if (is_file($candidate) && preg_match('/\.ya?ml$/i', basename($candidate)) === 1) {
+                    return $candidate;
+                }
+            }
+            break;
+        }
+
+        return null;
     }
 
 
