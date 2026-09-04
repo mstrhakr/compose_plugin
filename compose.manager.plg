@@ -36,13 +36,34 @@
 >
 
 <CHANGES>
-###2026.09.03.2109
+###2026.09.03
+- Features (compose): add wait-for-healthy and wait-timeout settings for stack management
+- Features (compose): add follow-logs functionality for live log streaming during compose up by omitting the detach option
+- Features (icon): enhance icon caching and management for Docker containers
 - Bug Fixes (test): update follow-logs test to check for correct option syntax
+- Bug Fixes (dashboard): improve handling of Docker container visibility during loading
+- Bug Fixes (icon): harden cache writes and reuse docker ps snapshot
+- Bug Fixes (ui): escape identity chooser attributes and restore main channel
+- Bug Fixes (ui): show plain warning for multi-stack identity errors
+- Bug Fixes (identity): allow logs when identity unresolved
+- Bug Fixes (identity): block mutating actions until project identity is proven
+- Bug Fixes (identity): add fail-closed legacy project identity resolver
+- Bug Fixes (icon): pass data URIs straight to the browser instead of proxying
+- Bug Fixes (dashboard): load icon helpers on Dashboard tile (#143)
+- Bug Fixes (icon): write icon cache and Docker Manager seeds atomically
+- Refactoring (dashboard): extract dashboard JS and hide Docker flash
+- Tests (icon): cover icon cache regression cases
+- Tests (identity): add regression suite for legacy migration and fail-closed behavior
+- Tests (icon): remove both Docker Manager icon copies after seeding tests
+- Chores: update changelog for v2026.09.03.2109 [skip ci]
+- Chores: update changelog for v2026.09.01.2251 [skip ci]
+- Chores: sync pluginURL+README for dev branch [skip ci]
+- Chores: sync pluginURL+README for dev branch [skip ci]
+- Chores (changelog): split concatenated refactoring entry
 - Harden follow-session suspension and add regression checks
 - Escape dashboard stack folder attributes
 - Fix follow-logs CLI parsing and cleanup trap
-- [PR #147](https://github.com/mstrhakr/compose_plugin/pull/147)
-- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.08.31...v2026.09.03.2109)
+- [View all changes](https://github.com/mstrhakr/compose_plugin/compare/v2026.08.31...v2026.09.03)
 </CHANGES>
 
 <!-- The 'pre-install' script. -->
