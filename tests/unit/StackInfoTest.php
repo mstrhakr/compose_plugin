@@ -1128,6 +1128,55 @@ class StackInfoTest extends TestCase
         $this->assertStringContainsString('docker-compose.yml', $info->buildComposeArgs()['files']);
     }
 
+    public function testIndirectStackLoadsWhenComposeFileViaEnvpath(): void
+    {
+        $stack = 'indirect-env-compose';
+        $stackDir = $this->tempRoot . '/' . $stack;
+        $indirectDir = $this->tempRoot . '/indirect_source';
+        mkdir($stackDir);
+        mkdir($indirectDir . '/config', 0755, true);
+
+        // Create indirect stack with envpath metadata
+        file_put_contents("$stackDir/indirect", $indirectDir);
+        file_put_contents("$stackDir/envpath", "$indirectDir/config/.env");
+
+        // Create .env file at indirect location with COMPOSE_FILE declaration
+        file_put_contents("$indirectDir/config/.env", "COMPOSE_FILE=../docker-compose.yml\n");
+        file_put_contents("$indirectDir/docker-compose.yml", "services:\n  web:\n    image: nginx\n");
+
+        $info = \StackInfo::fromProject($this->tempRoot, $stack);
+
+        $this->assertTrue($info->isIndirect);
+        $this->assertSame($indirectDir, $info->composeSource);
+        $this->assertSame($indirectDir . '/docker-compose.yml', $info->composeFilePath);
+        $this->assertContains($indirectDir . '/docker-compose.yml', $info->getEditableComposeFiles());
+    }
+
+    public function testIndirectStackLoadsWhenComposeFileViaRelativeEnvpath(): void
+    {
+        $stack = 'indirect-relative-env';
+        $stackDir = $this->tempRoot . '/' . $stack;
+        $indirectDir = $this->tempRoot . '/another_indirect';
+        mkdir($stackDir);
+        mkdir($indirectDir);
+
+        // Create indirect stack with relative envpath metadata
+        file_put_contents("$stackDir/indirect", $indirectDir);
+        file_put_contents("$stackDir/envpath", "config/.env");  // relative path in stack dir
+
+        // Create the referenced .env file in stack directory
+        mkdir("$stackDir/config", 0755, true);
+        file_put_contents("$stackDir/config/.env", "COMPOSE_FILE=../docker-compose.yml\n");
+        file_put_contents("$stackDir/docker-compose.yml", "services:\n  web:\n    image: nginx\n");
+
+        $info = \StackInfo::fromProject($this->tempRoot, $stack);
+
+        $this->assertTrue($info->isIndirect);
+        $this->assertSame($indirectDir, $info->composeSource);
+        // The compose file is discovered via COMPOSE_FILE in the referenced envpath
+        $this->assertSame($stackDir . '/docker-compose.yml', $info->composeFilePath);
+    }
+
     public function testBuildComposeArgsWithQuotedComposeFileInEnv(): void
     {
         $stack = 'env-compose-file-quoted';

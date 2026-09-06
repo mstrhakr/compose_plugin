@@ -2366,7 +2366,7 @@ class StackInfo
                 }
                 $candidate = Path::isAbsolutePath($entry) ? $entry : $envDir . '/' . $entry;
                 if (is_file($candidate) && preg_match('/\.ya?ml$/i', basename($candidate)) === 1) {
-                    return $candidate;
+                    return realpath($candidate) ?: $candidate;
                 }
             }
             break;
