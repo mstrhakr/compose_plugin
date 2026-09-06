@@ -2271,11 +2271,11 @@ class StackInfo
      *                                 defaults to $path if not provided
      * @return string|null Full path to the compose file if found, or null if none found
      */
-    private static function getComposeFilePath($path, ?string $stackPath = null): string|null
+    private static function getComposeFilePath(string $path, ?string $stackPath = null): string|null
     {
         $stackPath = $stackPath ?? $path;
 
-        if (is_string($path) && is_file($path)) {
+        if (is_file($path)) {
             return preg_match('/\.ya?ml$/i', basename($path)) === 1 ? $path : null;
         }
 
