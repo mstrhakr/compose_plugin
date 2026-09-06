@@ -2615,6 +2615,9 @@ class StackInfo
     /**
      * Resolve a valid explicit envpath configured in stack metadata.
      *
+     * Supports both absolute and relative paths. Relative paths are resolved
+     * relative to the stack directory ($this->path).
+     *
      * @return string|null
      */
     private function getExplicitEnvFilePath(): ?string
@@ -2629,8 +2632,17 @@ class StackInfo
             return null;
         }
 
+        // Try as absolute path first
         if (is_file($rawEnvPath)) {
             return realpath($rawEnvPath) ?: $rawEnvPath;
+        }
+
+        // Try as relative to stack directory
+        if (!Path::isAbsolutePath($rawEnvPath)) {
+            $relativePath = $this->path . '/' . $rawEnvPath;
+            if (is_file($relativePath)) {
+                return realpath($relativePath) ?: $relativePath;
+            }
         }
 
         composeLogger('Explicit envpath is set but not resolvable to a file; falling back to default env resolution', [
