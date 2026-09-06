@@ -36,15 +36,10 @@
 >
 
 <CHANGES>
-###2026.09.05.2104
-- Features: add option to not close editor modal on outside click (#126)
-- Bug Fixes: support docker-compose stacks that resolve COMPOSE_FILE from .env in default discovery mode (#149)
-- Bug Fixes: quiet routine dockerload reconnect warnings (#133)
-- Fix #3: Add tests for indirect stack envpath metadata discovery
-- Fix: Support relative envpath values in getExplicitEnvFilePath
-- Fix: Pass stack directory to resolveProjectEnvFilePath for indirect stack envpath metadata resolution
+###2026.09.06.1706
+- Minor updates and improvements
 - [PR #150](https://github.com/mstrhakr/compose_plugin/pull/150)
-- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.09.03...v2026.09.05.2104)
+- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.09.03...v2026.09.06.1706)
 </CHANGES>
 
 <!-- The 'pre-install' script. -->
