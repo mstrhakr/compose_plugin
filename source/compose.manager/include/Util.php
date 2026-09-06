@@ -2189,13 +2189,12 @@ class StackInfo
                 $this->composeSource = dirname($this->indirectPath);
             } else {
                 $this->composeSource = $this->indirectPath;
-                $this->composeFilePath = self::getComposeFilePath($this->composeSource);
+                $this->composeFilePath = self::getComposeFilePath($this->composeSource, $this->path);
             }
         } else {
             $this->composeSource = $this->path;
-            $this->composeFilePath = self::getComposeFilePath($this->composeSource);
+            $this->composeFilePath = self::getComposeFilePath($this->composeSource, $this->path);
         }
-
         if ($this->invalidIndirectPath === null && $this->indirectPath !== null && $this->indirectPath !== '' && $this->composeFilePath === null && $this->isIndirect) {
             // Preserve the broken indirect target for repair flows.
             $this->invalidIndirectPath = $this->indirectPath;
@@ -2267,10 +2266,15 @@ class StackInfo
      * Checks for compose.yaml, compose.yml, docker-compose.yaml, docker-compose.yml
      * in that order and returns the first one found.
      *
+     * @param string $path The compose source directory (where to look for compose files and .env)
+     * @param string|null $stackPath Optional stack metadata directory (where to look for envpath metadata);
+     *                                 defaults to $path if not provided
      * @return string|null Full path to the compose file if found, or null if none found
      */
-    private static function getComposeFilePath($path): string|null
+    private static function getComposeFilePath($path, ?string $stackPath = null): string|null
     {
+        $stackPath = $stackPath ?? $path;
+
         if (is_string($path) && is_file($path)) {
             return preg_match('/\.ya?ml$/i', basename($path)) === 1 ? $path : null;
         }
@@ -2286,7 +2290,7 @@ class StackInfo
             return $composeFilePath;
         }
 
-        $envFilePath = self::resolveProjectEnvFilePath($path);
+        $envFilePath = self::resolveProjectEnvFilePath($path, $stackPath);
         if ($envFilePath === null) {
             return null;
         }
@@ -2298,12 +2302,16 @@ class StackInfo
      * Resolve the active env file for a project root, respecting explicit
      * envpath metadata before falling back to the local .env file.
      *
-     * @param string $path Project directory path
+     * @param string $path Compose source directory (where to look for .env)
+     * @param string $stackPath Stack directory (where to look for envpath metadata)
      * @return string|null Resolved env file path or null if none is usable
      */
-    private static function resolveProjectEnvFilePath(string $path): ?string
+    private static function resolveProjectEnvFilePath(string $path, string $stackPath): ?string
     {
-        $stackDir = rtrim($path, '/');
+        $stackDir = rtrim($stackPath, '/');
+        $composeDir = rtrim($path, '/');
+
+        // Check for explicit envpath metadata in stack directory
         $envPathMetadata = $stackDir . '/envpath';
         if (is_file($envPathMetadata)) {
             $raw = @file_get_contents($envPathMetadata);
@@ -2319,7 +2327,8 @@ class StackInfo
             }
         }
 
-        $defaultEnvPath = $stackDir . '/.env';
+        // Fall back to .env in compose directory
+        $defaultEnvPath = $composeDir . '/.env';
         return is_file($defaultEnvPath) ? $defaultEnvPath : null;
     }
 
