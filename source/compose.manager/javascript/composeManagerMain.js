@@ -1460,9 +1460,15 @@ function initEditorModal() {
 
     // Close modal when clicking on the overlay background (not the inner modal content)
     $('#editor-modal-overlay').off('click.editorModal').on('click.editorModal', function(e) {
-        if (e.target === this) {
-            closeEditorModal();
+        if (e.target !== this) {
+            return;
         }
+        getConfig().then(function(cfg) {
+            if (cfg.DONT_CLOSE_EDITOR_MODAL_ON_OUTSIDE_CLICK === 'true') {
+                return;
+            }
+            closeEditorModal();
+        });
     });
 }
 
@@ -3240,10 +3246,34 @@ $(function() {
                 if (!isCurrentComposeDockerLoad(composeDockerLoad, newGeneration)) {
                     return;
                 }
-                composeLogger('WebSocket error', {
-                    code: code,
-                    desc: desc
-                }, 'user', 'warn', 'dockerload');
+
+                var socketError = {};
+                if (code && typeof code === 'object') {
+                    socketError.type = code.type || null;
+                    socketError.message = code.message || null;
+                    socketError.readyState = (code.target && code.target.readyState !== undefined) ? code.target.readyState : null;
+                    if (code.code !== undefined && code.code !== null) {
+                        socketError.code = code.code;
+                    }
+                } else if (code !== undefined && code !== null) {
+                    socketError.code = code;
+                }
+
+                if (desc && typeof desc === 'object') {
+                    if (desc.type) {
+                        socketError.descType = desc.type;
+                    }
+                    if (desc.readyState !== undefined && desc.readyState !== null) {
+                        socketError.descReadyState = desc.readyState;
+                    }
+                    if (desc.message) {
+                        socketError.descMessage = desc.message;
+                    }
+                } else if (desc !== undefined && desc !== null) {
+                    socketError.desc = desc;
+                }
+
+                composeLogger('WebSocket reconnect/error', socketError, 'user', 'debug', 'dockerload');
             });
 
             // If dockerload pauses/stalls, drop stale values on a timer so the UI

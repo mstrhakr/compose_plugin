@@ -2189,13 +2189,12 @@ class StackInfo
                 $this->composeSource = dirname($this->indirectPath);
             } else {
                 $this->composeSource = $this->indirectPath;
-                $this->composeFilePath = self::getComposeFilePath($this->composeSource);
+                $this->composeFilePath = self::getComposeFilePath($this->composeSource, $this->path);
             }
         } else {
             $this->composeSource = $this->path;
-            $this->composeFilePath = self::getComposeFilePath($this->composeSource);
+            $this->composeFilePath = self::getComposeFilePath($this->composeSource, $this->path);
         }
-
         if ($this->invalidIndirectPath === null && $this->indirectPath !== null && $this->indirectPath !== '' && $this->composeFilePath === null && $this->isIndirect) {
             // Preserve the broken indirect target for repair flows.
             $this->invalidIndirectPath = $this->indirectPath;
@@ -2267,10 +2266,15 @@ class StackInfo
      * Checks for compose.yaml, compose.yml, docker-compose.yaml, docker-compose.yml
      * in that order and returns the first one found.
      *
+     * @param string $path The compose source directory (where to look for compose files and .env)
+     * @param string|null $stackPath Optional stack metadata directory (where to look for envpath metadata);
+     *                                 defaults to $path if not provided
      * @return string|null Full path to the compose file if found, or null if none found
      */
-    private static function getComposeFilePath($path): string|null
+    private static function getComposeFilePath($path, ?string $stackPath = null): string|null
     {
+        $stackPath = $stackPath ?? $path;
+
         if (is_string($path) && is_file($path)) {
             return preg_match('/\.ya?ml$/i', basename($path)) === 1 ? $path : null;
         }
@@ -2282,7 +2286,93 @@ class StackInfo
                 break;
             }
         }
-        return $composeFilePath;
+        if ($composeFilePath !== null) {
+            return $composeFilePath;
+        }
+
+        $envFilePath = self::resolveProjectEnvFilePath($path, $stackPath);
+        if ($envFilePath === null) {
+            return null;
+        }
+
+        return self::resolveComposeFileFromEnvFile($envFilePath);
+    }
+
+    /**
+     * Resolve the active env file for a project root, respecting explicit
+     * envpath metadata before falling back to the local .env file.
+     *
+     * @param string $path Compose source directory (where to look for .env)
+     * @param string $stackPath Stack directory (where to look for envpath metadata)
+     * @return string|null Resolved env file path or null if none is usable
+     */
+    private static function resolveProjectEnvFilePath(string $path, string $stackPath): ?string
+    {
+        $stackDir = rtrim($stackPath, '/');
+        $composeDir = rtrim($path, '/');
+
+        // Check for explicit envpath metadata in stack directory
+        $envPathMetadata = $stackDir . '/envpath';
+        if (is_file($envPathMetadata)) {
+            $raw = @file_get_contents($envPathMetadata);
+            $candidate = $raw === false ? '' : trim($raw);
+            if ($candidate !== '') {
+                $resolved = $candidate;
+                if (!Path::isAbsolutePath($resolved)) {
+                    $resolved = $stackDir . '/' . $resolved;
+                }
+                if (is_file($resolved)) {
+                    return realpath($resolved) ?: $resolved;
+                }
+            }
+        }
+
+        // Fall back to .env in compose directory
+        $defaultEnvPath = $composeDir . '/.env';
+        return is_file($defaultEnvPath) ? $defaultEnvPath : null;
+    }
+
+    /**
+     * Resolve the first valid compose file declared by COMPOSE_FILE in an env file.
+     *
+     * @param string $envFilePath
+     * @return string|null
+     */
+    private static function resolveComposeFileFromEnvFile(string $envFilePath): ?string
+    {
+        $content = @file_get_contents($envFilePath);
+        if ($content === false) {
+            return null;
+        }
+
+        $envDir = dirname($envFilePath);
+        foreach (preg_split('/\R/', $content) as $line) {
+            $line = trim($line);
+            if ($line === '' || str_starts_with($line, '#') || str_starts_with($line, ';')) {
+                continue;
+            }
+            if (!str_contains($line, '=')) {
+                continue;
+            }
+            [$key, $value] = explode('=', $line, 2);
+            if (trim($key) !== 'COMPOSE_FILE') {
+                continue;
+            }
+
+            foreach (self::splitComposeFileValue(trim($value)) as $entry) {
+                $entry = Strings::stripQuotes(trim($entry));
+                if ($entry === '') {
+                    continue;
+                }
+                $candidate = Path::isAbsolutePath($entry) ? $entry : $envDir . '/' . $entry;
+                if (is_file($candidate) && preg_match('/\.ya?ml$/i', basename($candidate)) === 1) {
+                    return realpath($candidate) ?: $candidate;
+                }
+            }
+            break;
+        }
+
+        return null;
     }
 
 
@@ -2525,6 +2615,9 @@ class StackInfo
     /**
      * Resolve a valid explicit envpath configured in stack metadata.
      *
+     * Supports both absolute and relative paths. Relative paths are resolved
+     * relative to the stack directory ($this->path).
+     *
      * @return string|null
      */
     private function getExplicitEnvFilePath(): ?string
@@ -2539,8 +2632,17 @@ class StackInfo
             return null;
         }
 
+        // Try as absolute path first
         if (is_file($rawEnvPath)) {
             return realpath($rawEnvPath) ?: $rawEnvPath;
+        }
+
+        // Try as relative to stack directory
+        if (!Path::isAbsolutePath($rawEnvPath)) {
+            $relativePath = $this->path . '/' . $rawEnvPath;
+            if (is_file($relativePath)) {
+                return realpath($relativePath) ?: $relativePath;
+            }
         }
 
         composeLogger('Explicit envpath is set but not resolvable to a file; falling back to default env resolution', [
