@@ -36,10 +36,10 @@
 >
 
 <CHANGES>
-###2026.09.06.1706
-- Minor updates and improvements
+###2026.09.06.2116
+- Bug Fixes: enhance environment variable handling in build scripts and workflows
 - [PR #150](https://github.com/mstrhakr/compose_plugin/pull/150)
-- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.09.03...v2026.09.06.1706)
+- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.09.03...v2026.09.06.2116)
 </CHANGES>
 
 <!-- The 'pre-install' script. -->
