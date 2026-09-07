@@ -27,3 +27,4 @@ Thumbs.db
 
 # Runtime config files (created at runtime, not source)
 autoupdate.json
+.env

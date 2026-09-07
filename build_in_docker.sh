@@ -2,7 +2,7 @@
 # shellcheck disable=SC1091
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 [ -f "${SCRIPT_DIR}/versions.env" ] && source "${SCRIPT_DIR}/versions.env"
-[ -z "$COMPOSE_VERSION" ] && COMPOSE_VERSION=5.1.2
+[ -z "$COMPOSE_VERSION" ] && COMPOSE_VERSION=5.5.0
 [ -z "$PKG_VERSION" ] && PKG_VERSION="$(date +%Y.%m.%d)"
 [ -z "$PKG_BUILD" ] && PKG_BUILD="$(date +%H%M)"
 mkdir -p "$PWD/archive/.build-cache"
