@@ -150,6 +150,16 @@ test_setup() {
     assert_success
 }
 
+@test "autostart script detaches from array-start and exits immediately" {
+    local autostart_script="$BATS_TEST_DIRNAME/../../source/compose.manager/event/docker_started"
+    run grep -F 'nohup env COMPOSE_MANAGER_AUTOSTART_CHILD=1' "$autostart_script"
+    assert_success
+    run grep -F 'COMPOSE_MANAGER_AUTOSTART_CHILD' "$autostart_script"
+    assert_success
+    run grep -F 'Autostart event received; detaching background worker' "$autostart_script"
+    assert_success
+}
+
 @test "compose.sh update action pull step uses --ignore-buildable" {
     # The update action pulls before 'up -d --build'; buildable services are handled by --build
     run grep -E 'pull --ignore-buildable' "$COMPOSE_SCRIPT"

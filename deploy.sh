@@ -6,15 +6,38 @@ trap 'echo "ERROR: command failed on line $LINENO" >&2' ERR
 VERSION=""
 DEV=false
 REMOTE_HOSTS=()
-USER_NAME="root"
-REMOTE_DIR="/tmp"
+USER_NAME="${USER_NAME:-root}"
+REMOTE_DIR="${REMOTE_DIR:-/tmp}"
 PACKAGE_PATH=""
 SKIP_BUILD=false
-COMPOSE_VERSION="5.1.2"
+COMPOSE_VERSION=""
 QUICK=false
+
+if [[ -n "${REMOTE_HOSTS:-}" ]]; then
+  IFS=',' read -r -a REMOTE_HOSTS <<< "${REMOTE_HOSTS}"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ARCHIVE_DIR="$SCRIPT_DIR/archive"
+ENV_FILE="$SCRIPT_DIR/.env"
+
+if [[ -f "$SCRIPT_DIR/versions.env" ]]; then
+  # shellcheck disable=SC1091
+  set -a
+  source "$SCRIPT_DIR/versions.env"
+  set +a
+fi
+
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  set -a
+  source "$ENV_FILE"
+  set +a
+fi
+
+if [[ -z "${COMPOSE_VERSION:-}" ]]; then
+  COMPOSE_VERSION="5.1.2"
+fi
 
 in_container=false
 if [[ -f "/.dockerenv" ]] || grep -qE '/docker|/lxc|/kubepods' /proc/1/cgroup 2>/dev/null; then

@@ -12,6 +12,26 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_PATH="$SCRIPT_DIR/archive"
 PLG_FILE="$SCRIPT_DIR/compose.manager.plg"
 VERSIONS_FILE="$SCRIPT_DIR/versions.env"
+BUILD_ENV_FILE="${BUILD_ENV_FILE:-$SCRIPT_DIR/.env}"
+
+load_env_file() {
+    local env_file="$1"
+    if [[ -n "$env_file" && -f "$env_file" ]]; then
+        # shellcheck disable=SC1090
+        set -a
+        source "$env_file"
+        set +a
+    fi
+}
+
+load_env_file "$VERSIONS_FILE"
+load_env_file "$BUILD_ENV_FILE"
+
+# Environment override knobs for nested Docker / Unraid host setups.
+HOST_WORKSPACE_ROOT="${HOST_WORKSPACE_ROOT:-}"
+HOST_SOURCE_PATH="${HOST_SOURCE_PATH:-}"
+HOST_ARCHIVE_PATH_OVERRIDE="${HOST_ARCHIVE_PATH:-}"
+HOST_CACHE_PATH_OVERRIDE="${HOST_CACHE_PATH:-}"
 
 # Argument parsing
 while [[ $# -gt 0 ]]; do
@@ -44,7 +64,7 @@ if [[ -f "$VERSIONS_FILE" ]]; then
         [[ "$line" =~ ^RESVG_SHA256=(.+)$ ]]   && [[ -z "$RESVG_SHA256" ]]   && RESVG_SHA256="${BASH_REMATCH[1]}"
     done < "$VERSIONS_FILE"
 fi
-: "${COMPOSE_VERSION:=5.1.2}"
+: "${COMPOSE_VERSION:=5.5.0}"
 : "${RESVG_VERSION:=0.48.1}"
 
 # Generate dev version with timestamp if requested
@@ -114,7 +134,13 @@ mkdir -p "$ARCHIVE_PATH"
 
 # Host path for docker socket operations should be the actual unRAID path.
 HOST_ARCHIVE_PATH="$ARCHIVE_PATH"
-if [[ "$in_container" == true && -d "/code" ]]; then
+if [[ -n "$HOST_ARCHIVE_PATH_OVERRIDE" ]]; then
+  HOST_ARCHIVE_PATH="$HOST_ARCHIVE_PATH_OVERRIDE"
+elif [[ -n "$HOST_WORKSPACE_ROOT" ]]; then
+  HOST_ARCHIVE_PATH="${HOST_WORKSPACE_ROOT%/}/compose_plugin/archive"
+elif [[ "$in_container" == true && -d "/mnt/user/code" ]]; then
+  HOST_ARCHIVE_PATH="/mnt/user/code/compose_plugin/archive"
+elif [[ "$in_container" == true && -d "/code" ]]; then
   # Map /code inside container to host path for Docker bind mounts (normally /mnt/user/code).
   read -r host_root host_source < <(awk '$5=="/code" {for(i=1;i<=NF;i++){if($i=="-"){print $4, $(i+2); exit}}}' /proc/self/mountinfo 2>/dev/null || true)
   if [[ -n "$host_root" && -n "$host_source" ]]; then
@@ -158,8 +184,18 @@ mkdir -p "$HOST_ARCHIVE_PATH" 2>/dev/null || true
 
 CACHE_PATH="$ARCHIVE_PATH/.build-cache"
 HOST_CACHE_PATH="$HOST_ARCHIVE_PATH/.build-cache"
+if [[ -n "$HOST_CACHE_PATH_OVERRIDE" ]]; then
+  HOST_CACHE_PATH="$HOST_CACHE_PATH_OVERRIDE"
+fi
 
 SOURCE_PATH="$SCRIPT_DIR/source"
+if [[ -n "$HOST_SOURCE_PATH" ]]; then
+  SOURCE_PATH="$HOST_SOURCE_PATH"
+elif [[ -n "$HOST_WORKSPACE_ROOT" ]]; then
+  SOURCE_PATH="${HOST_WORKSPACE_ROOT%/}/compose_plugin/source"
+elif [[ "$in_container" == true && -d "/mnt/user/code/compose_plugin/source" ]]; then
+  SOURCE_PATH="/mnt/user/code/compose_plugin/source"
+fi
 
 mkdir -p "$ARCHIVE_PATH"
 mkdir -p "$HOST_ARCHIVE_PATH"
@@ -248,28 +284,15 @@ SOURCE_PATH="$TMP_SOURCE_PATH"
 echo "Docker will mount SOURCE_PATH=$SOURCE_PATH"
 
 # Determine a strategy to provide SOURCE_PATH to the container.
-# First attempt direct bind mount; if that fails we fallback to tar stream.
+# In nested Docker and CI, direct bind mounts are usually not visible to the daemon,
+# so prefer the tar-stream path unless we are on a native host with a visible workspace.
+USE_DIRECT_BIND=false
+if [[ "$in_container" != true && -z "${CI:-}" && -d "$SOURCE_PATH" ]]; then
+  USE_DIRECT_BIND=true
+fi
 
-build_cmd_direct=(docker run --rm --tmpfs /tmp \
-    -v "$HOST_ARCHIVE_PATH:/mnt/output:rw" \
-    -v "$HOST_CACHE_PATH:/mnt/cache:rw" \
-    -v "$SOURCE_PATH:/mnt/source:ro" \
-    -v "$HOST_CA_CERT:$CONTAINER_CA_CERT:ro" \
-    -e TZ=America/New_York \
-    -e COMPOSE_VERSION="$COMPOSE_VERSION" \
-    -e RESVG_VERSION="$RESVG_VERSION" \
-    -e RESVG_SHA256="$RESVG_SHA256" \
-    -e OUTPUT_FOLDER=/mnt/output \
-    -e DOWNLOAD_CACHE_DIR=/mnt/cache \
-    -e PKG_VERSION="$VERSION" \
-    -e PKG_BUILD="$BUILD_NUM" \
-    -e CA_CERT="$CONTAINER_CA_CERT" \
-    vbatts/slackware:latest \
-    sh -c 'test -f /mnt/source/pkg_build.sh')
-
-if "${build_cmd_direct[@]}"; then
-  echo "Direct source mount works. Running build via direct mount..."
-  if ! docker run --rm --tmpfs /tmp \
+if [[ "$USE_DIRECT_BIND" == true ]]; then
+  build_cmd_direct=(docker run --rm --tmpfs /tmp \
       -v "$HOST_ARCHIVE_PATH:/mnt/output:rw" \
       -v "$HOST_CACHE_PATH:/mnt/cache:rw" \
       -v "$SOURCE_PATH:/mnt/source:ro" \
@@ -284,11 +307,35 @@ if "${build_cmd_direct[@]}"; then
       -e PKG_BUILD="$BUILD_NUM" \
       -e CA_CERT="$CONTAINER_CA_CERT" \
       vbatts/slackware:latest \
-      /mnt/source/pkg_build.sh; then
-    echo "Docker build failed."; exit 1
+      sh -c 'test -f /mnt/source/pkg_build.sh')
+
+  if "${build_cmd_direct[@]}"; then
+    echo "Direct source mount works. Running build via direct mount..."
+    if ! docker run --rm --tmpfs /tmp \
+        -v "$HOST_ARCHIVE_PATH:/mnt/output:rw" \
+        -v "$HOST_CACHE_PATH:/mnt/cache:rw" \
+        -v "$SOURCE_PATH:/mnt/source:ro" \
+        -v "$HOST_CA_CERT:$CONTAINER_CA_CERT:ro" \
+        -e TZ=America/New_York \
+        -e COMPOSE_VERSION="$COMPOSE_VERSION" \
+        -e RESVG_VERSION="$RESVG_VERSION" \
+        -e RESVG_SHA256="$RESVG_SHA256" \
+        -e OUTPUT_FOLDER=/mnt/output \
+        -e DOWNLOAD_CACHE_DIR=/mnt/cache \
+        -e PKG_VERSION="$VERSION" \
+        -e PKG_BUILD="$BUILD_NUM" \
+        -e CA_CERT="$CONTAINER_CA_CERT" \
+        vbatts/slackware:latest \
+        /mnt/source/pkg_build.sh; then
+      echo "Docker build failed."; exit 1
+    fi
+  else
+    echo "Direct bind-mount probe failed. Docker is remote or nested; falling back to tar-stream upload."
   fi
-else
-  echo "Direct mount failed, using tar stream fallback."
+fi
+
+if [[ "$USE_DIRECT_BIND" != true || ! "${build_cmd_direct[@]}" ]]; then
+  echo "Using tar-stream upload for Docker build (safe for nested Docker and CI)."
   if ! tar -C "$SOURCE_PATH" -cf - . | docker run --rm --tmpfs /tmp -i \
       -v "$HOST_ARCHIVE_PATH:/mnt/output:rw" \
       -v "$HOST_CACHE_PATH:/mnt/cache:rw" \

@@ -45,6 +45,10 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
   PLUGIN_NAME: compose.manager
+  HOST_WORKSPACE_ROOT: ${{ github.workspace }}
+  HOST_SOURCE_PATH: ${{ github.workspace }}/source
+  HOST_ARCHIVE_PATH: ${{ github.workspace }}/archive
+  HOST_CACHE_PATH: ${{ github.workspace }}/archive/.build-cache
 
 jobs:
   build:
