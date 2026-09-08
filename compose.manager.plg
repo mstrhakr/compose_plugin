@@ -10,7 +10,7 @@
 <!ENTITY packageName "&name;-&packageVER;-noarch-&pkgBUILD;">
 <!ENTITY packagefile "&packageName;.txz">
 <!ENTITY github "mstrhakr/compose_plugin">
-<!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/dev/&name;.plg">
+<!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/main/&name;.plg">
 <!ENTITY packageURL "https://github.com/&github;/releases/download/v&version;/&packagefile;">
 <!ENTITY pluginsPATH "/boot/config/plugins">
 <!ENTITY pluginLOC "&pluginsPATH;/&name;">
