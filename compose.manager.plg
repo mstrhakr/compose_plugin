@@ -36,10 +36,10 @@
 >
 
 <CHANGES>
-###2026.09.07.2056
-- Chores: update changelog for v2026.09.03 [skip ci]
+###2026.09.07.2121
+- Bug Fixes: enhance logging and background processing in docker_started script
 - [PR #150](https://github.com/mstrhakr/compose_plugin/pull/150)
-- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.09.03...v2026.09.07.2056)
+- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.09.03...v2026.09.07.2121)
 </CHANGES>
 
 <!-- The 'pre-install' script. -->
