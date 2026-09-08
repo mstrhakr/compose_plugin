@@ -306,10 +306,10 @@
 }
 
 .settings-effective-command-wrap {
-  border: 1px solid var(--dynamix-box-inner-div-border-color, var(--border-color));
+  border: 1px solid var(--border-color, var(--dynamix-box-inner-div-border-color));
   border-radius: 6px;
   padding: 14px 16px;
-  background-color: var(--dynamix-sb-body-bg-color, var(--background-color));
+  background-color: var(--background-color, var(--dynamix-sb-body-bg-color));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
@@ -323,8 +323,11 @@
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-all;
-  color: var(--text-color);
-  background: transparent;
+  color: var(--text-color, var(--dynamix-sb-body-text-color, #111));
+  background-color: var(--background-color, var(--dynamix-sb-body-bg-color, #fff));
+  border: 1px solid var(--border-color, var(--dynamix-box-inner-div-border-color));
+  border-radius: 4px;
+  padding: 8px 10px;
   text-shadow: none;
 }
 
