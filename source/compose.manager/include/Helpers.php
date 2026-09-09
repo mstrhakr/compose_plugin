@@ -208,6 +208,29 @@ function resolveStackWaitSettings(string $stackPath, array $cfg): array
 }
 
 /**
+ * Resolve whether `update` should rebuild buildable services for a stack.
+ *
+ * Compose only builds automatically when an image is missing, so forcing
+ * `--build` breaks stacks that publish an image alongside an unbuildable
+ * `build:` section (see issue #149). Opt-in per stack, global default otherwise.
+ *
+ * @param array<string, mixed> $cfg
+ */
+function resolveStackBuildOnUpdate(string $stackPath, array $cfg): bool
+{
+    $buildFile = rtrim($stackPath, '/') . '/build_on_update';
+
+    if (is_file($buildFile)) {
+        $raw = trim((string) file_get_contents($buildFile));
+        if ($raw !== '') {
+            return ($raw === 'true' || $raw === '1');
+        }
+    }
+
+    return (($cfg['BUILD_ON_UPDATE_DEFAULT'] ?? 'false') === 'true');
+}
+
+/**
  * Build and echo a compose command for a single stack.
  *
  * @param string $action The compose action (up, down, update, pull, stop, logs)
@@ -238,6 +261,7 @@ function echoComposeCommand($action, array $options = [])
     $followLogs = !empty($options['followLogs']);
     $waitForHealthy = false;
     $waitTimeout = (string) ($cfg['WAIT_FOR_HEALTHY_TIMEOUT_DEFAULT'] ?? '300');
+    $buildOnUpdate = ($action === 'update') && resolveStackBuildOnUpdate($path, $cfg);
     if ($action === 'up') {
         $resolvedWait = resolveStackWaitSettings($path, $cfg);
         $waitForHealthy = !empty($resolvedWait['enabled']);
@@ -324,6 +348,10 @@ function echoComposeCommand($action, array $options = [])
 
         if ($action === 'up' && $followLogs) {
             $composeCommand[] = "--follow-logs";
+        }
+
+        if ($buildOnUpdate) {
+            $composeCommand[] = "--build";
         }
 
         if ($action === 'up' && $waitForHealthy) {

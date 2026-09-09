@@ -2763,6 +2763,18 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dd>
         </dl>
 
+        <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Rebuild Images on Update by Default)_:</dt>
+            <dd>
+                <input type="checkbox" name="BUILD_ON_UPDATE_DEFAULT" id="BUILD_ON_UPDATE_DEFAULT" class="compose-toggle" <?= ($cfg['BUILD_ON_UPDATE_DEFAULT'] ?? 'false') == 'true' ? 'checked' : '' ?>>
+                <blockquote class="inline_help">
+                    Default behavior for stack <em>Update</em> actions: when enabled, <code>--build</code> is added so services with a <code>build:</code> section are rebuilt from source.
+                    Leave disabled for stacks that publish an image alongside a <code>build:</code> section &mdash; those should be pulled, not rebuilt.
+                    This is a global default and can still be overridden per stack.
+                </blockquote>
+            </dd>
+        </dl>
+
         <div class="title"><span class="left"><i class="fa fa-plus-square icon"></i>_(New Stack Configuration)_</span></div>
         <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Default settings applied automatically when creating new compose stacks.</p>
 

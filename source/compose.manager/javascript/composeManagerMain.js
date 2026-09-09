@@ -1277,7 +1277,7 @@ function initEditorModal() {
     editorModal.editors['override'] = overrideEditor;
 
     // Initialize settings field change tracking
-    $('#settings-name, #settings-description, #settings-icon-url, #settings-webui-url, #settings-env-path, #settings-default-profile, #settings-wait-for-healthy, #settings-wait-timeout, #settings-external-compose-path, #settings-external-compose-file, #settings-use-default-compose-files').on('input change', function() {
+    $('#settings-name, #settings-description, #settings-icon-url, #settings-webui-url, #settings-env-path, #settings-default-profile, #settings-wait-for-healthy, #settings-wait-timeout, #settings-build-on-update, #settings-external-compose-path, #settings-external-compose-file, #settings-use-default-compose-files').on('input change', function() {
         var fieldId = this.id.replace('settings-', '');
         var isCheckbox = this.type === 'checkbox';
         var currentValue = isCheckbox ? ($(this).is(':checked') ? 'true' : 'false') : $(this).val();
@@ -6294,6 +6294,11 @@ function loadSettingsData(project, projectName) {
                 $('#settings-wait-timeout').val(waitTimeout);
                 editorModal.originalSettings['wait-timeout'] = waitTimeout;
 
+                // Rebuild-on-update setting
+                var buildOnUpdate = response.buildOnUpdate === true || response.buildOnUpdate === 'true' || response.buildOnUpdate === '1';
+                $('#settings-build-on-update').prop('checked', buildOnUpdate);
+                editorModal.originalSettings['build-on-update'] = buildOnUpdate ? 'true' : 'false';
+
                 // Compose file discovery mode
                 var useDefaultComposeFiles = response.useDefaultComposeFiles === true;
                 $('#settings-use-default-compose-files').prop('checked', useDefaultComposeFiles);
@@ -6341,6 +6346,7 @@ function loadSettingsData(project, projectName) {
         $('#settings-default-profile').val('');
         $('#settings-wait-for-healthy').prop('checked', false);
         $('#settings-wait-timeout').val('');
+        $('#settings-build-on-update').prop('checked', false);
         $('#settings-external-compose-path').val('');
         $('#settings-external-compose-file').val('');
         $('#settings-use-default-compose-files').prop('checked', false);
@@ -7293,6 +7299,7 @@ function saveSettings(saveErrors) {
         var defaultProfile = $('#settings-default-profile').val();
         var waitForHealthy = $('#settings-wait-for-healthy').is(':checked') ? 'true' : 'false';
         var waitTimeout = $('#settings-wait-timeout').val();
+        var buildOnUpdate = $('#settings-build-on-update').is(':checked') ? 'true' : 'false';
         var externalComposePath = $('#settings-external-compose-path').val();
         var externalComposeFilePath = $('#settings-external-compose-file').val();
         var useDefaultComposeFiles = $('#settings-use-default-compose-files').is(':checked') ? 'true' : 'false';
@@ -7307,6 +7314,7 @@ function saveSettings(saveErrors) {
                 defaultProfile: defaultProfile,
                 waitForHealthy: waitForHealthy,
                 waitTimeout: waitTimeout,
+                buildOnUpdate: buildOnUpdate,
                 externalComposePath: externalComposePath,
                 externalComposeFilePath: externalComposeFilePath,
                 useDefaultComposeFiles: useDefaultComposeFiles
@@ -7326,6 +7334,7 @@ function saveSettings(saveErrors) {
                         editorModal.originalSettings['default-profile'] = defaultProfile;
                         editorModal.originalSettings['wait-for-healthy'] = waitForHealthy;
                         editorModal.originalSettings['wait-timeout'] = waitTimeout;
+                        editorModal.originalSettings['build-on-update'] = buildOnUpdate;
                         editorModal.originalSettings['external-compose-path'] = externalComposePath;
                         editorModal.originalSettings['external-compose-file'] = externalComposeFilePath;
                         editorModal.originalSettings['use-default-compose-files'] = useDefaultComposeFiles;
@@ -7336,6 +7345,7 @@ function saveSettings(saveErrors) {
                         editorModal.modifiedSettings.delete('default-profile');
                         editorModal.modifiedSettings.delete('wait-for-healthy');
                         editorModal.modifiedSettings.delete('wait-timeout');
+                        editorModal.modifiedSettings.delete('build-on-update');
                         editorModal.modifiedSettings.delete('external-compose-path');
                         editorModal.modifiedSettings.delete('external-compose-file');
                         editorModal.modifiedSettings.delete('use-default-compose-files');

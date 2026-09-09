@@ -12,7 +12,7 @@ LOCK_TIMEOUT=${COMPOSE_LOCK_TIMEOUT:-30}
 LOCK_DIR="/var/run/compose.manager"
 
 SHORT=e:,c:,f:,p:,d:,o:,g:,s:,w:
-LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:,follow-logs,wait,wait-timeout:
+LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:,follow-logs,wait,wait-timeout:,build
 OPTS=$(getopt -a -n compose --options $SHORT --longoptions $LONG -- "$@")
 
 eval set -- "$OPTS"
@@ -29,6 +29,7 @@ debug=false
 follow_logs=false
 wait_for_healthy=false
 wait_timeout=""
+build_on_update=false
 lock_fd=""
 operation_exit_code=0
 
@@ -204,6 +205,10 @@ do
       wait_timeout="$2"
       shift 2
       ;;
+    --build )
+      build_on_update=true
+      shift;
+      ;;
     --)
       shift;
       break
@@ -345,10 +350,18 @@ case $command in
     ;;
     
   update)
+    up_args=("-d")
+    pull_args=()
+    if [ "$build_on_update" = true ]; then
+      # --ignore-buildable only makes sense when we rebuild those services ourselves.
+      pull_args+=("--ignore-buildable")
+      up_args+=("--build")
+    fi
+
     if [ "$debug" = true ]; then
       log_msg "DEBUG" "${compose_base[*]} -p $name images -q"
-      log_msg "DEBUG" "${compose_base[*]} -p $name pull --ignore-buildable"
-      log_msg "DEBUG" "${compose_base[*]} -p $name up -d --build"
+      log_msg "DEBUG" "${compose_base[*]} -p $name pull ${pull_args[*]}"
+      log_msg "DEBUG" "${compose_base[*]} -p $name up ${up_args[*]}"
     fi
 
     # Capture current images for cleanup later
@@ -374,9 +387,9 @@ case $command in
       images=( "${images[@]##sha256:}" )
     fi
     
-    # Pull latest images (--ignore-buildable: skip services with build sections, they are rebuilt by up --build)
+    # Pull latest images. Buildable services are only skipped when we rebuild them below.
     echo "Pulling latest images..."
-    "${compose_base[@]}" -p "$name" pull --ignore-buildable
+    "${compose_base[@]}" -p "$name" pull "${pull_args[@]}"
     pull_exit=$?
     
     if [ $pull_exit -ne 0 ]; then
@@ -391,7 +404,7 @@ case $command in
     # Recreate containers with new images
     echo ""
     echo "Recreating containers..."
-    "${compose_base[@]}" -p "$name" up -d --build
+    "${compose_base[@]}" -p "$name" up "${up_args[@]}"
     up_exit=$?
 
     if [ $up_exit -eq 0 ]; then

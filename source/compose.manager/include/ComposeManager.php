@@ -781,6 +781,15 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                             <input type="number" id="settings-wait-timeout" min="10" max="1800" step="10" placeholder="300">
                             <div class="settings-field-help">Seconds to wait for the stack to become healthy. Leave empty to use the global default timeout.</div>
                         </div>
+
+                        <div class="settings-field">
+                            <label for="settings-build-on-update">Rebuild Images on Update</label>
+                            <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+                                <input type="checkbox" id="settings-build-on-update">
+                                <span>Add <code>--build</code> to <code>docker compose up</code> when updating</span>
+                            </label>
+                            <div class="settings-field-help">Enable only for stacks whose images are built locally. Leave unchecked for stacks that publish an image alongside a <code>build:</code> section &mdash; those are pulled instead, matching plain <code>docker compose up</code>.</div>
+                        </div>
                     </div>
 
                     <!-- Labels & Overrides -->
