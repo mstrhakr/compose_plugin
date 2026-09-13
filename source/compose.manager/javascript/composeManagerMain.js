@@ -3884,9 +3884,10 @@ function isStackRunning(project) {
     return $stackRow.length > 0 && $stackRow.data('isup') == '1';
 }
 
-function buildRemoveOrphansCheckboxHtml(checkboxId) {
+function buildRemoveOrphansCheckboxHtml(checkboxId, checked) {
+    var checkedAttr = checked ? ' checked' : '';
     return '<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--dynamix-box-inner-div-border-color);display:flex;align-items:center;gap:8px;">' +
-        '<input type="checkbox" id="' + checkboxId + '" style="width:16px;height:16px;cursor:pointer;">' +
+        '<input type="checkbox" id="' + checkboxId + '"' + checkedAttr + ' style="width:16px;height:16px;cursor:pointer;">' +
         '<label for="' + checkboxId + '" style="cursor:pointer;user-select:none;margin:0;font-size:0.95em;">Remove orphans</label>' +
         '</div>';
 }
@@ -4900,12 +4901,11 @@ function startAllStacks() {
         '<input type="checkbox" id="swal-run-bg-startall" style="width:16px;height:16px;cursor:pointer;">' +
         '<label for="swal-run-bg-startall" style="cursor:pointer;user-select:none;margin:0;font-size:0.95em;">Run in background</label>' +
         '</div>';
-    var removeOrphansHtml = buildRemoveOrphansCheckboxHtml('swal-remove-orphans-startall');
-
     getConfig().then(function(pluginCfg) {
         var bgDefault = pluginCfg && pluginCfg.RUN_IN_BACKGROUND_DEFAULT === 'true';
         var removeOrphansDefault = pluginCfg && pluginCfg.REMOVE_ORPHANS_DEFAULT === 'true';
         var disableWarnings = pluginCfg && pluginCfg.DISABLE_ACTION_WARNINGS === 'true';
+        var removeOrphansHtml = buildRemoveOrphansCheckboxHtml('swal-remove-orphans-startall', removeOrphansDefault);
 
         if (disableWarnings) {
             executeStartAllStacks({
@@ -4941,8 +4941,6 @@ function startAllStacks() {
         setTimeout(function() {
             var $cb = $('#swal-run-bg-startall');
             if ($cb.length) $cb.prop('checked', bgDefault);
-            var $removeCb = $('#swal-remove-orphans-startall');
-            if ($removeCb.length) $removeCb.prop('checked', removeOrphansDefault);
         }, 50);
     });
 }
@@ -5038,12 +5036,11 @@ function stopAllStacks() {
         '<input type="checkbox" id="swal-run-bg-stopall" style="width:16px;height:16px;cursor:pointer;">' +
         '<label for="swal-run-bg-stopall" style="cursor:pointer;user-select:none;margin:0;font-size:0.95em;">Run in background</label>' +
         '</div>';
-    var removeOrphansHtml = buildRemoveOrphansCheckboxHtml('swal-remove-orphans-stopall');
-
     getConfig().then(function(pluginCfg) {
         var bgDefault = pluginCfg && pluginCfg.RUN_IN_BACKGROUND_DEFAULT === 'true';
         var removeOrphansDefault = pluginCfg && pluginCfg.REMOVE_ORPHANS_DEFAULT === 'true';
         var disableWarnings = pluginCfg && pluginCfg.DISABLE_ACTION_WARNINGS === 'true';
+        var removeOrphansHtml = buildRemoveOrphansCheckboxHtml('swal-remove-orphans-stopall', removeOrphansDefault);
 
         if (disableWarnings) {
             executeStopAllStacks({
@@ -5079,8 +5076,6 @@ function stopAllStacks() {
         setTimeout(function() {
             var $cb = $('#swal-run-bg-stopall');
             if ($cb.length) $cb.prop('checked', bgDefault);
-            var $removeCb = $('#swal-remove-orphans-stopall');
-            if ($removeCb.length) $removeCb.prop('checked', removeOrphansDefault);
         }, 50);
     });
 }
@@ -5493,7 +5488,6 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
         var bgDefault = pluginCfg && pluginCfg.RUN_IN_BACKGROUND_DEFAULT === 'true';
         removeOrphansDefault = pluginCfg && pluginCfg.REMOVE_ORPHANS_DEFAULT === 'true';
         var disableWarnings = pluginCfg && pluginCfg.DISABLE_ACTION_WARNINGS === 'true';
-        var stackMismatchDetected = !!showRemoveOrphans;
 
         if (disableWarnings) {
             // In default background mode (warnings disabled and background enabled), don't show toast if background is used
@@ -5506,8 +5500,8 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             return;
         }
 
-        var removeOrphansChecked = removeOrphansDefault || stackMismatchDetected;
-        var showRemoveOrphansOption = !!cfg.showRemoveOrphans || stackMismatchDetected;
+        var removeOrphansChecked = removeOrphansDefault;
+        var showRemoveOrphansOption = !!cfg.showRemoveOrphans;
 
         // Use native swal (SweetAlert 1.x) with callback style
         swal({
