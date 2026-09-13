@@ -4,6 +4,7 @@
     var credentials = [];
     var onSaved = null;
     var githubPollTimer = null;
+    var activeCredential = {};
 
     function ensureModal() {
         if ($('#compose-credential-modal').length) return;
@@ -15,11 +16,13 @@
                     '<label for="credential-provider">Provider</label><select id="credential-provider"><option value="github">GitHub Container Registry</option><option value="docker">Docker Hub</option><option value="generic">Other registry</option></select>' +
                     '<button type="button" id="credential-github-signin"><i class="fa fa-github"></i> Sign in with GitHub</button>' +
                     '<div id="credential-github-device" style="display:none;"><p>Enter this code on GitHub:</p><strong id="credential-github-code"></strong> <a id="credential-github-link" target="_blank" rel="noopener noreferrer">Open GitHub</a><p id="credential-github-status">Waiting for authorization...</p></div>' +
-                    '<label for="credential-name">Name</label><input id="credential-name" type="text" autocomplete="off" placeholder="Work GitHub">' +
-                    '<label for="credential-registry">Registry</label><input id="credential-registry" type="text" autocomplete="off" placeholder="ghcr.io">' +
-                    '<label for="credential-username">Username</label><input id="credential-username" type="text" autocomplete="username">' +
-                    '<label for="credential-secret">Access token</label><input id="credential-secret" type="password" autocomplete="new-password" placeholder="Required for new credentials">' +
-                    '<div class="credential-help">Use a read-only token. Existing tokens are never displayed.</div>' +
+                    '<div id="credential-oauth-connected" style="display:none;"><i class="fa fa-check-circle"></i> GitHub account connected</div>' +
+                    '<div id="credential-details">' +
+                        '<label for="credential-name">Name</label><input id="credential-name" type="text" autocomplete="off" placeholder="Work GitHub">' +
+                        '<label for="credential-registry">Registry</label><input id="credential-registry" type="text" autocomplete="off" placeholder="ghcr.io">' +
+                        '<label for="credential-username">Username</label><input id="credential-username" type="text" autocomplete="username">' +
+                    '</div>' +
+                    '<div id="credential-secret-wrap"><label for="credential-secret">Access token</label><input id="credential-secret" type="password" autocomplete="new-password" placeholder="Required for new credentials"><div class="credential-help">Use a read-only token. Existing tokens are never displayed.</div></div>' +
                     '<div id="credential-modal-error" class="compose-status-danger" style="display:none;"></div>' +
                     '<div class="credential-modal-actions"><button type="button" class="credential-cancel">Cancel</button><button type="button" class="credential-save">Save credential</button></div>' +
                 '</div>' +
@@ -44,6 +47,7 @@
                 '#credential-github-signin{width:100%;margin-top:12px}' +
                 '#credential-github-device{margin-top:12px;padding:14px 16px;color:var(--text-color);background-color:var(--dynamix-tablesorter-tbody-row-alt-bg-color);border:1px solid var(--border-color);border-radius:6px}' +
                 '#credential-github-device p{margin:0 0 10px;color:var(--alt-text-color)}#credential-github-device p:last-child{margin:10px 0 0}#credential-github-code{color:var(--brand-orange);font-size:1.3rem;letter-spacing:0}#credential-github-link{margin-left:12px}' +
+                '#credential-oauth-connected{margin-top:12px;padding:10px 12px;color:var(--status-success);background-color:var(--dynamix-tablesorter-tbody-row-alt-bg-color);border:1px solid var(--border-color);border-radius:6px}#credential-oauth-connected i{margin-right:8px}' +
                 '#credential-modal-error{margin-top:12px;padding:10px 12px;border-radius:6px}' +
                 '@media(max-width:600px){.credential-modal-backdrop{padding:10px}.credential-modal{width:100%;max-height:calc(100vh - 20px);padding:20px}.credential-modal-header{margin:-20px -20px 16px}.credential-modal-actions{margin:20px -20px -20px}.credential-modal-actions button{padding:10px 16px}}' +
             '</style>');
@@ -56,8 +60,17 @@
 
     function applyProviderDefaults() {
         var provider = $('#credential-provider').val();
-        $('#credential-github-signin').toggle(provider === 'github' && !$('#credential-id').val());
+        var isOAuthGitHub = provider === 'github' && activeCredential.authMethod === 'oauth_device';
+        var isNewGitHub = provider === 'github' && !$('#credential-id').val();
+        $('#credential-github-signin').toggle(isNewGitHub);
         $('#credential-github-device').hide();
+        $('#credential-oauth-connected').toggle(isOAuthGitHub);
+        $('#credential-details').toggle(!isNewGitHub);
+        $('#credential-secret-wrap').toggle(!isNewGitHub && !isOAuthGitHub);
+        $('.credential-save').toggle(!isNewGitHub && !isOAuthGitHub);
+        $('.credential-cancel').text(isOAuthGitHub ? 'Close' : 'Cancel');
+        $('#credential-provider').prop('disabled', isOAuthGitHub);
+        $('#credential-name,#credential-username').prop('readonly', isOAuthGitHub);
         if (provider === 'github') $('#credential-registry').val('ghcr.io').prop('readonly', true);
         else if (provider === 'docker') $('#credential-registry').val('docker.io').prop('readonly', true);
         else $('#credential-registry').prop('readonly', false);
@@ -109,8 +122,10 @@
                 }
                 if (auth.status === 'success') {
                     var callback = onSaved;
-                    closeModal();
-                    loadCredentials(function() { if (callback) callback(auth.credential); });
+                    loadCredentials(function() {
+                        if (callback) callback(auth.credential);
+                        openModal(auth.credential, null);
+                    });
                     return;
                 }
                 $('#credential-github-status').text(auth.status === 'denied' ? 'Authorization was denied.' : 'Authorization expired. Try again.');
@@ -125,6 +140,7 @@
     function openModal(credential, callback) {
         ensureModal();
         credential = credential || {};
+        activeCredential = credential;
         onSaved = callback || null;
         $('#credential-modal-title').text(credential.id ? 'Edit registry credential' : 'Add registry credential');
         $('#credential-id').val(credential.id || '');

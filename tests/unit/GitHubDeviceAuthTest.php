@@ -38,6 +38,7 @@ final class GitHubDeviceAuthTest extends TestCase
 
         $this->assertSame('success', $result['status']);
         $this->assertSame('GitHub - octocat', $result['credential']['name']);
+        $this->assertSame('oauth_device', $result['credential']['authMethod']);
         $this->assertArrayNotHasKey('secret', $result['credential']);
         $this->assertStringNotContainsString('github-access-token', (string) file_get_contents(COMPOSE_CREDENTIAL_VAULT_FILE));
     }

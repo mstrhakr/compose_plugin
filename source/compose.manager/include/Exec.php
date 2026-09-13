@@ -1026,6 +1026,7 @@ switch ($_POST['action']) {
                 'id' => trim((string) ($_POST['id'] ?? '')),
                 'name' => trim((string) ($_POST['name'] ?? '')),
                 'provider' => trim((string) ($_POST['provider'] ?? 'generic')),
+                'authMethod' => 'manual',
                 'registry' => trim((string) ($_POST['registry'] ?? '')),
                 'username' => trim((string) ($_POST['username'] ?? '')),
                 'secret' => trim((string) ($_POST['secret'] ?? '')),

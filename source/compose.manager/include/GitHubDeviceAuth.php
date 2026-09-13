@@ -97,6 +97,7 @@ final class GitHubDeviceAuth
         $credential = $this->vault->saveCredential([
             'name' => 'GitHub - ' . $username,
             'provider' => 'github',
+            'authMethod' => 'oauth_device',
             'registry' => 'ghcr.io',
             'username' => $username,
             'secret' => $token,

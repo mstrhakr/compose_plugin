@@ -38,11 +38,15 @@ final class CredentialVault
         $registry = self::normalizeRegistry($input['registry'] ?? (string) ($existing['registry'] ?? ''));
         $username = trim($input['username'] ?? (string) ($existing['username'] ?? ''));
         $provider = strtolower(trim($input['provider'] ?? (string) ($existing['provider'] ?? 'generic')));
+        $authMethod = strtolower(trim($input['authMethod'] ?? (string) ($existing['authMethod'] ?? 'manual')));
         if ($name === '' || $registry === '' || $username === '' || $secret === '') {
             throw new InvalidArgumentException('Name, registry, username, and token are required.');
         }
         if (!in_array($provider, ['github', 'docker', 'generic'], true)) {
             throw new InvalidArgumentException('Unsupported credential provider.');
+        }
+        if (!in_array($authMethod, ['manual', 'oauth_device'], true)) {
+            throw new InvalidArgumentException('Unsupported credential authentication method.');
         }
 
         $now = gmdate('c');
@@ -50,6 +54,7 @@ final class CredentialVault
             'id' => $id !== '' ? $id : bin2hex(random_bytes(16)),
             'name' => $name,
             'provider' => $provider,
+            'authMethod' => $authMethod,
             'registry' => $registry,
             'username' => $username,
             'secret' => $secret,
