@@ -402,6 +402,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 </script>
 <script src="<?php autov('/plugins/compose.manager/javascript/composeManagerPageInit.js'); ?>" type="text/javascript"></script>
 <script src="<?php autov('/plugins/compose.manager/javascript/composeColumnCustomizer.js'); ?>" type="text/javascript"></script>
+<script src="<?php autov('/plugins/compose.manager/javascript/credentialManager.js'); ?>" type="text/javascript"></script>
 <script src="<?php autov('/plugins/compose.manager/javascript/composeManagerMain.js'); ?>" type="text/javascript"></script>
 
 <HTML>
@@ -765,6 +766,15 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                                 <span class="compose-text-muted" style="font-size:0.9em;">Available profiles: </span>
                                 <span id="settings-profiles-list" style="font-family:var(--font-bitstream);"></span>
                             </div>
+                        </div>
+
+                        <div class="settings-field">
+                            <label for="settings-credential-id">Registry Credential</label>
+                            <div style="display:flex;gap:8px;align-items:center;">
+                                <select id="settings-credential-id" style="flex:1;"><option value="">Anonymous / no credential</option></select>
+                                <button type="button" id="settings-add-credential" title="Add credential"><i class="fa fa-plus"></i></button>
+                            </div>
+                            <div class="settings-field-help">Used only for pull-capable operations for this stack.</div>
                         </div>
 
                         <div class="settings-field">
