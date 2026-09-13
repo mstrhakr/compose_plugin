@@ -324,6 +324,14 @@ function echoComposeCommand($action, array $options = [])
 
         appendComposeEnvFileArg($composeCommand, $args);
 
+        if (in_array($action, ['up', 'update', 'pull'], true)) {
+            $credentialId = trim((string) ($stackInfo->getCredentialId() ?? ''));
+            if ($credentialId !== '') {
+                $composeCommand[] = '--credential-id';
+                $composeCommand[] = $credentialId;
+            }
+        }
+
         // Support multiple profiles (comma-separated)
         if ($profile) {
             $profileList = array_map('trim', explode(',', $profile));
@@ -479,6 +487,14 @@ function echoComposeCommandMultiple($action, array $options = [])
         }
 
         appendComposeEnvFileArg($composeCommand, $args);
+
+        if (in_array($action, ['up', 'update', 'pull'], true)) {
+            $credentialId = trim((string) ($stackInfo->getCredentialId() ?? ''));
+            if ($credentialId !== '') {
+                $composeCommand[] = '--credential-id';
+                $composeCommand[] = $credentialId;
+            }
+        }
 
         // Profile selection per action:
         //  - up:     use user-configured default profiles (running_profiles

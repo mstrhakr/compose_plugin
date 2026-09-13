@@ -43,6 +43,10 @@ define('COMPOSE_ICON_CACHE_DIR',     sys_get_temp_dir() . '/compose_manager_icon
 define('COMPOSE_DM_ICON_RAM_DIR',     sys_get_temp_dir() . '/compose_manager_dm_images_ram');
 define('COMPOSE_DM_ICON_PERSIST_DIR', sys_get_temp_dir() . '/compose_manager_dm_images');
 define('COMPOSE_DM_WEBUI_INFO_FILE',  sys_get_temp_dir() . '/compose_manager_dm_docker.json');
+define('COMPOSE_CREDENTIAL_VAULT_FILE', sys_get_temp_dir() . '/compose_manager_credentials.vault');
+define('COMPOSE_CREDENTIAL_KEY_FILE', sys_get_temp_dir() . '/compose_manager_credentials.key');
+define('COMPOSE_DOCKER_CONFIG_DIR', sys_get_temp_dir() . '/compose_manager_docker_configs');
+define('COMPOSE_GITHUB_DEVICE_DIR', sys_get_temp_dir() . '/compose_manager_github_device');
 // Point to the dev-env resvg binary when present; plugin path used on real Unraid
 define('COMPOSE_RESVG_BIN',          is_executable('/tmp/resvg') ? '/tmp/resvg'
     : '/usr/local/emhttp/plugins/compose.manager/bin/resvg');

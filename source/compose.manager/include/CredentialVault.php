@@ -1,0 +1,220 @@
+<?php
+
+declare(strict_types=1);
+
+require_once '/usr/local/emhttp/plugins/compose.manager/include/Defines.php';
+
+final class CredentialVault
+{
+    /** @return array<int, array<string, string>> */
+    public function listCredentials(): array
+    {
+        return array_map(static function (array $credential): array {
+            unset($credential['secret']);
+            return $credential;
+        }, $this->readVault());
+    }
+
+    /** @param array<string, string> $input */
+    public function saveCredential(array $input): array
+    {
+        $credentials = $this->readVault();
+        $id = trim($input['id'] ?? '');
+        $existingIndex = null;
+        foreach ($credentials as $index => $credential) {
+            if (($credential['id'] ?? '') === $id && $id !== '') {
+                $existingIndex = $index;
+                break;
+            }
+        }
+
+        $existing = $existingIndex !== null ? $credentials[$existingIndex] : [];
+        $secret = trim($input['secret'] ?? '');
+        if ($secret === '') {
+            $secret = (string) ($existing['secret'] ?? '');
+        }
+
+        $name = trim($input['name'] ?? (string) ($existing['name'] ?? ''));
+        $registry = self::normalizeRegistry($input['registry'] ?? (string) ($existing['registry'] ?? ''));
+        $username = trim($input['username'] ?? (string) ($existing['username'] ?? ''));
+        $provider = strtolower(trim($input['provider'] ?? (string) ($existing['provider'] ?? 'generic')));
+        if ($name === '' || $registry === '' || $username === '' || $secret === '') {
+            throw new InvalidArgumentException('Name, registry, username, and token are required.');
+        }
+        if (!in_array($provider, ['github', 'docker', 'generic'], true)) {
+            throw new InvalidArgumentException('Unsupported credential provider.');
+        }
+
+        $now = gmdate('c');
+        $credential = [
+            'id' => $id !== '' ? $id : bin2hex(random_bytes(16)),
+            'name' => $name,
+            'provider' => $provider,
+            'registry' => $registry,
+            'username' => $username,
+            'secret' => $secret,
+            'createdAt' => (string) ($existing['createdAt'] ?? $now),
+            'updatedAt' => $now,
+        ];
+
+        if ($existingIndex === null) {
+            $credentials[] = $credential;
+        } else {
+            $credentials[$existingIndex] = $credential;
+        }
+        $this->writeVault($credentials);
+
+        unset($credential['secret']);
+        return $credential;
+    }
+
+    public function deleteCredential(string $id): bool
+    {
+        $credentials = $this->readVault();
+        $filtered = array_values(array_filter($credentials, static fn(array $credential): bool => ($credential['id'] ?? '') !== $id));
+        if (count($filtered) === count($credentials)) {
+            return false;
+        }
+        $this->writeVault($filtered);
+        return true;
+    }
+
+    public function hasCredential(string $id): bool
+    {
+        if ($id === '') {
+            return false;
+        }
+        foreach ($this->readVault() as $credential) {
+            if (($credential['id'] ?? '') === $id) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public function materializeDockerConfig(string $id): string
+    {
+        $credential = $this->findCredential($id);
+        $baseDir = rtrim(COMPOSE_DOCKER_CONFIG_DIR, '/');
+        $directory = $baseDir . '/' . bin2hex(random_bytes(16));
+        if (!is_dir($baseDir) && !mkdir($baseDir, 0700, true) && !is_dir($baseDir)) {
+            throw new RuntimeException('Unable to create Docker credential directory.');
+        }
+        chmod($baseDir, 0700);
+        if (!mkdir($directory, 0700)) {
+            throw new RuntimeException('Unable to create temporary Docker config.');
+        }
+
+        $auth = base64_encode($credential['username'] . ':' . $credential['secret']);
+        $json = json_encode(['auths' => [$credential['registry'] => ['auth' => $auth]]], JSON_UNESCAPED_SLASHES);
+        if ($json === false || file_put_contents($directory . '/config.json', $json, LOCK_EX) === false) {
+            @rmdir($directory);
+            throw new RuntimeException('Unable to write temporary Docker config.');
+        }
+        chmod($directory . '/config.json', 0600);
+        return $directory;
+    }
+
+    public static function removeDockerConfig(string $directory): void
+    {
+        $baseDir = realpath(COMPOSE_DOCKER_CONFIG_DIR);
+        $target = realpath($directory);
+        if ($baseDir === false || $target === false || dirname($target) !== $baseDir) {
+            return;
+        }
+        @unlink($target . '/config.json');
+        @rmdir($target);
+    }
+
+    private static function normalizeRegistry(string $registry): string
+    {
+        $registry = strtolower(trim($registry));
+        $registry = preg_replace('#^https?://#', '', $registry) ?? '';
+        $registry = rtrim($registry, '/');
+        if ($registry === 'docker.io' || $registry === 'registry-1.docker.io') {
+            return 'https://index.docker.io/v1/';
+        }
+        if ($registry === '' || preg_match('/[\s?#]/', $registry)) {
+            return '';
+        }
+        return $registry;
+    }
+
+    /** @return array<string, string> */
+    private function findCredential(string $id): array
+    {
+        foreach ($this->readVault() as $credential) {
+            if (($credential['id'] ?? '') === $id) {
+                return $credential;
+            }
+        }
+        throw new RuntimeException('Selected credential no longer exists.');
+    }
+
+    /** @return array<int, array<string, string>> */
+    private function readVault(): array
+    {
+        if (!is_file(COMPOSE_CREDENTIAL_VAULT_FILE)) {
+            return [];
+        }
+        $payload = json_decode((string) file_get_contents(COMPOSE_CREDENTIAL_VAULT_FILE), true);
+        if (!is_array($payload) || !isset($payload['nonce'], $payload['ciphertext'])) {
+            throw new RuntimeException('Credential vault is invalid.');
+        }
+        $nonce = base64_decode((string) $payload['nonce'], true);
+        $ciphertext = base64_decode((string) $payload['ciphertext'], true);
+        if ($nonce === false || $ciphertext === false) {
+            throw new RuntimeException('Credential vault is invalid.');
+        }
+        $plaintext = sodium_crypto_secretbox_open($ciphertext, $nonce, $this->loadKey());
+        if ($plaintext === false) {
+            throw new RuntimeException('Credential vault could not be decrypted.');
+        }
+        $credentials = json_decode($plaintext, true);
+        return is_array($credentials) ? array_values($credentials) : [];
+    }
+
+    /** @param array<int, array<string, string>> $credentials */
+    private function writeVault(array $credentials): void
+    {
+        $directory = dirname(COMPOSE_CREDENTIAL_VAULT_FILE);
+        if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) {
+            throw new RuntimeException('Unable to create credential storage directory.');
+        }
+        $nonce = random_bytes(SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+        $plaintext = json_encode(array_values($credentials), JSON_UNESCAPED_SLASHES);
+        if ($plaintext === false) {
+            throw new RuntimeException('Unable to encode credential vault.');
+        }
+        $payload = json_encode([
+            'version' => 1,
+            'nonce' => base64_encode($nonce),
+            'ciphertext' => base64_encode(sodium_crypto_secretbox($plaintext, $nonce, $this->loadKey())),
+        ], JSON_UNESCAPED_SLASHES);
+        if ($payload === false || file_put_contents(COMPOSE_CREDENTIAL_VAULT_FILE, $payload, LOCK_EX) === false) {
+            throw new RuntimeException('Unable to save credential vault.');
+        }
+        chmod(COMPOSE_CREDENTIAL_VAULT_FILE, 0600);
+    }
+
+    private function loadKey(): string
+    {
+        if (is_file(COMPOSE_CREDENTIAL_KEY_FILE)) {
+            $key = base64_decode(trim((string) file_get_contents(COMPOSE_CREDENTIAL_KEY_FILE)), true);
+            if ($key !== false && strlen($key) === SODIUM_CRYPTO_SECRETBOX_KEYBYTES) {
+                return $key;
+            }
+            throw new RuntimeException('Credential encryption key is invalid.');
+        }
+        $directory = dirname(COMPOSE_CREDENTIAL_KEY_FILE);
+        if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) {
+            throw new RuntimeException('Unable to create credential storage directory.');
+        }
+        $key = random_bytes(SODIUM_CRYPTO_SECRETBOX_KEYBYTES);
+        if (file_put_contents(COMPOSE_CREDENTIAL_KEY_FILE, base64_encode($key), LOCK_EX) === false) {
+            throw new RuntimeException('Unable to save credential encryption key.');
+        }
+        chmod(COMPOSE_CREDENTIAL_KEY_FILE, 0600);
+        return $key;
+    }
+}

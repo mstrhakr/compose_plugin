@@ -11,7 +11,25 @@ PROJECT_NAME="$2"
 COMPOSE_FILE_LIST="${COMPOSE_FILE_LIST:-}"
 COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE:-}"
 COMPOSE_PROJECT_DIR="${COMPOSE_PROJECT_DIR:-}"
+COMPOSE_CREDENTIAL_ID="${COMPOSE_CREDENTIAL_ID:-}"
 COMPOSE_FILE="${COMPOSE_FILE_ARG:-${COMPOSE_FILE:-}}"
+DOCKER_CONFIG_DIR=""
+
+# shellcheck disable=SC2317  # Invoked by EXIT trap.
+cleanup_docker_config() {
+  if [ -n "$DOCKER_CONFIG_DIR" ]; then
+    php "$(dirname "$0")/credential_config.php" --remove "$DOCKER_CONFIG_DIR" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_docker_config EXIT
+
+if [ -n "$COMPOSE_CREDENTIAL_ID" ]; then
+  if ! DOCKER_CONFIG_DIR=$(php "$(dirname "$0")/credential_config.php" --credential-id "$COMPOSE_CREDENTIAL_ID"); then
+    composeLogger "Selected registry credential could not be loaded for '$PROJECT_NAME'" error autoupdate daemon
+    exit 1
+  fi
+  export DOCKER_CONFIG="$DOCKER_CONFIG_DIR"
+fi
 
 # If this script is invoked by the background runner, the first positional
 # argument is the project name and compose files are supplied through env vars.

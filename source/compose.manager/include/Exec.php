@@ -3,6 +3,8 @@
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Defines.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Util.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/ColumnLayout.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/CredentialVault.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/GitHubDeviceAuth.php");
 require_once("/usr/local/emhttp/plugins/dynamix/include/Wrappers.php");
 require_once('/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php');
 
@@ -980,6 +982,83 @@ switch ($_POST['action']) {
         }
         echo json_encode(['result' => 'success', 'fileName' => "$fileName", 'content' => $fileContents]);
         break;
+    case 'listCredentials':
+        try {
+            $credentials = (new CredentialVault())->listCredentials();
+            foreach ($credentials as &$credential) {
+                $credential['stacks'] = [];
+                foreach (glob(rtrim($compose_root, '/') . '/*/credential_id') ?: [] as $credentialFile) {
+                    if (trim((string) file_get_contents($credentialFile)) === $credential['id']) {
+                        $credential['stacks'][] = basename(dirname($credentialFile));
+                    }
+                }
+            }
+            unset($credential);
+            echo json_encode(['result' => 'success', 'credentials' => $credentials]);
+        } catch (\Throwable $error) {
+            composeLogger('Unable to list credentials', ['error' => $error->getMessage()], 'user', 'error', 'credentials');
+            echo json_encode(['result' => 'error', 'message' => 'Unable to read credential vault.']);
+        }
+        break;
+    case 'startGitHubDeviceAuth':
+        try {
+            $cfg = parse_plugin_cfg($sName);
+            $auth = new GitHubDeviceAuth((string) ($cfg['GITHUB_OAUTH_CLIENT_ID'] ?? ''));
+            echo json_encode(['result' => 'success', 'device' => $auth->start()]);
+        } catch (\Throwable $error) {
+            composeLogger('Unable to start GitHub sign-in', ['error' => $error->getMessage()], 'user', 'warning', 'credentials');
+            echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);
+        }
+        break;
+    case 'pollGitHubDeviceAuth':
+        try {
+            $cfg = parse_plugin_cfg($sName);
+            $auth = new GitHubDeviceAuth((string) ($cfg['GITHUB_OAUTH_CLIENT_ID'] ?? ''));
+            echo json_encode(['result' => 'success', 'auth' => $auth->poll(trim((string) ($_POST['state'] ?? '')))]);
+        } catch (\Throwable $error) {
+            composeLogger('Unable to complete GitHub sign-in', ['error' => $error->getMessage()], 'user', 'warning', 'credentials');
+            echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);
+        }
+        break;
+    case 'saveCredential':
+        try {
+            $credential = (new CredentialVault())->saveCredential([
+                'id' => trim((string) ($_POST['id'] ?? '')),
+                'name' => trim((string) ($_POST['name'] ?? '')),
+                'provider' => trim((string) ($_POST['provider'] ?? 'generic')),
+                'registry' => trim((string) ($_POST['registry'] ?? '')),
+                'username' => trim((string) ($_POST['username'] ?? '')),
+                'secret' => trim((string) ($_POST['secret'] ?? '')),
+            ]);
+            composeLogger('Saved registry credential', ['id' => $credential['id'], 'provider' => $credential['provider'], 'registry' => $credential['registry']], 'user', 'info', 'credentials');
+            echo json_encode(['result' => 'success', 'credential' => $credential]);
+        } catch (\InvalidArgumentException $error) {
+            echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);
+        } catch (\Throwable $error) {
+            composeLogger('Unable to save credential', ['error' => $error->getMessage()], 'user', 'error', 'credentials');
+            echo json_encode(['result' => 'error', 'message' => 'Unable to save credential.']);
+        }
+        break;
+    case 'deleteCredential':
+        $credentialId = trim((string) ($_POST['id'] ?? ''));
+        $stacks = [];
+        foreach (glob(rtrim($compose_root, '/') . '/*/credential_id') ?: [] as $credentialFile) {
+            if (trim((string) file_get_contents($credentialFile)) === $credentialId) {
+                $stacks[] = basename(dirname($credentialFile));
+            }
+        }
+        if (!empty($stacks)) {
+            echo json_encode(['result' => 'error', 'message' => 'Credential is assigned to: ' . implode(', ', $stacks), 'stacks' => $stacks]);
+            break;
+        }
+        try {
+            $deleted = (new CredentialVault())->deleteCredential($credentialId);
+            echo json_encode(['result' => $deleted ? 'success' : 'error', 'message' => $deleted ? '' : 'Credential not found.']);
+        } catch (\Throwable $error) {
+            composeLogger('Unable to delete credential', ['error' => $error->getMessage()], 'user', 'error', 'credentials');
+            echo json_encode(['result' => 'error', 'message' => 'Unable to delete credential.']);
+        }
+        break;
     case 'getStackSettings':
         $script = getPostScript();
         if (!$script) {
@@ -1022,6 +1101,9 @@ switch ($_POST['action']) {
         // Get additional compose files (one path per line)
         $extraComposeFilesFile = "$compose_root/$script/extra_compose_files";
         $extraComposeFiles = is_file($extraComposeFilesFile) ? trim(file_get_contents($extraComposeFilesFile)) : "";
+
+        $credentialIdFile = "$compose_root/$script/credential_id";
+        $credentialId = is_file($credentialIdFile) ? trim(file_get_contents($credentialIdFile)) : "";
 
         // Candidate compose files in the compose source folder for the
         // Additional Compose Files selector (*compose*.y(a)ml, excluding the
@@ -1110,6 +1192,7 @@ switch ($_POST['action']) {
             'waitTimeout' => $waitTimeout,
             'buildOnUpdate' => ($buildOnUpdate === 'true' || $buildOnUpdate === '1'),
             'extraComposeFiles' => $extraComposeFiles,
+            'credentialId' => $credentialId,
             'composeFileCandidates' => $composeFileCandidates,
             'editableComposeFiles' => $stackInfo->getEditableComposeFiles(),
             'labelsViewMode' => $labelsViewMode,
@@ -1223,6 +1306,12 @@ switch ($_POST['action']) {
         $waitForHealthy = isset($_POST['waitForHealthy']) ? strtolower(trim((string) $_POST['waitForHealthy'])) : "false";
         $waitTimeout = isset($_POST['waitTimeout']) ? trim((string) $_POST['waitTimeout']) : "";
         $buildOnUpdate = isset($_POST['buildOnUpdate']) ? strtolower(trim((string) $_POST['buildOnUpdate'])) : "false";
+        $credentialIdProvided = isset($_POST['credentialId']);
+        $credentialId = $credentialIdProvided ? trim((string) $_POST['credentialId']) : '';
+        if ($credentialId !== '' && !(new CredentialVault())->hasCredential($credentialId)) {
+            echo json_encode(['result' => 'error', 'message' => 'Selected credential no longer exists.']);
+            break;
+        }
         $useDefaultComposeFiles = isset($_POST['useDefaultComposeFiles'])
             && strtolower(trim((string) $_POST['useDefaultComposeFiles'])) === 'true';
 
@@ -1398,6 +1487,17 @@ switch ($_POST['action']) {
                     @unlink($extraComposeFilesFile);
             } else {
                 file_put_contents($extraComposeFilesFile, implode("\n", $extraComposeFilesNormalized) . "\n");
+            }
+        }
+
+        if ($credentialIdProvided) {
+            $credentialIdFile = "$compose_root/$script/credential_id";
+            if ($credentialId === '') {
+                if (is_file($credentialIdFile)) {
+                    @unlink($credentialIdFile);
+                }
+            } else {
+                file_put_contents($credentialIdFile, $credentialId);
             }
         }
 

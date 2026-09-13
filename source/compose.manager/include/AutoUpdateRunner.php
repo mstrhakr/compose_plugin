@@ -128,10 +128,12 @@ foreach ($data as $path => $entry) {
             $composeFileList = $stackInfo->buildComposeFileList();
             $envFilePath = $args['envFilePath'] ?? null;
             $projectDirectory = $args['projectDirectory'];
+            $credentialId = $stackInfo->getCredentialId();
         } else {
             $composeFileList = findComposeFile($path);
             $envFilePath = null;
             $projectDirectory = $path;
+            $credentialId = null;
         }
 
         // Allow overriding the shell command via environment for tests; default to sh
@@ -146,6 +148,9 @@ foreach ($data as $path => $entry) {
         }
         if ($composeFileList === '' && $projectDirectory !== '') {
             $envPrefix .= 'COMPOSE_PROJECT_DIR=' . escapeshellarg($projectDirectory) . ' ';
+        }
+        if ($credentialId !== null && $credentialId !== '') {
+            $envPrefix .= 'COMPOSE_CREDENTIAL_ID=' . escapeshellarg($credentialId) . ' ';
         }
 
         $cmd = $envPrefix . $shCmd . ' ' . escapeshellarg($script) . " " . escapeshellarg($projectName) . " >/dev/null 2>&1 &";
