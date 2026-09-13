@@ -37,7 +37,9 @@ final class CredentialVaultTest extends TestCase
 
         $this->assertSame('ghcr.io', $saved['registry']);
         $this->assertArrayNotHasKey('secret', $saved);
-        $this->assertStringNotContainsString('github-secret-token', (string) file_get_contents(COMPOSE_CREDENTIAL_VAULT_FILE));
+        $vaultPayload = (string) file_get_contents(COMPOSE_CREDENTIAL_VAULT_FILE);
+        $this->assertStringNotContainsString('github-secret-token', $vaultPayload);
+        $this->assertSame('aes-256-gcm', json_decode($vaultPayload, true)['algorithm']);
         $this->assertArrayNotHasKey('secret', $vault->listCredentials()[0]);
     }
 

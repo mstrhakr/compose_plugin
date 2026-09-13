@@ -6,6 +6,9 @@ require_once '/usr/local/emhttp/plugins/compose.manager/include/Defines.php';
 
 final class CredentialVault
 {
+    private const KEY_BYTES = 32;
+    private const CIPHER = 'aes-256-gcm';
+
     /** @return array<int, array<string, string>> */
     public function listCredentials(): array
     {
@@ -163,16 +166,29 @@ final class CredentialVault
             return [];
         }
         $payload = json_decode((string) file_get_contents(COMPOSE_CREDENTIAL_VAULT_FILE), true);
-        if (!is_array($payload) || !isset($payload['nonce'], $payload['ciphertext'])) {
+        if (!is_array($payload) || !isset($payload['ciphertext'])) {
             throw new RuntimeException('Credential vault is invalid.');
         }
-        $nonce = base64_decode((string) $payload['nonce'], true);
         $ciphertext = base64_decode((string) $payload['ciphertext'], true);
-        if ($nonce === false || $ciphertext === false) {
+        if ($ciphertext === false) {
             throw new RuntimeException('Credential vault is invalid.');
         }
-        $plaintext = sodium_crypto_secretbox_open($ciphertext, $nonce, $this->loadKey());
-        if ($plaintext === false) {
+
+        if (($payload['algorithm'] ?? '') === self::CIPHER) {
+            $iv = base64_decode((string) ($payload['iv'] ?? ''), true);
+            $tag = base64_decode((string) ($payload['tag'] ?? ''), true);
+            if ($iv === false || $tag === false || !function_exists('openssl_decrypt')) {
+                throw new RuntimeException('Credential vault is invalid.');
+            }
+            $plaintext = openssl_decrypt($ciphertext, self::CIPHER, $this->loadKey(), OPENSSL_RAW_DATA, $iv, $tag);
+        } else {
+            $nonce = base64_decode((string) ($payload['nonce'] ?? ''), true);
+            if ($nonce === false || !function_exists('sodium_crypto_secretbox_open')) {
+                throw new RuntimeException('Legacy credential vault requires the PHP sodium extension.');
+            }
+            $plaintext = sodium_crypto_secretbox_open($ciphertext, $nonce, $this->loadKey());
+        }
+        if (!is_string($plaintext)) {
             throw new RuntimeException('Credential vault could not be decrypted.');
         }
         $credentials = json_decode($plaintext, true);
@@ -186,15 +202,29 @@ final class CredentialVault
         if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) {
             throw new RuntimeException('Unable to create credential storage directory.');
         }
-        $nonce = random_bytes(SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+        if (!function_exists('openssl_encrypt')) {
+            throw new RuntimeException('Credential encryption requires the PHP OpenSSL extension.');
+        }
+        $ivLength = openssl_cipher_iv_length(self::CIPHER);
+        if ($ivLength === false) {
+            throw new RuntimeException('Credential encryption is unavailable.');
+        }
+        $iv = random_bytes($ivLength);
         $plaintext = json_encode(array_values($credentials), JSON_UNESCAPED_SLASHES);
         if ($plaintext === false) {
             throw new RuntimeException('Unable to encode credential vault.');
         }
+        $tag = '';
+        $ciphertext = openssl_encrypt($plaintext, self::CIPHER, $this->loadKey(), OPENSSL_RAW_DATA, $iv, $tag);
+        if ($ciphertext === false) {
+            throw new RuntimeException('Unable to encrypt credential vault.');
+        }
         $payload = json_encode([
-            'version' => 1,
-            'nonce' => base64_encode($nonce),
-            'ciphertext' => base64_encode(sodium_crypto_secretbox($plaintext, $nonce, $this->loadKey())),
+            'version' => 2,
+            'algorithm' => self::CIPHER,
+            'iv' => base64_encode($iv),
+            'tag' => base64_encode($tag),
+            'ciphertext' => base64_encode($ciphertext),
         ], JSON_UNESCAPED_SLASHES);
         if ($payload === false || file_put_contents(COMPOSE_CREDENTIAL_VAULT_FILE, $payload, LOCK_EX) === false) {
             throw new RuntimeException('Unable to save credential vault.');
@@ -206,7 +236,7 @@ final class CredentialVault
     {
         if (is_file(COMPOSE_CREDENTIAL_KEY_FILE)) {
             $key = base64_decode(trim((string) file_get_contents(COMPOSE_CREDENTIAL_KEY_FILE)), true);
-            if ($key !== false && strlen($key) === SODIUM_CRYPTO_SECRETBOX_KEYBYTES) {
+            if ($key !== false && strlen($key) === self::KEY_BYTES) {
                 return $key;
             }
             throw new RuntimeException('Credential encryption key is invalid.');
@@ -215,7 +245,7 @@ final class CredentialVault
         if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) {
             throw new RuntimeException('Unable to create credential storage directory.');
         }
-        $key = random_bytes(SODIUM_CRYPTO_SECRETBOX_KEYBYTES);
+        $key = random_bytes(self::KEY_BYTES);
         if (file_put_contents(COMPOSE_CREDENTIAL_KEY_FILE, base64_encode($key), LOCK_EX) === false) {
             throw new RuntimeException('Unable to save credential encryption key.');
         }
