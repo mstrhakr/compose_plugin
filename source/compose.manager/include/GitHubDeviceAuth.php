@@ -46,6 +46,7 @@ final class GitHubDeviceAuth
             'state' => $state,
             'userCode' => (string) $response['user_code'],
             'verificationUri' => (string) $response['verification_uri'],
+            'verificationUriComplete' => empty($response['verification_uri_complete']) ? '' : (string) $response['verification_uri_complete'],
             'expiresIn' => (int) $response['expires_in'],
             'interval' => $interval,
         ];

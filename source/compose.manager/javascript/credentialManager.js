@@ -124,7 +124,16 @@
                     '</select>' +
                     '<div id="credential-github-oauth-section">' +
                         '<button type="button" id="credential-github-signin"><i class="fa fa-github"></i> Sign in with GitHub</button>' +
-                        '<div id="credential-github-device" style="display:none;"><p>Enter this code on GitHub:</p><strong id="credential-github-code"></strong> <a id="credential-github-link" target="_blank" rel="noopener noreferrer">Open GitHub</a><p id="credential-github-status">Waiting for authorization...</p></div>' +
+                        '<div id="credential-github-device" style="display:none;">' +
+                            '<p>Enter this code on GitHub:</p>' +
+                            '<div class="credential-github-code-row">' +
+                                '<strong id="credential-github-code"></strong>' +
+                                '<button type="button" id="credential-github-copy" title="Copy code"><i class="fa fa-copy"></i> Copy</button>' +
+                            '</div>' +
+                            '<p class="credential-github-url">Go to <a id="credential-github-link" target="_blank" rel="noopener noreferrer"></a> on this or any other device</p>' +
+                            '<div id="credential-github-qr-wrap"><div id="credential-github-qr"></div><span>Or scan with your phone</span></div>' +
+                            '<p id="credential-github-status">Waiting for authorization...</p>' +
+                        '</div>' +
                         '<div id="credential-oauth-connected" style="display:none;"><i class="fa fa-check-circle"></i> GitHub account connected via OAuth</div>' +
                     '</div>' +
                     '<div id="credential-provider-help" class="credential-provider-box">' +
@@ -168,7 +177,12 @@
                 '.credential-list-actions{white-space:nowrap}.credential-empty{padding:22px;text-align:center;color:var(--alt-text-color)}' +
                 '#credential-github-signin{width:100%;margin-top:12px}' +
                 '#credential-github-device{margin-top:12px;padding:14px 16px;color:var(--text-color);background-color:var(--dynamix-tablesorter-tbody-row-alt-bg-color);border:1px solid var(--border-color);border-radius:6px}' +
-                '#credential-github-device p{margin:0 0 10px;color:var(--alt-text-color)}#credential-github-device p:last-child{margin:10px 0 0}#credential-github-code{color:var(--brand-orange);font-size:1.3rem;letter-spacing:0}#credential-github-link{margin-left:12px}' +
+                '#credential-github-device p{margin:0 0 10px;color:var(--alt-text-color)}#credential-github-device p:last-child{margin:10px 0 0}#credential-github-code{color:var(--brand-orange);font-size:1.3rem;letter-spacing:0}#credential-github-link{margin-left:0}' +
+                '.credential-github-code-row{display:flex;align-items:center;gap:12px}' +
+                '#credential-github-copy{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;color:var(--text-color);background-color:var(--dynamix-tablesorter-tbody-row-alt-bg-color);border:1px solid var(--border-color);border-radius:4px;cursor:pointer;font-size:.9rem}#credential-github-copy:hover{border-color:var(--brand-orange)}' +
+                '.credential-github-url{word-break:break-word}' +
+                '#credential-github-qr-wrap{display:flex;flex-direction:column;align-items:center;gap:6px;margin:12px 0}#credential-github-qr-wrap span{color:var(--alt-text-color);font-size:.85rem}' +
+                '#credential-github-qr{padding:8px;background:#fff;border:1px solid var(--border-color);border-radius:6px;line-height:0}#credential-github-qr svg{display:block;width:150px;height:150px}' +
                 '#credential-oauth-connected{margin-top:12px;padding:10px 12px;color:var(--status-success);background-color:var(--dynamix-tablesorter-tbody-row-alt-bg-color);border:1px solid var(--border-color);border-radius:6px}#credential-oauth-connected i{margin-right:8px}' +
                 '#credential-modal-error{margin-top:12px;padding:10px 12px;border-radius:6px}' +
                 '@media(max-width:600px){.credential-modal-backdrop{padding:10px}.credential-modal{width:100%;max-height:calc(100vh - 20px);padding:20px}.credential-modal-header{margin:-20px -20px 16px}.credential-modal-actions{margin:20px -20px -20px}.credential-modal-actions button{padding:10px 16px}}' +
@@ -180,6 +194,14 @@
         });
         $('.credential-save').on('click', saveCredential);
         $('#credential-github-signin').on('click', startGitHubSignIn);
+        $('#credential-github-copy').on('click', function() {
+            var $copyButton = $(this);
+            copyGitHubCode($('#credential-github-code').text(), function() {
+                var original = $copyButton.html();
+                $copyButton.html('<i class="fa fa-check"></i> Copied');
+                window.setTimeout(function() { $copyButton.html(original); }, 1500);
+            });
+        });
     }
 
     function applyProviderDefaults() {
@@ -231,7 +253,7 @@
         $('#compose-credential-modal').hide();
     }
 
-    function copyGitHubCode(code) {
+    function copyGitHubCode(code, onCopied) {
         function copyFallback() {
             var textarea = document.createElement('textarea');
             textarea.value = code;
@@ -245,16 +267,36 @@
             document.body.removeChild(textarea);
             return copied;
         }
+        function notify(copied) {
+            if (copied && typeof onCopied === 'function') onCopied();
+        }
 
         if (navigator.clipboard && window.isSecureContext) {
             navigator.clipboard.writeText(code).then(function() {
-                $('#credential-github-status').text('Code copied. Waiting for authorization...');
+                notify(true);
             }).catch(function() {
-                if (copyFallback()) $('#credential-github-status').text('Code copied. Waiting for authorization...');
+                notify(copyFallback());
             });
             return;
         }
-        if (copyFallback()) $('#credential-github-status').text('Code copied. Waiting for authorization...');
+        notify(copyFallback());
+    }
+
+    function renderGitHubQr(url) {
+        var $container = $('#credential-github-qr').empty();
+        if (!url || typeof window.qrcode !== 'function') {
+            $('#credential-github-qr-wrap').hide();
+            return;
+        }
+        try {
+            var qr = window.qrcode(0, 'M');
+            qr.addData(url);
+            qr.make();
+            $container.html(qr.createSvgTag(4, 4));
+            $('#credential-github-qr-wrap').show();
+        } catch (error) {
+            $('#credential-github-qr-wrap').hide();
+        }
     }
 
     function startGitHubSignIn() {
@@ -270,10 +312,13 @@
             }
             var device = response.device;
             $('#credential-github-code').text(device.userCode);
-            $('#credential-github-link').attr('href', device.verificationUri);
+            $('#credential-github-link').attr('href', device.verificationUri).text(device.verificationUri);
             $('#credential-github-status').text('Waiting for authorization...');
             $('#credential-github-device').show();
-            copyGitHubCode(device.userCode);
+            renderGitHubQr(device.verificationUriComplete || device.verificationUri);
+            copyGitHubCode(device.userCode, function() {
+                $('#credential-github-status').text('Code copied. Waiting for authorization...');
+            });
             window.open(device.verificationUri, '_blank', 'noopener');
             pollGitHubSignIn(device.state, device.interval || 5);
         }).fail(function() {
