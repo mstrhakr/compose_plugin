@@ -180,6 +180,27 @@ if (!function_exists('composePurgeDeletedStackCaches')) {
     }
 }
 
+if (!function_exists('composeBuildCredentialStackMap')) {
+    /**
+     * Single-pass scan of every stack's `credential_id` file, grouped by credential id.
+     * Avoids re-globbing/re-reading the compose root once per credential.
+     *
+     * @return array<string, string[]> Credential id => assigned stack names
+     */
+    function composeBuildCredentialStackMap(string $composeRoot): array
+    {
+        $map = [];
+        foreach (glob(rtrim($composeRoot, '/') . '/*/credential_id') ?: [] as $credentialFile) {
+            $credentialId = trim((string) file_get_contents($credentialFile));
+            if ($credentialId === '') {
+                continue;
+            }
+            $map[$credentialId][] = basename(dirname($credentialFile));
+        }
+        return $map;
+    }
+}
+
 if (!function_exists('composeResolveContainerIcon')) {
     /**
      * Resolve container icon using stack cache first, then docker inspect fallback.
@@ -985,13 +1006,9 @@ switch ($_POST['action']) {
     case 'listCredentials':
         try {
             $credentials = (new CredentialVault())->listCredentials();
+            $stacksByCredential = composeBuildCredentialStackMap($compose_root);
             foreach ($credentials as &$credential) {
-                $credential['stacks'] = [];
-                foreach (glob(rtrim($compose_root, '/') . '/*/credential_id') ?: [] as $credentialFile) {
-                    if (trim((string) file_get_contents($credentialFile)) === $credential['id']) {
-                        $credential['stacks'][] = basename(dirname($credentialFile));
-                    }
-                }
+                $credential['stacks'] = $stacksByCredential[$credential['id']] ?? [];
             }
             unset($credential);
             echo json_encode(['result' => 'success', 'credentials' => $credentials]);
@@ -1042,12 +1059,7 @@ switch ($_POST['action']) {
         break;
     case 'deleteCredential':
         $credentialId = trim((string) ($_POST['id'] ?? ''));
-        $stacks = [];
-        foreach (glob(rtrim($compose_root, '/') . '/*/credential_id') ?: [] as $credentialFile) {
-            if (trim((string) file_get_contents($credentialFile)) === $credentialId) {
-                $stacks[] = basename(dirname($credentialFile));
-            }
-        }
+        $stacks = composeBuildCredentialStackMap($compose_root)[$credentialId] ?? [];
         if (!empty($stacks)) {
             echo json_encode(['result' => 'error', 'message' => 'Credential is assigned to: ' . implode(', ', $stacks), 'stacks' => $stacks]);
             break;
