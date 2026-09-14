@@ -44,7 +44,9 @@ final class CredentialVault
             $registry = self::normalizeRegistry($input['registry'] ?? (string) ($existing['registry'] ?? ''));
             $username = trim($input['username'] ?? (string) ($existing['username'] ?? ''));
             $provider = strtolower(trim($input['provider'] ?? (string) ($existing['provider'] ?? 'generic')));
-            $authMethod = strtolower(trim($input['authMethod'] ?? (string) ($existing['authMethod'] ?? 'manual')));
+            // Auth provenance is set at creation time (manual entry vs. OAuth device flow)
+            // and must not be overridable by a client-supplied field on update.
+            $authMethod = strtolower((string) ($existing['authMethod'] ?? trim($input['authMethod'] ?? 'manual')));
             if ($name === '' || $registry === '' || $username === '' || $secret === '') {
                 throw new InvalidArgumentException('Name, registry, username, and token are required.');
             }
@@ -57,7 +59,9 @@ final class CredentialVault
 
             $now = gmdate('c');
             $credential = [
-                'id' => $id !== '' ? $id : bin2hex(random_bytes(16)),
+                // Only an id that matched an existing record is honored; otherwise the
+                // vault always generates the id so clients cannot choose their own.
+                'id' => $existingIndex !== null ? $id : bin2hex(random_bytes(16)),
                 'name' => $name,
                 'provider' => $provider,
                 'authMethod' => $authMethod,
@@ -67,6 +71,7 @@ final class CredentialVault
                 'createdAt' => (string) ($existing['createdAt'] ?? $now),
                 'updatedAt' => $now,
             ];
+
 
             if ($existingIndex === null) {
                 $credentials[] = $credential;
