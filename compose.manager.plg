@@ -36,12 +36,28 @@
 >
 
 <CHANGES>
-###2026.09.13.1636
+###2026.09.13
+- Features: add option to not close editor modal on outside click (#126)
 - Bug Fixes: set remove-orphans checkbox checked state at render time instead of via setTimeout
 - Bug Fixes: stop forced rebuilds on compose update
 - Bug Fixes: adjust css so effective command is visible in all themes
-- [PR #150](https://github.com/mstrhakr/compose_plugin/pull/150)
-- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.09.03...v2026.09.13.1636)
+- Bug Fixes: enhance logging and background processing in docker_started script
+- Bug Fixes: enhance environment variable handling in build scripts and workflows
+- Bug Fixes: dynamically resolve latest infozip package from Slackware repository
+- Bug Fixes: enforce string type for path parameter in getComposeFilePath method
+- Bug Fixes: support docker-compose stacks that resolve COMPOSE_FILE from .env in default discovery mode (#149)
+- Bug Fixes: quiet routine dockerload reconnect warnings (#133)
+- Chores: update changelog for v2026.09.13.1636 [skip ci]
+- Chores: update changelog for v2026.09.07.2121 [skip ci]
+- Chores: update changelog for v2026.09.07.2056 [skip ci]
+- Chores: sync pluginURL+README for dev branch [skip ci]
+- Chores: update changelog for v2026.09.06.2116 [skip ci]
+- Chores: update changelog for v2026.09.06.1706 [skip ci]
+- Chores: update changelog for v2026.09.05.2104 [skip ci]
+- Fix #3: Add tests for indirect stack envpath metadata discovery
+- Fix: Support relative envpath values in getExplicitEnvFilePath
+- Fix: Pass stack directory to resolveProjectEnvFilePath for indirect stack envpath metadata resolution
+- [View all changes](https://github.com/mstrhakr/compose_plugin/compare/v2026.09.03...v2026.09.13)
 </CHANGES>
 
 <!-- The 'pre-install' script. -->
