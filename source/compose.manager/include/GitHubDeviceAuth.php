@@ -24,6 +24,7 @@ final class GitHubDeviceAuth
         if ($this->clientId === '') {
             throw new RuntimeException('GitHub sign-in is not configured.');
         }
+        self::sweepExpiredSessions();
         $response = ($this->request)('POST', 'https://github.com/login/device/code', [
             'client_id' => $this->clientId,
             'scope' => 'read:packages',
@@ -171,6 +172,21 @@ final class GitHubDeviceAuth
     {
         if (preg_match('/^[a-f0-9]{48}$/', $state) === 1) {
             @unlink(COMPOSE_GITHUB_DEVICE_DIR . '/' . $state . '.json');
+        }
+    }
+
+    /**
+     * Remove abandoned session files (user never completed or cancelled the flow)
+     * that would otherwise accumulate in COMPOSE_GITHUB_DEVICE_DIR indefinitely.
+     */
+    private static function sweepExpiredSessions(): void
+    {
+        foreach (glob(COMPOSE_GITHUB_DEVICE_DIR . '/*.json') ?: [] as $sessionFile) {
+            $session = json_decode((string) file_get_contents($sessionFile), true);
+            $expiresAt = is_array($session) ? (int) ($session['expiresAt'] ?? 0) : 0;
+            if ($expiresAt <= 0 || $expiresAt <= time()) {
+                @unlink($sessionFile);
+            }
         }
     }
 }
