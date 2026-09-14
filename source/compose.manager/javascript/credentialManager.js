@@ -6,6 +6,105 @@
     var githubPollTimer = null;
     var activeCredential = {};
 
+    var PROVIDER_CONFIGS = {
+        github: {
+            label: 'GitHub Container Registry (ghcr.io)',
+            defaultRegistry: 'ghcr.io',
+            registryReadonly: true,
+            namePlaceholder: 'e.g. Work GitHub',
+            usernamePlaceholder: 'GitHub username or organisation',
+            secretPlaceholder: 'Personal access token (ghp_... / github_pat_...)',
+            tokenUrl: 'https://github.com/settings/tokens/new?scopes=read:packages&description=Unraid%20Compose%20Manager',
+            tokenUrlLabel: 'Generate GitHub Token',
+            instructions: 'Sign in with the one-click button above, or generate a Personal Access Token with <code>read:packages</code> scope.',
+            canOAuth: true
+        },
+        docker: {
+            label: 'Docker Hub (docker.io)',
+            defaultRegistry: 'docker.io',
+            registryReadonly: true,
+            namePlaceholder: 'e.g. Docker Hub',
+            usernamePlaceholder: 'Docker Hub username (not email)',
+            secretPlaceholder: 'Personal access token (dckr_pat_...)',
+            tokenUrl: 'https://app.docker.com/settings/personal-access-tokens/create',
+            tokenUrlLabel: 'Generate Docker Hub PAT',
+            instructions: 'Create a Personal Access Token with <b>Read-only</b> permissions in Docker Hub Account Settings. Use your Docker Hub username (not email).',
+            canOAuth: false
+        },
+        gitlab: {
+            label: 'GitLab Container Registry (registry.gitlab.com)',
+            defaultRegistry: 'registry.gitlab.com',
+            registryReadonly: true,
+            namePlaceholder: 'e.g. GitLab Registry',
+            usernamePlaceholder: 'GitLab username or deploy token username',
+            secretPlaceholder: 'Personal access token or deploy token secret',
+            tokenUrl: 'https://gitlab.com/-/user_settings/personal_access_tokens',
+            tokenUrlLabel: 'Generate GitLab Token',
+            instructions: 'Create a Personal Access Token with <code>read_registry</code> scope, or use a Project / Group Deploy Token.',
+            canOAuth: false
+        },
+        quay: {
+            label: 'Quay.io (quay.io)',
+            defaultRegistry: 'quay.io',
+            registryReadonly: true,
+            namePlaceholder: 'e.g. Quay Registry',
+            usernamePlaceholder: 'Robot account name (e.g. org+bot) or username',
+            secretPlaceholder: 'Robot account token or password',
+            tokenUrl: 'https://quay.io/organization/',
+            tokenUrlLabel: 'Open Quay Organization Settings',
+            instructions: 'Create a Robot Account with read permissions or an application token in Quay Settings.',
+            canOAuth: false
+        },
+        aws: {
+            label: 'AWS Elastic Container Registry (ECR)',
+            defaultRegistry: 'public.ecr.aws',
+            registryReadonly: false,
+            namePlaceholder: 'e.g. AWS ECR',
+            usernamePlaceholder: 'AWS',
+            secretPlaceholder: 'Auth token (from aws ecr get-login-password)',
+            tokenUrl: 'https://console.aws.amazon.com/ecr/',
+            tokenUrlLabel: 'Open AWS ECR Console',
+            instructions: 'For private ECR, set registry to <code>&lt;account&gt;.dkr.ecr.&lt;region&gt;.amazonaws.com</code>, username to <code>AWS</code>, and token from <code>aws ecr get-login-password</code>.',
+            canOAuth: false
+        },
+        azure: {
+            label: 'Azure Container Registry (ACR)',
+            defaultRegistry: '',
+            registryReadonly: false,
+            namePlaceholder: 'e.g. Azure ACR',
+            usernamePlaceholder: 'ACR username or Service Principal App ID',
+            secretPlaceholder: 'Access key password or client secret',
+            tokenUrl: 'https://portal.azure.com/#blade/HubsExtension/BrowseResource/resourceType/Microsoft.ContainerRegistry%2Fregistries',
+            tokenUrlLabel: 'Open Azure Portal',
+            instructions: 'Set registry to <code>&lt;name&gt;.azurecr.io</code>. Generate credentials in ACR under Access Keys or Tokens.',
+            canOAuth: false
+        },
+        gcr: {
+            label: 'Google Artifact / Container Registry',
+            defaultRegistry: 'gcr.io',
+            registryReadonly: false,
+            namePlaceholder: 'e.g. Google Artifact Registry',
+            usernamePlaceholder: '_json_key',
+            secretPlaceholder: 'Service Account JSON key file content',
+            tokenUrl: 'https://console.cloud.google.com/artifacts',
+            tokenUrlLabel: 'Open Google Cloud Console',
+            instructions: 'For Artifact Registry (<code>&lt;region&gt;-docker.pkg.dev</code>) or Container Registry (<code>gcr.io</code>), use username <code>_json_key</code> and paste the JSON service account key.',
+            canOAuth: false
+        },
+        generic: {
+            label: 'Other / Custom Registry',
+            defaultRegistry: '',
+            registryReadonly: false,
+            namePlaceholder: 'e.g. Self-hosted Registry',
+            usernamePlaceholder: 'Registry username',
+            secretPlaceholder: 'Password or access token',
+            tokenUrl: '',
+            tokenUrlLabel: '',
+            instructions: 'Enter your custom registry hostname (e.g. <code>registry.example.com</code>), username, and authentication token or password.',
+            canOAuth: false
+        }
+    };
+
     function ensureModal() {
         if ($('#compose-credential-modal').length) return;
         $('body').append(
@@ -13,16 +112,35 @@
                 '<div class="credential-modal" role="dialog" aria-modal="true" aria-labelledby="credential-modal-title">' +
                     '<div class="credential-modal-header"><h3 id="credential-modal-title">Add registry credential</h3><button type="button" class="credential-close" title="Close"><i class="fa fa-times"></i></button></div>' +
                     '<input type="hidden" id="credential-id">' +
-                    '<label for="credential-provider">Provider</label><select id="credential-provider"><option value="github">GitHub Container Registry</option><option value="docker">Docker Hub</option><option value="generic">Other registry</option></select>' +
-                    '<button type="button" id="credential-github-signin"><i class="fa fa-github"></i> Sign in with GitHub</button>' +
-                    '<div id="credential-github-device" style="display:none;"><p>Enter this code on GitHub:</p><strong id="credential-github-code"></strong> <a id="credential-github-link" target="_blank" rel="noopener noreferrer">Open GitHub</a><p id="credential-github-status">Waiting for authorization...</p></div>' +
-                    '<div id="credential-oauth-connected" style="display:none;"><i class="fa fa-check-circle"></i> GitHub account connected</div>' +
+                    '<label for="credential-provider">Provider</label><select id="credential-provider">' +
+                        '<option value="github">GitHub Container Registry (ghcr.io)</option>' +
+                        '<option value="docker">Docker Hub (docker.io)</option>' +
+                        '<option value="gitlab">GitLab Container Registry (registry.gitlab.com)</option>' +
+                        '<option value="quay">Quay.io (quay.io)</option>' +
+                        '<option value="aws">AWS Elastic Container Registry (ECR)</option>' +
+                        '<option value="azure">Azure Container Registry (ACR)</option>' +
+                        '<option value="gcr">Google Artifact / Container Registry</option>' +
+                        '<option value="generic">Other / Custom Registry</option>' +
+                    '</select>' +
+                    '<div id="credential-github-oauth-section">' +
+                        '<button type="button" id="credential-github-signin"><i class="fa fa-github"></i> Sign in with GitHub</button>' +
+                        '<div id="credential-github-device" style="display:none;"><p>Enter this code on GitHub:</p><strong id="credential-github-code"></strong> <a id="credential-github-link" target="_blank" rel="noopener noreferrer">Open GitHub</a><p id="credential-github-status">Waiting for authorization...</p></div>' +
+                        '<div id="credential-oauth-connected" style="display:none;"><i class="fa fa-check-circle"></i> GitHub account connected via OAuth</div>' +
+                    '</div>' +
+                    '<div id="credential-provider-help" class="credential-provider-box">' +
+                        '<div id="credential-provider-desc"></div>' +
+                        '<div id="credential-provider-link-wrap" style="margin-top:8px;">' +
+                            '<a id="credential-provider-token-link" class="credential-token-link" target="_blank" rel="noopener noreferrer">' +
+                                '<i class="fa fa-external-link"></i> <span id="credential-provider-token-label">Generate Token</span>' +
+                            '</a>' +
+                        '</div>' +
+                    '</div>' +
                     '<div id="credential-details">' +
-                        '<label for="credential-name">Name</label><input id="credential-name" type="text" autocomplete="off" placeholder="Work GitHub">' +
-                        '<label for="credential-registry">Registry</label><input id="credential-registry" type="text" autocomplete="off" placeholder="ghcr.io">' +
+                        '<label for="credential-name">Credential Name</label><input id="credential-name" type="text" autocomplete="off" placeholder="Work GitHub">' +
+                        '<label for="credential-registry">Registry Host</label><input id="credential-registry" type="text" autocomplete="off" placeholder="ghcr.io">' +
                         '<label for="credential-username">Username</label><input id="credential-username" type="text" autocomplete="username">' +
                     '</div>' +
-                    '<div id="credential-secret-wrap"><label for="credential-secret">Access token</label><input id="credential-secret" type="password" autocomplete="new-password" placeholder="Required for new credentials"><div class="credential-help">Use a read-only token. Existing tokens are never displayed.</div></div>' +
+                    '<div id="credential-secret-wrap"><label for="credential-secret">Access token / Password</label><input id="credential-secret" type="password" autocomplete="new-password" placeholder="Required for new credentials"><div class="credential-help">Use a read-only token whenever possible. Existing tokens are encrypted and never shown.</div></div>' +
                     '<div id="credential-modal-error" class="compose-status-danger" style="display:none;"></div>' +
                     '<div class="credential-modal-actions"><button type="button" class="credential-cancel">Cancel</button><button type="button" class="credential-save">Save credential</button></div>' +
                 '</div>' +
@@ -39,6 +157,10 @@
                 '.credential-modal input,.credential-modal select{box-sizing:border-box;width:100%;max-width:100%;padding:12px 16px;color:var(--text-color);background-color:var(--input-background-color);border:1px solid var(--border-color);border-radius:6px;font:inherit;transition:border-color .2s ease,box-shadow .2s ease}' +
                 '.credential-modal input:hover,.credential-modal select:hover{border-color:var(--border-hover-color)}.credential-modal input:focus,.credential-modal select:focus{outline:none;border-color:var(--brand-orange);box-shadow:0 0 0 3px var(--brand-focus-ring)}.credential-modal input::placeholder{color:var(--placeholder-color)}.credential-modal input[readonly]{color:var(--alt-text-color);background-color:var(--disabled-input-background-color)}' +
                 '.credential-help{margin-top:8px;color:var(--alt-text-color);font-size:.95rem;line-height:1.4}' +
+                '.credential-provider-box{margin-top:12px;padding:12px 14px;color:var(--text-color);background-color:var(--dynamix-tablesorter-tbody-row-alt-bg-color);border:1px solid var(--border-color);border-radius:6px;font-size:.95rem;line-height:1.4}' +
+                '.credential-provider-box code{padding:2px 5px;background:var(--input-background-color);border:1px solid var(--border-color);border-radius:3px;font-family:inherit;font-size:.9em}' +
+                '.credential-token-link{display:inline-flex;align-items:center;gap:6px;color:var(--brand-orange);font-weight:600;text-decoration:none}' +
+                '.credential-token-link:hover{text-decoration:underline;color:var(--brand-red)}' +
                 '.credential-modal-actions{display:flex;justify-content:flex-end;gap:10px;margin:22px -28px -24px;padding:12px 20px;background-color:var(--dynamix-tablesorter-tbody-row-alt-bg-color);border-top:1px solid var(--border-color);border-radius:0 0 8px 8px}' +
                 '.credential-modal-actions button,#credential-github-signin{padding:10px 25px;border:0;border-radius:4px;cursor:pointer;font-size:.95rem}' +
                 '.credential-cancel{color:var(--text-color);background-color:var(--dynamix-tablesorter-tbody-row-alt-bg-color)}.credential-cancel:hover{background-color:var(--border-color)}' +
@@ -53,27 +175,54 @@
             '</style>');
         }
         $('.credential-close,.credential-cancel').on('click', closeModal);
-        $('#credential-provider').on('change', applyProviderDefaults);
+        $('#credential-provider').on('change', function() {
+            applyProviderDefaults();
+        });
         $('.credential-save').on('click', saveCredential);
         $('#credential-github-signin').on('click', startGitHubSignIn);
     }
 
     function applyProviderDefaults() {
-        var provider = $('#credential-provider').val();
+        var provider = $('#credential-provider').val() || 'github';
+        var config = PROVIDER_CONFIGS[provider] || PROVIDER_CONFIGS.generic;
         var isOAuthGitHub = provider === 'github' && activeCredential.authMethod === 'oauth_device';
-        var isNewGitHub = provider === 'github' && !$('#credential-id').val();
+        var isNewCredential = !$('#credential-id').val();
+        var isNewGitHub = provider === 'github' && isNewCredential;
+
+        $('#credential-github-oauth-section').toggle(isNewGitHub || isOAuthGitHub);
         $('#credential-github-signin').toggle(isNewGitHub);
         $('#credential-github-device').hide();
         $('#credential-oauth-connected').toggle(isOAuthGitHub);
-        $('#credential-details').toggle(!isNewGitHub);
-        $('#credential-secret-wrap').toggle(!isNewGitHub && !isOAuthGitHub);
-        $('.credential-save').toggle(!isNewGitHub && !isOAuthGitHub);
+
+        $('#credential-provider-help').toggle(!isOAuthGitHub);
+        $('#credential-provider-desc').html(config.instructions);
+        if (config.tokenUrl) {
+            $('#credential-provider-token-link').attr('href', config.tokenUrl);
+            $('#credential-provider-token-label').text(config.tokenUrlLabel);
+            $('#credential-provider-link-wrap').show();
+        } else {
+            $('#credential-provider-link-wrap').hide();
+        }
+
+        $('#credential-details').show();
+        $('#credential-secret-wrap').toggle(!isOAuthGitHub);
+        $('.credential-save').toggle(!isOAuthGitHub);
         $('.credential-cancel').text(isOAuthGitHub ? 'Close' : 'Cancel');
         $('#credential-provider').prop('disabled', isOAuthGitHub);
         $('#credential-name,#credential-username').prop('readonly', isOAuthGitHub);
-        if (provider === 'github') $('#credential-registry').val('ghcr.io').prop('readonly', true);
-        else if (provider === 'docker') $('#credential-registry').val('docker.io').prop('readonly', true);
-        else $('#credential-registry').prop('readonly', false);
+
+        $('#credential-name').attr('placeholder', config.namePlaceholder);
+        $('#credential-username').attr('placeholder', config.usernamePlaceholder);
+        $('#credential-secret').attr('placeholder', isNewCredential ? config.secretPlaceholder : 'Leave empty to keep existing token');
+
+        if (config.registryReadonly) {
+            $('#credential-registry').val(config.defaultRegistry).prop('readonly', true);
+        } else {
+            $('#credential-registry').prop('readonly', false);
+            if (!$('#credential-registry').val() && config.defaultRegistry) {
+                $('#credential-registry').val(config.defaultRegistry);
+            }
+        }
     }
 
     function closeModal() {
@@ -172,7 +321,7 @@
         onSaved = callback || null;
         $('#credential-modal-title').text(credential.id ? 'Edit registry credential' : 'Add registry credential');
         $('#credential-id').val(credential.id || '');
-        $('#credential-provider').val(credential.provider || 'github');
+        $('#credential-provider').val(credential.provider || 'github').prop('disabled', false);
         $('#credential-name').val(credential.name || '');
         $('#credential-registry').val(credential.registry || '');
         $('#credential-username').val(credential.username || '');
@@ -226,8 +375,13 @@
         }
         credentials.forEach(function(credential) {
             var $row = $('<tr>');
+            var providerCfg = PROVIDER_CONFIGS[credential.provider];
+            var providerLabel = providerCfg ? providerCfg.label : (credential.provider || 'generic');
+            if (credential.authMethod === 'oauth_device') {
+                providerLabel += ' (OAuth)';
+            }
             $row.append($('<td>').text(credential.name));
-            $row.append($('<td>').text(credential.provider));
+            $row.append($('<td>').text(providerLabel));
             $row.append($('<td>').text(credential.registry));
             $row.append($('<td>').text(credential.username));
             $row.append($('<td>').text((credential.stacks || []).join(', ') || 'Not assigned'));

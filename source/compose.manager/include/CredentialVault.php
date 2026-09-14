@@ -45,7 +45,7 @@ final class CredentialVault
         if ($name === '' || $registry === '' || $username === '' || $secret === '') {
             throw new InvalidArgumentException('Name, registry, username, and token are required.');
         }
-        if (!in_array($provider, ['github', 'docker', 'generic'], true)) {
+        if (!in_array($provider, ['github', 'docker', 'gitlab', 'quay', 'aws', 'azure', 'gcr', 'generic'], true)) {
             throw new InvalidArgumentException('Unsupported credential provider.');
         }
         if (!in_array($authMethod, ['manual', 'oauth_device'], true)) {

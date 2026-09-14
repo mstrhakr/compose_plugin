@@ -77,4 +77,35 @@ final class CredentialVaultTest extends TestCase
         $config = json_decode((string) file_get_contents($directory . '/config.json'), true);
         $this->assertSame(base64_encode('user:token'), $config['auths']['ghcr.io']['auth']);
     }
+
+    public function testSupportsAllStandardProviderPresets(): void
+    {
+        $vault = new CredentialVault();
+        $providers = ['github', 'docker', 'gitlab', 'quay', 'aws', 'azure', 'gcr', 'generic'];
+        foreach ($providers as $provider) {
+            $saved = $vault->saveCredential([
+                'name' => 'Provider ' . $provider,
+                'provider' => $provider,
+                'registry' => 'registry.example.com',
+                'username' => 'user',
+                'secret' => 'secret123',
+            ]);
+            $this->assertSame($provider, $saved['provider']);
+        }
+    }
+
+    public function testRejectsUnsupportedProvider(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Unsupported credential provider.');
+
+        $vault = new CredentialVault();
+        $vault->saveCredential([
+            'name' => 'Invalid Provider',
+            'provider' => 'unsupported_vendor',
+            'registry' => 'registry.example.com',
+            'username' => 'user',
+            'secret' => 'secret123',
+        ]);
+    }
 }
