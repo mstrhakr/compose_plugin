@@ -23,14 +23,6 @@ cleanup_docker_config() {
 }
 trap cleanup_docker_config EXIT
 
-if [ -n "$COMPOSE_CREDENTIAL_ID" ]; then
-  if ! DOCKER_CONFIG_DIR=$(php "$(dirname "$0")/credential_config.php" --credential-id "$COMPOSE_CREDENTIAL_ID"); then
-    composeLogger "Selected registry credential could not be loaded for '$PROJECT_NAME'" error autoupdate daemon
-    exit 1
-  fi
-  export DOCKER_CONFIG="$DOCKER_CONFIG_DIR"
-fi
-
 # If this script is invoked by the background runner, the first positional
 # argument is the project name and compose files are supplied through env vars.
 if [ -z "$PROJECT_NAME" ] && [ -n "$COMPOSE_FILE_LIST" ]; then
@@ -43,6 +35,16 @@ fi
 if [ -z "$PROJECT_NAME" ] && [ -n "$COMPOSE_FILE" ]; then
   PROJECT_NAME="$COMPOSE_FILE_ARG"
   COMPOSE_FILE_ARG=""
+fi
+
+if [ -n "$COMPOSE_CREDENTIAL_ID" ]; then
+  if ! DOCKER_CONFIG_DIR=$(php "$(dirname "$0")/credential_config.php" --credential-id "$COMPOSE_CREDENTIAL_ID"); then
+    composeLogger "Selected registry credential could not be loaded for '$PROJECT_NAME'" error autoupdate daemon
+    exit 1
+  fi
+  export DOCKER_CONFIG="$DOCKER_CONFIG_DIR"
+else
+  composeLogger "No registry credential configured for '$PROJECT_NAME'; using default Docker credentials" debug autoupdate daemon
 fi
 
 NOTIFY="/usr/local/emhttp/webGui/scripts/notify"

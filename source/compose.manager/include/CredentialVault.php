@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require_once '/usr/local/emhttp/plugins/compose.manager/include/Defines.php';
+require_once '/usr/local/emhttp/plugins/compose.manager/include/Util.php';
 
 final class CredentialVault
 {
@@ -116,6 +117,14 @@ final class CredentialVault
     public function materializeDockerConfig(string $id): string
     {
         $credential = $this->withLock(LOCK_SH, fn(): array => $this->findCredential($id));
+        // Confirms which named credential a compose operation is using, without ever logging the secret.
+        composeLogger(
+            "Using registry credential '{$credential['name']}' ({$credential['registry']}) for this operation",
+            null,
+            'user',
+            'info',
+            'credential'
+        );
         $baseDir = rtrim(COMPOSE_DOCKER_CONFIG_DIR, '/');
         if (!is_dir($baseDir) && !mkdir($baseDir, 0700, true) && !is_dir($baseDir)) {
             throw new RuntimeException('Unable to create Docker credential directory.');

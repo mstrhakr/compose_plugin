@@ -239,6 +239,8 @@ if [ -n "$credential_id" ]; then
     exit 1
   fi
   export DOCKER_CONFIG="$docker_config_dir"
+elif [[ "$command" =~ ^(up|pull|update)$ ]]; then
+  log_msg "DEBUG" "No registry credential configured for $name; using default Docker credentials"
 fi
 
 # Build docker compose profile flags from canonical profile names.
