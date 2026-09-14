@@ -1015,6 +1015,10 @@ switch ($_POST['action']) {
         $waitTimeoutFile = "$compose_root/$script/wait_timeout";
         $waitTimeout = is_file($waitTimeoutFile) ? trim(file_get_contents($waitTimeoutFile)) : "";
 
+        // Get rebuild-on-update override
+        $buildOnUpdateFile = "$compose_root/$script/build_on_update";
+        $buildOnUpdate = is_file($buildOnUpdateFile) ? trim(file_get_contents($buildOnUpdateFile)) : "";
+
         // Get additional compose files (one path per line)
         $extraComposeFilesFile = "$compose_root/$script/extra_compose_files";
         $extraComposeFiles = is_file($extraComposeFilesFile) ? trim(file_get_contents($extraComposeFilesFile)) : "";
@@ -1104,6 +1108,7 @@ switch ($_POST['action']) {
             'defaultProfile' => $defaultProfile,
             'waitForHealthy' => ($waitForHealthy === 'true' || $waitForHealthy === '1'),
             'waitTimeout' => $waitTimeout,
+            'buildOnUpdate' => ($buildOnUpdate === 'true' || $buildOnUpdate === '1'),
             'extraComposeFiles' => $extraComposeFiles,
             'composeFileCandidates' => $composeFileCandidates,
             'editableComposeFiles' => $stackInfo->getEditableComposeFiles(),
@@ -1217,6 +1222,7 @@ switch ($_POST['action']) {
         $defaultProfile = isset($_POST['defaultProfile']) ? trim($_POST['defaultProfile']) : "";
         $waitForHealthy = isset($_POST['waitForHealthy']) ? strtolower(trim((string) $_POST['waitForHealthy'])) : "false";
         $waitTimeout = isset($_POST['waitTimeout']) ? trim((string) $_POST['waitTimeout']) : "";
+        $buildOnUpdate = isset($_POST['buildOnUpdate']) ? strtolower(trim((string) $_POST['buildOnUpdate'])) : "false";
         $useDefaultComposeFiles = isset($_POST['useDefaultComposeFiles'])
             && strtolower(trim((string) $_POST['useDefaultComposeFiles'])) === 'true';
 
@@ -1371,6 +1377,16 @@ switch ($_POST['action']) {
                 }
             } else {
                 file_put_contents($waitTimeoutFile, $waitTimeoutValue);
+            }
+        }
+
+        // Set stack rebuild-on-update override
+        $buildOnUpdateFile = "$compose_root/$script/build_on_update";
+        if ($buildOnUpdate === 'true' || $buildOnUpdate === '1') {
+            file_put_contents($buildOnUpdateFile, 'true');
+        } elseif ($buildOnUpdate === 'false' || $buildOnUpdate === '0' || $buildOnUpdate === '') {
+            if (is_file($buildOnUpdateFile)) {
+                @unlink($buildOnUpdateFile);
             }
         }
 

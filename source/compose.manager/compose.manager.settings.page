@@ -530,7 +530,24 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
     }
 
     .compose-status-info {
-        color: var(--dynamix-sb-title-text-color);
+        color: var(--text-color, var(--dynamix-sb-title-text-color, #f2f2f2));
+        background: var(--dynamix-sb-body-bg-color, var(--background-color, #111));
+    }
+
+    #settings-discovery-mode-badge,
+    #compose-stack-discovery-mode-badge {
+        display: inline-block;
+        color: var(--text-color, var(--dynamix-sb-title-text-color, #f2f2f2));
+        background: var(--dynamix-sb-body-bg-color, var(--background-color, #111));
+        border: 1px solid var(--border-color, var(--dynamix-box-inner-div-border-color, #3b3b3b));
+    }
+
+    #settings-discovery-mode-toggle,
+    #compose-stack-discovery-mode-toggle {
+        color: var(--black, #111);
+        background: var(--brand-orange, #f15a24);
+        border: 1px solid var(--brand-orange, #f15a24);
+        box-shadow: none;
     }
 
     #aggressive-mode-wrapper {
@@ -2746,6 +2763,18 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dd>
         </dl>
 
+        <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Rebuild Images on Update by Default)_:</dt>
+            <dd>
+                <input type="checkbox" name="BUILD_ON_UPDATE_DEFAULT" id="BUILD_ON_UPDATE_DEFAULT" class="compose-toggle" <?= ($cfg['BUILD_ON_UPDATE_DEFAULT'] ?? 'false') == 'true' ? 'checked' : '' ?>>
+                <blockquote class="inline_help">
+                    Default behavior for stack <em>Update</em> actions: when enabled, <code>--build</code> is added so services with a <code>build:</code> section are rebuilt from source.
+                    Leave disabled for stacks that publish an image alongside a <code>build:</code> section &mdash; those should be pulled, not rebuilt.
+                    This is a global default and can still be overridden per stack.
+                </blockquote>
+            </dd>
+        </dl>
+
         <div class="title"><span class="left"><i class="fa fa-plus-square icon"></i>_(New Stack Configuration)_</span></div>
         <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Default settings applied automatically when creating new compose stacks.</p>
 
@@ -2904,6 +2933,16 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
         <div class="title"><span class="left"><i class="fa fa-sliders icon"></i>_(Advanced Options)_</span></div>
         <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Performance tuning and troubleshooting options for advanced users.</p>
+
+        <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Don't close editor modal on outside click)_:</dt>
+            <dd>
+                <input type="checkbox" name="DONT_CLOSE_EDITOR_MODAL_ON_OUTSIDE_CLICK" id="DONT_CLOSE_EDITOR_MODAL_ON_OUTSIDE_CLICK" class="compose-toggle" <?= ($cfg['DONT_CLOSE_EDITOR_MODAL_ON_OUTSIDE_CLICK'] ?? 'false') == 'true' ? 'checked' : '' ?>>
+                <blockquote class="inline_help">
+                    When enabled, the Compose editor stays open when you click or drag on the backdrop outside the modal. This keeps editing from being interrupted while selecting or moving large blocks of text.
+                </blockquote>
+            </dd>
+        </dl>
 
         <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Debug Logging)_:</dt>

@@ -150,14 +150,36 @@ test_setup() {
     assert_success
 }
 
-@test "compose.sh update action pull step uses --ignore-buildable" {
-    # The update action pulls before 'up -d --build'; buildable services are handled by --build
-    run grep -E 'pull --ignore-buildable' "$COMPOSE_SCRIPT"
+@test "autostart script detaches from array-start and exits immediately" {
+    local autostart_script="$BATS_TEST_DIRNAME/../../source/compose.manager/event/docker_started"
+    run grep -F 'nohup env COMPOSE_MANAGER_AUTOSTART_CHILD=1' "$autostart_script"
     assert_success
-    # Should appear at least twice (pull action + update action)
-    local count
-    count=$(grep -cE 'pull --ignore-buildable' "$COMPOSE_SCRIPT")
-    [ "$count" -ge 2 ]
+    run grep -F 'COMPOSE_MANAGER_AUTOSTART_CHILD' "$autostart_script"
+    assert_success
+    run grep -F 'Autostart event received; detaching background worker' "$autostart_script"
+    assert_success
+}
+
+@test "compose.sh update action only rebuilds when --build is requested" {
+    # Issue #149: forcing --build breaks stacks that publish an image alongside
+    # an unbuildable build: section, so the rebuild must be opt-in.
+    run grep -F 'up -d --build' "$COMPOSE_SCRIPT"
+    assert_failure
+
+    run grep -F -- '--build )' "$COMPOSE_SCRIPT"
+    assert_success
+
+    run grep -F 'build_on_update=true' "$COMPOSE_SCRIPT"
+    assert_success
+}
+
+@test "compose.sh update action pairs --ignore-buildable with the rebuild flag" {
+    # --ignore-buildable is only correct when we rebuild those services ourselves.
+    run grep -F 'pull_args+=("--ignore-buildable")' "$COMPOSE_SCRIPT"
+    assert_success
+
+    run grep -F 'up_args+=("--build")' "$COMPOSE_SCRIPT"
+    assert_success
 }
 
 @test "compose.sh mutating commands have explicit final exit propagation" {

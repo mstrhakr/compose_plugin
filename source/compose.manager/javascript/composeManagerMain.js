@@ -1277,7 +1277,7 @@ function initEditorModal() {
     editorModal.editors['override'] = overrideEditor;
 
     // Initialize settings field change tracking
-    $('#settings-name, #settings-description, #settings-icon-url, #settings-webui-url, #settings-env-path, #settings-default-profile, #settings-wait-for-healthy, #settings-wait-timeout, #settings-external-compose-path, #settings-external-compose-file, #settings-use-default-compose-files').on('input change', function() {
+    $('#settings-name, #settings-description, #settings-icon-url, #settings-webui-url, #settings-env-path, #settings-default-profile, #settings-wait-for-healthy, #settings-wait-timeout, #settings-build-on-update, #settings-external-compose-path, #settings-external-compose-file, #settings-use-default-compose-files').on('input change', function() {
         var fieldId = this.id.replace('settings-', '');
         var isCheckbox = this.type === 'checkbox';
         var currentValue = isCheckbox ? ($(this).is(':checked') ? 'true' : 'false') : $(this).val();
@@ -1460,9 +1460,15 @@ function initEditorModal() {
 
     // Close modal when clicking on the overlay background (not the inner modal content)
     $('#editor-modal-overlay').off('click.editorModal').on('click.editorModal', function(e) {
-        if (e.target === this) {
-            closeEditorModal();
+        if (e.target !== this) {
+            return;
         }
+        getConfig().then(function(cfg) {
+            if (cfg.DONT_CLOSE_EDITOR_MODAL_ON_OUTSIDE_CLICK === 'true') {
+                return;
+            }
+            closeEditorModal();
+        });
     });
 }
 
@@ -3240,10 +3246,34 @@ $(function() {
                 if (!isCurrentComposeDockerLoad(composeDockerLoad, newGeneration)) {
                     return;
                 }
-                composeLogger('WebSocket error', {
-                    code: code,
-                    desc: desc
-                }, 'user', 'warn', 'dockerload');
+
+                var socketError = {};
+                if (code && typeof code === 'object') {
+                    socketError.type = code.type || null;
+                    socketError.message = code.message || null;
+                    socketError.readyState = (code.target && code.target.readyState !== undefined) ? code.target.readyState : null;
+                    if (code.code !== undefined && code.code !== null) {
+                        socketError.code = code.code;
+                    }
+                } else if (code !== undefined && code !== null) {
+                    socketError.code = code;
+                }
+
+                if (desc && typeof desc === 'object') {
+                    if (desc.type) {
+                        socketError.descType = desc.type;
+                    }
+                    if (desc.readyState !== undefined && desc.readyState !== null) {
+                        socketError.descReadyState = desc.readyState;
+                    }
+                    if (desc.message) {
+                        socketError.descMessage = desc.message;
+                    }
+                } else if (desc !== undefined && desc !== null) {
+                    socketError.desc = desc;
+                }
+
+                composeLogger('WebSocket reconnect/error', socketError, 'user', 'debug', 'dockerload');
             });
 
             // If dockerload pauses/stalls, drop stale values on a timer so the UI
@@ -3854,9 +3884,10 @@ function isStackRunning(project) {
     return $stackRow.length > 0 && $stackRow.data('isup') == '1';
 }
 
-function buildRemoveOrphansCheckboxHtml(checkboxId) {
+function buildRemoveOrphansCheckboxHtml(checkboxId, checked) {
+    var checkedAttr = checked ? ' checked' : '';
     return '<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--dynamix-box-inner-div-border-color);display:flex;align-items:center;gap:8px;">' +
-        '<input type="checkbox" id="' + checkboxId + '" style="width:16px;height:16px;cursor:pointer;">' +
+        '<input type="checkbox" id="' + checkboxId + '"' + checkedAttr + ' style="width:16px;height:16px;cursor:pointer;">' +
         '<label for="' + checkboxId + '" style="cursor:pointer;user-select:none;margin:0;font-size:0.95em;">Remove orphans</label>' +
         '</div>';
 }
@@ -4870,12 +4901,11 @@ function startAllStacks() {
         '<input type="checkbox" id="swal-run-bg-startall" style="width:16px;height:16px;cursor:pointer;">' +
         '<label for="swal-run-bg-startall" style="cursor:pointer;user-select:none;margin:0;font-size:0.95em;">Run in background</label>' +
         '</div>';
-    var removeOrphansHtml = buildRemoveOrphansCheckboxHtml('swal-remove-orphans-startall');
-
     getConfig().then(function(pluginCfg) {
         var bgDefault = pluginCfg && pluginCfg.RUN_IN_BACKGROUND_DEFAULT === 'true';
         var removeOrphansDefault = pluginCfg && pluginCfg.REMOVE_ORPHANS_DEFAULT === 'true';
         var disableWarnings = pluginCfg && pluginCfg.DISABLE_ACTION_WARNINGS === 'true';
+        var removeOrphansHtml = buildRemoveOrphansCheckboxHtml('swal-remove-orphans-startall', removeOrphansDefault);
 
         if (disableWarnings) {
             executeStartAllStacks({
@@ -4911,8 +4941,6 @@ function startAllStacks() {
         setTimeout(function() {
             var $cb = $('#swal-run-bg-startall');
             if ($cb.length) $cb.prop('checked', bgDefault);
-            var $removeCb = $('#swal-remove-orphans-startall');
-            if ($removeCb.length) $removeCb.prop('checked', removeOrphansDefault);
         }, 50);
     });
 }
@@ -5008,12 +5036,11 @@ function stopAllStacks() {
         '<input type="checkbox" id="swal-run-bg-stopall" style="width:16px;height:16px;cursor:pointer;">' +
         '<label for="swal-run-bg-stopall" style="cursor:pointer;user-select:none;margin:0;font-size:0.95em;">Run in background</label>' +
         '</div>';
-    var removeOrphansHtml = buildRemoveOrphansCheckboxHtml('swal-remove-orphans-stopall');
-
     getConfig().then(function(pluginCfg) {
         var bgDefault = pluginCfg && pluginCfg.RUN_IN_BACKGROUND_DEFAULT === 'true';
         var removeOrphansDefault = pluginCfg && pluginCfg.REMOVE_ORPHANS_DEFAULT === 'true';
         var disableWarnings = pluginCfg && pluginCfg.DISABLE_ACTION_WARNINGS === 'true';
+        var removeOrphansHtml = buildRemoveOrphansCheckboxHtml('swal-remove-orphans-stopall', removeOrphansDefault);
 
         if (disableWarnings) {
             executeStopAllStacks({
@@ -5049,8 +5076,6 @@ function stopAllStacks() {
         setTimeout(function() {
             var $cb = $('#swal-run-bg-stopall');
             if ($cb.length) $cb.prop('checked', bgDefault);
-            var $removeCb = $('#swal-remove-orphans-stopall');
-            if ($removeCb.length) $removeCb.prop('checked', removeOrphansDefault);
         }, 50);
     });
 }
@@ -5463,7 +5488,6 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
         var bgDefault = pluginCfg && pluginCfg.RUN_IN_BACKGROUND_DEFAULT === 'true';
         removeOrphansDefault = pluginCfg && pluginCfg.REMOVE_ORPHANS_DEFAULT === 'true';
         var disableWarnings = pluginCfg && pluginCfg.DISABLE_ACTION_WARNINGS === 'true';
-        var stackMismatchDetected = !!showRemoveOrphans;
 
         if (disableWarnings) {
             // In default background mode (warnings disabled and background enabled), don't show toast if background is used
@@ -5476,8 +5500,8 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             return;
         }
 
-        var removeOrphansChecked = removeOrphansDefault || stackMismatchDetected;
-        var showRemoveOrphansOption = !!cfg.showRemoveOrphans || stackMismatchDetected;
+        var removeOrphansChecked = removeOrphansDefault;
+        var showRemoveOrphansOption = !!cfg.showRemoveOrphans;
 
         // Use native swal (SweetAlert 1.x) with callback style
         swal({
@@ -6264,6 +6288,11 @@ function loadSettingsData(project, projectName) {
                 $('#settings-wait-timeout').val(waitTimeout);
                 editorModal.originalSettings['wait-timeout'] = waitTimeout;
 
+                // Rebuild-on-update setting
+                var buildOnUpdate = response.buildOnUpdate === true || response.buildOnUpdate === 'true' || response.buildOnUpdate === '1';
+                $('#settings-build-on-update').prop('checked', buildOnUpdate);
+                editorModal.originalSettings['build-on-update'] = buildOnUpdate ? 'true' : 'false';
+
                 // Compose file discovery mode
                 var useDefaultComposeFiles = response.useDefaultComposeFiles === true;
                 $('#settings-use-default-compose-files').prop('checked', useDefaultComposeFiles);
@@ -6311,6 +6340,7 @@ function loadSettingsData(project, projectName) {
         $('#settings-default-profile').val('');
         $('#settings-wait-for-healthy').prop('checked', false);
         $('#settings-wait-timeout').val('');
+        $('#settings-build-on-update').prop('checked', false);
         $('#settings-external-compose-path').val('');
         $('#settings-external-compose-file').val('');
         $('#settings-use-default-compose-files').prop('checked', false);
@@ -7263,6 +7293,7 @@ function saveSettings(saveErrors) {
         var defaultProfile = $('#settings-default-profile').val();
         var waitForHealthy = $('#settings-wait-for-healthy').is(':checked') ? 'true' : 'false';
         var waitTimeout = $('#settings-wait-timeout').val();
+        var buildOnUpdate = $('#settings-build-on-update').is(':checked') ? 'true' : 'false';
         var externalComposePath = $('#settings-external-compose-path').val();
         var externalComposeFilePath = $('#settings-external-compose-file').val();
         var useDefaultComposeFiles = $('#settings-use-default-compose-files').is(':checked') ? 'true' : 'false';
@@ -7277,6 +7308,7 @@ function saveSettings(saveErrors) {
                 defaultProfile: defaultProfile,
                 waitForHealthy: waitForHealthy,
                 waitTimeout: waitTimeout,
+                buildOnUpdate: buildOnUpdate,
                 externalComposePath: externalComposePath,
                 externalComposeFilePath: externalComposeFilePath,
                 useDefaultComposeFiles: useDefaultComposeFiles
@@ -7296,6 +7328,7 @@ function saveSettings(saveErrors) {
                         editorModal.originalSettings['default-profile'] = defaultProfile;
                         editorModal.originalSettings['wait-for-healthy'] = waitForHealthy;
                         editorModal.originalSettings['wait-timeout'] = waitTimeout;
+                        editorModal.originalSettings['build-on-update'] = buildOnUpdate;
                         editorModal.originalSettings['external-compose-path'] = externalComposePath;
                         editorModal.originalSettings['external-compose-file'] = externalComposeFilePath;
                         editorModal.originalSettings['use-default-compose-files'] = useDefaultComposeFiles;
@@ -7306,6 +7339,7 @@ function saveSettings(saveErrors) {
                         editorModal.modifiedSettings.delete('default-profile');
                         editorModal.modifiedSettings.delete('wait-for-healthy');
                         editorModal.modifiedSettings.delete('wait-timeout');
+                        editorModal.modifiedSettings.delete('build-on-update');
                         editorModal.modifiedSettings.delete('external-compose-path');
                         editorModal.modifiedSettings.delete('external-compose-file');
                         editorModal.modifiedSettings.delete('use-default-compose-files');

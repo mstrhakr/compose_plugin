@@ -130,13 +130,35 @@ wget_args() {
   echo "${args[@]}"
 }
 
+resolve_latest_slackware_package() {
+  local package_prefix="$1"
+  local package_index
+  local package_name=""
+
+  package_index="$(mktemp)"
+  if ! wget $(wget_args) -q -O "$package_index" "https://slackware.osuosl.org/slackware64-current/slackware64/a/"; then
+    echo "Failed to fetch Slackware package index while resolving ${package_prefix}." | tee -a "$LOG_FILE"
+    rm -f "$package_index"
+    exit 9
+  fi
+
+  package_name="$(grep -Eo "${package_prefix}[^\"'[:space:]]+\\.txz" "$package_index" | sort -V | tail -n 1 || true)"
+  rm -f "$package_index"
+
+  if [[ -z "$package_name" ]]; then
+    echo "No ${package_prefix} package found in the Slackware current package index." | tee -a "$LOG_FILE"
+    exit 10
+  fi
+
+  echo "$package_name"
+}
+
 echo "Installing unzip dependency..."
-INFOZIP_PKG="infozip-6.0-x86_64-8.txz"
-download_with_sha_cache \
-  "https://slackware.osuosl.org/slackware64-current/slackware64/a/${INFOZIP_PKG}" \
-  "" \
-  "$INFOZIP_PKG" \
-  "2df6d72a3662be939fb533564b1b1e6d4fedd1e2cbddaa8d39627509a397d4d3"
+INFOZIP_PKG="$(resolve_latest_slackware_package "infozip")"
+INFOZIP_URL="https://slackware.osuosl.org/slackware64-current/slackware64/a/${INFOZIP_PKG}"
+
+echo "Resolved latest infozip package: ${INFOZIP_PKG}" | tee -a "$LOG_FILE"
+download_file_quiet "$INFOZIP_URL" "$INFOZIP_PKG" "infozip package"
 run_quiet upgradepkg --install-new "${INFOZIP_PKG}"
 
 echo "Creating temporary package structure at $tmpdir..."
