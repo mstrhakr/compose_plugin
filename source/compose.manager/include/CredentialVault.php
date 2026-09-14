@@ -12,79 +12,85 @@ final class CredentialVault
     /** @return array<int, array<string, string>> */
     public function listCredentials(): array
     {
-        return array_map(static function (array $credential): array {
-            unset($credential['secret']);
-            return $credential;
-        }, $this->readVault());
+        return $this->withLock(LOCK_SH, function (): array {
+            return array_map(static function (array $credential): array {
+                unset($credential['secret']);
+                return $credential;
+            }, $this->readVault());
+        });
     }
 
     /** @param array<string, string> $input */
     public function saveCredential(array $input): array
     {
-        $credentials = $this->readVault();
-        $id = trim($input['id'] ?? '');
-        $existingIndex = null;
-        foreach ($credentials as $index => $credential) {
-            if (($credential['id'] ?? '') === $id && $id !== '') {
-                $existingIndex = $index;
-                break;
+        return $this->withLock(LOCK_EX, function () use ($input): array {
+            $credentials = $this->readVault();
+            $id = trim($input['id'] ?? '');
+            $existingIndex = null;
+            foreach ($credentials as $index => $credential) {
+                if (($credential['id'] ?? '') === $id && $id !== '') {
+                    $existingIndex = $index;
+                    break;
+                }
             }
-        }
 
-        $existing = $existingIndex !== null ? $credentials[$existingIndex] : [];
-        $secret = trim($input['secret'] ?? '');
-        if ($secret === '') {
-            $secret = (string) ($existing['secret'] ?? '');
-        }
+            $existing = $existingIndex !== null ? $credentials[$existingIndex] : [];
+            $secret = trim($input['secret'] ?? '');
+            if ($secret === '') {
+                $secret = (string) ($existing['secret'] ?? '');
+            }
 
-        $name = trim($input['name'] ?? (string) ($existing['name'] ?? ''));
-        $registry = self::normalizeRegistry($input['registry'] ?? (string) ($existing['registry'] ?? ''));
-        $username = trim($input['username'] ?? (string) ($existing['username'] ?? ''));
-        $provider = strtolower(trim($input['provider'] ?? (string) ($existing['provider'] ?? 'generic')));
-        $authMethod = strtolower(trim($input['authMethod'] ?? (string) ($existing['authMethod'] ?? 'manual')));
-        if ($name === '' || $registry === '' || $username === '' || $secret === '') {
-            throw new InvalidArgumentException('Name, registry, username, and token are required.');
-        }
-        if (!in_array($provider, ['github', 'docker', 'gitlab', 'quay', 'aws', 'azure', 'gcr', 'generic'], true)) {
-            throw new InvalidArgumentException('Unsupported credential provider.');
-        }
-        if (!in_array($authMethod, ['manual', 'oauth_device'], true)) {
-            throw new InvalidArgumentException('Unsupported credential authentication method.');
-        }
+            $name = trim($input['name'] ?? (string) ($existing['name'] ?? ''));
+            $registry = self::normalizeRegistry($input['registry'] ?? (string) ($existing['registry'] ?? ''));
+            $username = trim($input['username'] ?? (string) ($existing['username'] ?? ''));
+            $provider = strtolower(trim($input['provider'] ?? (string) ($existing['provider'] ?? 'generic')));
+            $authMethod = strtolower(trim($input['authMethod'] ?? (string) ($existing['authMethod'] ?? 'manual')));
+            if ($name === '' || $registry === '' || $username === '' || $secret === '') {
+                throw new InvalidArgumentException('Name, registry, username, and token are required.');
+            }
+            if (!in_array($provider, ['github', 'docker', 'gitlab', 'quay', 'aws', 'azure', 'gcr', 'generic'], true)) {
+                throw new InvalidArgumentException('Unsupported credential provider.');
+            }
+            if (!in_array($authMethod, ['manual', 'oauth_device'], true)) {
+                throw new InvalidArgumentException('Unsupported credential authentication method.');
+            }
 
-        $now = gmdate('c');
-        $credential = [
-            'id' => $id !== '' ? $id : bin2hex(random_bytes(16)),
-            'name' => $name,
-            'provider' => $provider,
-            'authMethod' => $authMethod,
-            'registry' => $registry,
-            'username' => $username,
-            'secret' => $secret,
-            'createdAt' => (string) ($existing['createdAt'] ?? $now),
-            'updatedAt' => $now,
-        ];
+            $now = gmdate('c');
+            $credential = [
+                'id' => $id !== '' ? $id : bin2hex(random_bytes(16)),
+                'name' => $name,
+                'provider' => $provider,
+                'authMethod' => $authMethod,
+                'registry' => $registry,
+                'username' => $username,
+                'secret' => $secret,
+                'createdAt' => (string) ($existing['createdAt'] ?? $now),
+                'updatedAt' => $now,
+            ];
 
-        if ($existingIndex === null) {
-            $credentials[] = $credential;
-        } else {
-            $credentials[$existingIndex] = $credential;
-        }
-        $this->writeVault($credentials);
+            if ($existingIndex === null) {
+                $credentials[] = $credential;
+            } else {
+                $credentials[$existingIndex] = $credential;
+            }
+            $this->writeVault($credentials);
 
-        unset($credential['secret']);
-        return $credential;
+            unset($credential['secret']);
+            return $credential;
+        });
     }
 
     public function deleteCredential(string $id): bool
     {
-        $credentials = $this->readVault();
-        $filtered = array_values(array_filter($credentials, static fn(array $credential): bool => ($credential['id'] ?? '') !== $id));
-        if (count($filtered) === count($credentials)) {
-            return false;
-        }
-        $this->writeVault($filtered);
-        return true;
+        return $this->withLock(LOCK_EX, function () use ($id): bool {
+            $credentials = $this->readVault();
+            $filtered = array_values(array_filter($credentials, static fn(array $credential): bool => ($credential['id'] ?? '') !== $id));
+            if (count($filtered) === count($credentials)) {
+                return false;
+            }
+            $this->writeVault($filtered);
+            return true;
+        });
     }
 
     public function hasCredential(string $id): bool
@@ -92,17 +98,19 @@ final class CredentialVault
         if ($id === '') {
             return false;
         }
-        foreach ($this->readVault() as $credential) {
-            if (($credential['id'] ?? '') === $id) {
-                return true;
+        return $this->withLock(LOCK_SH, function () use ($id): bool {
+            foreach ($this->readVault() as $credential) {
+                if (($credential['id'] ?? '') === $id) {
+                    return true;
+                }
             }
-        }
-        return false;
+            return false;
+        });
     }
 
     public function materializeDockerConfig(string $id): string
     {
-        $credential = $this->findCredential($id);
+        $credential = $this->withLock(LOCK_SH, fn(): array => $this->findCredential($id));
         $baseDir = rtrim(COMPOSE_DOCKER_CONFIG_DIR, '/');
         $directory = $baseDir . '/' . bin2hex(random_bytes(16));
         if (!is_dir($baseDir) && !mkdir($baseDir, 0700, true) && !is_dir($baseDir)) {
@@ -251,5 +259,36 @@ final class CredentialVault
         }
         chmod(COMPOSE_CREDENTIAL_KEY_FILE, 0600);
         return $key;
+    }
+
+    /**
+     * Execute a callback while holding a lock on the credential vault lockfile.
+     *
+     * @template T
+     * @param int $lockType LOCK_SH or LOCK_EX
+     * @param callable(): T $callback
+     * @return T
+     */
+    private function withLock(int $lockType, callable $callback)
+    {
+        $lockDir = dirname(COMPOSE_CREDENTIAL_VAULT_FILE);
+        if (!is_dir($lockDir) && !mkdir($lockDir, 0700, true) && !is_dir($lockDir)) {
+            throw new RuntimeException('Unable to create credential storage directory.');
+        }
+        $lockFile = $lockDir . '/credentials.lock';
+        $handle = fopen($lockFile, 'c+');
+        if ($handle === false) {
+            throw new RuntimeException('Unable to open credential lock.');
+        }
+        if (!flock($handle, $lockType)) {
+            fclose($handle);
+            throw new RuntimeException('Unable to acquire credential lock.');
+        }
+        try {
+            return $callback();
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
     }
 }
