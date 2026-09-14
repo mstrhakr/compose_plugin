@@ -129,13 +129,35 @@ final class CredentialVault
         }
 
         $auth = base64_encode($credential['username'] . ':' . $credential['secret']);
-        $json = json_encode(['auths' => [$credential['registry'] => ['auth' => $auth]]], JSON_UNESCAPED_SLASHES);
+        // Merge onto the operator's existing Docker CLI config so credHelpers,
+        // other registries' auths, and proxy settings still apply during the run.
+        $config = self::loadExistingDockerConfig();
+        if (!isset($config['auths']) || !is_array($config['auths'])) {
+            $config['auths'] = [];
+        }
+        $config['auths'][$credential['registry']] = ['auth' => $auth];
+
+        $json = json_encode($config, JSON_UNESCAPED_SLASHES);
         if ($json === false || file_put_contents($directory . '/config.json', $json, LOCK_EX) === false) {
             @rmdir($directory);
             throw new RuntimeException('Unable to write temporary Docker config.');
         }
         chmod($directory . '/config.json', 0600);
         return $directory;
+    }
+
+    /** @return array<string, mixed> */
+    private static function loadExistingDockerConfig(): array
+    {
+        $configDir = getenv('DOCKER_CONFIG');
+        $existingPath = $configDir !== false && $configDir !== ''
+            ? rtrim($configDir, '/') . '/config.json'
+            : rtrim((string) (getenv('HOME') ?: '/root'), '/') . '/.docker/config.json';
+        if (!is_file($existingPath)) {
+            return [];
+        }
+        $decoded = json_decode((string) file_get_contents($existingPath), true);
+        return is_array($decoded) ? $decoded : [];
     }
 
     public static function removeDockerConfig(string $directory): void
