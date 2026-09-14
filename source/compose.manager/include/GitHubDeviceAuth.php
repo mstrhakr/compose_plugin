@@ -142,8 +142,15 @@ final class GitHubDeviceAuth
             throw new RuntimeException('Unable to create GitHub sign-in session.');
         }
         chmod(COMPOSE_GITHUB_DEVICE_DIR, 0700);
-        file_put_contents(COMPOSE_GITHUB_DEVICE_DIR . '/' . $state . '.json', json_encode($session), LOCK_EX);
-        chmod(COMPOSE_GITHUB_DEVICE_DIR . '/' . $state . '.json', 0600);
+        $encoded = json_encode($session);
+        if ($encoded === false) {
+            throw new RuntimeException('Unable to serialize GitHub sign-in session.');
+        }
+        $sessionFile = COMPOSE_GITHUB_DEVICE_DIR . '/' . $state . '.json';
+        if (file_put_contents($sessionFile, $encoded, LOCK_EX) === false) {
+            throw new RuntimeException('Unable to create GitHub sign-in session.');
+        }
+        chmod($sessionFile, 0600);
     }
 
     /** @return array<string, mixed> */
