@@ -1277,7 +1277,7 @@ function initEditorModal() {
     editorModal.editors['override'] = overrideEditor;
 
     // Initialize settings field change tracking
-    $('#settings-name, #settings-description, #settings-icon-url, #settings-webui-url, #settings-env-path, #settings-default-profile, #settings-wait-for-healthy, #settings-wait-timeout, #settings-build-on-update, #settings-external-compose-path, #settings-external-compose-file, #settings-use-default-compose-files').on('input change', function() {
+    $('#settings-name, #settings-description, #settings-icon-url, #settings-webui-url, #settings-env-path, #settings-default-profile, #settings-credential-id, #settings-wait-for-healthy, #settings-wait-timeout, #settings-build-on-update, #settings-external-compose-path, #settings-external-compose-file, #settings-use-default-compose-files').on('input change', function() {
         var fieldId = this.id.replace('settings-', '');
         var isCheckbox = this.type === 'checkbox';
         var currentValue = isCheckbox ? ($(this).is(':checked') ? 'true' : 'false') : $(this).val();
@@ -1297,6 +1297,13 @@ function initEditorModal() {
         }
 
         updateEffectiveCommandDirtyIndicator();
+    });
+
+    $('#settings-add-credential').on('click', function() {
+        ComposeCredentialManager.open(null, function(credential) {
+            ComposeCredentialManager.populateSelect($('#settings-credential-id'), credential.id);
+            $('#settings-credential-id').trigger('change');
+        });
     });
 
     // Additional compose files: combined change tracking for the candidate
@@ -6279,6 +6286,12 @@ function loadSettingsData(project, projectName) {
                 $('#settings-default-profile').val(defaultProfile);
                 editorModal.originalSettings['default-profile'] = defaultProfile;
 
+                var credentialId = response.credentialId || '';
+                ComposeCredentialManager.load(function() {
+                    ComposeCredentialManager.populateSelect($('#settings-credential-id'), credentialId);
+                    editorModal.originalSettings['credential-id'] = credentialId;
+                });
+
                 // Wait-for-healthy settings
                 var waitForHealthy = response.waitForHealthy === true || response.waitForHealthy === 'true' || response.waitForHealthy === '1';
                 $('#settings-wait-for-healthy').prop('checked', waitForHealthy);
@@ -7283,7 +7296,7 @@ function saveSettings(saveErrors) {
     }
 
     // Save icon URL, webui URL, env path, default profile, and external compose settings if any are modified
-    if (editorModal.modifiedSettings.has('icon-url') || editorModal.modifiedSettings.has('webui-url') || editorModal.modifiedSettings.has('env-path') || editorModal.modifiedSettings.has('extra-compose-files') || editorModal.modifiedSettings.has('default-profile') || editorModal.modifiedSettings.has('wait-for-healthy') || editorModal.modifiedSettings.has('wait-timeout') || editorModal.modifiedSettings.has('external-compose-path') || editorModal.modifiedSettings.has('external-compose-file') || editorModal.modifiedSettings.has('use-default-compose-files')) {
+    if (editorModal.modifiedSettings.has('icon-url') || editorModal.modifiedSettings.has('webui-url') || editorModal.modifiedSettings.has('env-path') || editorModal.modifiedSettings.has('extra-compose-files') || editorModal.modifiedSettings.has('default-profile') || editorModal.modifiedSettings.has('credential-id') || editorModal.modifiedSettings.has('wait-for-healthy') || editorModal.modifiedSettings.has('wait-timeout') || editorModal.modifiedSettings.has('external-compose-path') || editorModal.modifiedSettings.has('external-compose-file') || editorModal.modifiedSettings.has('use-default-compose-files')) {
         // Inline validation blocks Apply when errors are present, so by the
         // time we reach saveSettings the visible form state is valid.
         var iconUrl = $('#settings-icon-url').val();
@@ -7291,6 +7304,7 @@ function saveSettings(saveErrors) {
         var envPath = $('#settings-env-path').val();
         var extraComposeFiles = getExtraComposeFilesValue();
         var defaultProfile = $('#settings-default-profile').val();
+        var credentialId = $('#settings-credential-id').val();
         var waitForHealthy = $('#settings-wait-for-healthy').is(':checked') ? 'true' : 'false';
         var waitTimeout = $('#settings-wait-timeout').val();
         var buildOnUpdate = $('#settings-build-on-update').is(':checked') ? 'true' : 'false';
@@ -7306,6 +7320,7 @@ function saveSettings(saveErrors) {
                 envPath: envPath,
                 extraComposeFiles: extraComposeFiles,
                 defaultProfile: defaultProfile,
+                credentialId: credentialId,
                 waitForHealthy: waitForHealthy,
                 waitTimeout: waitTimeout,
                 buildOnUpdate: buildOnUpdate,
@@ -7326,6 +7341,7 @@ function saveSettings(saveErrors) {
                         editorModal.originalSettings['env-path'] = envPath;
                         editorModal.originalSettings['extra-compose-files'] = extraComposeFiles;
                         editorModal.originalSettings['default-profile'] = defaultProfile;
+                        editorModal.originalSettings['credential-id'] = credentialId;
                         editorModal.originalSettings['wait-for-healthy'] = waitForHealthy;
                         editorModal.originalSettings['wait-timeout'] = waitTimeout;
                         editorModal.originalSettings['build-on-update'] = buildOnUpdate;
@@ -7337,6 +7353,7 @@ function saveSettings(saveErrors) {
                         editorModal.modifiedSettings.delete('env-path');
                         editorModal.modifiedSettings.delete('extra-compose-files');
                         editorModal.modifiedSettings.delete('default-profile');
+                        editorModal.modifiedSettings.delete('credential-id');
                         editorModal.modifiedSettings.delete('wait-for-healthy');
                         editorModal.modifiedSettings.delete('wait-timeout');
                         editorModal.modifiedSettings.delete('build-on-update');

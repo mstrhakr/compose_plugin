@@ -12,7 +12,7 @@ LOCK_TIMEOUT=${COMPOSE_LOCK_TIMEOUT:-30}
 LOCK_DIR="/var/run/compose.manager"
 
 SHORT=e:,c:,f:,p:,d:,o:,g:,s:,w:
-LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:,follow-logs,wait,wait-timeout:,build
+LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:,follow-logs,wait,wait-timeout:,build,credential-id:
 OPTS=$(getopt -a -n compose --options $SHORT --longoptions $LONG -- "$@")
 
 eval set -- "$OPTS"
@@ -32,6 +32,8 @@ wait_timeout=""
 build_on_update=false
 lock_fd=""
 operation_exit_code=0
+credential_id=""
+docker_config_dir=""
 
 
 # Logging helper — delegates to shared composeLogger, adds console echo in debug mode
@@ -89,7 +91,14 @@ release_lock() {
 }
 
 # Ensure lock is released and follow state is cleared on exit.
-trap 'release_lock; clear_follow_pid' EXIT
+cleanup_docker_config() {
+  if [ -n "$docker_config_dir" ]; then
+    php "$(dirname "$0")/credential_config.php" --remove "$docker_config_dir" >/dev/null 2>&1 || true
+    docker_config_dir=""
+  fi
+}
+
+trap 'release_lock; clear_follow_pid; cleanup_docker_config' EXIT
 
 # Save operation result to stack directory
 save_result() {
@@ -209,6 +218,10 @@ do
       build_on_update=true
       shift;
       ;;
+    --credential-id )
+      credential_id="$2"
+      shift 2
+      ;;
     --)
       shift;
       break
@@ -219,6 +232,19 @@ do
       ;;
   esac
 done
+
+if [ -n "$credential_id" ]; then
+  if ! credential_output=$(php "$(dirname "$0")/credential_config.php" --credential-id "$credential_id"); then
+    log_msg "ERROR" "Selected registry credential could not be loaded"
+    exit 1
+  fi
+  docker_config_dir=$(printf '%s\n' "$credential_output" | sed -n '1p')
+  credential_label=$(printf '%s\n' "$credential_output" | sed -n '2p')
+  export DOCKER_CONFIG="$docker_config_dir"
+  log_msg "DEBUG" "Using registry credential '${credential_label:-$credential_id}' for $name"
+elif [[ "$command" =~ ^(up|pull|update)$ ]]; then
+  log_msg "DEBUG" "No registry credential configured for $name; using default Docker credentials"
+fi
 
 # Build docker compose profile flags from canonical profile names.
 for profile_name in "${profile_names[@]}"; do

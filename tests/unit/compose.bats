@@ -112,7 +112,7 @@ test_setup() {
 }
 
 @test "compose.sh combines exit cleanup handlers into one trap" {
-    run grep -F "trap 'release_lock; clear_follow_pid' EXIT" "$COMPOSE_SCRIPT"
+    run grep -F "trap 'release_lock; clear_follow_pid; cleanup_docker_config' EXIT" "$COMPOSE_SCRIPT"
     assert_success
 }
 
