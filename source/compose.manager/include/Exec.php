@@ -1309,9 +1309,17 @@ switch ($_POST['action']) {
         $buildOnUpdate = isset($_POST['buildOnUpdate']) ? strtolower(trim((string) $_POST['buildOnUpdate'])) : "false";
         $credentialIdProvided = isset($_POST['credentialId']);
         $credentialId = $credentialIdProvided ? trim((string) $_POST['credentialId']) : '';
-        if ($credentialId !== '' && !(new CredentialVault())->hasCredential($credentialId)) {
-            echo json_encode(['result' => 'error', 'message' => 'Selected credential no longer exists.']);
-            break;
+        if ($credentialId !== '') {
+            try {
+                if (!(new CredentialVault())->hasCredential($credentialId)) {
+                    echo json_encode(['result' => 'error', 'message' => 'Selected credential no longer exists.']);
+                    break;
+                }
+            } catch (\Throwable $error) {
+                composeLogger('Unable to validate credential for stack settings', ['error' => $error->getMessage()], 'user', 'error', 'credentials');
+                echo json_encode(['result' => 'error', 'message' => 'Unable to read credential vault: ' . $error->getMessage()]);
+                break;
+            }
         }
         $useDefaultComposeFiles = isset($_POST['useDefaultComposeFiles'])
             && strtolower(trim((string) $_POST['useDefaultComposeFiles'])) === 'true';
