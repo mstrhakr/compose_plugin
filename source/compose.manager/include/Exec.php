@@ -1021,7 +1021,8 @@ switch ($_POST['action']) {
         try {
             $cfg = parse_plugin_cfg($sName);
             $auth = new GitHubDeviceAuth((string) ($cfg['GITHUB_OAUTH_CLIENT_ID'] ?? ''));
-            echo json_encode(['result' => 'success', 'device' => $auth->start()]);
+            $renewCredentialId = trim((string) ($_POST['credentialId'] ?? ''));
+            echo json_encode(['result' => 'success', 'device' => $auth->start($renewCredentialId !== '' ? $renewCredentialId : null)]);
         } catch (\Throwable $error) {
             composeLogger('Unable to start GitHub sign-in', ['error' => $error->getMessage()], 'user', 'warning', 'credentials');
             echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);

@@ -56,4 +56,32 @@ final class GitHubDeviceAuthTest extends TestCase
 
         $this->assertSame('pending', $auth->poll($device['state'])['status']);
     }
+
+    public function testRenewingAnExistingCredentialPreservesIdAndName(): void
+    {
+        $responses = [
+            ['device_code' => 'device-secret-1', 'user_code' => 'ABCD-EFGH', 'verification_uri' => 'https://github.com/login/device', 'expires_in' => 900, 'interval' => 5],
+            ['access_token' => 'first-token', 'token_type' => 'bearer', 'scope' => 'read:packages'],
+            ['login' => 'octocat'],
+        ];
+        $auth = new GitHubDeviceAuth('client-id', null, static function () use (&$responses): array {
+            return array_shift($responses);
+        });
+        $original = $auth->poll($auth->start()['state'])['credential'];
+        $vault = new \CredentialVault();
+        $vault->saveCredential(array_merge($original, ['id' => $original['id'], 'name' => 'My Renamed Credential', 'secret' => 'first-token']));
+
+        $responses = [
+            ['device_code' => 'device-secret-2', 'user_code' => 'IJKL-MNOP', 'verification_uri' => 'https://github.com/login/device', 'expires_in' => 900, 'interval' => 5],
+            ['access_token' => 'renewed-token', 'token_type' => 'bearer', 'scope' => 'read:packages'],
+            ['login' => 'octocat'],
+        ];
+        $device = $auth->start($original['id']);
+        $result = $auth->poll($device['state']);
+
+        $this->assertSame('success', $result['status']);
+        $this->assertSame($original['id'], $result['credential']['id']);
+        $this->assertSame('My Renamed Credential', $result['credential']['name']);
+        $this->assertCount(1, $vault->listCredentials());
+    }
 }

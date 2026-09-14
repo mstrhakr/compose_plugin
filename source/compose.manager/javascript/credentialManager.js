@@ -134,7 +134,7 @@
                             '<div id="credential-github-qr-wrap"><div id="credential-github-qr"></div><span>Or scan with your phone</span></div>' +
                             '<p id="credential-github-status">Waiting for authorization...</p>' +
                         '</div>' +
-                        '<div id="credential-oauth-connected" style="display:none;"><i class="fa fa-check-circle"></i> GitHub account connected via OAuth</div>' +
+                        '<div id="credential-oauth-connected" style="display:none;"><i class="fa fa-check-circle"></i> <span>GitHub account connected via OAuth</span> <button type="button" id="credential-github-renew">Renew access</button></div>' +
                     '</div>' +
                     '<div id="credential-provider-help" class="credential-provider-box">' +
                         '<div id="credential-provider-desc"></div>' +
@@ -183,7 +183,8 @@
                 '.credential-github-url{word-break:break-word}' +
                 '#credential-github-qr-wrap{display:flex;flex-direction:column;align-items:center;gap:6px;margin:12px 0}#credential-github-qr-wrap span{color:var(--alt-text-color);font-size:.85rem}' +
                 '#credential-github-qr{padding:8px;background:#fff;border:1px solid var(--border-color);border-radius:6px;line-height:0}#credential-github-qr svg{display:block;width:150px;height:150px}' +
-                '#credential-oauth-connected{margin-top:12px;padding:10px 12px;color:var(--status-success);background-color:var(--dynamix-tablesorter-tbody-row-alt-bg-color);border:1px solid var(--border-color);border-radius:6px}#credential-oauth-connected i{margin-right:8px}' +
+                '#credential-oauth-connected{margin-top:12px;padding:10px 12px;color:var(--status-success);background-color:var(--dynamix-tablesorter-tbody-row-alt-bg-color);border:1px solid var(--border-color);border-radius:6px;display:flex;align-items:center;flex-wrap:wrap;gap:8px}#credential-oauth-connected i{margin-right:0}#credential-oauth-connected span{flex:1 1 auto}' +
+                '#credential-github-renew{padding:6px 14px;color:var(--text-color);background-color:var(--input-background-color);border:1px solid var(--border-color);border-radius:4px;cursor:pointer;font-size:.9rem}#credential-github-renew:hover{border-color:var(--brand-orange)}#credential-github-renew:disabled{cursor:not-allowed;opacity:.5}' +
                 '#credential-modal-error{margin-top:12px;padding:10px 12px;border-radius:6px}' +
                 '@media(max-width:600px){.credential-modal-backdrop{padding:10px}.credential-modal{width:100%;max-height:calc(100vh - 20px);padding:20px}.credential-modal-header{margin:-20px -20px 16px}.credential-modal-actions{margin:20px -20px -20px}.credential-modal-actions button{padding:10px 16px}}' +
             '</style>');
@@ -193,7 +194,8 @@
             applyProviderDefaults();
         });
         $('.credential-save').on('click', saveCredential);
-        $('#credential-github-signin').on('click', startGitHubSignIn);
+        $('#credential-github-signin').on('click', function() { startGitHubSignIn(false); });
+        $('#credential-github-renew').on('click', function() { startGitHubSignIn(true); });
         $('#credential-github-copy').on('click', function() {
             var $copyButton = $(this);
             copyGitHubCode($('#credential-github-code').text(), function() {
@@ -299,10 +301,13 @@
         }
     }
 
-    function startGitHubSignIn() {
-        var $button = $('#credential-github-signin').prop('disabled', true);
+    function startGitHubSignIn(renew) {
+        var credentialId = renew && activeCredential.id ? activeCredential.id : '';
+        var $button = (credentialId ? $('#credential-github-renew') : $('#credential-github-signin')).prop('disabled', true);
         $('#credential-modal-error').hide();
-        $.post(window.caURL || '/plugins/compose.manager/include/Exec.php', { action: 'startGitHubDeviceAuth' }).done(function(data) {
+        var payload = { action: 'startGitHubDeviceAuth' };
+        if (credentialId) payload.credentialId = credentialId;
+        $.post(window.caURL || '/plugins/compose.manager/include/Exec.php', payload).done(function(data) {
             var response;
             try { response = typeof data === 'string' ? JSON.parse(data) : data; } catch (error) { response = {}; }
             if (response.result !== 'success') {
@@ -320,26 +325,27 @@
                 $('#credential-github-status').text('Code copied. Waiting for authorization...');
             });
             window.open(device.verificationUri, '_blank', 'noopener');
-            pollGitHubSignIn(device.state, device.interval || 5);
+            pollGitHubSignIn(device.state, device.interval || 5, credentialId);
         }).fail(function() {
             $('#credential-modal-error').text('Unable to reach GitHub sign-in service.').show();
             $button.prop('disabled', false);
         });
     }
 
-    function pollGitHubSignIn(state, interval) {
+    function pollGitHubSignIn(state, interval, credentialId) {
+        var $button = credentialId ? $('#credential-github-renew') : $('#credential-github-signin');
         githubPollTimer = window.setTimeout(function() {
             $.post(window.caURL || '/plugins/compose.manager/include/Exec.php', { action: 'pollGitHubDeviceAuth', state: state }).done(function(data) {
                 var response;
                 try { response = typeof data === 'string' ? JSON.parse(data) : data; } catch (error) { response = {}; }
                 if (response.result !== 'success') {
                     $('#credential-github-status').text(response.message || 'GitHub sign-in failed.');
-                    $('#credential-github-signin').prop('disabled', false);
+                    $button.prop('disabled', false);
                     return;
                 }
                 var auth = response.auth || {};
                 if (auth.status === 'pending') {
-                    pollGitHubSignIn(state, auth.interval || interval);
+                    pollGitHubSignIn(state, auth.interval || interval, credentialId);
                     return;
                 }
                 if (auth.status === 'success') {
@@ -351,10 +357,10 @@
                     return;
                 }
                 $('#credential-github-status').text(auth.status === 'denied' ? 'Authorization was denied.' : 'Authorization expired. Try again.');
-                $('#credential-github-signin').prop('disabled', false);
+                $button.prop('disabled', false);
             }).fail(function() {
                 $('#credential-github-status').text('Unable to check authorization. Retrying...');
-                pollGitHubSignIn(state, interval);
+                pollGitHubSignIn(state, interval, credentialId);
             });
         }, Math.max(5, interval) * 1000);
     }
@@ -372,6 +378,7 @@
         $('#credential-username').val(credential.username || '');
         $('#credential-secret').val('');
         $('#credential-github-signin').prop('disabled', false);
+        $('#credential-github-renew').prop('disabled', false);
         $('#credential-modal-error').hide().text('');
         applyProviderDefaults();
         if (credential.registry) $('#credential-registry').val(credential.registry);
@@ -450,10 +457,22 @@
             if (response.valid) {
                 swal({ title: 'Credential is valid', text: response.message || (credential.name + ' authenticated successfully.'), type: 'success' });
             } else {
+                var isOAuth = credential.authMethod === 'oauth_device';
                 swal({
                     title: 'Credential rejected',
-                    text: (response.message || 'The registry rejected this credential.') + ' It may have expired or been revoked \u2014 edit the credential to enter a new token, or sign in again if it was added via GitHub.',
-                    type: 'warning'
+                    text: (response.message || 'The registry rejected this credential.') + ' It may have expired or been revoked.',
+                    type: 'warning',
+                    showCancelButton: true,
+                    confirmButtonText: isOAuth ? 'Renew access' : 'Edit credential',
+                    cancelButtonText: 'Later'
+                }, function(confirmed) {
+                    if (!confirmed) return;
+                    openModal(credential, null);
+                    if (isOAuth) {
+                        startGitHubSignIn(true);
+                    } else {
+                        $('#credential-secret').trigger('focus');
+                    }
                 });
             }
         }).fail(function() {

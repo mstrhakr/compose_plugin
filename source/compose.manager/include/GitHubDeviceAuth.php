@@ -18,11 +18,20 @@ final class GitHubDeviceAuth
         $this->request = $request ?? [$this, 'curlRequest'];
     }
 
-    /** @return array<string, mixed> */
-    public function start(): array
+    /**
+     * @param string|null $renewCredentialId When set, a successful sign-in updates this
+     *   existing credential in place (keeping its id and stack assignments) instead of
+     *   creating a new one.
+     * @return array<string, mixed>
+     */
+    public function start(?string $renewCredentialId = null): array
     {
         if ($this->clientId === '') {
             throw new RuntimeException('GitHub sign-in is not configured.');
+        }
+        $renewCredentialId = trim((string) $renewCredentialId);
+        if ($renewCredentialId !== '' && !$this->vault->hasCredential($renewCredentialId)) {
+            throw new RuntimeException('The credential to renew no longer exists.');
         }
         self::sweepExpiredSessions();
         $response = ($this->request)('POST', 'https://github.com/login/device/code', [
@@ -41,6 +50,7 @@ final class GitHubDeviceAuth
             'expiresAt' => time() + (int) $response['expires_in'],
             'interval' => $interval,
             'nextPollAt' => 0,
+            'renewCredentialId' => $renewCredentialId,
         ]);
         return [
             'state' => $state,
@@ -96,8 +106,17 @@ final class GitHubDeviceAuth
         if ($username === '') {
             throw new RuntimeException('Unable to read the authorized GitHub account.');
         }
+        $renewCredentialId = trim((string) ($session['renewCredentialId'] ?? ''));
+        $name = 'GitHub - ' . $username;
+        if ($renewCredentialId !== '' && $this->vault->hasCredential($renewCredentialId)) {
+            $existingName = trim((string) ($this->vault->getCredentialSummary($renewCredentialId)['name'] ?? ''));
+            if ($existingName !== '') {
+                $name = $existingName;
+            }
+        }
         $credential = $this->vault->saveCredential([
-            'name' => 'GitHub - ' . $username,
+            'id' => $renewCredentialId,
+            'name' => $name,
             'provider' => 'github',
             'authMethod' => 'oauth_device',
             'registry' => 'ghcr.io',
