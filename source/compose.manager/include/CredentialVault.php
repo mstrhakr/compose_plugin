@@ -112,11 +112,13 @@ final class CredentialVault
     {
         $credential = $this->withLock(LOCK_SH, fn(): array => $this->findCredential($id));
         $baseDir = rtrim(COMPOSE_DOCKER_CONFIG_DIR, '/');
-        $directory = $baseDir . '/' . bin2hex(random_bytes(16));
         if (!is_dir($baseDir) && !mkdir($baseDir, 0700, true) && !is_dir($baseDir)) {
             throw new RuntimeException('Unable to create Docker credential directory.');
         }
         chmod($baseDir, 0700);
+        self::sweepStaleDockerConfigs($baseDir);
+
+        $directory = $baseDir . '/' . bin2hex(random_bytes(16));
         if (!mkdir($directory, 0700)) {
             throw new RuntimeException('Unable to create temporary Docker config.');
         }
@@ -140,6 +142,20 @@ final class CredentialVault
         }
         @unlink($target . '/config.json');
         @rmdir($target);
+    }
+
+    /**
+     * Remove orphaned Docker config directories left behind by crashed or killed
+     * compose operations that never reached their cleanup trap.
+     */
+    private static function sweepStaleDockerConfigs(string $baseDir, int $maxAgeSeconds = 3600): void
+    {
+        foreach (glob($baseDir . '/*', GLOB_ONLYDIR) ?: [] as $directory) {
+            $mtime = @filemtime($directory);
+            if ($mtime !== false && (time() - $mtime) > $maxAgeSeconds) {
+                self::removeDockerConfig($directory);
+            }
+        }
     }
 
     private static function normalizeRegistry(string $registry): string
@@ -234,10 +250,10 @@ final class CredentialVault
             'tag' => base64_encode($tag),
             'ciphertext' => base64_encode($ciphertext),
         ], JSON_UNESCAPED_SLASHES);
-        if ($payload === false || file_put_contents(COMPOSE_CREDENTIAL_VAULT_FILE, $payload, LOCK_EX) === false) {
-            throw new RuntimeException('Unable to save credential vault.');
+        if ($payload === false) {
+            throw new RuntimeException('Unable to encode credential vault.');
         }
-        chmod(COMPOSE_CREDENTIAL_VAULT_FILE, 0600);
+        self::atomicWrite(COMPOSE_CREDENTIAL_VAULT_FILE, $payload, 0600, 'Unable to save credential vault.');
     }
 
     private function loadKey(): string
@@ -254,11 +270,26 @@ final class CredentialVault
             throw new RuntimeException('Unable to create credential storage directory.');
         }
         $key = random_bytes(self::KEY_BYTES);
-        if (file_put_contents(COMPOSE_CREDENTIAL_KEY_FILE, base64_encode($key), LOCK_EX) === false) {
-            throw new RuntimeException('Unable to save credential encryption key.');
-        }
-        chmod(COMPOSE_CREDENTIAL_KEY_FILE, 0600);
+        self::atomicWrite(COMPOSE_CREDENTIAL_KEY_FILE, base64_encode($key), 0600, 'Unable to save credential encryption key.');
         return $key;
+    }
+
+    /**
+     * Write via a same-directory temp file + rename so a crash or power loss
+     * mid-write cannot corrupt the existing vault/key file.
+     */
+    private static function atomicWrite(string $path, string $contents, int $mode, string $errorMessage): void
+    {
+        $tmpPath = $path . '.tmp-' . bin2hex(random_bytes(8));
+        if (file_put_contents($tmpPath, $contents, LOCK_EX) === false) {
+            @unlink($tmpPath);
+            throw new RuntimeException($errorMessage);
+        }
+        chmod($tmpPath, $mode);
+        if (!rename($tmpPath, $path)) {
+            @unlink($tmpPath);
+            throw new RuntimeException($errorMessage);
+        }
     }
 
     /**
