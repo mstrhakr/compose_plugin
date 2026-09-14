@@ -234,11 +234,14 @@ do
 done
 
 if [ -n "$credential_id" ]; then
-  if ! docker_config_dir=$(php "$(dirname "$0")/credential_config.php" --credential-id "$credential_id"); then
+  if ! credential_output=$(php "$(dirname "$0")/credential_config.php" --credential-id "$credential_id"); then
     log_msg "ERROR" "Selected registry credential could not be loaded"
     exit 1
   fi
+  docker_config_dir=$(printf '%s\n' "$credential_output" | sed -n '1p')
+  credential_label=$(printf '%s\n' "$credential_output" | sed -n '2p')
   export DOCKER_CONFIG="$docker_config_dir"
+  log_msg "DEBUG" "Using registry credential '${credential_label:-$credential_id}' for $name"
 elif [[ "$command" =~ ^(up|pull|update)$ ]]; then
   log_msg "DEBUG" "No registry credential configured for $name; using default Docker credentials"
 fi

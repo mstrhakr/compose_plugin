@@ -114,6 +114,35 @@ final class CredentialVault
         });
     }
 
+    /** @return array<string, string> */
+    public function getCredentialSummary(string $id): array
+    {
+        return $this->withLock(LOCK_SH, function () use ($id): array {
+            $credential = $this->findCredential($id);
+            unset($credential['secret']);
+            return $credential;
+        });
+    }
+
+    /**
+     * Verifies a credential still authenticates against its registry using the
+     * standard Docker Registry v2 handshake. Never throws; failures are returned
+     * as an invalid result so the UI can surface a renewal prompt.
+     * @return array{id: string, name: string, registry: string, valid: bool, message: string}
+     */
+    public function testCredential(string $id): array
+    {
+        $credential = $this->withLock(LOCK_SH, fn(): array => $this->findCredential($id));
+        [$valid, $message] = self::checkRegistryAuth($credential['registry'], $credential['username'], $credential['secret']);
+        return [
+            'id' => $credential['id'],
+            'name' => $credential['name'],
+            'registry' => $credential['registry'],
+            'valid' => $valid,
+            'message' => $message,
+        ];
+    }
+
     public function materializeDockerConfig(string $id): string
     {
         $credential = $this->withLock(LOCK_SH, fn(): array => $this->findCredential($id));
@@ -206,6 +235,96 @@ final class CredentialVault
             return '';
         }
         return $registry;
+    }
+
+    /**
+     * Performs the standard Docker Registry v2 auth handshake: ping /v2/, and if
+     * challenged with a Bearer realm, request a token using the credential.
+     * @return array{0: bool, 1: string}
+     */
+    private static function checkRegistryAuth(string $registry, string $username, string $secret): array
+    {
+        $host = $registry === 'https://index.docker.io/v1/' ? 'registry-1.docker.io' : $registry;
+        if ($host === '') {
+            return [false, 'No registry host configured for this credential.'];
+        }
+        if (!function_exists('curl_init')) {
+            return [false, 'Unable to verify credential: the PHP curl extension is unavailable.'];
+        }
+
+        $ping = self::registryRequest('https://' . $host . '/v2/', $username, $secret);
+        if ($ping['status'] === 200) {
+            return [true, 'Registry accepted the credential.'];
+        }
+        if ($ping['status'] === 401 && $ping['authHeader'] !== '') {
+            $challenge = self::parseBearerChallenge($ping['authHeader']);
+            if ($challenge === null) {
+                return [false, 'Registry returned an unrecognized authentication challenge.'];
+            }
+            $query = array_filter([
+                'service' => $challenge['service'] ?? null,
+                'scope' => $challenge['scope'] ?? null,
+            ]);
+            $tokenUrl = $challenge['realm'] . ($query ? '?' . http_build_query($query) : '');
+            $tokenResponse = self::registryRequest($tokenUrl, $username, $secret);
+            if ($tokenResponse['status'] === 200) {
+                return [true, 'Registry accepted the credential.'];
+            }
+            if ($tokenResponse['status'] === 401 || $tokenResponse['status'] === 403) {
+                return [false, 'Registry rejected the credential (invalid or expired token).'];
+            }
+            return [false, 'Unable to verify credential (auth service returned HTTP ' . $tokenResponse['status'] . ').'];
+        }
+        if ($ping['status'] === 401 || $ping['status'] === 403) {
+            return [false, 'Registry rejected the credential (invalid or expired token).'];
+        }
+        if ($ping['status'] === 0) {
+            return [false, 'Could not reach the registry: ' . $ping['error']];
+        }
+        return [false, 'Unable to verify credential (registry returned HTTP ' . $ping['status'] . ').'];
+    }
+
+    /** @return array{status: int, authHeader: string, error: string} */
+    private static function registryRequest(string $url, string $username, string $secret): array
+    {
+        $handle = curl_init($url);
+        curl_setopt_array($handle, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HEADER => true,
+            CURLOPT_CONNECTTIMEOUT => 8,
+            CURLOPT_TIMEOUT => 15,
+            CURLOPT_USERPWD => $username . ':' . $secret,
+            CURLOPT_HTTPHEADER => ['User-Agent: Compose-Manager-Credential-Test'],
+            CURLOPT_FOLLOWLOCATION => true,
+        ]);
+        $response = curl_exec($handle);
+        $status = (int) curl_getinfo($handle, CURLINFO_HTTP_CODE);
+        $error = curl_error($handle);
+        curl_close($handle);
+
+        $authHeader = '';
+        if (is_string($response) && preg_match('/^www-authenticate:\s*(.+)$/mi', $response, $matches)) {
+            $authHeader = trim($matches[1]);
+        }
+        return ['status' => $status, 'authHeader' => $authHeader, 'error' => $error];
+    }
+
+    /** @return array{realm: string, service?: string, scope?: string}|null */
+    private static function parseBearerChallenge(string $header): ?array
+    {
+        if (stripos($header, 'Bearer') !== 0) {
+            return null;
+        }
+        $params = [];
+        if (preg_match_all('/(realm|service|scope)="([^"]*)"/i', $header, $matches, PREG_SET_ORDER)) {
+            foreach ($matches as $match) {
+                $params[strtolower($match[1])] = $match[2];
+            }
+        }
+        if (empty($params['realm'])) {
+            return null;
+        }
+        return $params;
     }
 
     /** @return array<string, string> */

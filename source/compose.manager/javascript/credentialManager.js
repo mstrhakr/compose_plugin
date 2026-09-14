@@ -431,9 +431,36 @@
             $row.append($('<td>').text(credential.username));
             $row.append($('<td>').text((credential.stacks || []).join(', ') || 'Not assigned'));
             var $actions = $('<td class="credential-list-actions">');
+            $('<button type="button" title="Test credential"><i class="fa fa-plug"></i></button>').on('click', function() { testCredential(credential, $(this)); }).appendTo($actions);
             $('<button type="button" title="Edit"><i class="fa fa-pencil"></i></button>').on('click', function() { openModal(credential); }).appendTo($actions);
             $('<button type="button" title="Delete"><i class="fa fa-trash"></i></button>').on('click', function() { deleteCredential(credential); }).appendTo($actions);
             $row.append($actions).appendTo($body);
+        });
+    }
+
+    function testCredential(credential, $button) {
+        var $icon = $button.prop('disabled', true).find('i').removeClass('fa-plug').addClass('fa-spinner fa-spin');
+        $.post(window.caURL || '/plugins/compose.manager/include/Exec.php', { action: 'testCredential', id: credential.id }).done(function(data) {
+            var response;
+            try { response = typeof data === 'string' ? JSON.parse(data) : data; } catch (error) { response = {}; }
+            if (response.result !== 'success') {
+                swal({ title: 'Unable to test credential', text: response.message || 'Unknown error.', type: 'error' });
+                return;
+            }
+            if (response.valid) {
+                swal({ title: 'Credential is valid', text: response.message || (credential.name + ' authenticated successfully.'), type: 'success' });
+            } else {
+                swal({
+                    title: 'Credential rejected',
+                    text: (response.message || 'The registry rejected this credential.') + ' It may have expired or been revoked \u2014 edit the credential to enter a new token, or sign in again if it was added via GitHub.',
+                    type: 'warning'
+                });
+            }
+        }).fail(function() {
+            swal({ title: 'Unable to test credential', text: 'Could not reach the credential service.', type: 'error' });
+        }).always(function() {
+            $button.prop('disabled', false);
+            $icon.removeClass('fa-spinner fa-spin').addClass('fa-plug');
         });
     }
 

@@ -38,11 +38,14 @@ if [ -z "$PROJECT_NAME" ] && [ -n "$COMPOSE_FILE" ]; then
 fi
 
 if [ -n "$COMPOSE_CREDENTIAL_ID" ]; then
-  if ! DOCKER_CONFIG_DIR=$(php "$(dirname "$0")/credential_config.php" --credential-id "$COMPOSE_CREDENTIAL_ID"); then
+  if ! credential_output=$(php "$(dirname "$0")/credential_config.php" --credential-id "$COMPOSE_CREDENTIAL_ID"); then
     composeLogger "Selected registry credential could not be loaded for '$PROJECT_NAME'" error autoupdate daemon
     exit 1
   fi
+  DOCKER_CONFIG_DIR=$(printf '%s\n' "$credential_output" | sed -n '1p')
+  credential_label=$(printf '%s\n' "$credential_output" | sed -n '2p')
   export DOCKER_CONFIG="$DOCKER_CONFIG_DIR"
+  composeLogger "Using registry credential '${credential_label:-$COMPOSE_CREDENTIAL_ID}' for '$PROJECT_NAME'" debug autoupdate daemon
 else
   composeLogger "No registry credential configured for '$PROJECT_NAME'; using default Docker credentials" debug autoupdate daemon
 fi

@@ -108,4 +108,21 @@ final class CredentialVaultTest extends TestCase
             'secret' => 'secret123',
         ]);
     }
+
+    public function testGetCredentialSummaryOmitsSecret(): void
+    {
+        $vault = new CredentialVault();
+        $saved = $vault->saveCredential([
+            'name' => 'Work GitHub',
+            'provider' => 'github',
+            'registry' => 'ghcr.io',
+            'username' => 'octocat',
+            'secret' => 'github-secret-token',
+        ]);
+
+        $summary = $vault->getCredentialSummary($saved['id']);
+        $this->assertSame('Work GitHub', $summary['name']);
+        $this->assertSame('ghcr.io', $summary['registry']);
+        $this->assertArrayNotHasKey('secret', $summary);
+    }
 }

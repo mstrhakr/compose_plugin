@@ -1072,6 +1072,27 @@ switch ($_POST['action']) {
             echo json_encode(['result' => 'error', 'message' => 'Unable to delete credential.']);
         }
         break;
+    case 'testCredential':
+        $credentialId = trim((string) ($_POST['id'] ?? ''));
+        if ($credentialId === '') {
+            echo json_encode(['result' => 'error', 'message' => 'Credential ID is required.']);
+            break;
+        }
+        try {
+            $test = (new CredentialVault())->testCredential($credentialId);
+            composeLogger(
+                "Tested registry credential '{$test['name']}': " . ($test['valid'] ? 'valid' : 'invalid') . ' - ' . $test['message'],
+                null,
+                'user',
+                $test['valid'] ? 'info' : 'warning',
+                'credential'
+            );
+            echo json_encode(['result' => 'success'] + $test);
+        } catch (\Throwable $error) {
+            composeLogger('Unable to test credential', ['error' => $error->getMessage()], 'user', 'error', 'credentials');
+            echo json_encode(['result' => 'error', 'message' => 'Unable to test credential.']);
+        }
+        break;
     case 'getStackSettings':
         $script = getPostScript();
         if (!$script) {
