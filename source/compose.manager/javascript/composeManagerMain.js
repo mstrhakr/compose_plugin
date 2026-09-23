@@ -5873,32 +5873,35 @@ function showProfileSelector(action, path, profiles, runningProfile, defaultProf
             // Use "*" when all profile-based services are requested.
             // Empty profile string means default services only.
             var profileStr = $('#profile_all_profiles').is(':checked') ? '*' : selectedProfiles.join(',');
-            switch (action) {
-                case 'up':
-                    ComposeUp(path, profileStr);
-                    break;
-                case 'down':
-                    ComposeDown(path, profileStr);
-                    break;
-                case 'stop':
-                    ComposeStop(path, profileStr);
-                    break;
-                case 'restart':
-                    ComposeRestart(path, profileStr);
-                    break;
-                case 'update':
-                    UpdateStack(path, profileStr);
-                    break;
-                case 'forceUpdate':
-                    ForceUpdateStack(path, profileStr);
-                    break;
-                case 'pull':
-                    ComposePull(path, profileStr);
-                    break;
-                case 'logs':
-                    ComposeLogs(path, profileStr);
-                    break;
-            }
+            // SweetAlert closes this dialog after the callback returns.
+            setTimeout(function() {
+                switch (action) {
+                    case 'up':
+                        ComposeUp(path, profileStr);
+                        break;
+                    case 'down':
+                        ComposeDown(path, profileStr);
+                        break;
+                    case 'stop':
+                        ComposeStop(path, profileStr);
+                        break;
+                    case 'restart':
+                        ComposeRestart(path, profileStr);
+                        break;
+                    case 'update':
+                        UpdateStack(path, profileStr);
+                        break;
+                    case 'forceUpdate':
+                        ForceUpdateStack(path, profileStr);
+                        break;
+                    case 'pull':
+                        ComposePull(path, profileStr);
+                        break;
+                    case 'logs':
+                        ComposeLogs(path, profileStr);
+                        break;
+                }
+            }, 0);
         }
     });
 }
