@@ -33,6 +33,7 @@ function emitSuccess(array $data, string $format): void
         echo "projectDirectory\t" . ($data['projectDirectory'] ?? '') . "\n";
         echo "useDefaultFileDiscovery\t" . ((($data['useDefaultFileDiscovery'] ?? false) ? 'true' : 'false')) . "\n";
         echo "envFilePath\t" . ($data['envFilePath'] ?? '') . "\n";
+        echo "credentialId\t" . ($data['credentialId'] ?? '') . "\n";
         foreach (($data['composeFiles'] ?? []) as $filePath) {
             echo "composeFile\t" . $filePath . "\n";
         }

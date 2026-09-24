@@ -2587,6 +2587,12 @@ class StackInfo
         return ($val !== null && $val !== '') ? $val : null;
     }
 
+    public function getCredentialId(): ?string
+    {
+        $value = $this->readMetadata('credential_id');
+        return ($value !== null && $value !== '') ? $value : null;
+    }
+
     /**
      * Resolve the effective env file path for this stack.
      *

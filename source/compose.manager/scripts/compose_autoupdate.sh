@@ -11,7 +11,17 @@ PROJECT_NAME="$2"
 COMPOSE_FILE_LIST="${COMPOSE_FILE_LIST:-}"
 COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE:-}"
 COMPOSE_PROJECT_DIR="${COMPOSE_PROJECT_DIR:-}"
+COMPOSE_CREDENTIAL_ID="${COMPOSE_CREDENTIAL_ID:-}"
 COMPOSE_FILE="${COMPOSE_FILE_ARG:-${COMPOSE_FILE:-}}"
+DOCKER_CONFIG_DIR=""
+
+# shellcheck disable=SC2317  # Invoked by EXIT trap.
+cleanup_docker_config() {
+  if [ -n "$DOCKER_CONFIG_DIR" ]; then
+    php "$(dirname "$0")/credential_config.php" --remove "$DOCKER_CONFIG_DIR" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_docker_config EXIT
 
 # If this script is invoked by the background runner, the first positional
 # argument is the project name and compose files are supplied through env vars.
@@ -25,6 +35,19 @@ fi
 if [ -z "$PROJECT_NAME" ] && [ -n "$COMPOSE_FILE" ]; then
   PROJECT_NAME="$COMPOSE_FILE_ARG"
   COMPOSE_FILE_ARG=""
+fi
+
+if [ -n "$COMPOSE_CREDENTIAL_ID" ]; then
+  if ! credential_output=$(php "$(dirname "$0")/credential_config.php" --credential-id "$COMPOSE_CREDENTIAL_ID"); then
+    composeLogger "Selected registry credential could not be loaded for '$PROJECT_NAME'" error autoupdate daemon
+    exit 1
+  fi
+  DOCKER_CONFIG_DIR=$(printf '%s\n' "$credential_output" | sed -n '1p')
+  credential_label=$(printf '%s\n' "$credential_output" | sed -n '2p')
+  export DOCKER_CONFIG="$DOCKER_CONFIG_DIR"
+  composeLogger "Using registry credential '${credential_label:-$COMPOSE_CREDENTIAL_ID}' for '$PROJECT_NAME'" debug autoupdate daemon
+else
+  composeLogger "No registry credential configured for '$PROJECT_NAME'; using default Docker credentials" debug autoupdate daemon
 fi
 
 NOTIFY="/usr/local/emhttp/webGui/scripts/notify"
