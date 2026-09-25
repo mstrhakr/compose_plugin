@@ -187,13 +187,39 @@ if (!function_exists('compose_icon_browser_url')) {
 }
 
 if (!function_exists('compose_icon_is_safe_host')) {    /** Block loopback, private, and link-local hosts (SSRF prevention). */
-    function compose_icon_is_safe_host(string $host): bool
+    function compose_icon_is_safe_host(string $host, ?callable $resolver = null): bool
     {
-        $ip = gethostbyname($host);
-        if ($ip === $host && filter_var($host, FILTER_VALIDATE_IP) === false) {
-            return false; // unresolvable
+        $host = trim($host, '[]');
+        $addresses = [];
+
+        if (filter_var($host, FILTER_VALIDATE_IP) !== false) {
+            $addresses[] = $host;
+        } else {
+            $records = $resolver !== null
+                ? $resolver($host)
+                : dns_get_record($host, DNS_A | DNS_AAAA);
+
+            foreach ($records ?: [] as $record) {
+                if (isset($record['ip'])) {
+                    $addresses[] = $record['ip'];
+                }
+                if (isset($record['ipv6'])) {
+                    $addresses[] = $record['ipv6'];
+                }
+            }
         }
-        return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
+
+        if ($addresses === []) {
+            return false;
+        }
+
+        foreach ($addresses as $address) {
+            if (filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false) {
+                return false;
+            }
+        }
+
+        return true;
     }
 }
 
