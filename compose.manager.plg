@@ -36,28 +36,33 @@
 >
 
 <CHANGES>
-###2026.09.13
-- Features: add option to not close editor modal on outside click (#126)
-- Bug Fixes: set remove-orphans checkbox checked state at render time instead of via setTimeout
-- Bug Fixes: stop forced rebuilds on compose update
-- Bug Fixes: adjust css so effective command is visible in all themes
-- Bug Fixes: enhance logging and background processing in docker_started script
-- Bug Fixes: enhance environment variable handling in build scripts and workflows
-- Bug Fixes: dynamically resolve latest infozip package from Slackware repository
-- Bug Fixes: enforce string type for path parameter in getComposeFilePath method
-- Bug Fixes: support docker-compose stacks that resolve COMPOSE_FILE from .env in default discovery mode (#149)
-- Bug Fixes: quiet routine dockerload reconnect warnings (#133)
-- Chores: update changelog for v2026.09.13.1636 [skip ci]
-- Chores: update changelog for v2026.09.07.2121 [skip ci]
-- Chores: update changelog for v2026.09.07.2056 [skip ci]
+###2026.09.25.0845
+- Features (credentials): add one-click renewal for OAuth GitHub credentials
+- Features (credentials): log which registry credential is used for compose operations
+- Features (credentials): add copy button and QR code for GitHub device sign-in
+- Features: add registry provider presets and token helper links
+- Features: add credential manager and stack selector UI
+- Features: add registry credential backend and runtime
+- Bug Fixes (autoupdate): limit concurrent image pulls
+- Bug Fixes (icons): support IPv6-only icon hosts
+- Bug Fixes (ui): wait for profile dialog to close
+- Bug Fixes (credentials): surface credential name in operation output; add credential test/renewal check
+- Bug Fixes: sweep expired GitHub device-auth session files on start
+- Bug Fixes: merge onto existing Docker config instead of replacing it wholesale
+- Bug Fixes: reject client-supplied ids for new credentials and lock authMethod on update
+- Bug Fixes: sweep stale docker-config temp dirs and write vault/key atomically
+- Bug Fixes: serialize vault read-modify-write transactions with flock
+- Bug Fixes: catch credential vault errors in setStackSettings
+- Bug Fixes: validate GitHub device session file write and chmod
+- Bug Fixes: support credential encryption without sodium
+- Bug Fixes: copy GitHub device code before authorization
+- Bug Fixes: lock GitHub OAuth credential fields
+- Performance: single-pass credential-to-stack mapping instead of per-credential glob scans
 - Chores: sync pluginURL+README for dev branch [skip ci]
-- Chores: update changelog for v2026.09.06.2116 [skip ci]
-- Chores: update changelog for v2026.09.06.1706 [skip ci]
-- Chores: update changelog for v2026.09.05.2104 [skip ci]
-- Fix #3: Add tests for indirect stack envpath metadata discovery
-- Fix: Support relative envpath values in getExplicitEnvFilePath
-- Fix: Pass stack directory to resolveProjectEnvFilePath for indirect stack envpath metadata resolution
-- [View all changes](https://github.com/mstrhakr/compose_plugin/compare/v2026.09.03...v2026.09.13)
+- Chores: update changelog for v2026.09.13 [skip ci]
+- Chores: sync pluginURL+README for main branch [skip ci]
+- [PR #155](https://github.com/mstrhakr/compose_plugin/pull/155)
+- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.09.13...v2026.09.25.0845)
 </CHANGES>
 
 <!-- The 'pre-install' script. -->
