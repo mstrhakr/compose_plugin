@@ -84,4 +84,20 @@ final class GitHubDeviceAuthTest extends TestCase
         $this->assertSame('My Renamed Credential', $result['credential']['name']);
         $this->assertCount(1, $vault->listCredentials());
     }
+
+    public function testCannotRenewCredentialFromAnotherProvider(): void
+    {
+        $vault = new \CredentialVault();
+        $credential = $vault->saveCredential([
+            'name' => 'Docker Hub', 'provider' => 'docker', 'registry' => 'docker.io',
+            'username' => 'user', 'secret' => 'token',
+        ]);
+        $auth = new GitHubDeviceAuth('client-id', $vault, static function (): array {
+            throw new \RuntimeException('GitHub must not be contacted.');
+        });
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Only GitHub OAuth credentials can be renewed');
+        $auth->start($credential['id']);
+    }
 }

@@ -30,8 +30,14 @@ final class GitHubDeviceAuth
             throw new RuntimeException('GitHub sign-in is not configured.');
         }
         $renewCredentialId = trim((string) $renewCredentialId);
-        if ($renewCredentialId !== '' && !$this->vault->hasCredential($renewCredentialId)) {
-            throw new RuntimeException('The credential to renew no longer exists.');
+        if ($renewCredentialId !== '') {
+            if (!$this->vault->hasCredential($renewCredentialId)) {
+                throw new RuntimeException('The credential to renew no longer exists.');
+            }
+            $existing = $this->vault->getCredentialSummary($renewCredentialId);
+            if (($existing['provider'] ?? '') !== 'github' || ($existing['authMethod'] ?? '') !== 'oauth_device') {
+                throw new RuntimeException('Only GitHub OAuth credentials can be renewed with GitHub sign-in.');
+            }
         }
         self::sweepExpiredSessions();
         $response = ($this->request)('POST', 'https://github.com/login/device/code', [
