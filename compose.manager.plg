@@ -36,12 +36,10 @@
 >
 
 <CHANGES>
-###2026.09.25.1001
-- Bug Fixes (credentials): serialize assignment and deletion
-- Bug Fixes (credentials): preserve active Docker configs
-- Bug Fixes (auth): restrict GitHub credential renewal
+###2026.09.25.1058
+- Bug Fixes (staticcheck): remove invalid credential lock template
 - [PR #155](https://github.com/mstrhakr/compose_plugin/pull/155)
-- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.09.13...v2026.09.25.1001)
+- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.09.13...v2026.09.25.1058)
 </CHANGES>
 
 <!-- The 'pre-install' script. -->
