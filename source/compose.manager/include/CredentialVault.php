@@ -99,6 +99,28 @@ final class CredentialVault
         });
     }
 
+    /** @template T @param callable(): T $callback @return T */
+    public static function withCredentialAssignmentLock(callable $callback)
+    {
+        $lockDir = dirname(COMPOSE_CREDENTIAL_VAULT_FILE);
+        if (!is_dir($lockDir) && !mkdir($lockDir, 0700, true) && !is_dir($lockDir)) {
+            throw new RuntimeException('Unable to create credential storage directory.');
+        }
+        $handle = fopen($lockDir . '/credential-assignments.lock', 'c+');
+        if ($handle === false || !flock($handle, LOCK_EX)) {
+            if (is_resource($handle)) {
+                fclose($handle);
+            }
+            throw new RuntimeException('Unable to acquire credential assignment lock.');
+        }
+        try {
+            return $callback();
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
+    }
+
     public function hasCredential(string $id): bool
     {
         if ($id === '') {

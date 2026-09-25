@@ -1060,15 +1060,21 @@ switch ($_POST['action']) {
         break;
     case 'deleteCredential':
         $credentialId = trim((string) ($_POST['id'] ?? ''));
-        $stacks = composeBuildCredentialStackMap($compose_root)[$credentialId] ?? [];
-        if (!empty($stacks)) {
-            echo json_encode(['result' => 'error', 'message' => 'Credential is assigned to: ' . implode(', ', $stacks), 'stacks' => $stacks]);
-            break;
-        }
         try {
-            $deleted = (new CredentialVault())->deleteCredential($credentialId);
+            $deleted = CredentialVault::withCredentialAssignmentLock(function () use ($compose_root, $credentialId): bool {
+                $stacks = composeBuildCredentialStackMap($compose_root)[$credentialId] ?? [];
+                if (!empty($stacks)) {
+                    throw new RuntimeException('Credential is assigned to: ' . implode(', ', $stacks));
+                }
+                return (new CredentialVault())->deleteCredential($credentialId);
+            });
             echo json_encode(['result' => $deleted ? 'success' : 'error', 'message' => $deleted ? '' : 'Credential not found.']);
         } catch (\Throwable $error) {
+            if (str_starts_with($error->getMessage(), 'Credential is assigned to: ')) {
+                $stacks = composeBuildCredentialStackMap($compose_root)[$credentialId] ?? [];
+                echo json_encode(['result' => 'error', 'message' => $error->getMessage(), 'stacks' => $stacks]);
+                break;
+            }
             composeLogger('Unable to delete credential', ['error' => $error->getMessage()], 'user', 'error', 'credentials');
             echo json_encode(['result' => 'error', 'message' => 'Unable to delete credential.']);
         }
@@ -1343,18 +1349,6 @@ switch ($_POST['action']) {
         $buildOnUpdate = isset($_POST['buildOnUpdate']) ? strtolower(trim((string) $_POST['buildOnUpdate'])) : "false";
         $credentialIdProvided = isset($_POST['credentialId']);
         $credentialId = $credentialIdProvided ? trim((string) $_POST['credentialId']) : '';
-        if ($credentialId !== '') {
-            try {
-                if (!(new CredentialVault())->hasCredential($credentialId)) {
-                    echo json_encode(['result' => 'error', 'message' => 'Selected credential no longer exists.']);
-                    break;
-                }
-            } catch (\Throwable $error) {
-                composeLogger('Unable to validate credential for stack settings', ['error' => $error->getMessage()], 'user', 'error', 'credentials');
-                echo json_encode(['result' => 'error', 'message' => 'Unable to read credential vault: ' . $error->getMessage()]);
-                break;
-            }
-        }
         $useDefaultComposeFiles = isset($_POST['useDefaultComposeFiles'])
             && strtolower(trim((string) $_POST['useDefaultComposeFiles'])) === 'true';
 
@@ -1535,12 +1529,23 @@ switch ($_POST['action']) {
 
         if ($credentialIdProvided) {
             $credentialIdFile = "$compose_root/$script/credential_id";
-            if ($credentialId === '') {
-                if (is_file($credentialIdFile)) {
-                    @unlink($credentialIdFile);
-                }
-            } else {
-                file_put_contents($credentialIdFile, $credentialId);
+            try {
+                CredentialVault::withCredentialAssignmentLock(function () use ($credentialId, $credentialIdFile): void {
+                    if ($credentialId !== '' && !(new CredentialVault())->hasCredential($credentialId)) {
+                        throw new RuntimeException('Selected credential no longer exists.');
+                    }
+                    if ($credentialId === '') {
+                        if (is_file($credentialIdFile)) {
+                            @unlink($credentialIdFile);
+                        }
+                    } else {
+                        file_put_contents($credentialIdFile, $credentialId);
+                    }
+                });
+            } catch (\Throwable $error) {
+                composeLogger('Unable to update stack credential', ['error' => $error->getMessage()], 'user', 'error', 'credentials');
+                echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);
+                break;
             }
         }
 
