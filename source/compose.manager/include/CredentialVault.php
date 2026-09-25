@@ -216,11 +216,28 @@ final class CredentialVault
     private static function sweepStaleDockerConfigs(string $baseDir, int $maxAgeSeconds = 3600): void
     {
         foreach (glob($baseDir . '/*', GLOB_ONLYDIR) ?: [] as $directory) {
+            if (self::isDockerConfigInUse($directory)) {
+                continue;
+            }
             $mtime = @filemtime($directory);
             if ($mtime !== false && (time() - $mtime) > $maxAgeSeconds) {
                 self::removeDockerConfig($directory);
             }
         }
+    }
+
+    private static function isDockerConfigInUse(string $directory): bool
+    {
+        foreach (glob('/proc/[0-9]*/environ') ?: [] as $environmentFile) {
+            $environment = @file_get_contents($environmentFile);
+            if ($environment !== false && preg_match(
+                '/(?:^|\0)DOCKER_CONFIG=' . preg_quote($directory, '/') . '(?:\0|$)/',
+                $environment
+            ) === 1) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static function normalizeRegistry(string $registry): string

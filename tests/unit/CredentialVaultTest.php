@@ -78,6 +78,35 @@ final class CredentialVaultTest extends TestCase
         $this->assertSame(base64_encode('user:token'), $config['auths']['ghcr.io']['auth']);
     }
 
+    public function testStaleSweepPreservesConfigUsedByComposeProcess(): void
+    {
+        $baseDir = COMPOSE_DOCKER_CONFIG_DIR;
+        mkdir($baseDir, 0700, true);
+        $activeDirectory = $baseDir . '/active';
+        mkdir($activeDirectory, 0700);
+        file_put_contents($activeDirectory . '/config.json', '{}');
+        touch($activeDirectory, time() - 7200);
+        $process = proc_open(
+            [PHP_BINARY, '-r', 'usleep(5000000);'],
+            [],
+            $pipes,
+            null,
+            ['DOCKER_CONFIG' => $activeDirectory]
+        );
+        $this->assertIsResource($process);
+
+        $vault = new CredentialVault();
+        $saved = $vault->saveCredential([
+            'name' => 'GitHub', 'provider' => 'github', 'registry' => 'ghcr.io',
+            'username' => 'user', 'secret' => 'token',
+        ]);
+        $vault->materializeDockerConfig($saved['id']);
+
+        $this->assertDirectoryExists($activeDirectory);
+        proc_terminate($process);
+        proc_close($process);
+    }
+
     public function testSupportsAllStandardProviderPresets(): void
     {
         $vault = new CredentialVault();
