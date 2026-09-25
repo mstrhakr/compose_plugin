@@ -36,8 +36,6 @@ class AutoupdateRunnerTest extends TestCase
 
         $shim = <<<'PHP'
 <?php
-$marker = getenv('AUTOTEST_MARKER');
-if ($marker) file_put_contents($marker, "RAN\n");
 exit(0);
 PHP;
         file_put_contents($this->wrapperPath, $shim);
@@ -90,7 +88,10 @@ PHP;
 
         // Create autoupdate.json with entry scheduled for now
         // Use a deterministic due time to avoid timezone mismatches in runner logic.
-        $cfg = [ $path => ['enabled' => true, 'schedule' => 'daily', 'time' => '00:00'] ];
+        $cfg = [
+            'defaults' => ['parallel_limit' => 2],
+            $path => ['enabled' => true, 'schedule' => 'daily', 'time' => '00:00'],
+        ];
         file_put_contents((string)$this->autoUpdateConfigFile, json_encode($cfg, JSON_PRETTY_PRINT));
 
         // Configure shim path for environments where process execution is available.

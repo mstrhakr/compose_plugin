@@ -82,6 +82,19 @@ function sanitizeLogText(string $text): string
     return htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
+if (!function_exists('compose_get_autoupdate_parallel_limit')) {
+    function compose_get_autoupdate_parallel_limit(array $config): int
+    {
+        $limit = filter_var(
+            $config['defaults']['parallel_limit'] ?? null,
+            FILTER_VALIDATE_INT,
+            ['options' => ['min_range' => 1, 'max_range' => 16]]
+        );
+
+        return $limit === false ? 4 : $limit;
+    }
+}
+
 if (!function_exists('compose_get_icon_cache_path')) {
     function compose_get_icon_cache_path(string $source): string
     {

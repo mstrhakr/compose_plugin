@@ -205,6 +205,15 @@ test_setup() {
     assert_success
 }
 
+@test "compose_autoupdate.sh exports a bounded pull concurrency limit" {
+    local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
+    run grep -F 'COMPOSE_PARALLEL_LIMIT=${COMPOSE_PARALLEL_LIMIT:-4}' "$autoupdate_script"
+    assert_success
+
+    run grep -F 'export COMPOSE_PARALLEL_LIMIT' "$autoupdate_script"
+    assert_success
+}
+
 @test "compose_autoupdate.sh uses compose config --images for digest detection" {
     local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
     run grep -E 'config --images' "$autoupdate_script"

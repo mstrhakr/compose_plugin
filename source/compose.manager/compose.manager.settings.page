@@ -1191,6 +1191,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 AUTOUPDATE_ENABLED: $('#AUTOUPDATE_ENABLED').is(':checked') ? 'true' : 'false',
                 default_schedule: $('#default-schedule').val() || '',
                 default_time: $('#default-time').val() || '',
+                parallel_limit: $('#default-parallel-limit').val() || '',
                 rows: rows
             };
 
@@ -1597,7 +1598,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             updateUnifiedActionState();
         });
 
-        $('#compose-tab-updates').on('input change', '#AUTOUPDATE_ENABLED, #default-schedule, #default-time, #updates-tbody input, #updates-tbody select', function() {
+        $('#compose-tab-updates').on('input change', '#AUTOUPDATE_ENABLED, #default-schedule, #default-time, #default-parallel-limit, #updates-tbody input, #updates-tbody select', function() {
             settingsUnifiedState.updatesInitialized = true;
             updateUnifiedActionState();
         });
@@ -2378,6 +2379,10 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             }, function(cfg) {
                 // Response is already parsed as JSON by jQuery due to Content-Type header
                 if (typeof cfg !== 'object' || cfg === null) cfg = {};
+                var defaults = cfg.defaults || {};
+                $('#default-schedule').val(defaults.schedule || 'daily');
+                $('#default-time').val(defaults.time || '02:00');
+                $('#default-parallel-limit').val(defaults.parallel_limit || 4);
                 $('#updates-tbody').empty();
                 projects.forEach(function(p) {
                     var id = p.id;
@@ -2586,8 +2591,13 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             });
             var defaults = {
                 schedule: $('#default-schedule').val(),
-                time: $('#default-time').val()
+                time: $('#default-time').val(),
+                parallel_limit: parseInt($('#default-parallel-limit').val(), 10)
             };
+            if (isNaN(defaults.parallel_limit) || defaults.parallel_limit < 1 || defaults.parallel_limit > 16) {
+                defaults.parallel_limit = 4;
+                $('#default-parallel-limit').val(defaults.parallel_limit);
+            }
             cfg['defaults'] = defaults;
 
             var schedulerEnabled = $('#AUTOUPDATE_ENABLED').is(':checked');
@@ -3066,6 +3076,16 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 <blockquote class="inline_help">
                     Set the default schedule for new stacks. Use "Apply to All Stacks" to apply this<br>
                     schedule to all existing stacks in the table below.
+                </blockquote>
+            </dd>
+        </dl>
+
+        <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Image Pull Concurrency)_:</dt>
+            <dd>
+                <input type="number" id="default-parallel-limit" min="1" max="16" step="1" value="4" style="width:80px;"> _(pulls)_
+                <blockquote class="inline_help">
+                    Limit concurrent image pulls during auto-updates. Lower values reduce registry throttling; the default is 4.
                 </blockquote>
             </dd>
         </dl>

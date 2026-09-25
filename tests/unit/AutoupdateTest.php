@@ -11,6 +11,7 @@ class AutoupdateTest extends TestCase
 {
     private ?string $wrapperPath = null;
     private ?string $cronFile = null;
+    private ?string $autoUpdateConfigFile = null;
 
     protected function setUp(): void
     {
@@ -18,8 +19,8 @@ class AutoupdateTest extends TestCase
         // Ensure plugin_root writable mapping exists (framework provides)
         global $plugin_root;
         $plugin_root = '/usr/local/emhttp/plugins/compose.manager/';
-        // Clean any existing autoupdate.json
-        if (is_file($plugin_root . 'autoupdate.json')) unlink($plugin_root . 'autoupdate.json');
+        $this->autoUpdateConfigFile = sys_get_temp_dir() . '/autoupdate_test_cfg_' . getmypid() . '_' . uniqid('', true) . '.json';
+        putenv('COMPOSE_MANAGER_AUTOUPDATE_FILE=' . $this->autoUpdateConfigFile);
         // Ensure scripts path exists
         if (!is_dir($plugin_root . 'scripts')) mkdir($plugin_root . 'scripts', 0755, true);
 
@@ -31,6 +32,7 @@ class AutoupdateTest extends TestCase
     if ($marker) {
         file_put_contents($marker, json_encode([
             'argv' => $argv,
+                'parallelLimit' => getenv('COMPOSE_PARALLEL_LIMIT'),
         ]));
     }
     exit(0);
@@ -49,6 +51,10 @@ class AutoupdateTest extends TestCase
         putenv('COMPOSE_MANAGER_SH');
         putenv('AUTOTEST_MARKER');
         putenv('COMPOSE_MANAGER_AUTOUPDATE_FILE');
+        if ($this->autoUpdateConfigFile !== null && is_file($this->autoUpdateConfigFile)) {
+            @unlink($this->autoUpdateConfigFile);
+        }
+        $this->autoUpdateConfigFile = null;
         if ($this->cronFile !== null && is_file($this->cronFile)) {
             @unlink($this->cronFile);
         }
@@ -89,6 +95,9 @@ class AutoupdateTest extends TestCase
         $tmp = $compose_root . '/PrintMaster_' . getmypid();
         if (!is_dir($tmp)) mkdir($tmp, 0755, true);
         file_put_contents($tmp . '/docker-compose.yml', "services:\n  a:\n    image: busybox\n");
+        file_put_contents((string) $this->autoUpdateConfigFile, json_encode([
+            'defaults' => ['parallel_limit' => 3],
+        ]));
 
         // Create stub script that writes marker file
         $marker = sys_get_temp_dir() . '/autoupdate_marker_' . getmypid();
@@ -115,12 +124,33 @@ class AutoupdateTest extends TestCase
         $this->assertGreaterThanOrEqual(3, count($payload['argv']));
         $expectedProjectName = \StackInfo::sanitizeProjectString(basename($tmp));
         $this->assertSame($expectedProjectName, $payload['argv'][2]);
+        $this->assertSame('3', $payload['parallelLimit']);
 
         // cleanup
         unlink($marker);
         unlink($scriptPath);
         // remove tmp
         unlink($tmp . '/docker-compose.yml'); rmdir($tmp);
+        $_POST = [];
+    }
+
+    public function testSaveConfigNormalizesParallelLimit(): void
+    {
+        $_POST = [
+            'action' => 'saveConfig',
+            'data' => json_encode(['defaults' => ['parallel_limit' => 'invalid']]),
+        ];
+        ob_start();
+        include '/usr/local/emhttp/plugins/compose.manager/include/AutoUpdate.php';
+        $response = json_decode((string) ob_get_clean(), true);
+
+        $this->assertTrue((bool) ($response['ok'] ?? false));
+
+        $_POST = ['action' => 'getConfig'];
+        ob_start();
+        include '/usr/local/emhttp/plugins/compose.manager/include/AutoUpdate.php';
+        $config = json_decode((string) ob_get_clean(), true);
+        $this->assertSame(4, $config['defaults']['parallel_limit']);
         $_POST = [];
     }
 
