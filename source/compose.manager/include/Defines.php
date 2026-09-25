@@ -32,6 +32,10 @@ defined('COMPOSE_DM_ICON_RAM_DIR')     || define('COMPOSE_DM_ICON_RAM_DIR',     
 defined('COMPOSE_DM_ICON_PERSIST_DIR') || define('COMPOSE_DM_ICON_PERSIST_DIR', '/var/lib/docker/unraid/images');
 defined('COMPOSE_DM_WEBUI_INFO_FILE')  || define('COMPOSE_DM_WEBUI_INFO_FILE',  '/usr/local/emhttp/state/plugins/dynamix.docker.manager/docker.json');
 defined('COMPOSE_DOCKER_LABEL_ICON')   || define('COMPOSE_DOCKER_LABEL_ICON',   'net.unraid.docker.icon');
+defined('COMPOSE_CREDENTIAL_VAULT_FILE') || define('COMPOSE_CREDENTIAL_VAULT_FILE', '/boot/config/plugins/compose.manager/credentials.vault');
+defined('COMPOSE_CREDENTIAL_KEY_FILE') || define('COMPOSE_CREDENTIAL_KEY_FILE', '/boot/config/plugins/compose.manager/credentials.key');
+defined('COMPOSE_DOCKER_CONFIG_DIR') || define('COMPOSE_DOCKER_CONFIG_DIR', '/var/tmp/compose-manager-docker-config');
+defined('COMPOSE_GITHUB_DEVICE_DIR') || define('COMPOSE_GITHUB_DEVICE_DIR', '/var/tmp/compose-manager-github-device');
 
 /**
  * Reserved filename at the compose root level used by the plugin installer

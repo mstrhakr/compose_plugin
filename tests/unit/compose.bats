@@ -112,7 +112,7 @@ test_setup() {
 }
 
 @test "compose.sh combines exit cleanup handlers into one trap" {
-    run grep -F "trap 'release_lock; clear_follow_pid' EXIT" "$COMPOSE_SCRIPT"
+    run grep -F "trap 'release_lock; clear_follow_pid; cleanup_docker_config' EXIT" "$COMPOSE_SCRIPT"
     assert_success
 }
 
@@ -202,6 +202,15 @@ test_setup() {
 @test "compose_autoupdate.sh uses --ignore-buildable" {
     local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
     run grep -E 'pull --ignore-buildable' "$autoupdate_script"
+    assert_success
+}
+
+@test "compose_autoupdate.sh exports a bounded pull concurrency limit" {
+    local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
+    run grep -F 'COMPOSE_PARALLEL_LIMIT=${COMPOSE_PARALLEL_LIMIT:-4}' "$autoupdate_script"
+    assert_success
+
+    run grep -F 'export COMPOSE_PARALLEL_LIMIT' "$autoupdate_script"
     assert_success
 }
 

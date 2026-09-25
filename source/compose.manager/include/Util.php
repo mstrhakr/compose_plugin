@@ -82,6 +82,19 @@ function sanitizeLogText(string $text): string
     return htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
+if (!function_exists('compose_get_autoupdate_parallel_limit')) {
+    function compose_get_autoupdate_parallel_limit(array $config): int
+    {
+        $limit = filter_var(
+            $config['defaults']['parallel_limit'] ?? null,
+            FILTER_VALIDATE_INT,
+            ['options' => ['min_range' => 1, 'max_range' => 16]]
+        );
+
+        return $limit === false ? 4 : $limit;
+    }
+}
+
 if (!function_exists('compose_get_icon_cache_path')) {
     function compose_get_icon_cache_path(string $source): string
     {
@@ -187,13 +200,39 @@ if (!function_exists('compose_icon_browser_url')) {
 }
 
 if (!function_exists('compose_icon_is_safe_host')) {    /** Block loopback, private, and link-local hosts (SSRF prevention). */
-    function compose_icon_is_safe_host(string $host): bool
+    function compose_icon_is_safe_host(string $host, ?callable $resolver = null): bool
     {
-        $ip = gethostbyname($host);
-        if ($ip === $host && filter_var($host, FILTER_VALIDATE_IP) === false) {
-            return false; // unresolvable
+        $host = trim($host, '[]');
+        $addresses = [];
+
+        if (filter_var($host, FILTER_VALIDATE_IP) !== false) {
+            $addresses[] = $host;
+        } else {
+            $records = $resolver !== null
+                ? $resolver($host)
+                : dns_get_record($host, DNS_A | DNS_AAAA);
+
+            foreach ($records ?: [] as $record) {
+                if (isset($record['ip'])) {
+                    $addresses[] = $record['ip'];
+                }
+                if (isset($record['ipv6'])) {
+                    $addresses[] = $record['ipv6'];
+                }
+            }
         }
-        return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
+
+        if ($addresses === []) {
+            return false;
+        }
+
+        foreach ($addresses as $address) {
+            if (filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false) {
+                return false;
+            }
+        }
+
+        return true;
     }
 }
 
@@ -2585,6 +2624,12 @@ class StackInfo
     {
         $val = $this->readMetadata('envpath');
         return ($val !== null && $val !== '') ? $val : null;
+    }
+
+    public function getCredentialId(): ?string
+    {
+        $value = $this->readMetadata('credential_id');
+        return ($value !== null && $value !== '') ? $value : null;
     }
 
     /**

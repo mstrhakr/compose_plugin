@@ -193,6 +193,29 @@ SH
         $this->assertFalse(compose_icon_is_safe_host('192.168.1.1'));
         $this->assertFalse(compose_icon_is_safe_host('10.0.0.1'));
         $this->assertFalse(compose_icon_is_safe_host('172.16.0.1'));
+        $this->assertFalse(compose_icon_is_safe_host('::1'));
+        $this->assertFalse(compose_icon_is_safe_host('fe80::1'));
+        $this->assertFalse(compose_icon_is_safe_host('fd00::1'));
+    }
+
+    public function testSafeHostAcceptsPublicIpv6OnlyResolution(): void
+    {
+        $resolver = static fn (string $host): array => [
+            ['host' => $host, 'class' => 'IN', 'type' => 'AAAA', 'ipv6' => '2606:4700:4700::1111'],
+        ];
+
+        $this->assertTrue(compose_icon_is_safe_host('ipv6-only.example', $resolver));
+        $this->assertTrue(compose_icon_is_safe_host('2606:4700:4700::1111'));
+    }
+
+    public function testSafeHostRejectsMixedPublicAndPrivateResolution(): void
+    {
+        $resolver = static fn (string $host): array => [
+            ['host' => $host, 'class' => 'IN', 'type' => 'A', 'ip' => '93.184.216.34'],
+            ['host' => $host, 'class' => 'IN', 'type' => 'AAAA', 'ipv6' => 'fd00::1'],
+        ];
+
+        $this->assertFalse(compose_icon_is_safe_host('mixed.example', $resolver));
     }
 
     // ── compose_icon_ext_to_mime ───────────────────────────────────────────

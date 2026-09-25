@@ -42,6 +42,10 @@ switch ($action) {
         }
         // Normalize keys: ensure top-level is array
         if (!is_array($arr)) $arr = array();
+        if (!isset($arr['defaults']) || !is_array($arr['defaults'])) {
+            $arr['defaults'] = array();
+        }
+        $arr['defaults']['parallel_limit'] = compose_get_autoupdate_parallel_limit($arr);
         // Filter top-level keys: only allow stack paths that pass isAllowedAutoUpdatePath
         // Skip validation for 'defaults' key which stores default settings
         $filtered = array();
@@ -151,8 +155,10 @@ switch ($action) {
 
         // Allow overriding the shell command via environment for tests; default to sh
         $shCmd = getenv('COMPOSE_MANAGER_SH') ? getenv('COMPOSE_MANAGER_SH') : 'sh';
+        $autoUpdateConfig = is_file($autofile) ? json_decode((string) file_get_contents($autofile), true) : array();
+        $parallelLimit = compose_get_autoupdate_parallel_limit(is_array($autoUpdateConfig) ? $autoUpdateConfig : array());
 
-        $envPrefix = '';
+        $envPrefix = 'COMPOSE_PARALLEL_LIMIT=' . escapeshellarg((string) $parallelLimit) . ' ';
         if ($composeFileList !== '') {
             $envPrefix .= 'COMPOSE_FILE_LIST=' . escapeshellarg($composeFileList) . ' ';
         }

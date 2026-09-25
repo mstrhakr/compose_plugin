@@ -30,6 +30,8 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 <script src="<?php autov('/webGui/javascript/jquery.switchbutton.js'); ?>"></script>
 <script src="<?php autov('/webGui/javascript/jquery.filetree.js'); ?>" charset="utf-8"></script>
 <script src="<?php autov('/plugins/compose.manager/javascript/common.js'); ?>" type="text/javascript"></script>
+<script src="<?php autov('/plugins/compose.manager/javascript/qrcode/qrcode.min.js'); ?>" type="text/javascript"></script>
+<script src="<?php autov('/plugins/compose.manager/javascript/credentialManager.js'); ?>" type="text/javascript"></script>
 <style>
     /* Toggle switch overrides */
     #compose-tab-settings .switch-button-background,
@@ -1189,6 +1191,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 AUTOUPDATE_ENABLED: $('#AUTOUPDATE_ENABLED').is(':checked') ? 'true' : 'false',
                 default_schedule: $('#default-schedule').val() || '',
                 default_time: $('#default-time').val() || '',
+                parallel_limit: $('#default-parallel-limit').val() || '',
                 rows: rows
             };
 
@@ -1437,7 +1440,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 }, 'user', 'debug', 'settings');
             }
 
-            if (settingsUnifiedState.activeTab === 'credits' || settingsUnifiedState.activeTab === 'log') {
+            if (settingsUnifiedState.activeTab === 'credits' || settingsUnifiedState.activeTab === 'log' || settingsUnifiedState.activeTab === 'credentials') {
                 $('#global-settings-actions').addClass('hidden');
             } else {
                 $('#global-settings-actions').removeClass('hidden');
@@ -1595,7 +1598,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             updateUnifiedActionState();
         });
 
-        $('#compose-tab-updates').on('input change', '#AUTOUPDATE_ENABLED, #default-schedule, #default-time, #updates-tbody input, #updates-tbody select', function() {
+        $('#compose-tab-updates').on('input change', '#AUTOUPDATE_ENABLED, #default-schedule, #default-time, #default-parallel-limit, #updates-tbody input, #updates-tbody select', function() {
             settingsUnifiedState.updatesInitialized = true;
             updateUnifiedActionState();
         });
@@ -1648,6 +1651,9 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 startLogRefresh();
             } else {
                 stopLogRefresh();
+            }
+            if (tabId === 'credentials') {
+                ComposeCredentialManager.load();
             }
             // Always load backup archives when switching to backup tab
             if (tabId === 'backup') {
@@ -1778,6 +1784,10 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 onComplete: finalizeInitialUpdates
             });
             refreshCronStatus(finalizeInitialUpdates);
+        }
+
+        if (savedTab === 'credentials') {
+            ComposeCredentialManager.load();
         }
     });
 
@@ -2369,6 +2379,10 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             }, function(cfg) {
                 // Response is already parsed as JSON by jQuery due to Content-Type header
                 if (typeof cfg !== 'object' || cfg === null) cfg = {};
+                var defaults = cfg.defaults || {};
+                $('#default-schedule').val(defaults.schedule || 'daily');
+                $('#default-time').val(defaults.time || '02:00');
+                $('#default-parallel-limit').val(defaults.parallel_limit || 4);
                 $('#updates-tbody').empty();
                 projects.forEach(function(p) {
                     var id = p.id;
@@ -2577,8 +2591,13 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             });
             var defaults = {
                 schedule: $('#default-schedule').val(),
-                time: $('#default-time').val()
+                time: $('#default-time').val(),
+                parallel_limit: parseInt($('#default-parallel-limit').val(), 10)
             };
+            if (isNaN(defaults.parallel_limit) || defaults.parallel_limit < 1 || defaults.parallel_limit > 16) {
+                defaults.parallel_limit = 4;
+                $('#default-parallel-limit').val(defaults.parallel_limit);
+            }
             cfg['defaults'] = defaults;
 
             var schedulerEnabled = $('#AUTOUPDATE_ENABLED').is(':checked');
@@ -2666,8 +2685,19 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
     <div class="compose-tab active" data-tab="settings"><i class="fa fa-cog fa-fw"></i> _(Settings)_</div>
     <div class="compose-tab" data-tab="updates"><i class="fa fa-refresh fa-fw"></i> _(Updates)_</div>
     <div class="compose-tab" data-tab="backup"><i class="fa fa-archive fa-fw"></i> _(Backup / Restore)_</div>
+    <div class="compose-tab" data-tab="credentials"><i class="fa fa-key fa-fw"></i> _(Credentials)_</div>
     <div class="compose-tab" data-tab="log"><i class="fa fa-file-text-o fa-fw"></i> _(Log)_</div>
     <div class="compose-tab" data-tab="credits"><i class="fa fa-star fa-fw"></i> _(Credits)_</div>
+</div>
+
+<div id="compose-tab-credentials" class="compose-tab-content">
+    <div class="title"><span class="left"><i class="fa fa-key icon"></i>_(Registry Credentials)_</span></div>
+    <p>Store pull credentials locally and assign them to individual stacks.</p>
+    <button type="button" id="add-credential-button"><i class="fa fa-plus"></i> Add credential</button>
+    <table class="tablesorter" style="width:100%;margin-top:16px;">
+        <thead><tr><th>Name</th><th>Provider</th><th>Registry</th><th>Account</th><th>Used by</th><th>Actions</th></tr></thead>
+        <tbody id="credentials-tbody"><tr><td colspan="6" class="credential-empty">Open this tab to load credentials.</td></tr></tbody>
+    </table>
 </div>
 
 <!-- Settings Tab -->
@@ -3046,6 +3076,16 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 <blockquote class="inline_help">
                     Set the default schedule for new stacks. Use "Apply to All Stacks" to apply this<br>
                     schedule to all existing stacks in the table below.
+                </blockquote>
+            </dd>
+        </dl>
+
+        <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Image Pull Concurrency)_:</dt>
+            <dd>
+                <input type="number" id="default-parallel-limit" min="1" max="16" step="1" value="4" style="width:80px;"> _(pulls)_
+                <blockquote class="inline_help">
+                    Limit concurrent image pulls during auto-updates. Lower values reduce registry throttling; the default is 4.
                 </blockquote>
             </dd>
         </dl>
