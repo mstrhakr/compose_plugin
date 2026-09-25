@@ -99,7 +99,7 @@ final class CredentialVault
         });
     }
 
-    /** @template T @param callable(): T $callback @return T */
+    /** @param callable $callback @return mixed */
     public static function withCredentialAssignmentLock(callable $callback)
     {
         $lockDir = dirname(COMPOSE_CREDENTIAL_VAULT_FILE);
