@@ -36,33 +36,12 @@
 >
 
 <CHANGES>
-###2026.09.25.0845
-- Features (credentials): add one-click renewal for OAuth GitHub credentials
-- Features (credentials): log which registry credential is used for compose operations
-- Features (credentials): add copy button and QR code for GitHub device sign-in
-- Features: add registry provider presets and token helper links
-- Features: add credential manager and stack selector UI
-- Features: add registry credential backend and runtime
-- Bug Fixes (autoupdate): limit concurrent image pulls
-- Bug Fixes (icons): support IPv6-only icon hosts
-- Bug Fixes (ui): wait for profile dialog to close
-- Bug Fixes (credentials): surface credential name in operation output; add credential test/renewal check
-- Bug Fixes: sweep expired GitHub device-auth session files on start
-- Bug Fixes: merge onto existing Docker config instead of replacing it wholesale
-- Bug Fixes: reject client-supplied ids for new credentials and lock authMethod on update
-- Bug Fixes: sweep stale docker-config temp dirs and write vault/key atomically
-- Bug Fixes: serialize vault read-modify-write transactions with flock
-- Bug Fixes: catch credential vault errors in setStackSettings
-- Bug Fixes: validate GitHub device session file write and chmod
-- Bug Fixes: support credential encryption without sodium
-- Bug Fixes: copy GitHub device code before authorization
-- Bug Fixes: lock GitHub OAuth credential fields
-- Performance: single-pass credential-to-stack mapping instead of per-credential glob scans
-- Chores: sync pluginURL+README for dev branch [skip ci]
-- Chores: update changelog for v2026.09.13 [skip ci]
-- Chores: sync pluginURL+README for main branch [skip ci]
+###2026.09.25.1001
+- Bug Fixes (credentials): serialize assignment and deletion
+- Bug Fixes (credentials): preserve active Docker configs
+- Bug Fixes (auth): restrict GitHub credential renewal
 - [PR #155](https://github.com/mstrhakr/compose_plugin/pull/155)
-- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.09.13...v2026.09.25.0845)
+- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.09.13...v2026.09.25.1001)
 </CHANGES>
 
 <!-- The 'pre-install' script. -->
