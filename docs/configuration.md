@@ -14,6 +14,7 @@ Access settings via **Settings → Compose** in the Unraid web UI.
 | **Autostart: Wait for Docker** | No | Wait for Docker's autostart containers to finish before starting compose stacks. Useful when stacks depend on non-compose Docker containers. |
 | **Autostart Docker Wait Timeout** | 120 | Seconds to wait for Docker autostart containers to stabilize (applies only when "Autostart: Wait for Docker" is enabled). |
 | **Autostart Timeout** | 300 | Maximum time to wait for each stack to start during autostart (seconds). |
+| **Create Missing External Networks** | No | Before a stack starts (Compose Up, Update, autostart), create any network it declares `external: true` that does not exist yet, as a plain bridge network. Docker Compose never creates external networks itself. Networks that need another driver or options (for example macvlan) must still be created by hand. |
 
 ### Display Options
 

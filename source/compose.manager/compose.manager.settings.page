@@ -2805,6 +2805,18 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dd>
         </dl>
 
+        <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Create Missing External Networks)_:</dt>
+            <dd>
+                <input type="checkbox" name="CREATE_MISSING_EXTERNAL_NETWORKS" id="CREATE_MISSING_EXTERNAL_NETWORKS" class="compose-toggle" <?= ($cfg['CREATE_MISSING_EXTERNAL_NETWORKS'] ?? 'false') == 'true' ? 'checked' : '' ?>>
+                <blockquote class="inline_help">
+                    Docker Compose never creates networks marked <code>external: true</code>, so a stack using one fails to start until the network exists.
+                    When enabled, any missing external network is created as a plain bridge network right before a stack starts (Compose Up, Update and autostart).
+                    Networks that need another driver or options (for example macvlan) must still be created by hand.
+                </blockquote>
+            </dd>
+        </dl>
+
         <div class="title"><span class="left"><i class="fa fa-plus-square icon"></i>_(New Stack Configuration)_</span></div>
         <p style="margin:0 0 15px 0;color:var(--dynamix-sb-title-text-color);font-size:0.95em;">Default settings applied automatically when creating new compose stacks.</p>
 

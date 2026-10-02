@@ -281,6 +281,16 @@ case $command in
     ;;
 esac
 
+# Optionally create missing `external: true` networks before starting the stack
+# (Settings > Compose > Create Missing External Networks).
+case $command in
+  up|update)
+    if plugin_setting_enabled CREATE_MISSING_EXTERNAL_NETWORKS; then
+      create_missing_external_networks "${compose_base[@]}" -p "$name"
+    fi
+    ;;
+esac
+
 case $command in
 
   up)

@@ -175,3 +175,72 @@ Stack+Name@Home
 -leading
 EOF
 }
+
+# ============================================================
+# External network helper Tests
+# ============================================================
+
+# `docker compose config --format json` output for a stack with two external networks
+# (one renamed with `name:`) and one network compose creates itself.
+NETWORKS_CONFIG_JSON='{"networks":{"internalnet":{"name":"stack_internalnet"},"svc":{"name":"svc-real-name","external":true},"web":{"name":"web","external":true}}}'
+
+@test "plugin_setting_enabled reads true and false settings from the config file" {
+    # shellcheck disable=SC1090
+    source "$COMMON_SCRIPT"
+    export COMPOSE_MANAGER_CFG_FILE="$TEST_TEMP_DIR/compose.manager.cfg"
+    printf 'CREATE_MISSING_EXTERNAL_NETWORKS="true"\nOTHER_SETTING="false"\n' > "$COMPOSE_MANAGER_CFG_FILE"
+
+    run plugin_setting_enabled CREATE_MISSING_EXTERNAL_NETWORKS
+    assert_success
+    run plugin_setting_enabled OTHER_SETTING
+    assert_failure
+    run plugin_setting_enabled MISSING_SETTING
+    assert_failure
+}
+
+@test "external_network_names lists only external networks, by their real name" {
+    # shellcheck disable=SC1090
+    source "$COMMON_SCRIPT"
+
+    run external_network_names <<< "$NETWORKS_CONFIG_JSON"
+
+    assert_success
+    [[ "$output" == $'svc-real-name\nweb' ]]
+}
+
+@test "create_missing_external_networks creates only the external networks that are missing" {
+    # shellcheck disable=SC1090
+    source "$COMMON_SCRIPT"
+    # Fake docker: "web" already exists, "svc-real-name" does not; record every create.
+    docker() {
+        case "$*" in
+            "compose -p teststack config --format json") echo "$NETWORKS_CONFIG_JSON" ;;
+            "network inspect web") return 0 ;;
+            "network inspect "*) return 1 ;;
+            "network create "*) echo "$3" >> "$TEST_TEMP_DIR/created" ;;
+        esac
+    }
+
+    run create_missing_external_networks docker compose -p teststack
+
+    assert_success
+    assert_output_contains "Created missing external network: svc-real-name"
+    [[ "$(cat "$TEST_TEMP_DIR/created")" == "svc-real-name" ]]
+}
+
+@test "create_missing_external_networks does nothing when the compose config does not parse" {
+    # shellcheck disable=SC1090
+    source "$COMMON_SCRIPT"
+    docker() {
+        case "$*" in
+            "compose -p teststack config --format json") return 1 ;;
+            "network inspect "*) return 1 ;;
+            "network create "*) echo "$3" >> "$TEST_TEMP_DIR/created" ;;
+        esac
+    }
+
+    run create_missing_external_networks docker compose -p teststack
+
+    assert_success
+    [[ ! -e "$TEST_TEMP_DIR/created" ]]
+}
