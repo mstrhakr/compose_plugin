@@ -523,6 +523,19 @@ class StackInfoTest extends TestCase
         $this->assertSame('/path/to/.env', $info->getEnvFilePath());
     }
 
+    public function testGetEnvFilePathResolvesRelativePathFromStackDirectory(): void
+    {
+        $stack = 'relative-env-stack';
+        $stackDir = $this->tempRoot . '/' . $stack;
+        mkdir($stackDir);
+        file_put_contents("$stackDir/compose.yaml", "services:\n");
+        file_put_contents("$stackDir/envpath", "config/app.env");
+
+        $info = \StackInfo::fromProject($this->tempRoot, $stack);
+
+        $this->assertSame($stackDir . '/config/app.env', $info->getEnvFilePath());
+    }
+
     public function testGetEnvFilePathNullWhenNoFile(): void
     {
         $stack = 'no-env';

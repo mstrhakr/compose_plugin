@@ -42,6 +42,10 @@ switch ($action) {
         }
         // Normalize keys: ensure top-level is array
         if (!is_array($arr)) $arr = array();
+        if (!isset($arr['defaults']) || !is_array($arr['defaults'])) {
+            $arr['defaults'] = array();
+        }
+        $arr['defaults']['parallel_limit'] = compose_get_autoupdate_parallel_limit($arr);
         // Filter top-level keys: only allow stack paths that pass isAllowedAutoUpdatePath
         // Skip validation for 'defaults' key which stores default settings
         $filtered = array();
@@ -59,7 +63,35 @@ switch ($action) {
                 break;
             }
         }
-        if (file_put_contents($autofile, json_encode($filtered, JSON_PRETTY_PRINT)) === false) {
+        // Same lock as AutoUpdateRunner, so a save and a scheduled run cannot overwrite each other.
+        $handle = fopen($autofile, 'c+');
+        if (!$handle || !flock($handle, LOCK_EX)) {
+            if ($handle) fclose($handle);
+            http_response_code(500);
+            echo json_encode(array('error' => 'Failed to lock config file'));
+            break;
+        }
+        // The settings page only sends the fields it shows, so keep the stored ones it does not
+        // (such as last_run, without which the runner updates the stack again).
+        $existing = json_decode((string) stream_get_contents($handle), true);
+        if (!is_array($existing)) $existing = array();
+        foreach ($filtered as $key => $config) {
+            if (is_array($config) && isset($existing[$key]) && is_array($existing[$key])) {
+                $filtered[$key] = array_merge($existing[$key], $config);
+            }
+        }
+        // Encode before truncating, so a failed encode leaves the file as it was.
+        $json = json_encode($filtered, JSON_PRETTY_PRINT);
+        $written = false;
+        if ($json !== false) {
+            ftruncate($handle, 0);
+            rewind($handle);
+            $written = fwrite($handle, $json);
+            fflush($handle);
+        }
+        flock($handle, LOCK_UN);
+        fclose($handle);
+        if ($written === false) {
             http_response_code(500);
             echo json_encode(array('error' => 'Failed to write config file'));
             break;
@@ -143,16 +175,23 @@ switch ($action) {
             $composeFileList = $stackInfo->buildComposeFileList();
             $envFilePath = $args['envFilePath'] ?? null;
             $projectDirectory = $args['projectDirectory'];
+            $credentialId = $stackInfo->getCredentialId();
         } else {
             $composeFileList = $composeFile;
             $envFilePath = null;
             $projectDirectory = $path;
+            $credentialIdFile = rtrim($path, '/') . '/credential_id';
+            $credentialId = is_file($credentialIdFile)
+                ? trim((string) file_get_contents($credentialIdFile))
+                : null;
         }
 
         // Allow overriding the shell command via environment for tests; default to sh
         $shCmd = getenv('COMPOSE_MANAGER_SH') ? getenv('COMPOSE_MANAGER_SH') : 'sh';
+        $autoUpdateConfig = is_file($autofile) ? json_decode((string) file_get_contents($autofile), true) : array();
+        $parallelLimit = compose_get_autoupdate_parallel_limit(is_array($autoUpdateConfig) ? $autoUpdateConfig : array());
 
-        $envPrefix = '';
+        $envPrefix = 'COMPOSE_PARALLEL_LIMIT=' . escapeshellarg((string) $parallelLimit) . ' ';
         if ($composeFileList !== '') {
             $envPrefix .= 'COMPOSE_FILE_LIST=' . escapeshellarg($composeFileList) . ' ';
         }
@@ -161,6 +200,9 @@ switch ($action) {
         }
         if ($composeFileList === '' && $projectDirectory !== '') {
             $envPrefix .= 'COMPOSE_PROJECT_DIR=' . escapeshellarg($projectDirectory) . ' ';
+        }
+        if ($credentialId !== null && $credentialId !== '') {
+            $envPrefix .= 'COMPOSE_CREDENTIAL_ID=' . escapeshellarg($credentialId) . ' ';
         }
 
         $cmd = $envPrefix . $shCmd . ' ' . escapeshellarg($script) . " " . escapeshellarg($projectName) . " 2>&1";

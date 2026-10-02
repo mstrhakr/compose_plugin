@@ -1277,7 +1277,7 @@ function initEditorModal() {
     editorModal.editors['override'] = overrideEditor;
 
     // Initialize settings field change tracking
-    $('#settings-name, #settings-description, #settings-icon-url, #settings-webui-url, #settings-env-path, #settings-default-profile, #settings-wait-for-healthy, #settings-wait-timeout, #settings-build-on-update, #settings-external-compose-path, #settings-external-compose-file, #settings-use-default-compose-files').on('input change', function() {
+    $('#settings-name, #settings-description, #settings-icon-url, #settings-webui-url, #settings-env-path, #settings-default-profile, #settings-credential-id, #settings-wait-for-healthy, #settings-wait-timeout, #settings-build-on-update, #settings-external-compose-path, #settings-external-compose-file, #settings-use-default-compose-files').on('input change', function() {
         var fieldId = this.id.replace('settings-', '');
         var isCheckbox = this.type === 'checkbox';
         var currentValue = isCheckbox ? ($(this).is(':checked') ? 'true' : 'false') : $(this).val();
@@ -1297,6 +1297,13 @@ function initEditorModal() {
         }
 
         updateEffectiveCommandDirtyIndicator();
+    });
+
+    $('#settings-add-credential').on('click', function() {
+        ComposeCredentialManager.open(null, function(credential) {
+            ComposeCredentialManager.populateSelect($('#settings-credential-id'), credential.id);
+            $('#settings-credential-id').trigger('change');
+        });
     });
 
     // Additional compose files: combined change tracking for the candidate
@@ -1326,7 +1333,7 @@ function initEditorModal() {
 
     // Icon preview update with debounce
     var settingsIconDebounce = null;
-    $('#settings-icon-url').on('input', function() {
+    $('#settings-icon-url').on('input change', function() {
         var $input = $(this);
         clearTimeout(settingsIconDebounce);
         settingsIconDebounce = setTimeout(function() {
@@ -1359,7 +1366,7 @@ function initEditorModal() {
     });
 
     // External compose path info toggle
-    $('#settings-external-compose-path').on('input', function() {
+    $('#settings-external-compose-path').on('input change', function() {
         var path = $(this).val().trim();
         var filePath = $('#settings-external-compose-file').val().trim();
         if (path || filePath) {
@@ -1368,7 +1375,7 @@ function initEditorModal() {
             $('#settings-external-compose-info').hide();
         }
     });
-    $('#settings-external-compose-file').on('input', function() {
+    $('#settings-external-compose-file').on('input change', function() {
         var path = $('#settings-external-compose-path').val().trim();
         var filePath = $(this).val().trim();
         if (path || filePath) {
@@ -3572,7 +3579,7 @@ function addStack() {
         });
     }
 
-    $('#compose-stack-external-path, #compose-stack-external-file, #compose-stack-env-path').off('input.defaultComposeDiscovery').on('input.defaultComposeDiscovery', function() {
+    $('#compose-stack-external-path, #compose-stack-external-file, #compose-stack-env-path').off('input.defaultComposeDiscovery change.defaultComposeDiscovery').on('input.defaultComposeDiscovery change.defaultComposeDiscovery', function() {
         updateAddStackDefaultComposeDiscoveryState();
     });
 
@@ -3597,7 +3604,7 @@ function addStack() {
         updateAddStackSlugPreview();
         updateAddStackValidity();
     });
-    $('#compose-stack-external-path, #compose-stack-external-file').off('input.addStackValidate').on('input.addStackValidate', function() {
+    $('#compose-stack-external-path, #compose-stack-external-file').off('input.addStackValidate change.addStackValidate').on('input.addStackValidate change.addStackValidate', function() {
         updateAddStackValidity();
     });
     $('input[name="compose-stack-compose-source"]').off('change.addStackValidate').on('change.addStackValidate', function() {
@@ -4200,7 +4207,7 @@ $(document).on('click', '.compose-identity-warning', function (event) {
 $(document).on('click', '.compose-identity-choice', function () {
     var project = $(this).data('project');
     var choice = $(this).data('choice');
-    $.post(compURL, { action: 'setProjectIdentity', stackName: project, projectName: choice }, function (data) {
+    $.post(caURL, { action: 'setProjectIdentity', stackName: project, projectName: choice }, function (data) {
         var parsed = tryParseJson(data);
         if (parsed && parsed.result === 'success') {
             swal({ title: 'Identity pinned', text: 'Using project name "' + choice + '".', type: 'success' }, function () {
@@ -5272,7 +5279,9 @@ function showStackActionDialog(action, path, profile) {
             detectedMismatch
         }, 'user', 'debug', 'showStackActionDialog');
         containers = mergeUpdateStatus(containers, project);
-        renderStackActionDialog(action, displayName, path, profile, containers, hasBuild, detectedMismatch);
+        waitForStackActionDialogClose(function() {
+            renderStackActionDialog(action, displayName, path, profile, containers, hasBuild, detectedMismatch);
+        });
     }).fail(function(xhr, status, error) {
         // Fallback: if profile resolution fails, show cached container metadata
         composeLogger('getProfileServices AJAX fail', {
@@ -5290,9 +5299,20 @@ function showStackActionDialog(action, path, profile) {
             });
             containers = mergeUpdateStatus(containers, project);
         }
-        renderStackActionDialog(action, displayName, path, profile, containers, hasBuild, cachedContainers.length > 0);
+        waitForStackActionDialogClose(function() {
+            renderStackActionDialog(action, displayName, path, profile, containers, hasBuild, cachedContainers.length > 0);
+        });
     });
     return;
+}
+
+function waitForStackActionDialogClose(callback) {
+    var poll = setInterval(function() {
+        if (!$('.sweet-alert').hasClass('showSweetAlert')) {
+            clearInterval(poll);
+            callback();
+        }
+    }, 20);
 }
 
 function renderStackActionDialog(action, displayName, path, profile, containers, hasBuild, showRemoveOrphans) {
@@ -5873,32 +5893,35 @@ function showProfileSelector(action, path, profiles, runningProfile, defaultProf
             // Use "*" when all profile-based services are requested.
             // Empty profile string means default services only.
             var profileStr = $('#profile_all_profiles').is(':checked') ? '*' : selectedProfiles.join(',');
-            switch (action) {
-                case 'up':
-                    ComposeUp(path, profileStr);
-                    break;
-                case 'down':
-                    ComposeDown(path, profileStr);
-                    break;
-                case 'stop':
-                    ComposeStop(path, profileStr);
-                    break;
-                case 'restart':
-                    ComposeRestart(path, profileStr);
-                    break;
-                case 'update':
-                    UpdateStack(path, profileStr);
-                    break;
-                case 'forceUpdate':
-                    ForceUpdateStack(path, profileStr);
-                    break;
-                case 'pull':
-                    ComposePull(path, profileStr);
-                    break;
-                case 'logs':
-                    ComposeLogs(path, profileStr);
-                    break;
-            }
+            // SweetAlert closes this dialog after the callback returns.
+            setTimeout(function() {
+                switch (action) {
+                    case 'up':
+                        ComposeUp(path, profileStr);
+                        break;
+                    case 'down':
+                        ComposeDown(path, profileStr);
+                        break;
+                    case 'stop':
+                        ComposeStop(path, profileStr);
+                        break;
+                    case 'restart':
+                        ComposeRestart(path, profileStr);
+                        break;
+                    case 'update':
+                        UpdateStack(path, profileStr);
+                        break;
+                    case 'forceUpdate':
+                        ForceUpdateStack(path, profileStr);
+                        break;
+                    case 'pull':
+                        ComposePull(path, profileStr);
+                        break;
+                    case 'logs':
+                        ComposeLogs(path, profileStr);
+                        break;
+                }
+            }, 0);
         }
     });
 }
@@ -6278,6 +6301,12 @@ function loadSettingsData(project, projectName) {
                 var defaultProfile = response.defaultProfile || '';
                 $('#settings-default-profile').val(defaultProfile);
                 editorModal.originalSettings['default-profile'] = defaultProfile;
+
+                var credentialId = response.credentialId || '';
+                ComposeCredentialManager.load(function() {
+                    ComposeCredentialManager.populateSelect($('#settings-credential-id'), credentialId);
+                    editorModal.originalSettings['credential-id'] = credentialId;
+                });
 
                 // Wait-for-healthy settings
                 var waitForHealthy = response.waitForHealthy === true || response.waitForHealthy === 'true' || response.waitForHealthy === '1';
@@ -6804,7 +6833,7 @@ function renderLabelsUI(mainDoc, overrideDoc) {
     }
 
     // Attach change handlers to label inputs
-    $('#labels-services-container').find('input[data-service]').on('input', function() {
+    $('#labels-services-container').find('input[data-service]').on('input change', function() {
         var service = $(this).data('service');
         var field = $(this).data('field');
         var key = service + '_' + field;
@@ -7283,7 +7312,7 @@ function saveSettings(saveErrors) {
     }
 
     // Save icon URL, webui URL, env path, default profile, and external compose settings if any are modified
-    if (editorModal.modifiedSettings.has('icon-url') || editorModal.modifiedSettings.has('webui-url') || editorModal.modifiedSettings.has('env-path') || editorModal.modifiedSettings.has('extra-compose-files') || editorModal.modifiedSettings.has('default-profile') || editorModal.modifiedSettings.has('wait-for-healthy') || editorModal.modifiedSettings.has('wait-timeout') || editorModal.modifiedSettings.has('external-compose-path') || editorModal.modifiedSettings.has('external-compose-file') || editorModal.modifiedSettings.has('use-default-compose-files')) {
+    if (editorModal.modifiedSettings.has('icon-url') || editorModal.modifiedSettings.has('webui-url') || editorModal.modifiedSettings.has('env-path') || editorModal.modifiedSettings.has('extra-compose-files') || editorModal.modifiedSettings.has('default-profile') || editorModal.modifiedSettings.has('credential-id') || editorModal.modifiedSettings.has('wait-for-healthy') || editorModal.modifiedSettings.has('wait-timeout') || editorModal.modifiedSettings.has('external-compose-path') || editorModal.modifiedSettings.has('external-compose-file') || editorModal.modifiedSettings.has('use-default-compose-files')) {
         // Inline validation blocks Apply when errors are present, so by the
         // time we reach saveSettings the visible form state is valid.
         var iconUrl = $('#settings-icon-url').val();
@@ -7291,6 +7320,7 @@ function saveSettings(saveErrors) {
         var envPath = $('#settings-env-path').val();
         var extraComposeFiles = getExtraComposeFilesValue();
         var defaultProfile = $('#settings-default-profile').val();
+        var credentialId = $('#settings-credential-id').val();
         var waitForHealthy = $('#settings-wait-for-healthy').is(':checked') ? 'true' : 'false';
         var waitTimeout = $('#settings-wait-timeout').val();
         var buildOnUpdate = $('#settings-build-on-update').is(':checked') ? 'true' : 'false';
@@ -7306,6 +7336,7 @@ function saveSettings(saveErrors) {
                 envPath: envPath,
                 extraComposeFiles: extraComposeFiles,
                 defaultProfile: defaultProfile,
+                credentialId: credentialId,
                 waitForHealthy: waitForHealthy,
                 waitTimeout: waitTimeout,
                 buildOnUpdate: buildOnUpdate,
@@ -7326,6 +7357,7 @@ function saveSettings(saveErrors) {
                         editorModal.originalSettings['env-path'] = envPath;
                         editorModal.originalSettings['extra-compose-files'] = extraComposeFiles;
                         editorModal.originalSettings['default-profile'] = defaultProfile;
+                        editorModal.originalSettings['credential-id'] = credentialId;
                         editorModal.originalSettings['wait-for-healthy'] = waitForHealthy;
                         editorModal.originalSettings['wait-timeout'] = waitTimeout;
                         editorModal.originalSettings['build-on-update'] = buildOnUpdate;
@@ -7337,6 +7369,7 @@ function saveSettings(saveErrors) {
                         editorModal.modifiedSettings.delete('env-path');
                         editorModal.modifiedSettings.delete('extra-compose-files');
                         editorModal.modifiedSettings.delete('default-profile');
+                        editorModal.modifiedSettings.delete('credential-id');
                         editorModal.modifiedSettings.delete('wait-for-healthy');
                         editorModal.modifiedSettings.delete('wait-timeout');
                         editorModal.modifiedSettings.delete('build-on-update');

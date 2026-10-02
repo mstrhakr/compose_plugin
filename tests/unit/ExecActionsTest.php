@@ -47,6 +47,8 @@ class ExecActionsTest extends TestCase
         FunctionMocks::setPluginConfig('compose.manager', [
             'PROJECTS_FOLDER' => $this->testComposeRoot,
         ]);
+        @unlink(COMPOSE_CREDENTIAL_VAULT_FILE);
+        @unlink(COMPOSE_CREDENTIAL_KEY_FILE);
     }
 
     protected function tearDown(): void
@@ -521,6 +523,24 @@ class ExecActionsTest extends TestCase
         $this->assertStringContainsString('saved', $output);
     }
 
+    /**
+     * Test saveEnv writes a relative envpath inside the stack directory
+     */
+    public function testSaveEnvWritesRelativeEnvPathInStackDirectory(): void
+    {
+        $stackPath = $this->createTestStack('test-stack');
+        file_put_contents($stackPath . '/envpath', 'app.env');
+
+        $envContent = "RELATIVE_VAR=value";
+        $output = $this->executeAction('saveEnv', [
+            'script' => 'test-stack',
+            'scriptContents' => $envContent,
+        ]);
+
+        $this->assertStringContainsString('saved', $output);
+        $this->assertEquals($envContent, file_get_contents($stackPath . '/app.env'));
+    }
+
     // ===========================================
     // getOverride Action Tests
     // ===========================================
@@ -791,6 +811,33 @@ class ExecActionsTest extends TestCase
         $this->assertArrayHasKey('defaultProfile', $result);
         $this->assertEquals('/custom/path.env', $result['envPath']);
         $this->assertEquals('production', $result['defaultProfile']);
+    }
+
+    public function testCredentialCrudAndStackAssignmentRoundTrip(): void
+    {
+        $stackPath = $this->createTestStack('test-stack');
+        $saveOutput = $this->executeAction('saveCredential', [
+            'name' => 'Work GitHub', 'provider' => 'github', 'registry' => 'ghcr.io',
+            'username' => 'octocat', 'secret' => 'read-only-token',
+        ]);
+        $saved = json_decode($saveOutput, true);
+        $this->assertSame('success', $saved['result']);
+        $credentialId = $saved['credential']['id'];
+        $this->assertArrayNotHasKey('secret', $saved['credential']);
+
+        $settingsOutput = $this->executeAction('setStackSettings', [
+            'script' => 'test-stack', 'credentialId' => $credentialId,
+        ]);
+        $this->assertSame('success', json_decode($settingsOutput, true)['result']);
+        $this->assertSame($credentialId, trim((string) file_get_contents($stackPath . '/credential_id')));
+
+        $getOutput = $this->executeAction('getStackSettings', ['script' => 'test-stack']);
+        $this->assertSame($credentialId, json_decode($getOutput, true)['credentialId']);
+
+        $deleteOutput = $this->executeAction('deleteCredential', ['id' => $credentialId]);
+        $deleteResult = json_decode($deleteOutput, true);
+        $this->assertSame('error', $deleteResult['result']);
+        $this->assertSame(['test-stack'], $deleteResult['stacks']);
     }
 
     public function testGetStackSettingsReturnsExternalComposeFileForFileMode(): void

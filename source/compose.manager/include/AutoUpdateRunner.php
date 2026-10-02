@@ -25,6 +25,7 @@ if (!is_array($data)) {
     fclose($lockHandle);
     exit(0);
 }
+$parallelLimit = compose_get_autoupdate_parallel_limit($data);
 
 // Set timezone from /etc/timezone if available, otherwise use system default
 $timezoneFile = '/etc/timezone';
@@ -128,16 +129,18 @@ foreach ($data as $path => $entry) {
             $composeFileList = $stackInfo->buildComposeFileList();
             $envFilePath = $args['envFilePath'] ?? null;
             $projectDirectory = $args['projectDirectory'];
+            $credentialId = $stackInfo->getCredentialId();
         } else {
             $composeFileList = findComposeFile($path);
             $envFilePath = null;
             $projectDirectory = $path;
+            $credentialId = null;
         }
 
         // Allow overriding the shell command via environment for tests; default to sh
         $shCmd = getenv('COMPOSE_MANAGER_SH') ? getenv('COMPOSE_MANAGER_SH') : 'sh';
 
-        $envPrefix = '';
+        $envPrefix = 'COMPOSE_PARALLEL_LIMIT=' . escapeshellarg((string) $parallelLimit) . ' ';
         if ($composeFileList !== '') {
             $envPrefix .= 'COMPOSE_FILE_LIST=' . escapeshellarg($composeFileList) . ' ';
         }
@@ -146,6 +149,9 @@ foreach ($data as $path => $entry) {
         }
         if ($composeFileList === '' && $projectDirectory !== '') {
             $envPrefix .= 'COMPOSE_PROJECT_DIR=' . escapeshellarg($projectDirectory) . ' ';
+        }
+        if ($credentialId !== null && $credentialId !== '') {
+            $envPrefix .= 'COMPOSE_CREDENTIAL_ID=' . escapeshellarg($credentialId) . ' ';
         }
 
         $cmd = $envPrefix . $shCmd . ' ' . escapeshellarg($script) . " " . escapeshellarg($projectName) . " >/dev/null 2>&1 &";

@@ -159,6 +159,7 @@ resolve_stack_env_file() {
 #   COMPOSE_SPEC_PROJECT_DIR
 #   COMPOSE_SPEC_USE_DEFAULT_FILE_DISCOVERY
 #   COMPOSE_SPEC_ENV_FILE_PATH
+#   COMPOSE_SPEC_CREDENTIAL_ID
 #   COMPOSE_SPEC_COMPOSE_FILES (array)
 #   COMPOSE_SPEC_PROFILES (array)
 #
@@ -225,6 +226,7 @@ load_compose_action_spec() {
     COMPOSE_SPEC_USE_DEFAULT_FILE_DISCOVERY="false"
     # shellcheck disable=SC2034  # Populated here, consumed by scripts that source common.sh.
     COMPOSE_SPEC_ENV_FILE_PATH=""
+    COMPOSE_SPEC_CREDENTIAL_ID=""
     COMPOSE_SPEC_ERROR_MESSAGE=""
     COMPOSE_SPEC_COMPOSE_FILES=()
     COMPOSE_SPEC_PROFILES=()
@@ -254,6 +256,10 @@ load_compose_action_spec() {
             envFilePath)
                 # shellcheck disable=SC2034  # Populated here, consumed by scripts that source common.sh.
                 COMPOSE_SPEC_ENV_FILE_PATH="$value"
+                ;;
+            credentialId)
+                # shellcheck disable=SC2034  # Populated here, consumed by scripts that source common.sh.
+                COMPOSE_SPEC_CREDENTIAL_ID="$value"
                 ;;
             composeFile)
                 COMPOSE_SPEC_COMPOSE_FILES+=("$value")

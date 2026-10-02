@@ -28,12 +28,24 @@ function parsePostField(postData: string | null, field: string): string {
 }
 
 
-async function createUiFlowStack(page: Page, stackName: string): Promise<{ createdProject: string; projectPath: string }> {
+async function createUiFlowStack(
+  page: Page,
+  stackName: string,
+  withProfile = false
+): Promise<{ createdProject: string; projectPath: string }> {
   const composeYaml = [
     'services:',
     '  app:',
     '    image: alpine:3.20',
     '    command: ["sh", "-lc", "sleep 90"]',
+    ...(withProfile
+      ? [
+          '  profile-app:',
+          '    image: alpine:3.20',
+          '    command: ["sh", "-lc", "sleep 90"]',
+          '    profiles: [tunnel]',
+        ]
+      : []),
     '',
   ].join('\n');
 
@@ -216,6 +228,73 @@ test.describe('Compose Manager UI flow: background operations', () => {
     }
 
     expect(createdProject, 'Background UI flow cleanup failed.').toBe('');
+  });
+});
+
+test.describe('Compose Manager UI flow: profile selection', () => {
+  test('profile selector closes before compose action dialog opens', async ({ page }) => {
+    test.setTimeout(180_000);
+    test.skip(!process.env.E2E_BASE_URL, 'Set E2E_BASE_URL for live-server E2E tests.');
+    test.skip(!mutationEnabled, 'Set E2E_ENABLE_MUTATION_TESTS=1 to allow mutation lifecycle tests.');
+
+    await page.goto(composePath, { waitUntil: 'domcontentloaded' });
+    if (page.url().toLowerCase().includes('/login')) {
+      throw new Error('Not authenticated. Refresh storage state and retry.');
+    }
+
+    const stackName = buildStackName(stackPrefix);
+    let createdProject = '';
+    let projectPath = '';
+
+    try {
+      const created = await createUiFlowStack(page, stackName, true);
+      createdProject = created.createdProject;
+      projectPath = created.projectPath;
+
+      await page.evaluate(
+        ({ path }) => {
+          const fn = (window as {
+            showProfileSelector?: (action: string, stackPath: string, profiles: string[], running: string, defaults: string) => void;
+          }).showProfileSelector;
+          if (typeof fn !== 'function') {
+            throw new Error('showProfileSelector is unavailable in page context.');
+          }
+          fn('up', path, ['tunnel'], '', '');
+        },
+        { path: projectPath }
+      );
+
+      const profileDialog = page.locator('.sweet-alert h2').filter({ hasText: 'Select Profiles' });
+      await expect(profileDialog).toBeVisible();
+      await page.locator('.sweet-alert button.confirm').click();
+      await expect(profileDialog).toBeHidden();
+
+      const actionDialog = page.locator('.sweet-alert h2').filter({ hasText: 'Compose Up:' });
+      await expect(actionDialog).toBeVisible();
+      await expect(page.locator('#swal-run-bg-checkbox')).toBeVisible();
+    } finally {
+      if (createdProject) {
+        const downError = await composeDownAndWait(page, createdProject, projectPath);
+        if (downError) {
+          test.info().attach('profile-cleanup-composeDown', {
+            body: downError,
+            contentType: 'text/plain',
+          });
+        } else {
+          const deleteError = await deleteStackWithRetries(page, createdProject, 6);
+          if (!deleteError) {
+            createdProject = '';
+          } else {
+            test.info().attach('profile-cleanup-deleteStack', {
+              body: deleteError,
+              contentType: 'text/plain',
+            });
+          }
+        }
+      }
+    }
+
+    expect(createdProject, 'Profile UI flow cleanup failed.').toBe('');
   });
 });
 

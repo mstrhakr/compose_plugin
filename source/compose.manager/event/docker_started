@@ -205,6 +205,9 @@ start_stack() {
     if [ -n "$COMPOSE_SPEC_ENV_FILE_PATH" ]; then
         cmd_args+=(-e "$COMPOSE_SPEC_ENV_FILE_PATH")
     fi
+    if [ -n "$COMPOSE_SPEC_CREDENTIAL_ID" ]; then
+        cmd_args+=(--credential-id "$COMPOSE_SPEC_CREDENTIAL_ID")
+    fi
     for profile in "${COMPOSE_SPEC_PROFILES[@]}"; do
         cmd_args+=(-g "$profile")
     done

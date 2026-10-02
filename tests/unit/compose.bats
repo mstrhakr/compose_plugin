@@ -88,6 +88,13 @@ test_setup() {
     assert_failure
 }
 
+@test "compose.sh fails when the env file does not exist" {
+    run bash "$COMPOSE_SCRIPT" -e "$TEST_TEMP_DIR/missing.env" -c up -p teststack
+
+    assert_failure
+    assert_output_contains ".env doesn't exist"
+}
+
 # ============================================================
 # --ignore-buildable Flag Tests
 # ============================================================
@@ -112,7 +119,7 @@ test_setup() {
 }
 
 @test "compose.sh combines exit cleanup handlers into one trap" {
-    run grep -F "trap 'release_lock; clear_follow_pid' EXIT" "$COMPOSE_SCRIPT"
+    run grep -F "trap 'release_lock; clear_follow_pid; cleanup_docker_config' EXIT" "$COMPOSE_SCRIPT"
     assert_success
 }
 
@@ -205,6 +212,15 @@ test_setup() {
     assert_success
 }
 
+@test "compose_autoupdate.sh exports a bounded pull concurrency limit" {
+    local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
+    run grep -F 'COMPOSE_PARALLEL_LIMIT=${COMPOSE_PARALLEL_LIMIT:-4}' "$autoupdate_script"
+    assert_success
+
+    run grep -F 'export COMPOSE_PARALLEL_LIMIT' "$autoupdate_script"
+    assert_success
+}
+
 @test "compose_autoupdate.sh uses compose config --images for digest detection" {
     local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
     run grep -E 'config --images' "$autoupdate_script"
@@ -217,6 +233,41 @@ test_setup() {
     assert_success
 
     run grep -E 'not running; skipping up -d' "$autoupdate_script"
+    assert_success
+}
+
+@test "compose_autoupdate.sh removes only superseded image IDs after successful up" {
+    local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
+    local old_image_id="sha256:$(printf '%064d' 1)"
+    local current_image_id="sha256:$(printf '%064d' 2)"
+    local removed_images_file="$TEST_TEMP_DIR/removed-images"
+
+    # Isolate the cleanup helper so docker rmi can be observed without Docker.
+    source <(sed -n '/^remove_superseded_images()/,/^}/p' "$autoupdate_script")
+    docker() { printf '%s\n' "$*" >> "$removed_images_file"; }
+
+    OLD_DIGESTS="$old_image_id
+$current_image_id
+registry.example/service:latest"
+    NEW_DIGESTS="$current_image_id
+registry.example/service:latest"
+
+    run remove_superseded_images
+    assert_success
+    run cat "$removed_images_file"
+    [ "$output" = "rmi $old_image_id" ]
+
+    # Cleanup must follow the up-failure exit path and precede success reporting.
+    run awk '
+        /# Images changed - run recreate\/up/ { in_update = 1 }
+        in_update && /exit 1$/ { failure_exit = NR }
+        in_update && failure_exit && /fi$/ && !failure_end { failure_end = NR }
+        in_update && /remove_superseded_images$/ { cleanup = NR }
+        in_update && /MSG="Stack.*updated successfully/ { success = NR }
+        END {
+            exit !(failure_exit < failure_end && failure_end < cleanup && cleanup < success)
+        }
+    ' "$autoupdate_script"
     assert_success
 }
 

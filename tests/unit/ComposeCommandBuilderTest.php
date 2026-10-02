@@ -86,6 +86,21 @@ class ComposeCommandBuilderTest extends TestCase
         $this->assertSame(['hotfix', 'metrics'], $spec['profiles']);
     }
 
+    public function testBuildIncludesCredentialOnlyForRegistryActions(): void
+    {
+        $stack = 'credential-action';
+        $stackDir = $this->tempRoot . '/' . $stack;
+        mkdir($stackDir);
+        file_put_contents($stackDir . '/compose.yaml', "services:\n");
+        file_put_contents($stackDir . '/credential_id', 'credential-123');
+
+        $info = \StackInfo::fromProject($this->tempRoot, $stack);
+        $this->assertSame('credential-123', \ComposeCommandBuilder::buildForAction($info, 'pull')['credentialId']);
+        $this->assertSame('credential-123', \ComposeCommandBuilder::buildForAction($info, 'up')['credentialId']);
+        $this->assertSame('', \ComposeCommandBuilder::buildForAction($info, 'down')['credentialId']);
+        $this->assertSame('', \ComposeCommandBuilder::buildForAction($info, 'logs')['credentialId']);
+    }
+
     public function testBuildForActionFallsBackToDefaultProfilesForUpdate(): void
     {
         $stack = 'profiles-update-default';

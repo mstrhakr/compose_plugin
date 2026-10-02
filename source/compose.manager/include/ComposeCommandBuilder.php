@@ -27,6 +27,9 @@ class ComposeCommandBuilder
         self::assertResolvedIdentity($stackInfo, $action);
 
         $args = $stackInfo->buildComposeArgs();
+        $credentialId = in_array($action, ['up', 'update', 'pull'], true)
+            ? trim((string) ($stackInfo->getCredentialId() ?? ''))
+            : '';
 
         return [
             'action' => $action,
@@ -37,6 +40,7 @@ class ComposeCommandBuilder
             'useDefaultFileDiscovery' => $args['useDefaultFileDiscovery'],
             'profiles' => self::resolveProfilesForAction($stackInfo, $action),
             'stackPath' => $stackPath ?? $stackInfo->path,
+            'credentialId' => $credentialId,
         ];
     }
 
