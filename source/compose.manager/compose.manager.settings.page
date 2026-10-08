@@ -9,12 +9,6 @@ Lock="true"
 include "/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php";
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Defines.php");
 $cfg = parse_plugin_cfg($sName);
-$ui_patch_button_type = (!$option_patch_ui && strcmp($cfg['PATCH_UI'], "true") == 0 && !isset($composemanDockerClientPatch)) ? "Button" : "Hidden";
-$ui_unpatch_button_type = (!$option_patch_ui && strcmp($cfg['PATCH_UI'], "false") == 0 && isset($composemanDockerClientPatch)) ? "Button" : "Hidden";
-
-$option_patch_ui = version_compare(parse_ini_file('/etc/unraid-version')['version'], '6.12.0-RC0', '>=');
-$ui_patch_help_class = $option_patch_ui ? "hidden" : "inline_help"; // hide help on 6.12+ (integration built-in) //
-
 
 $projects_exist = intval(shell_exec("ls -l " . $compose_root . " | grep ^d | wc -l")) != 0;
 
@@ -658,7 +652,6 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 <script src="<?php autov('/plugins/compose.manager/javascript/common.js'); ?>"></script>
 <script>
     var caURL = "/plugins/compose.manager/include/Exec.php";
-    var skipPatchUI = <?php echo json_encode($option_patch_ui); ?>; // true when Unraid >= 6.12
     var logRefreshInterval = null;
     var autoScroll = true;
 
@@ -668,30 +661,6 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         if (blockquote) {
             $(blockquote).slideToggle('fast');
         }
-    }
-
-    function patchWebui() {
-        if (skipPatchUI) {
-            swal('Not available', 'Patch Docker Page is not needed on Unraid 6.12+ (integration is built-in).', 'info');
-            return;
-        }
-        $.post(caURL, {
-            action: 'patchUI'
-        }, function(data) {
-            window.location.reload();
-        })
-    }
-
-    function unpatchWebui() {
-        if (skipPatchUI) {
-            swal('Not available', 'Unpatching the Docker page is not supported on Unraid 6.12+.', 'info');
-            return;
-        }
-        $.post(caURL, {
-            action: 'unPatchUI'
-        }, function(data) {
-            window.location.reload();
-        })
     }
 
     function clearAllIconCache() {
@@ -865,7 +834,6 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             });
         }
 
-        var _ignorePatchUIChange = true; // prevent change handler from firing during initialization
         $('#PROJECTS_FOLDER').on("input change", null, null, checkProjectFolder);
 
         // Helper to initialize toggles as switchButton (only once)
@@ -905,41 +873,6 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 $wrapper.removeClass('aggressive-mode-active');
                 $('#aggressive-mode-warning').hide();
             }
-        }
-
-
-        // Patch UI toggle: confirm action and run patch.sh via server (uses existing ajax handlers)
-        if (!skipPatchUI) {
-            $('.compose-toggle[name="PATCH_UI"]').on('change', function(e) {
-                if (_ignorePatchUIChange) {
-                    _ignorePatchUIChange = false;
-                    return;
-                }
-                var $cb = $(this);
-                var checked = $cb.is(':checked');
-                swal({
-                    title: checked ? 'Patch Docker Page' : 'Unpatch Docker Page',
-                    text: checked ? 'This will patch the Docker page to better display compose-managed containers. Apply now?' : 'This will remove the Docker page patch and restore the original UI. Proceed?',
-                    type: 'warning',
-                    showCancelButton: true,
-                    confirmButtonText: 'Yes, proceed'
-                }, function(confirmed) {
-                    if (!confirmed) {
-                        // revert UI to previous state
-                        _ignorePatchUIChange = true;
-                        $cb.prop('checked', !checked);
-                        // reload to ensure switch UI reflects actual state
-                        window.location.reload();
-                        return;
-                    }
-                    // Call existing ajax helpers which execute patch.sh on the server and reload
-                    if (checked) patchWebui();
-                    else unpatchWebui();
-                });
-            });
-        } else {
-            // If Unraid >=6.12 then patch UI option is not applicable — keep checkbox disabled and show inline message
-            $('.compose-toggle[name="PATCH_UI"]').prop('disabled', true);
         }
 
         // Handle header menu toggle -> disable/enable compose-on-top and hide-from-docker
@@ -1741,8 +1674,6 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         $('#AUTO_CHECK_UPDATES_DAYS_CUSTOM').on('input', onAutoCheckCustomDaysInput);
         $('#AUTO_CHECK_UPDATES_DAYS_CUSTOM').on('change', onAutoCheckCustomDaysChanged);
 
-        // allow patch UI change handler to run now that switches are initialized
-        _ignorePatchUIChange = false;
         var savedTab = localStorage.getItem('compose-settings-tab') || 'settings';
         // Remove all active classes first
         $('.compose-tab, .compose-tab-content').removeClass('active');
@@ -3023,20 +2954,6 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 </blockquote>
             </dd>
         </dl>
-
-        <?php if (!$option_patch_ui): ?>
-            <dl>
-                <dt style="cursor: help;" onclick="toggleHelp(this)">_(Patch Docker Page)_:</dt>
-                <dd>
-                    <input type="checkbox" name="PATCH_UI" class="compose-toggle" <?= $cfg['PATCH_UI'] == 'true' ? 'checked' : '' ?>>
-                    <input type="button" value="_(Patch Now)_" onclick="patchWebui()" class="slim-button" style="margin-left:15px;">
-                    <input type="button" value="_(Unpatch)_" onclick="unpatchWebui()" class="slim-button" style="margin-left:15px;">
-                    <blockquote class="inline_help">
-                        <strong>(Unraid 6.11 and earlier only)</strong> Patch the Docker page to better display compose-managed containers.
-                    </blockquote>
-                </dd>
-            </dl>
-        <?php endif; ?>
 
         <dl class="settings-actions settings-actions-hidden">
             <dd>

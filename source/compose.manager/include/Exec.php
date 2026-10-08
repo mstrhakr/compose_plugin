@@ -895,27 +895,6 @@ switch ($_POST['action']) {
         echo json_encode(['result' => 'success']);
         break;
 
-    case 'runPatch':
-        $cmd = isset($_POST['cmd']) ? $_POST['cmd'] : 'apply';
-        if (!in_array($cmd, ['apply', 'remove'])) {
-            echo json_encode(['result' => 'error', 'message' => 'Invalid command']);
-            break;
-        }
-        $script = "$plugin_root/scripts/patch.sh";
-        // Quote each argument to preserve spaces and special characters and avoid the fragility of escapeshellcmd()
-        $fullcmd = escapeshellarg($script) . ' ' . escapeshellarg($cmd) . ' ' . escapeshellarg('--verbose') . ' 2>&1';
-        exec($fullcmd, $output, $rc);
-        // Save a copy to plugin log file
-        $logfile = "/boot/config/plugins/compose.manager/patch_last_run.log";
-        $ts = date('c');
-        $entry = "[{$ts}] runPatch {$cmd} exit={$rc}\n" . implode("\n", $output) . "\n\n";
-        @file_put_contents($logfile, $entry, FILE_APPEND);
-        foreach ($output as $line) {
-            composeLogger(escapeshellarg($cmd) . ' ' . $line, null, 'user', 'debug', 'patch.sh');
-        }
-        echo json_encode(['result' => $rc === 0 ? 'success' : 'error', 'output' => implode("\n", $output), 'rc' => $rc]);
-        break;
-
     case 'clearUpdateCache':
         // Clear the compose manager update status cache
         $composeUpdateStatusFile = COMPOSE_UPDATE_STATUS_FILE;

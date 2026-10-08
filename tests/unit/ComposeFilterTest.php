@@ -52,7 +52,7 @@ class ComposeFilterTest extends TestCase
             ],
         ]);
 
-        // Emulate the filtering logic the patch introduces: ensure a compose-managed container would be filtered
+        // Emulate Docker UI filtering: ensure a compose-managed container would be filtered
         $containers = [
             ['Name' => 'normal', 'Manager' => ''],
             ['Name' => 'compose_app', 'Manager' => 'composeman'],

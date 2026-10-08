@@ -29,7 +29,7 @@
          launch="&launch;"
          pluginURL="&pluginURL;"
          icon="cubes"
-         min="6.9.0"
+         min="6.12.0"
          support="https://forums.unraid.net/topic/197334-plugin-compose-manager-plus/"
          project="https://github.com/mstrhakr/compose_plugin"
          readme="https://github.com/mstrhakr/compose_plugin#readme"
@@ -108,59 +108,11 @@ rm -f /tmp/ace-editor-install.sh
 echo ""
 echo "----------------------------------------------------"
 echo ""
-echo "          Patches are only installed for"
-echo "             pre-6.12 Unraid versions."
-echo ""
-echo "     If on 6.12 or later, patches are not needed"
-echo "          and skips will be shown below."
-echo ""
-echo "----------------------------------------------------"
-echo ""
-</INLINE>
-</FILE>
-
-<!-- Patch utility installation for pre-6.12: install or remove patches -->
-<FILE Name="/tmp/patch-util-install.sh" Run="/bin/bash" Max="6.11.99">
-<INLINE>
-&emhttpLOC;/scripts/install-patch.sh install &emhttpLOC; &pluginLOC;
-rm -f /tmp/patch-util-install.sh
-</INLINE>
-</FILE>
-
-<FILE Run="/bin/bash">
-<INLINE>
-echo ""
-echo "----------------------------------------------------"
-echo ""
 echo "      Compose Manager Plus has been installed."
 echo "               Version: &version;"
 echo ""
 echo "----------------------------------------------------"
 echo ""
-</INLINE>
-</FILE>
-
-<FILE Run="/bin/bash" Method="remove">
-<INLINE>
-echo ""
-echo "----------------------------------------------------"
-echo ""
-echo "           Patches are only modified for"
-echo "             pre-6.12 Unraid versions."
-echo ""
-echo "     If on 6.12 or later, patches are not needed"
-echo "          and skips will be shown below."
-echo ""
-echo "----------------------------------------------------"
-echo ""
-</INLINE>
-</FILE>
-
-<!-- Patch utility removal for pre-6.12: remove patches -->
-<FILE Name="/tmp/patch-util-remove.sh" Run="/bin/bash" Method="remove" Max="6.11.99">
-<INLINE>
-&emhttpLOC;/scripts/install-patch.sh remove &emhttpLOC; &pluginLOC;
-rm -f /tmp/patch-util-remove.sh
 </INLINE>
 </FILE>
 
