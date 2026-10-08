@@ -81,7 +81,7 @@ Compose Manager provides a Backup & Restore interface under **Settings → Compo
 
 ### Hiding and Filtering Compose Containers
 
-You can optionally hide compose-managed containers from the native Docker manager and Dashboard. Use the setting to toggle patching of the Docker page and enable server-side filters so only the desired containers/stacks are shown.
+Use **Hide Compose Containers from Docker Page** to hide Compose-managed containers from the native Docker Containers table when **Show Compose in Header Menu** is disabled (inline mode). Use **Hide Compose Containers from Docker Dashboard Tile** to hide them from the native Dashboard tile when **Show Dashboard Tile** is enabled. These display options avoid duplicate entries without changing how containers run; no legacy WebUI patch is required.
 
 ### Display Options
 
@@ -119,7 +119,3 @@ services:
 ```
 
 The **Web UI** tab in the editor provides a visual interface for adding these labels.
-
-### Patching the Native UI
-
-Enable "Patch Web UI" in settings to show compose containers in the native Docker manager with stack grouping.

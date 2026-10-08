@@ -172,7 +172,7 @@ With dcflachs Docker Compose Manager being depreciated, if you want to go back t
 
 ## Requirements
 
-- unRAID 6.9.0 or later
+- unRAID 6.12.0 or later (PHP 8 is required; first included in Unraid 6.12.0)
 
 > NOTE: This is untested on anything older than 7.2.3 currently. I will remove this note if I get a report that this IS compatible that far back. I am working on getting a machine setup for testing on the older versions. Any advice would be welcome, eg how to VM unraid easily.
 
