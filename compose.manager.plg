@@ -36,11 +36,29 @@
 >
 
 <CHANGES>
-###2026.10.06.1617
-- Bug Fixes (loadlist): log HTTP status when a stack row request fails
-- Bug Fixes (credentials): log GitHub sign-in lifecycle and deletions
-- [PR #155](https://github.com/mstrhakr/compose_plugin/pull/155)
-- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.09.13...v2026.10.06.1617)
+###2026.10.08.0952
+- Features (git): prune the override's orphan services before a git deploy's checks
+- Features (git): create missing external networks in a git deploy when the setting is on
+- Features (git): add the compose-git command
+- Features (git): recreate a git stack's containers when its folder changes
+- Features (git): deploy a git stack with compose.sh gitdeploy
+- Features (git): record which commit a git stack has deployed
+- Features (git): check a git stack before a deploy touches any container
+- Features (git): keep a git stack's managed override and .env out of its clone
+- Features (git): save a git stack's local changes as a patch before discarding them
+- Features (git): clone, fetch and check out a git stack's repository safely
+- Features (git): store and validate a git stack's settings
+- Features (git): add a locked-down git runner for git stacks
+- Bug Fixes (compatibility): require Unraid 6.12 and remove legacy WebUI patches
+- Bug Fixes (git): notice a repository override that a checkout removed
+- Bug Fixes (git): keep the deployed commit when reclone finds the branch rewritten
+- Bug Fixes (git): catch two services of the stack publishing the same port
+- Bug Fixes (git): stop the deploy when Docker cannot say which names and ports are taken
+- Documentation (git): say what reclone leaves running on the old clone
+- Documentation: add a guide to git stacks
+- Tests (git): run the gitdeploy Bats tests without root, as CI does
+- [PR #172](https://github.com/mstrhakr/compose_plugin/pull/172)
+- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.10.07...v2026.10.08.0952)
 </CHANGES>
 
 <!-- The 'pre-install' script. -->
