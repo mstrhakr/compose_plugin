@@ -9,10 +9,10 @@ export HOME=/root
 
 # Configuration - can be overridden via environment
 LOCK_TIMEOUT=${COMPOSE_LOCK_TIMEOUT:-30}
-LOCK_DIR="/var/run/compose.manager"
+LOCK_DIR=${COMPOSE_LOCK_DIR:-/var/run/compose.manager}
 
 SHORT=e:,c:,f:,p:,d:,o:,g:,s:,w:
-LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:,follow-logs,wait,wait-timeout:,build,credential-id:
+LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:,follow-logs,wait,wait-timeout:,build,credential-id:,git-commit:,save-local-changes
 OPTS=$(getopt -a -n compose --options $SHORT --longoptions $LONG -- "$@")
 
 eval set -- "$OPTS"
@@ -34,6 +34,8 @@ lock_fd=""
 operation_exit_code=0
 credential_id=""
 docker_config_dir=""
+git_commit=""
+save_local_changes=false
 
 
 # Logging helper — delegates to shared composeLogger, adds console echo in debug mode
@@ -222,6 +224,14 @@ do
       credential_id="$2"
       shift 2
       ;;
+    --git-commit )
+      git_commit="$2"
+      shift 2
+      ;;
+    --save-local-changes )
+      save_local_changes=true
+      shift;
+      ;;
     --)
       shift;
       break
@@ -242,7 +252,7 @@ if [ -n "$credential_id" ]; then
   credential_label=$(printf '%s\n' "$credential_output" | sed -n '2p')
   export DOCKER_CONFIG="$docker_config_dir"
   log_msg "DEBUG" "Using registry credential '${credential_label:-$credential_id}' for $name"
-elif [[ "$command" =~ ^(up|pull|update)$ ]]; then
+elif [[ "$command" =~ ^(up|pull|update|gitdeploy)$ ]]; then
   log_msg "DEBUG" "No registry credential configured for $name; using default Docker credentials"
 fi
 
@@ -272,7 +282,7 @@ fi
 
 # Acquire lock for operations that modify state (not for read-only commands)
 case $command in
-  up|down|pull|update|stop)
+  up|down|pull|update|stop|gitdeploy)
     # Lock by canonical project name so every path uses the same stack identity.
     lock_name="$name"
     if ! acquire_lock "$lock_name"; then
@@ -481,6 +491,207 @@ case $command in
     fi
     ;;
 
+  gitdeploy)
+    # Deploy a git stack. Fetching, checking out, checking, pulling and
+    # starting all happen under this one lock. Until "up" starts, any failure
+    # leaves the containers untouched and the clone at its previous commit.
+    git_helper="$(dirname "$0")/git_stack.php"
+    # Run the git helper. PHP notices go to stderr, so stdout carries only its answer.
+    git_stack() {
+      php -d display_errors=stderr "$git_helper" "$@"
+    }
+    # After a failure before "up", check the previous commit out again and say
+    # where the clone is now.
+    put_back_previous_commit() {
+      if git_stack restore "$stack_path" "$previous_commit"; then
+        echo "The previous commit was put back and no container was changed."
+      else
+        log_msg "ERROR" "Could not put back commit $previous_commit for git stack $name"
+        echo "No container was changed, but the previous commit could not be put back: the clone is still at the new commit."
+      fi
+    }
+    if [ -z "$stack_path" ] || [ ! -f "$stack_path/git.json" ]; then
+      log_msg "ERROR" "gitdeploy needs the stack folder of a git stack (--stack-path)"
+      echo "✗ $name is not a git stack."
+      exit 1
+    fi
+
+    # 1. Fetch, check out and check the new commit (git_stack.php prints the
+    #    commit that was checked out before, for step 2).
+    prepare_args=("$stack_path" "$name")
+    if [ -n "$git_commit" ]; then
+      prepare_args+=("--commit" "$git_commit")
+    fi
+    if [ "$save_local_changes" = true ]; then
+      prepare_args+=("--save-local-changes")
+    fi
+    for profile_name in "${profile_names[@]}"; do
+      prepare_args+=("--profile" "$profile_name")
+    done
+    if ! previous_commit=$(git_stack prepare "${prepare_args[@]}"); then
+      save_result "failed" 1 "gitdeploy"
+      log_msg "ERROR" "Git deploy of $name stopped before any container was changed"
+      echo ""
+      echo "✗ Stack $name was not deployed. No container was changed."
+      exit 1
+    fi
+    if ! [[ "$previous_commit" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
+      save_result "failed" 1 "gitdeploy"
+      log_msg "ERROR" "git_stack.php prepare printed something other than a commit id for $name"
+      echo ""
+      echo "✗ Stack $name was not deployed. No container was changed, but the clone may be at the new commit."
+      exit 1
+    fi
+
+    # The compose files may have changed with the new commit, so build the
+    # command from the stack as it is checked out now.
+    git_compose_args=()
+    git_args_file=$(mktemp)
+    if ! git_stack compose-args "$stack_path" > "$git_args_file"; then
+      rm -f "$git_args_file"
+      save_result "failed" 1 "gitdeploy"
+      log_msg "ERROR" "Could not read the compose files of git stack $name"
+      echo ""
+      echo "✗ Stack $name was not deployed."
+      put_back_previous_commit
+      exit 1
+    fi
+    mapfile -d '' -t git_compose_args < "$git_args_file"
+    rm -f "$git_args_file"
+    git_compose=(docker compose "${git_compose_args[@]}" "${profile_args[@]}")
+
+    # A deploy always builds services that have a build section (the new
+    # commit may change their Dockerfile), as a step of its own before up.
+    up_args=("-d" "--remove-orphans")
+    if [ "$wait_for_healthy" = true ]; then
+      up_args+=("--wait")
+      if [ -n "$wait_timeout" ]; then
+        up_args+=("--wait-timeout" "$wait_timeout")
+      fi
+    fi
+    if [ "$debug" = true ]; then
+      log_msg "DEBUG" "${git_compose[*]} -p $name pull --ignore-buildable"
+      log_msg "DEBUG" "${git_compose[*]} -p $name build"
+      log_msg "DEBUG" "${git_compose[*]} -p $name up ${up_args[*]}"
+    fi
+
+    # Remember the stack's current images, to remove the ones it no longer uses afterwards.
+    old_images=()
+    mapfile -t old_images < <("${git_compose[@]}" -p "$name" images -q 2>/dev/null)
+
+    # 2. Pull and build images. If either fails, put the previous commit back:
+    #    still no container has changed.
+    echo "Pulling images..."
+    if ! "${git_compose[@]}" -p "$name" pull --ignore-buildable; then
+      save_result "failed" 1 "gitdeploy"
+      log_msg "ERROR" "Failed to pull images for git stack $name"
+      echo ""
+      echo "✗ Pulling images for $name failed."
+      put_back_previous_commit
+      exit 1
+    fi
+    echo ""
+    echo "Building images..."
+    if ! "${git_compose[@]}" -p "$name" build; then
+      save_result "failed" 1 "gitdeploy"
+      log_msg "ERROR" "Failed to build images for git stack $name"
+      echo ""
+      echo "✗ Building images for $name failed."
+      put_back_previous_commit
+      exit 1
+    fi
+
+    # 3. Ask whether every container should be recreated (the stack's
+    #    "recreate on any change in its folder" setting).
+    if ! git_up_extra=$(git_stack up-arguments "$stack_path" "$previous_commit"); then
+      save_result "failed" 1 "gitdeploy"
+      log_msg "ERROR" "Could not compare commits for git stack $name"
+      echo ""
+      echo "✗ Stack $name was not deployed."
+      put_back_previous_commit
+      exit 1
+    fi
+    # Only the two answers git_stack.php gives are accepted, so a stray line
+    # of output can never become an argument to up.
+    case "$git_up_extra" in
+      "")
+        ;;
+      "--force-recreate")
+        up_args+=("--force-recreate")
+        ;;
+      *)
+        save_result "failed" 1 "gitdeploy"
+        log_msg "ERROR" "git_stack.php up-arguments printed something unexpected for $name"
+        echo ""
+        echo "✗ Stack $name was not deployed."
+        put_back_previous_commit
+        exit 1
+        ;;
+    esac
+
+    # Optionally create missing `external: true` networks, as up and update do
+    # (Settings > Compose > Create Missing External Networks). This is done
+    # here, after every check, pull and build has passed, so a deploy that
+    # stops earlier creates nothing.
+    if plugin_setting_enabled CREATE_MISSING_EXTERNAL_NETWORKS; then
+      create_missing_external_networks "${git_compose[@]}" -p "$name"
+    fi
+
+    # 4. Start the stack at the new commit.
+    echo ""
+    echo "Starting containers..."
+    "${git_compose[@]}" -p "$name" up "${up_args[@]}"
+    up_exit=$?
+    operation_exit_code=$up_exit
+
+    if [ $up_exit -eq 0 ]; then
+      if ! git_stack finish "$stack_path" success; then
+        log_msg "ERROR" "Git stack $name started, but its deployed commit could not be recorded"
+        echo "⚠ The stack started, but the deployed commit could not be recorded. Deploy it again to record it."
+      fi
+
+      new_images=()
+      mapfile -t new_images < <("${git_compose[@]}" -p "$name" images -q 2>/dev/null)
+      superseded_images=()
+      for old_image in "${old_images[@]}"; do
+        still_used=false
+        for new_image in "${new_images[@]}"; do
+          if [ "$old_image" = "$new_image" ]; then
+            still_used=true
+          fi
+        done
+        if [ "$still_used" = false ]; then
+          superseded_images+=("$old_image")
+        fi
+      done
+      if (( ${#superseded_images[@]} )); then
+        echo ""
+        echo "Cleaning up old images..."
+        # Plain docker rmi leaves alone any image another container still uses.
+        docker rmi "${superseded_images[@]}" 2>/dev/null || true
+      fi
+
+      if [ -n "$stack_path" ] && [ -d "$stack_path" ]; then
+        date -Iseconds > "$stack_path/started_at"
+        persist_running_profiles
+      fi
+      save_result "success" 0 "gitdeploy"
+      echo ""
+      echo "✓ Stack $name deployed successfully"
+    else
+      # A half-finished up cannot be undone reliably, so it is not rolled back:
+      # the commit is recorded as failed, for a person to fix and deploy again.
+      if ! git_stack finish "$stack_path" failed; then
+        log_msg "ERROR" "The failed deploy of git stack $name could not be recorded"
+      fi
+      save_result "failed" $up_exit "gitdeploy"
+      log_msg "ERROR" "Failed to deploy git stack $name (exit code: $up_exit)"
+      echo ""
+      echo "✗ Stack $name failed to start (exit code: $up_exit). The commit is recorded as failed (compose-git status shows it)."
+      echo "Fix it and deploy again, or deploy a known good commit with --commit."
+    fi
+    ;;
+
   stop)
     if [ "$debug" = true ]; then
       log_msg "DEBUG" "${compose_base[*]} -p $name stop"
@@ -537,7 +748,7 @@ case $command in
 esac
 
 case $command in
-  up|down|pull|update|stop|logs)
+  up|down|pull|update|stop|logs|gitdeploy)
     exit "${operation_exit_code:-0}"
     ;;
 esac

@@ -190,7 +190,7 @@ test_setup() {
 }
 
 @test "compose.sh mutating commands have explicit final exit propagation" {
-    run grep -E '^\s*up\|down\|pull\|update\|stop\|logs\)' "$COMPOSE_SCRIPT"
+    run grep -E '^\s*up\|down\|pull\|update\|stop\|logs(\|gitdeploy)?\)' "$COMPOSE_SCRIPT"
     assert_success
 
     run grep -E '^\s*exit "\$\{operation_exit_code:-0\}"' "$COMPOSE_SCRIPT"
