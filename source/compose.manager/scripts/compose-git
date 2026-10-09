@@ -1,0 +1,3 @@
+#!/bin/bash
+# compose-git: create, deploy and look after git-backed stacks. See compose_git.php.
+exec php -d display_errors=stderr "$(dirname "$(readlink -f "$0")")/compose_git.php" "$@"

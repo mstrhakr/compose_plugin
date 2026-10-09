@@ -36,6 +36,19 @@ defined('COMPOSE_CREDENTIAL_VAULT_FILE') || define('COMPOSE_CREDENTIAL_VAULT_FIL
 defined('COMPOSE_CREDENTIAL_KEY_FILE') || define('COMPOSE_CREDENTIAL_KEY_FILE', '/boot/config/plugins/compose.manager/credentials.key');
 defined('COMPOSE_DOCKER_CONFIG_DIR') || define('COMPOSE_DOCKER_CONFIG_DIR', '/var/tmp/compose-manager-docker-config');
 defined('COMPOSE_GITHUB_DEVICE_DIR') || define('COMPOSE_GITHUB_DEVICE_DIR', '/var/tmp/compose-manager-github-device');
+// Git-backed stacks: where Unraid reports the array state and the live mounts,
+// and the folder under which disks, pools and shares are mounted.
+defined('COMPOSE_UNRAID_VAR_INI') || define('COMPOSE_UNRAID_VAR_INI', '/var/local/emhttp/var.ini');
+defined('COMPOSE_MOUNTS_FILE') || define('COMPOSE_MOUNTS_FILE', '/proc/self/mounts');
+defined('COMPOSE_GIT_MNT_DIR') || define('COMPOSE_GIT_MNT_DIR', '/mnt');
+defined('COMPOSE_GIT_HOME_DIR') || define('COMPOSE_GIT_HOME_DIR', '/var/tmp/compose-manager-git-home');
+// Short-lived files that hand a git stack's credential to git for one run (in RAM, emptied at reboot).
+defined('COMPOSE_GIT_CREDENTIAL_DIR') || define('COMPOSE_GIT_CREDENTIAL_DIR', '/var/tmp/compose-manager-git-credentials');
+defined('COMPOSE_GIT_DEFAULT_CLONES_ROOT') || define('COMPOSE_GIT_DEFAULT_CLONES_ROOT', '/mnt/user/appdata/compose.manager/git');
+// The docker CLI (the git deploy checks run it; tests point this at a scripted stand-in).
+defined('COMPOSE_DOCKER_BIN') || define('COMPOSE_DOCKER_BIN', 'docker');
+// compose.sh's per-stack lock files (its LOCK_DIR), which compose-git takes too.
+defined('COMPOSE_LOCK_DIR') || define('COMPOSE_LOCK_DIR', '/var/run/compose.manager');
 
 /**
  * Reserved filename at the compose root level used by the plugin installer

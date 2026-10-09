@@ -93,6 +93,41 @@ final class CredentialVaultTest extends TestCase
         $this->assertSame(base64_encode('user:token'), $config['auths']['ghcr.io']['auth']);
     }
 
+    public function testTheKindOfACredentialCannotChangeBetweenRegistryAndGit(): void
+    {
+        // A stack using it would break at its next run: refused, and the credential left as it was.
+        $vault = new CredentialVault();
+        $registry = $vault->saveCredential(['name' => 'Hub', 'provider' => 'docker', 'registry' => 'docker.io', 'username' => 'u', 'secret' => 's']);
+        $token = $vault->saveCredential(['name' => 'Forgejo', 'provider' => 'git', 'registry' => 'git.example.com', 'username' => 'u', 'secret' => 's']);
+        $key = $vault->saveCredential(['name' => 'app deploy key', 'provider' => 'git-ssh', 'registry' => 'git.example.com', 'username' => 'git', 'secret' => 'k']);
+
+        $changes = [
+            [$registry, 'git', 'git.example.com'],
+            [$token, 'github', 'ghcr.io'],
+            [$token, 'git-ssh', 'git.example.com'],
+            [$key, 'git', 'git.example.com'],
+        ];
+        foreach ($changes as [$credential, $provider, $host]) {
+            try {
+                $vault->saveCredential(['id' => $credential['id'], 'name' => $credential['name'], 'provider' => $provider, 'registry' => $host, 'username' => 'u']);
+                $this->fail("{$credential['provider']} was changed to $provider");
+            } catch (\InvalidArgumentException $error) {
+                $this->assertStringContainsString('cannot change between a registry login and a git credential', $error->getMessage());
+            }
+            $this->assertSame($credential['provider'], $vault->getCredentialSummary($credential['id'])['provider']);
+        }
+    }
+
+    public function testARegistryCredentialCanStillChangeBetweenRegistryKinds(): void
+    {
+        $vault = new CredentialVault();
+        $saved = $vault->saveCredential(['name' => 'Mine', 'provider' => 'generic', 'registry' => 'registry.example.com', 'username' => 'u', 'secret' => 's']);
+
+        $updated = $vault->saveCredential(['id' => $saved['id'], 'name' => 'Mine', 'provider' => 'docker', 'registry' => 'docker.io', 'username' => 'u']);
+
+        $this->assertSame('docker', $updated['provider']);
+    }
+
     public function testSelectedCredentialOverridesDockerCredentialHelpers(): void
     {
         $dockerConfigDirectory = sys_get_temp_dir() . '/docker-config-test-' . bin2hex(random_bytes(8));
@@ -192,6 +227,96 @@ final class CredentialVaultTest extends TestCase
             'username' => 'user',
             'secret' => 'secret123',
         ]);
+    }
+
+    public function testGitCredentialIsForOneHost(): void
+    {
+        $vault = new CredentialVault();
+        $saved = $vault->saveCredential([
+            'name' => 'Git stacks',
+            'provider' => 'git',
+            'registry' => 'https://GitHub.com/',
+            'username' => 'bot',
+            'secret' => 'token123',
+        ]);
+        $this->assertSame('git', $saved['provider']);
+        $this->assertSame('github.com', $saved['registry']);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('repository host only');
+        $vault->saveCredential([
+            'name' => 'Too much',
+            'provider' => 'git',
+            'registry' => 'github.com/owner/repo.git',
+            'username' => 'bot',
+            'secret' => 'token123',
+        ]);
+    }
+
+    public function testDeployKeyIsKeptLikeAnyOtherSecret(): void
+    {
+        $vault = new CredentialVault();
+        $privateKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----";
+        $saved = $vault->saveCredential([
+            'name' => 'whoami deploy key',
+            'provider' => 'git-ssh',
+            'registry' => 'git.example.com:2222',
+            'username' => 'git',
+            'secret' => $privateKey,
+        ]);
+
+        $this->assertSame('git-ssh', $saved['provider']);
+        $this->assertArrayNotHasKey('secret', $vault->listCredentials()[0]);
+        $this->assertStringNotContainsString('PRIVATE KEY', (string) file_get_contents(COMPOSE_CREDENTIAL_VAULT_FILE));
+        $this->assertSame($privateKey, $vault->useCredential($saved['id'], static fn(array $credential): string => $credential['secret']));
+    }
+
+    public function testDeployKeyIsNeverWrittenOutAsADockerLogin(): void
+    {
+        $vault = new CredentialVault();
+        $saved = $vault->saveCredential([
+            'name' => 'whoami deploy key',
+            'provider' => 'git-ssh',
+            'registry' => 'github.com',
+            'username' => 'git',
+            'secret' => "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----",
+        ]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('is a git repository credential, not a registry login');
+        $vault->materializeDockerConfig($saved['id']);
+    }
+
+    public function testUseCredentialHandsTheSecretToTheCallbackOnly(): void
+    {
+        $vault = new CredentialVault();
+        $saved = $vault->saveCredential([
+            'name' => 'Git stacks',
+            'provider' => 'git',
+            'registry' => 'github.com',
+            'username' => 'bot',
+            'secret' => 'token123',
+        ]);
+
+        $seen = $vault->useCredential($saved['id'], static fn(array $credential): string => $credential['secret']);
+
+        $this->assertSame('token123', $seen);
+    }
+
+    public function testGitCredentialIsNeverWrittenOutAsADockerLogin(): void
+    {
+        $vault = new CredentialVault();
+        $saved = $vault->saveCredential([
+            'name' => 'Git stacks',
+            'provider' => 'git',
+            'registry' => 'github.com',
+            'username' => 'bot',
+            'secret' => 'token123',
+        ]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('is a git repository credential, not a registry login');
+        $vault->materializeDockerConfig($saved['id']);
     }
 
     public function testGetCredentialSummaryOmitsSecret(): void

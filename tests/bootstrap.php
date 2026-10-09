@@ -47,6 +47,15 @@ define('COMPOSE_CREDENTIAL_VAULT_FILE', sys_get_temp_dir() . '/compose_manager_c
 define('COMPOSE_CREDENTIAL_KEY_FILE', sys_get_temp_dir() . '/compose_manager_credentials.key');
 define('COMPOSE_DOCKER_CONFIG_DIR', sys_get_temp_dir() . '/compose_manager_docker_configs');
 define('COMPOSE_GITHUB_DEVICE_DIR', sys_get_temp_dir() . '/compose_manager_github_device');
+// Git-backed stack tests fake Unraid's /mnt, array state and mount table in temp files.
+define('COMPOSE_GIT_MNT_DIR', sys_get_temp_dir() . '/compose_git_mnt');
+define('COMPOSE_UNRAID_VAR_INI', sys_get_temp_dir() . '/compose_git_var.ini');
+define('COMPOSE_MOUNTS_FILE', sys_get_temp_dir() . '/compose_git_mounts');
+define('COMPOSE_GIT_HOME_DIR', sys_get_temp_dir() . '/compose_git_home');
+define('COMPOSE_GIT_CREDENTIAL_DIR', sys_get_temp_dir() . '/compose_git_credentials');
+// A scripted stand-in for the docker CLI (see FakeDocker in the git deploy tests).
+define('COMPOSE_DOCKER_BIN', sys_get_temp_dir() . '/compose_fake_docker/docker');
+define('COMPOSE_LOCK_DIR', sys_get_temp_dir() . '/compose_manager_locks');
 // Point to the dev-env resvg binary when present; plugin path used on real Unraid
 define('COMPOSE_RESVG_BIN',          is_executable('/tmp/resvg') ? '/tmp/resvg'
     : '/usr/local/emhttp/plugins/compose.manager/bin/resvg');

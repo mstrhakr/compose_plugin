@@ -135,8 +135,9 @@ foreach ($config["networks"] ?? [] as $key => $network) {
 # Arguments: the docker compose command that reads the stack's config, for example
 #   create_missing_external_networks docker compose -f compose.yaml -p mystack
 # A config that does not parse is skipped here; the compose command that follows reports it.
+# Returns 1 if any network could not be created (after trying them all, so each is named).
 create_missing_external_networks() {
-    local config_json network
+    local config_json network failed=0
     if ! config_json=$("$@" config --format json 2>/dev/null); then
         return 0
     fi
@@ -151,8 +152,10 @@ create_missing_external_networks() {
         else
             echo "✗ Failed to create external network: $network"
             composeLogger "Failed to create external network: $network" error compose
+            failed=1
         fi
     done < <(printf '%s' "$config_json" | external_network_names)
+    return $failed
 }
 
 # Resolve effective env file for a stack.

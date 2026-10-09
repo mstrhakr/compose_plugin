@@ -1303,7 +1303,7 @@ function initEditorModal() {
         ComposeCredentialManager.open(null, function(credential) {
             ComposeCredentialManager.populateSelect($('#settings-credential-id'), credential.id);
             $('#settings-credential-id').trigger('change');
-        });
+        }, { registryOnly: true });
     });
 
     // Additional compose files: combined change tracking for the candidate

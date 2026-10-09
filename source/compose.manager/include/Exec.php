@@ -184,6 +184,7 @@ if (!function_exists('composeBuildCredentialStackMap')) {
     /**
      * Single-pass scan of every stack's `credential_id` file, grouped by credential id.
      * Avoids re-globbing/re-reading the compose root once per credential.
+     * A git stack's repository credential (`credentialId` in its git.json) counts too.
      *
      * @return array<string, string[]> Credential id => assigned stack names
      */
@@ -196,6 +197,18 @@ if (!function_exists('composeBuildCredentialStackMap')) {
                 continue;
             }
             $map[$credentialId][] = basename(dirname($credentialFile));
+        }
+        foreach (glob(rtrim($composeRoot, '/') . '/*/git.json') ?: [] as $gitSettingsFile) {
+            // Read as plain JSON: a git.json that fails validation still keeps its credential in use.
+            $gitSettings = json_decode((string) @file_get_contents($gitSettingsFile), true);
+            $credentialId = is_array($gitSettings) ? ($gitSettings['credentialId'] ?? null) : null;
+            if (!is_string($credentialId) || $credentialId === '') {
+                continue;
+            }
+            $stack = basename(dirname($gitSettingsFile));
+            if (!in_array($stack, $map[$credentialId] ?? [], true)) {
+                $map[$credentialId][] = $stack;
+            }
         }
         return $map;
     }
@@ -895,27 +908,6 @@ switch ($_POST['action']) {
         echo json_encode(['result' => 'success']);
         break;
 
-    case 'runPatch':
-        $cmd = isset($_POST['cmd']) ? $_POST['cmd'] : 'apply';
-        if (!in_array($cmd, ['apply', 'remove'])) {
-            echo json_encode(['result' => 'error', 'message' => 'Invalid command']);
-            break;
-        }
-        $script = "$plugin_root/scripts/patch.sh";
-        // Quote each argument to preserve spaces and special characters and avoid the fragility of escapeshellcmd()
-        $fullcmd = escapeshellarg($script) . ' ' . escapeshellarg($cmd) . ' ' . escapeshellarg('--verbose') . ' 2>&1';
-        exec($fullcmd, $output, $rc);
-        // Save a copy to plugin log file
-        $logfile = "/boot/config/plugins/compose.manager/patch_last_run.log";
-        $ts = date('c');
-        $entry = "[{$ts}] runPatch {$cmd} exit={$rc}\n" . implode("\n", $output) . "\n\n";
-        @file_put_contents($logfile, $entry, FILE_APPEND);
-        foreach ($output as $line) {
-            composeLogger(escapeshellarg($cmd) . ' ' . $line, null, 'user', 'debug', 'patch.sh');
-        }
-        echo json_encode(['result' => $rc === 0 ? 'success' : 'error', 'output' => implode("\n", $output), 'rc' => $rc]);
-        break;
-
     case 'clearUpdateCache':
         // Clear the compose manager update status cache
         $composeUpdateStatusFile = COMPOSE_UPDATE_STATUS_FILE;
@@ -1040,6 +1032,10 @@ switch ($_POST['action']) {
         break;
     case 'saveCredential':
         try {
+            // Deploy keys are made by compose-git for one stack, never on the Credentials tab.
+            if (strtolower(trim((string) ($_POST['provider'] ?? ''))) === 'git-ssh') {
+                throw new \InvalidArgumentException('A deploy key is made by compose-git for its stack, not added here.');
+            }
             $credential = (new CredentialVault())->saveCredential([
                 'id' => trim((string) ($_POST['id'] ?? '')),
                 'name' => trim((string) ($_POST['name'] ?? '')),
@@ -1089,9 +1085,20 @@ switch ($_POST['action']) {
             break;
         }
         try {
-            $test = (new CredentialVault())->testCredential($credentialId);
+            if (in_array((new CredentialVault())->getCredentialSummary($credentialId)['provider'] ?? '', ['git', 'git-ssh'], true)) {
+                // A git credential is tested by reaching a repository that uses it, not with a registry handshake.
+                require_once("/usr/local/emhttp/plugins/compose.manager/include/GitStackManager.php");
+                $test = (new GitStackManager($compose_root))->testCredential($credentialId);
+                if ($test === null) {
+                    echo json_encode(['result' => 'error', 'message' => 'No git stack uses this credential yet. '
+                        . 'It is tested by reaching a repository: give it to a stack with compose-git, then test it again.']);
+                    break;
+                }
+            } else {
+                $test = (new CredentialVault())->testCredential($credentialId);
+            }
             composeLogger(
-                "Tested registry credential '{$test['name']}': " . ($test['valid'] ? 'valid' : 'invalid') . ' - ' . $test['message'],
+                "Tested credential '{$test['name']}': " . ($test['valid'] ? 'valid' : 'invalid') . ' - ' . $test['message'],
                 null,
                 'user',
                 $test['valid'] ? 'info' : 'warning',
@@ -1451,6 +1458,9 @@ switch ($_POST['action']) {
                 CredentialVault::withCredentialAssignmentLock(function () use ($credentialId, $credentialIdFile): void {
                     if ($credentialId !== '' && !(new CredentialVault())->hasCredential($credentialId)) {
                         throw new RuntimeException('Selected credential no longer exists.');
+                    }
+                    if ($credentialId !== '' && in_array((new CredentialVault())->getCredentialSummary($credentialId)['provider'] ?? '', ['git', 'git-ssh'], true)) {
+                        throw new RuntimeException('A git repository credential cannot be used to pull images.');
                     }
                     if ($credentialId === '') {
                         if (is_file($credentialIdFile)) {

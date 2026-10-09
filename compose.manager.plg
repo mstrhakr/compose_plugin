@@ -2,15 +2,15 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "compose.manager">
 <!ENTITY author "mstrhakr">
-<!ENTITY version     "2026.10.07">
+<!ENTITY version     "2026.10.09.1841">
 <!ENTITY launch "Settings/&name;.settings">
 <!ENTITY packageVER "&version;">
-<!ENTITY packageMD5  "a7e3c1ec463d831fbf76ae3537d4cf5e">
-<!ENTITY pkgBUILD    "1839">
+<!ENTITY packageMD5  "d8c04c7ab6a2dbe27adff2dbd224996f">
+<!ENTITY pkgBUILD    "1841">
 <!ENTITY packageName "&name;-&packageVER;-noarch-&pkgBUILD;">
 <!ENTITY packagefile "&packageName;.txz">
 <!ENTITY github "mstrhakr/compose_plugin">
-<!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/main/&name;.plg">
+<!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/dev/&name;.plg">
 <!ENTITY packageURL "https://github.com/&github;/releases/download/v&version;/&packagefile;">
 <!ENTITY pluginsPATH "/boot/config/plugins">
 <!ENTITY pluginLOC "&pluginsPATH;/&name;">
@@ -29,72 +29,18 @@
          launch="&launch;"
          pluginURL="&pluginURL;"
          icon="cubes"
-         min="6.9.0"
+         min="6.12.0"
          support="https://forums.unraid.net/topic/197334-plugin-compose-manager-plus/"
          project="https://github.com/mstrhakr/compose_plugin"
          readme="https://github.com/mstrhakr/compose_plugin#readme"
 >
 
 <CHANGES>
-###2026.10.07
-- Features (compose): optionally create missing external networks before starting a stack
-- Features (credentials): add one-click renewal for OAuth GitHub credentials
-- Features (credentials): log which registry credential is used for compose operations
-- Features (credentials): add copy button and QR code for GitHub device sign-in
-- Features: add registry provider presets and token helper links
-- Features: add credential manager and stack selector UI
-- Bug Fixes (loadlist): log HTTP status when a stack row request fails
-- Bug Fixes (credentials): log GitHub sign-in lifecycle and deletions
-- Bug Fixes (credentials): reload list after deletion
-- Bug Fixes (settings): validate credentials before saving
-- Bug Fixes (credentials): honor selected registry auth
-- Bug Fixes (icon): block IPv4-mapped private hosts
-- Bug Fixes (override): leave the override out with default file discovery too
-- Bug Fixes (override): prune services the compose file no longer has
-- Bug Fixes (autoupdate): remove superseded images after updates
-- Bug Fixes (editor): read and save a relative env file path from the stack folder
-- Bug Fixes (autoupdate): keep the last run time when saving auto-update settings
-- Bug Fixes (compose): fail when the stack's env file is missing
-- Bug Fixes (identity): make the identity chooser save the chosen project name
-- Bug Fixes (ui): wait until action dialog is fully closed
-- Bug Fixes (ui): wait for profile dialog before action dialog
-- Bug Fixes (staticcheck): remove invalid credential lock template
-- Bug Fixes (credentials): serialize assignment and deletion
-- Bug Fixes (credentials): preserve active Docker configs
-- Bug Fixes (auth): restrict GitHub credential renewal
-- Bug Fixes (autoupdate): limit concurrent image pulls
-- Bug Fixes (icons): support IPv6-only icon hosts
-- Bug Fixes (ui): wait for profile dialog to close
-- Bug Fixes (credentials): surface credential name in operation output; add credential test/renewal check
-- Bug Fixes: sweep expired GitHub device-auth session files on start
-- Bug Fixes: merge onto existing Docker config instead of replacing it wholesale
-- Bug Fixes: reject client-supplied ids for new credentials and lock authMethod on update
-- Bug Fixes: sweep stale docker-config temp dirs and write vault/key atomically
-- Bug Fixes: serialize vault read-modify-write transactions with flock
-- Bug Fixes: catch credential vault errors in setStackSettings
-- Bug Fixes: validate GitHub device session file write and chmod
-- Bug Fixes: support credential encryption without sodium
-- Bug Fixes: copy GitHub device code before authorization
-- Bug Fixes: lock GitHub OAuth credential fields
-- Performance: single-pass credential-to-stack mapping instead of per-credential glob scans
-- Tests (e2e): cover profile action dialog transition
-- Chores: add banner image to readme
-- Chores: update changelog for v2026.10.06.1617 [skip ci]
-- Chores: update changelog for v2026.10.06.1458 [skip ci]
-- Chores: update changelog for v2026.10.05.1006 [skip ci]
-- Chores: update changelog for v2026.10.02.1007 [skip ci]
-- Chores: update changelog for v2026.10.02.0916 [skip ci]
-- Chores: update changelog for v2026.10.02.0915 [skip ci]
-- Chores: update changelog for v2026.10.02.0849 [skip ci]
-- Chores: update changelog for v2026.09.30.0815 [skip ci]
-- Chores: update changelog for v2026.09.25.1058 [skip ci]
-- Chores: update changelog for v2026.09.25.1001 [skip ci]
-- Chores: update changelog for v2026.09.25.0845 [skip ci]
-- Chores: sync pluginURL+README for dev branch [skip ci]
-- Save rebuild-on-update when it is the only changed setting
-- Fix credential permissions and autoupdate propagation
-- Fix picker-driven path validation updates
-- [View all changes](https://github.com/mstrhakr/compose_plugin/compare/v2026.09.13...v2026.10.07)
+###2026.10.09.1841
+- Bug Fixes: omit missing optional compose overrides
+- Tests: address override review feedback
+- [PR #172](https://github.com/mstrhakr/compose_plugin/pull/172)
+- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.10.07...v2026.10.09.1841)
 </CHANGES>
 
 <!-- The 'pre-install' script. -->
@@ -162,59 +108,11 @@ rm -f /tmp/ace-editor-install.sh
 echo ""
 echo "----------------------------------------------------"
 echo ""
-echo "          Patches are only installed for"
-echo "             pre-6.12 Unraid versions."
-echo ""
-echo "     If on 6.12 or later, patches are not needed"
-echo "          and skips will be shown below."
-echo ""
-echo "----------------------------------------------------"
-echo ""
-</INLINE>
-</FILE>
-
-<!-- Patch utility installation for pre-6.12: install or remove patches -->
-<FILE Name="/tmp/patch-util-install.sh" Run="/bin/bash" Max="6.11.99">
-<INLINE>
-&emhttpLOC;/scripts/install-patch.sh install &emhttpLOC; &pluginLOC;
-rm -f /tmp/patch-util-install.sh
-</INLINE>
-</FILE>
-
-<FILE Run="/bin/bash">
-<INLINE>
-echo ""
-echo "----------------------------------------------------"
-echo ""
 echo "      Compose Manager Plus has been installed."
 echo "               Version: &version;"
 echo ""
 echo "----------------------------------------------------"
 echo ""
-</INLINE>
-</FILE>
-
-<FILE Run="/bin/bash" Method="remove">
-<INLINE>
-echo ""
-echo "----------------------------------------------------"
-echo ""
-echo "           Patches are only modified for"
-echo "             pre-6.12 Unraid versions."
-echo ""
-echo "     If on 6.12 or later, patches are not needed"
-echo "          and skips will be shown below."
-echo ""
-echo "----------------------------------------------------"
-echo ""
-</INLINE>
-</FILE>
-
-<!-- Patch utility removal for pre-6.12: remove patches -->
-<FILE Name="/tmp/patch-util-remove.sh" Run="/bin/bash" Method="remove" Max="6.11.99">
-<INLINE>
-&emhttpLOC;/scripts/install-patch.sh remove &emhttpLOC; &pluginLOC;
-rm -f /tmp/patch-util-remove.sh
 </INLINE>
 </FILE>
 

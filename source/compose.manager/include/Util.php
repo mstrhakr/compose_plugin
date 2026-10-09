@@ -1541,9 +1541,8 @@ class OverrideInfo
     /**
      * Core override resolution logic shared by both factories.
      *
-     * Computes the override filename from the compose file, resolves project
-     * and indirect override paths while preserving legacy filenames as-is,
-     * and auto-creates a project override template if needed.
+      * Computes the override filename from the compose file and resolves
+      * project and indirect override paths while preserving legacy filenames.
      *
      * @param string      $projectPath     Full path to the stack directory
      * @param string|null $indirectPath     Indirect target directory, or null if not indirect
@@ -2620,6 +2619,50 @@ class StackInfo
     }
 
     /**
+     * Whether this stack is deployed from a git repository (has git.json).
+     *
+     * A git stack is an indirect stack whose target is a clone the plugin
+     * manages. The plugin-managed override always lives in the stack folder,
+     * never in the clone, so pulling new commits never touches it. The .env
+     * does too unless the repository brings its own (see
+     * gitStackDefaultEnvPath()).
+     */
+    public function isGitStack(): bool
+    {
+        return is_file($this->path . '/git.json');
+    }
+
+    /**
+     * The .env a git stack uses when no envpath is set.
+     *
+     * The stack folder's .env if there is one, so secrets can stay out of the
+     * repository. Otherwise a .env committed in the repository next to the
+     * compose file, for people who keep their settings versioned with the
+     * stack (editing that one changes the clone, which the next deploy reports
+     * as a local change). With neither, the stack folder's .env, which is where
+     * the editor creates it.
+     *
+     * Only one of the two is used. Overrides can apply both (see
+     * getComposeFilePaths()) because the plugin already passes compose a list
+     * of -f files. It passes exactly one env file everywhere (compose.sh's -e,
+     * autostart, auto-update's COMPOSE_ENV_FILE, the editor), so loading both,
+     * with the stack folder's values winning, would change all of those. That
+     * may come later, but was too big a change to make here.
+     */
+    private function gitStackDefaultEnvPath(): string
+    {
+        $stackFolderEnv = $this->path . '/.env';
+        if (is_file($stackFolderEnv)) {
+            return $stackFolderEnv;
+        }
+        $repositoryEnv = $this->composeSource . '/.env';
+        if (is_file($repositoryEnv)) {
+            return $repositoryEnv;
+        }
+        return $stackFolderEnv;
+    }
+
+    /**
      * Get the stack description.
      * @return string
      */
@@ -2640,7 +2683,7 @@ class StackInfo
     {
         $val = $this->readMetadata('envpath');
         if ($val === null || $val === '') {
-            return null;
+            return $this->isGitStack() ? $this->gitStackDefaultEnvPath() : null;
         }
         if (Path::isAbsolutePath($val)) {
             return $val;
@@ -2660,7 +2703,8 @@ class StackInfo
      * Resolution order:
      * 1) `envpath` metadata (explicit stack setting) when it points to a
      *    readable file
-     * 2) Local `.env` in compose source (direct or indirect)
+     * 2) Local `.env` in compose source (direct or indirect). A git stack
+     *    uses gitStackDefaultEnvPath() here instead.
      *
      * If `envpath` exists but is empty, it is treated as unset.
      * If `envpath` exists but points to a missing file, it is treated as
@@ -2675,7 +2719,7 @@ class StackInfo
             return $explicitEnvPath;
         }
 
-        $defaultEnvPath = $this->composeSource . '/.env';
+        $defaultEnvPath = $this->isGitStack() ? $this->gitStackDefaultEnvPath() : $this->composeSource . '/.env';
         return is_file($defaultEnvPath) ? $defaultEnvPath : null;
     }
 
@@ -3038,9 +3082,28 @@ class StackInfo
         $mainComposeFile = $this->composeFilePath ?? ($this->composeSource . '/' . COMPOSE_FILE_NAMES[0]);
         $paths[] = $mainComposeFile;
 
-        $overridePath = $this->getOverridePath();
-        if ($overridePath !== null) {
-            $paths[] = $overridePath;
+        if ($this->isGitStack()) {
+            // Git stacks apply both overrides: the repository's own (if it has
+            // one), then the plugin-managed one from the stack folder, so a
+            // repository override never hides the plugin's labels. Missing
+            // files are left out rather than passed to compose.
+            $repoOverride = $this->overrideInfo->indirectOverride;
+            if ($repoOverride !== null && is_file($repoOverride)) {
+                $paths[] = $repoOverride;
+            }
+            $managedOverride = $this->overrideInfo->getProjectOverridePath();
+            if ($managedOverride !== null && is_file($managedOverride)) {
+                $paths[] = $managedOverride;
+            }
+        } else {
+            $overridePath = $this->getOverridePath();
+            // Keep the preferred path available through getOverridePath() for
+            // editor/write operations, but only pass an existing optional
+            // override to Compose. Missing overrides are normal for older and
+            // manually created stacks.
+            if ($overridePath !== null && is_file($overridePath)) {
+                $paths[] = $overridePath;
+            }
         }
 
         foreach ($this->getAdditionalComposeFilesFromEnv() as $extraFile) {
@@ -3082,6 +3145,10 @@ class StackInfo
      */
     public function useDefaultComposeFileDiscovery(): bool
     {
+        // A git stack always names its files: discovery could pick up files from the wrong folder.
+        if ($this->isGitStack()) {
+            return false;
+        }
         $raw = $this->readMetadata('use_default_compose_files');
         if ($raw === null) {
             return false;
@@ -3312,6 +3379,10 @@ class StackInfo
             return true;
         }
 
+        if ($this->isRepositoryOverrideNewerThan($cacheMtime)) {
+            return true;
+        }
+
         $envFilePath = $this->getEffectiveEnvFilePath();
         if ($envFilePath !== null && is_file($envFilePath) && filemtime($envFilePath) > $cacheMtime) {
             return true;
@@ -3377,19 +3448,56 @@ class StackInfo
      */
     public function getOverridePath(): ?string
     {
+        if ($this->isGitStack()) {
+            // The repository's own override is applied too (see
+            // getComposeFilePaths), but the one the plugin reads and manages
+            // is in the stack folder.
+            return $this->overrideInfo->getProjectOverridePath();
+        }
         return $this->overrideInfo->getOverridePath();
+    }
+
+    /**
+     * Whether a git stack's repository override changed after a cache was written.
+     *
+     * getOverridePath() returns the managed override for a git stack, so the
+     * cache staleness checks compare that one; the repository's own override
+     * is a compose input too (see getComposeFilePaths). Always false for other stacks.
+     *
+     * A checkout that removes the override leaves no file to compare, so its
+     * folder's modification time stands in: removing a file updates it.
+     */
+    private function isRepositoryOverrideNewerThan(int|false $cacheMtime): bool
+    {
+        if (!$this->isGitStack()) {
+            return false;
+        }
+        $repoOverride = $this->overrideInfo->indirectOverride;
+        if ($repoOverride === null) {
+            return false;
+        }
+        if (is_file($repoOverride)) {
+            return filemtime($repoOverride) > $cacheMtime;
+        }
+        $folder = dirname($repoOverride);
+        clearstatcache(true, $folder);
+        return is_dir($folder) && filemtime($folder) > $cacheMtime;
     }
 
     /**
      * Get the path where a new override template should be created.
      *
      * Uses the indirect target when the stack is indirect, otherwise the
-     * project override path.
+     * project override path. A git stack always uses the project override.
      *
      * @return string|null
      */
     public function getPreferredOverridePath(): ?string
     {
+        // Never create or save an override inside a git stack's clone.
+        if ($this->isGitStack()) {
+            return $this->overrideInfo->getProjectOverridePath();
+        }
         if (!$this->isIndirect || $this->indirectPath === null || $this->indirectPath === '') {
             return $this->overrideInfo->getProjectOverridePath();
         }
@@ -3467,6 +3575,10 @@ class StackInfo
             if (filemtime($overridePath) > $cacheMtime) {
                 return true;
             }
+        }
+
+        if ($this->isRepositoryOverrideNewerThan($cacheMtime)) {
+            return true;
         }
 
         return false;
@@ -3730,6 +3842,10 @@ class StackInfo
             if (filemtime($overridePath) > $cacheMtime) {
                 return true;
             }
+        }
+
+        if ($this->isRepositoryOverrideNewerThan($cacheMtime)) {
+            return true;
         }
 
         return false;
