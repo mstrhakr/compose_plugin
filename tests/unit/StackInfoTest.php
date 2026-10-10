@@ -1011,6 +1011,59 @@ class StackInfoTest extends TestCase
         $this->assertSame([], $info->getProfiles());
     }
 
+    public function testAStackWithoutProfilesAsksComposeOnlyOnce(): void
+    {
+        $stackDir = $this->tempRoot . '/no-profiles';
+        mkdir($stackDir);
+        file_put_contents($stackDir . '/compose.yaml', "services:\n  web:\n    image: nginx\n");
+        // docker compose config --profiles prints nothing for a stack without profiles.
+        $calls = $this->withDockerStandIn(0, function () use ($stackDir): void {
+            $this->assertSame([], \StackInfo::fromProject($this->tempRoot, 'no-profiles')->getProfiles());
+            \StackInfo::clearCache();
+            $this->assertSame([], \StackInfo::fromProject($this->tempRoot, 'no-profiles')->getProfiles());
+        });
+
+        $this->assertSame(1, $calls);
+        $this->assertSame('[]', file_get_contents($stackDir . '/profiles'));
+    }
+
+    public function testProfilesAreNotCachedWhenComposeCannotReadTheStack(): void
+    {
+        $stackDir = $this->tempRoot . '/broken';
+        mkdir($stackDir);
+        file_put_contents($stackDir . '/compose.yaml', "services:\n  web:\n    image: nginx\n");
+        $calls = $this->withDockerStandIn(1, function (): void {
+            $this->assertSame([], \StackInfo::fromProject($this->tempRoot, 'broken')->getProfiles());
+            \StackInfo::clearCache();
+            $this->assertSame([], \StackInfo::fromProject($this->tempRoot, 'broken')->getProfiles());
+        });
+
+        // Asked again, since the failure might be fixed by the next read.
+        $this->assertSame(2, $calls);
+        $this->assertFileDoesNotExist($stackDir . '/profiles');
+    }
+
+    /**
+     * Run $work with a docker on PATH that prints nothing and exits with $exitCode,
+     * and return how many times it was run.
+     */
+    private function withDockerStandIn(int $exitCode, callable $work): int
+    {
+        $binDir = $this->tempRoot . '/bin';
+        $callsFile = $this->tempRoot . '/docker-calls';
+        mkdir($binDir);
+        file_put_contents($binDir . '/docker', "#!/bin/sh\necho call >> " . escapeshellarg($callsFile) . "\nexit $exitCode\n");
+        chmod($binDir . '/docker', 0755);
+        $originalPath = (string) getenv('PATH');
+        putenv('PATH=' . $binDir . ':' . $originalPath);
+        try {
+            $work();
+        } finally {
+            putenv('PATH=' . $originalPath);
+        }
+        return is_file($callsFile) ? count(file($callsFile)) : 0;
+    }
+
     public function testGetProfilesEmptyForInvalidJson(): void
     {
         $stack = 'bad-json';

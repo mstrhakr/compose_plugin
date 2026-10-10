@@ -3395,8 +3395,8 @@ class StackInfo
      * Extract available profiles via `docker compose config --profiles`.
      *
      * Mirrors the approach used by {@see getDefinedServices()}.  On success
-     * the result is written back to the profiles metadata file so subsequent
-     * reads hit the fast-path cache.
+     * the result, even an empty one, is written back to the profiles metadata
+     * file so subsequent reads hit the fast-path cache.
      *
      * @return string[]
      */
@@ -3413,17 +3413,23 @@ class StackInfo
         }
         $cmd .= " config --profiles 2>/dev/null";
 
-        $output = shell_exec($cmd);
-        if (!is_string($output) || trim($output) === '') {
+        $output = [];
+        $exitCode = 0;
+        exec($cmd, $output, $exitCode);
+        if ($exitCode !== 0) {
+            // Compose could not read the stack (a broken compose file, say): nothing is
+            // cached, so the next read asks again once it is fixed.
             return [];
         }
 
         $profiles = array_values(array_filter(
-            array_map('trim', explode("\n", trim($output))),
+            array_map('trim', $output),
             fn(string $p): bool => $p !== ''
         ));
 
-        // Write-through: persist so future reads hit the cache.
+        // Write-through: persist so future reads hit the cache. An empty list is cached
+        // too: most stacks have no profiles, and asking compose again costs about 0.1 s
+        // per stack on every load of the stack list.
         $this->writeMetadata('profiles', json_encode($profiles));
 
         return $profiles;
@@ -4197,8 +4203,30 @@ class StackInfo
 
         // Batch-preload container data with a single docker ps call to avoid
         // O(n) docker invocations when callers iterate getContainerList().
+        $containersByProject = self::containersByProject();
+        foreach ($stacks as $stack) {
+            $key = $stack->projectName;
+            $stack->setContainerList($containersByProject[$key] ?? []);
+        }
+
+        return $stacks;
+    }
+
+    /**
+     * The containers of compose projects, from a single `docker ps` call, by project name.
+     *
+     * Rows are `docker ps --format json` rows, filtered on the compose project label.
+     * That is much quicker than `docker compose ps` for each stack, which has to read
+     * the stack's compose files first. Pass a project name for that project's only.
+     *
+     * @param string|null $projectName One project, or null for every compose project
+     * @return array<string, array[]> Rows by project name
+     */
+    public static function containersByProject(?string $projectName = null): array
+    {
+        $filter = 'label=com.docker.compose.project' . ($projectName === null ? '' : '=' . $projectName);
         $containersByProject = [];
-        $psOutput = shell_exec("docker ps -a --filter label=com.docker.compose.project --format json 2>/dev/null");
+        $psOutput = shell_exec('docker ps -a --filter ' . escapeshellarg($filter) . ' --format json 2>/dev/null');
         if ($psOutput) {
             foreach (explode("\n", trim($psOutput)) as $line) {
                 if ($line === '') {
@@ -4215,12 +4243,7 @@ class StackInfo
                 }
             }
         }
-        foreach ($stacks as $stack) {
-            $key = $stack->projectName;
-            $stack->setContainerList($containersByProject[$key] ?? []);
-        }
-
-        return $stacks;
+        return $containersByProject;
     }
 
     /**

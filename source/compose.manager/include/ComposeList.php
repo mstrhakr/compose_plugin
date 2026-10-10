@@ -176,11 +176,16 @@ if ($mode === 'row') {
         exit;
     }
     try {
-        $stackInfos = [StackInfo::fromProject($compose_root, $project)];
+        $stackInfo = StackInfo::fromProject($compose_root, $project);
     } catch (\Throwable $e) {
         echo json_encode(composeRowBuildFailurePayload($compose_root, $project, $e->getMessage()));
         exit;
     }
+    // The stack's containers from one docker ps call, as the full list gets them
+    // (StackInfo::allFromRoot()), rather than docker compose ps, which reads the
+    // compose files first and takes several times as long for every row.
+    $stackInfo->setContainerList(StackInfo::containersByProject($stackInfo->projectName)[$stackInfo->projectName] ?? []);
+    $stackInfos = [$stackInfo];
 } else {
     $stackInfos = StackInfo::allFromRoot($compose_root);
 }
