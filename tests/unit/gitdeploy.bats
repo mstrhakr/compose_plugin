@@ -22,7 +22,9 @@ test_setup() {
     : > "$CALLS"
     echo 0 > "$IMAGES_CALLS"
     export PREPARE_EXIT=0 PULL_EXIT=0 BUILD_EXIT=0 UP_EXIT=0 UP_ARGUMENTS_EXIT=0 UP_ARGUMENTS=""
-    export COMPOSE_ARGS_EXIT=0 RESTORE_EXIT=0
+    export COMPOSE_ARGS_EXIT=0 RESTORE_EXIT=0 COMPOSE_FOLDER_EXIT=0
+    export COMPOSE_FOLDER="$TEST_TEMP_DIR/clone/whoami"
+    mkdir -p "$COMPOSE_FOLDER"
     export PREPARE_OUTPUT="0000000000000000000000000000000000000001"
     # The plugin's settings: none, so Create Missing External Networks is off unless a test turns it on.
     export COMPOSE_MANAGER_CFG_FILE="$TEST_TEMP_DIR/compose.manager.cfg"
@@ -41,6 +43,12 @@ if [ "$1" = "-d" ]; then
   shift 2
 fi
 case "$1" in
+  */credential_config.php)
+    # The registry credential's DOCKER_CONFIG folder and its label.
+    echo "$CREDENTIAL_DOCKER_CONFIG"
+    echo "registry login"
+    exit 0
+    ;;
   */git_stack.php)
     shift
     echo "git_stack $*" >> "$CALLS"
@@ -52,6 +60,10 @@ case "$1" in
       compose-args)
         [ "$COMPOSE_ARGS_EXIT" = 0 ] || { echo "✗ no compose file" >&2; exit "$COMPOSE_ARGS_EXIT"; }
         printf -- '-f\0/clone/whoami/compose.yaml\0--env-file\0/stack/.env\0'
+        ;;
+      compose-folder)
+        [ "$COMPOSE_FOLDER_EXIT" = 0 ] || { echo "✗ no compose file" >&2; exit "$COMPOSE_FOLDER_EXIT"; }
+        echo "$COMPOSE_FOLDER"
         ;;
       restore)
         exit "$RESTORE_EXIT"
@@ -73,6 +85,18 @@ SHIM
     # docker: record the call; images -q answers "before" then "after".
     cat > "$TEST_TEMP_DIR/bin/docker" <<'SHIM'
 #!/bin/bash
+# compose.sh runs docker compose with only the checks' environment, so the
+# settings above reach this script through a file (see run_gitdeploy).
+here="$(dirname "$0")"
+for arg in "$@"; do
+  case "$arg" in
+    up|rmi|create)
+      env > "$here/$arg-environment"
+      pwd > "$here/$arg-folder"
+      ;;
+  esac
+done
+. "$here/test-settings.sh"
 echo "docker $*" >> "$CALLS"
 for arg in "$@"; do
   case "$arg" in
@@ -95,6 +119,8 @@ SHIM
 }
 
 run_gitdeploy() {
+    declare -p CALLS IMAGES_CALLS PULL_EXIT BUILD_EXIT UP_EXIT CONFIG_JSON NETWORK_INSPECT_EXIT NETWORK_CREATE_EXIT \
+        > "$TEST_TEMP_DIR/bin/test-settings.sh"
     run bash "$COMPOSE_SCRIPT" -c gitdeploy -p whoami -s "$STACK" "$@"
 }
 
@@ -175,6 +201,42 @@ calls_matching() {
     [ "$status" -eq 1 ]
     [ "$(calls_matching 'docker')" -eq 0 ]
     grep -q "git_stack restore $STACK 0000000000000000000000000000000000000001" "$CALLS"
+}
+
+@test "gitdeploy stops before pulling when the compose file's folder cannot be found" {
+    export COMPOSE_FOLDER_EXIT=1
+    run_gitdeploy
+    [ "$status" -eq 1 ]
+    [ "$(calls_matching 'docker')" -eq 0 ]
+    grep -q "git_stack restore $STACK 0000000000000000000000000000000000000001" "$CALLS"
+}
+
+@test "gitdeploy runs docker in the compose file's folder with only the checks' environment" {
+    # As exported in the shell, web server or cron job that started the deploy.
+    export PORT=8080 DOCKER_HOST=tcp://elsewhere:2375 COMPOSE_PROFILES=debug TERM=xterm
+    # A missing network to create, so docker network create runs too; img-old is removed after up.
+    echo 'CREATE_MISSING_EXTERNAL_NETWORKS="true"' > "$COMPOSE_MANAGER_CFG_FILE"
+    export CONFIG_JSON='{"networks":{"proxy":{"name":"zz-proxy","external":true}}}' NETWORK_INSPECT_EXIT=1
+    run_gitdeploy
+    [ "$status" -eq 0 ]
+    grep -q "docker network create zz-proxy$" "$CALLS"
+    grep -q "docker rmi img-old$" "$CALLS"
+
+    for step in up create rmi; do
+        [ "$(cat "$TEST_TEMP_DIR/bin/$step-folder")" = "$COMPOSE_FOLDER" ]
+        grep -qx "PWD=$COMPOSE_FOLDER" "$TEST_TEMP_DIR/bin/$step-environment"
+        grep -qx "LC_ALL=C" "$TEST_TEMP_DIR/bin/$step-environment"
+        grep -qx "TERM=xterm" "$TEST_TEMP_DIR/bin/$step-environment"
+        run grep -E '^(PORT|DOCKER_HOST|COMPOSE_PROFILES)=' "$TEST_TEMP_DIR/bin/$step-environment"
+        [ "$status" -eq 1 ]
+    done
+}
+
+@test "gitdeploy passes the registry credential's DOCKER_CONFIG on to docker" {
+    export CREDENTIAL_DOCKER_CONFIG="$TEST_TEMP_DIR/docker-config"
+    run_gitdeploy --credential-id registry-1
+    [ "$status" -eq 0 ]
+    grep -qx "DOCKER_CONFIG=$CREDENTIAL_DOCKER_CONFIG" "$TEST_TEMP_DIR/bin/up-environment"
 }
 
 @test "gitdeploy records a failed up and does not roll back or remove images" {

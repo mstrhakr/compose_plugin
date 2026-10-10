@@ -432,6 +432,23 @@ final class GitDeployTest extends TestCase
         );
     }
 
+    public function testComposeFolderIsTheFolderTheChecksRunIn(): void
+    {
+        $this->assertSame(
+            dirname((string) realpath($this->clone->settings()->composeFileInClone())),
+            $this->deploy()->composeFolder()
+        );
+    }
+
+    public function testComposeFolderRefusesAMissingComposeFile(): void
+    {
+        unlink($this->clone->settings()->composeFileInClone());
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('was not found');
+        $this->deploy()->composeFolder();
+    }
+
     public function testComposeFileReachedThroughASymlinkOutsideTheCloneIsRefused(): void
     {
         $outside = $this->mnt . '/user/appdata/outside.yaml';

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ComposeManager\Tests;
 
 use GitClone;
+use GitCloneFailedException;
 use GitCloneNotOwnedException;
 use GitCommand;
 use GitStackSettings;
@@ -133,6 +134,72 @@ final class GitCloneTest extends TestCase
             $this->assertFalse($clone->exists());
             $this->assertDirectoryExists($this->clonesRoot);
         }
+    }
+
+    public function testMissingBranchIsACloneFailureButNotARefusal(): void
+    {
+        $clone = $this->makeClone('whoami/compose.yaml', 'mian');
+        try {
+            $clone->create();
+            $this->fail('Cloned a branch that does not exist');
+        } catch (GitCloneFailedException $error) {
+            $this->assertStringContainsString('mian', $error->gitOutput);
+            $this->assertFalse($error->serverRefusedAccess());
+        }
+    }
+
+    public function testChecksBeforeAndAfterTheCloneAreNotCloneFailures(): void
+    {
+        $exists = $this->makeClone('whoami/compose.yaml');
+        mkdir($exists->settings()->cloneDir, 0755, true);
+        try {
+            $exists->create();
+            $this->fail('Cloned into an existing folder');
+        } catch (RuntimeException $error) {
+            $this->assertNotInstanceOf(GitCloneFailedException::class, $error);
+        }
+        $this->removeTree($exists->settings()->cloneDir);
+
+        $noComposeFile = $this->makeClone('typo/compose.yaml');
+        try {
+            $noComposeFile->create();
+            $this->fail('Cloned a branch without the compose file');
+        } catch (RuntimeException $error) {
+            $this->assertStringContainsString('does not exist on branch main', $error->getMessage());
+            $this->assertNotInstanceOf(GitCloneFailedException::class, $error);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function cloneOutputs(): array
+    {
+        $cannotRead = "fatal: Could not read from remote repository.\n\n"
+            . "Please make sure you have the correct access rights\nand the repository exists.\n";
+        return [
+            'unknown key' => ["git@example.com: Permission denied (publickey).\n" . $cannotRead, true],
+            'GitHub, key of another repository' => ["ERROR: Repository not found.\n" . $cannotRead, true],
+            'GitLab' => ["remote: \nremote: ========================================================================\n"
+                . "remote: ERROR: The project you were looking for could not be found or you don't have permission to view it.\n"
+                . $cannotRead, true],
+            'Forgejo' => ["Forgejo: User permission denied for reading\n" . $cannotRead, true],
+            'Bitbucket' => ["conq: repository access denied. deployment key is not associated with the requested repository.\n"
+                . $cannotRead, true],
+            'wrong host key' => ["@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n"
+                . "Host key verification failed.\n" . $cannotRead, false],
+            'unreachable host' => ["ssh: connect to host example.com port 22: Connection refused\n" . $cannotRead, false],
+            'unknown host name' => ["ssh: Could not resolve hostname exmaple.com: Name or service not known\n" . $cannotRead, false],
+            'missing branch' => ["warning: Could not find remote branch mian to clone.\n"
+                . "fatal: Remote branch mian not found in upstream origin\n", false],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('cloneOutputs')]
+    public function testARefusedKeyIsToldApartFromOtherCloneFailures(string $gitOutput, bool $refused): void
+    {
+        $error = new GitCloneFailedException('Could not clone the repository: fatal: ...', $gitOutput);
+        $this->assertSame($refused, $error->serverRefusedAccess());
     }
 
     public function testMissingRepositoryLeavesNothingBehind(): void

@@ -570,7 +570,34 @@ case $command in
     fi
     mapfile -d '' -t git_compose_args < "$git_args_file"
     rm -f "$git_args_file"
-    git_compose=(docker compose "${git_compose_args[@]}" "${profile_args[@]}")
+
+    # docker runs in the compose file's folder, with the environment the
+    # checks gave it, whatever started this deploy (compose-git, the web UI
+    # or anything else). Otherwise ${PWD} in a compose file, or a variable in
+    # the environment of whatever started compose.sh (which wins over the
+    # stack's .env, and DOCKER_HOST could point at another daemon), could make
+    # the deploy do something other than what was checked.
+    if ! git_compose_folder=$(git_stack compose-folder "$stack_path") || ! cd "$git_compose_folder"; then
+      save_result "failed" 1 "gitdeploy"
+      log_msg "ERROR" "Could not find the compose file's folder of git stack $name"
+      echo ""
+      echo "✗ Stack $name was not deployed."
+      put_back_previous_commit
+      exit 1
+    fi
+    git_environment=(env -i "PATH=$PATH" "HOME=$HOME" "LC_ALL=C" "PWD=$git_compose_folder")
+    # DOCKER_CONFIG holds the registry credential chosen above; TERM only
+    # changes how Compose draws its progress.
+    for variable in DOCKER_CONFIG TERM; do
+      if [ -n "${!variable:-}" ]; then
+        git_environment+=("$variable=${!variable}")
+      fi
+    done
+    git_docker=("${git_environment[@]}" docker)
+    git_compose=("${git_docker[@]}" compose "${git_compose_args[@]}" "${profile_args[@]}")
+    # create_missing_external_networks (common.sh) runs its docker network calls with it too.
+    # shellcheck disable=SC2034 # read in common.sh
+    network_docker_command=("${git_docker[@]}")
 
     # A deploy always builds services that have a build section (the new
     # commit may change their Dockerfile), as a step of its own before up.
@@ -693,7 +720,7 @@ case $command in
         echo ""
         echo "Cleaning up old images..."
         # Plain docker rmi leaves alone any image another container still uses.
-        docker rmi "${superseded_images[@]}" 2>/dev/null || true
+        "${git_docker[@]}" rmi "${superseded_images[@]}" 2>/dev/null || true
       fi
 
       if [ -n "$stack_path" ] && [ -d "$stack_path" ]; then

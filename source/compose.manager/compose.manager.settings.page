@@ -2622,7 +2622,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 </div>
 
 <div id="compose-tab-credentials" class="compose-tab-content">
-    <div class="title"><span class="left"><i class="fa fa-key icon"></i>_(Registry Credentials)_</span></div>
+    <div class="title"><span class="left"><i class="fa fa-key icon"></i>_(Credentials)_</span></div>
     <p>Store pull credentials locally and assign them to individual stacks.</p>
     <button type="button" id="add-credential-button"><i class="fa fa-plus"></i> Add credential</button>
     <table class="tablesorter" style="width:100%;margin-top:16px;">

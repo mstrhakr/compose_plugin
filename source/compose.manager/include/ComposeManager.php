@@ -544,6 +544,10 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             <!-- ========== COMPOSE EDITOR PANEL ========== -->
             <div class="editor-panel active" id="editor-panel-compose" role="tabpanel" aria-labelledby="editor-tab-compose">
                 <div class="editor-modal-body">
+                    <div id="editor-compose-git-banner" class="compose-status-warning" style="display:none;padding:6px 12px;font-size:0.9em;">
+                        <i class="fa fa-code-fork"></i> <strong>This is a git stack.</strong> This file is in the plugin's clone of the repository: change it in the repository, then use Pull and Redeploy. An edit saved here is a local change, which the next deploy stops on (it can save it as a patch and discard it). Changes that must survive deploys belong in the Labels tab (the plugin's override) or the .env tab.
+                    </div>
+                    <div id="editor-compose-git-changed" class="compose-git-warning-box" style="display:none;margin:6px 12px;"></div>
                     <div id="compose-file-selector-wrap" style="display:none;align-items:center;gap:8px;padding:6px 12px;">
                         <label for="compose-file-selector" style="margin:0;">File:</label>
                         <select id="compose-file-selector" onchange="switchComposeFile(this.value)"></select>
@@ -621,7 +625,33 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                     <div class="settings-section">
                         <div class="settings-section-title"><i class="fa fa-files-o"></i> Compose Sources &amp; Files</div>
 
-                        <div class="settings-field">
+                        <!-- Shown instead of Compose Source for a git stack -->
+                        <div class="settings-field" id="settings-git-source" style="display:none;">
+                            <label>Git Repository</label>
+                            <div class="settings-field-help" style="margin-bottom:8px;">This stack is deployed from a git repository. Its compose file is the one in the plugin's clone of the repository.</div>
+                            <div id="settings-git-source-loading" class="compose-text-muted">Loading...</div>
+                            <div id="settings-git-source-error" class="compose-status-danger" style="display:none;"></div>
+                            <table id="settings-git-source-table" class="settings-git-source-table" style="display:none;">
+                                <tbody>
+                                    <tr><th>Repository</th><td><code id="settings-git-url"></code></td></tr>
+                                    <tr><th>Branch</th><td><code id="settings-git-branch"></code></td></tr>
+                                    <tr><th>Compose file</th><td><code id="settings-git-compose-path"></code></td></tr>
+                                    <tr><th>Clone</th><td><code id="settings-git-clone-dir"></code></td></tr>
+                                    <tr id="settings-git-credential-row"><th>Credential</th><td id="settings-git-credential"></td></tr>
+                                    <tr><th>Deployed commit</th><td id="settings-git-deployed"></td></tr>
+                                    <tr id="settings-git-failed-row"><th>Failed commit</th><td id="settings-git-failed" class="compose-status-danger"></td></tr>
+                                    <tr><th>Checked out</th><td id="settings-git-checked-out"></td></tr>
+                                </tbody>
+                            </table>
+                            <div id="settings-git-local-changes" class="compose-git-warning-box" style="display:none;margin-top:8px;"></div>
+                            <div id="settings-git-problem" class="compose-status-danger" style="display:none;margin-top:8px;"></div>
+                            <div id="settings-git-deploy-key-wrap" style="display:none;margin-top:8px;">
+                                <div class="settings-field-help">This stack's deploy key. Add it to the repository as a read-only deploy key:</div>
+                                <textarea id="settings-git-deploy-key" rows="2" readonly></textarea>
+                            </div>
+                        </div>
+
+                        <div class="settings-field" id="settings-compose-source-field">
                             <label>Compose Source</label>
                             <div class="settings-field-help" style="margin-bottom:8px;">Where does this stack's compose file live?</div>
                             <div id="settings-compose-source-radios" style="display:flex;flex-direction:column;gap:6px;">
@@ -656,6 +686,10 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                                 <span class="compose-status-warning" style="font-size:0.9em;"><i class="fa fa-info-circle"></i> This stack uses an external compose source. The Compose editor tab loads and saves from that location.</span>
                             </div>
                             <div id="settings-external-compose-file-error" class="compose-status-danger" style="margin-top:6px;display:none;font-size:0.9em;"></div>
+                            <div id="settings-convert-to-git" style="margin-top:12px;">
+                                <button type="button" class="btn btn-sm" style="padding:2px 12px;font-size:0.9em;" onclick="openConvertToGitModal()"><i class="fa fa-code-fork"></i> Move this stack into git...</button>
+                                <div class="settings-field-help">Deploy this stack from a git repository from now on. Put its compose file in the repository first.</div>
+                            </div>
                         </div>
 
                         <div class="settings-field">

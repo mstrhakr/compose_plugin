@@ -5,6 +5,7 @@ require_once("/usr/local/emhttp/plugins/compose.manager/include/Util.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/ColumnLayout.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/CredentialVault.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/GitHubDeviceAuth.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/GitStackWebActions.php");
 require_once("/usr/local/emhttp/plugins/dynamix/include/Wrappers.php");
 require_once('/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php');
 
@@ -485,6 +486,15 @@ switch ($_POST['action']) {
             'overrideManagementAutomatic' => $overrideManagementAutomatic,
         ]);
         break;
+    case 'addGitStack':
+        $result = (new GitStackWebActions($compose_root))->add($_POST);
+        if ($result['result'] === 'success') {
+            composeLogger('Created git stack: ' . $result['project'], null, 'user', 'info', 'stack');
+        } else {
+            composeLogger('Failed to create git stack: ' . $result['message'], null, 'user', 'error', 'stack');
+        }
+        echo json_encode($result);
+        break;
     case 'deleteStack':
         $stackName = isset($_POST['stackName']) ? basename(trim($_POST['stackName'])) : "";
         if (!$stackName) {
@@ -497,6 +507,13 @@ switch ($_POST['action']) {
         $isInvalidIndirect = !$isIndirect && is_file("$folderName/indirect.invalid");
         $filesRemain = $isIndirect ? file_get_contents("$folderName/indirect")
             : ($isInvalidIndirect ? file_get_contents("$folderName/indirect.invalid") : "");
+        // A git stack's indirect file points into its clone: name the clone instead, and say what it is.
+        $filesRemainNote = '';
+        $gitLeftBehind = GitStackWebActions::leftBehindByDelete($folderName);
+        if ($gitLeftBehind !== null) {
+            $filesRemain = $gitLeftBehind['path'] ?? $filesRemain;
+            $filesRemainNote = $gitLeftBehind['note'];
+        }
         composeLogger("Deleting stack: $stackName", [
             'folderName' => $folderName,
             'isIndirect' => $isIndirect,
@@ -537,14 +554,14 @@ switch ($_POST['action']) {
             composeSendNotification("Stack delete complete: $stackName", $message);
             echo json_encode(['result' => 'success', 'message' => '', 'cachePurge' => $cachePurgeMeta]);
         } else {
-            $message = "Stack '$stackName' was deleted. Files remain on disk at '$filesRemain'.";
+            $message = "Stack '$stackName' was deleted. Files remain on disk at '$filesRemain'." . ($filesRemainNote !== '' ? " $filesRemainNote" : '');
             composeLogger("Deleted stack: $stackName (indirect, external files remain at $filesRemain)", [
                 'deleteMeta' => $deleteMeta,
                 'filesRemain' => $filesRemain,
                 'cachePurgeMeta' => $cachePurgeMeta,
             ], 'user', 'warning', 'stack');
             composeSendNotification("Stack delete complete: $stackName", $message, 'warning');
-            echo json_encode(['result' => 'warning', 'message' => $filesRemain, 'cachePurge' => $cachePurgeMeta]);
+            echo json_encode(['result' => 'warning', 'message' => $filesRemain . ($filesRemainNote !== '' ? ". $filesRemainNote" : ''), 'cachePurge' => $cachePurgeMeta]);
         }
         break;
     case 'changeName':
@@ -1045,7 +1062,7 @@ switch ($_POST['action']) {
                 'username' => trim((string) ($_POST['username'] ?? '')),
                 'secret' => trim((string) ($_POST['secret'] ?? '')),
             ]);
-            composeLogger('Saved registry credential', ['id' => $credential['id'], 'provider' => $credential['provider'], 'registry' => $credential['registry']], 'user', 'info', 'credentials');
+            composeLogger('Saved credential', ['id' => $credential['id'], 'provider' => $credential['provider'], 'registry' => $credential['registry']], 'user', 'info', 'credentials');
             echo json_encode(['result' => 'success', 'credential' => $credential]);
         } catch (\InvalidArgumentException $error) {
             echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);
@@ -1065,7 +1082,7 @@ switch ($_POST['action']) {
                 return (new CredentialVault())->deleteCredential($credentialId);
             });
             if ($deleted) {
-                composeLogger('Deleted registry credential', ['id' => $credentialId], 'user', 'info', 'credential');
+                composeLogger('Deleted credential', ['id' => $credentialId], 'user', 'info', 'credential');
             }
             echo json_encode(['result' => $deleted ? 'success' : 'error', 'message' => $deleted ? '' : 'Credential not found.']);
         } catch (\Throwable $error) {
@@ -1091,7 +1108,7 @@ switch ($_POST['action']) {
                 $test = (new GitStackManager($compose_root))->testCredential($credentialId);
                 if ($test === null) {
                     echo json_encode(['result' => 'error', 'message' => 'No git stack uses this credential yet. '
-                        . 'It is tested by reaching a repository: give it to a stack with compose-git, then test it again.']);
+                        . 'It is tested by reaching a repository: choose it for a git stack (when adding the stack, or with compose-git), then test it again.']);
                     break;
                 }
             } else {
@@ -1256,7 +1273,38 @@ switch ($_POST['action']) {
             'projectPath' => "$compose_root/$script",
             'projectOverridePath' => $stackInfo->overrideInfo->getProjectOverridePath(),
             'effectiveOverridePath' => $stackInfo->getPreferredOverridePath(),
+            'isGitStack' => $stackInfo->isGitStack(),
         ]);
+        break;
+    case 'getGitStackStatus':
+        $script = getPostScript();
+        if (!$script) {
+            echo json_encode(['result' => 'error', 'message' => 'Stack not specified.']);
+            break;
+        }
+        echo json_encode((new GitStackWebActions($compose_root))->status($script));
+        break;
+    case 'convertToGitStack':
+        $script = getPostScript();
+        if (!$script) {
+            echo json_encode(['result' => 'error', 'message' => 'Stack not specified.']);
+            break;
+        }
+        $result = (new GitStackWebActions($compose_root))->convert($script, $_POST);
+        if ($result['result'] === 'success') {
+            composeLogger("Converted stack to a git stack: $script", ['backupDir' => $result['backupDir']], 'user', 'info', 'stack');
+        } else {
+            composeLogger("Failed to convert stack to a git stack: $script", ['error' => $result['message']], 'user', 'error', 'stack');
+        }
+        echo json_encode($result);
+        break;
+    case 'checkGitStack':
+        $script = getPostScript();
+        if (!$script) {
+            echo json_encode(['result' => 'error', 'message' => 'Stack not specified.']);
+            break;
+        }
+        echo json_encode((new GitStackWebActions($compose_root))->check($script));
         break;
     case 'setLabelsViewMode':
         $script = getPostScript();
@@ -1365,6 +1413,15 @@ switch ($_POST['action']) {
         $externalComposePath = isset($_POST['externalComposePath']) ? trim($_POST['externalComposePath']) : "";
         $externalComposePath = rtrim($externalComposePath, '/');
         $externalComposeFilePath = isset($_POST['externalComposeFilePath']) ? trim($_POST['externalComposeFilePath']) : "";
+
+        // A git stack's compose file is the one in its clone, set by git.json.
+        // The Sources tab cannot change it, so the form's values are ignored
+        // and the stack's indirect files are left as they are.
+        $isGitStack = is_file("$compose_root/$script/git.json");
+        if ($isGitStack) {
+            $externalComposePath = '';
+            $externalComposeFilePath = '';
+        }
 
         if (!empty($externalComposePath) && !empty($externalComposeFilePath)) {
             echo json_encode(['result' => 'error', 'message' => 'Set either External Compose Path or External Compose File, not both.']);
@@ -1585,7 +1642,9 @@ switch ($_POST['action']) {
             $indirectTarget = $externalComposePath;
         }
 
-        if ($indirectTarget === '') {
+        if ($isGitStack) {
+            // Left as they are (see above).
+        } elseif ($indirectTarget === '') {
             // Removing indirect: move compose file back to project folder if it only exists externally
             if (is_file($indirectFile)) {
                 $oldIndirectPath = trim(file_get_contents($indirectFile));

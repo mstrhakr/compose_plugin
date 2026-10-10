@@ -86,7 +86,16 @@ final class GitSsh
         }
         sort($lines);
         if ($lines === []) {
-            throw new RuntimeException("Could not get the ssh host keys of $host (port $port). Is the address right?");
+            // ssh-keyscan reports the server's banner as "#" lines on stderr; any other line is the error.
+            $errors = array_values(array_filter(
+                array_map('trim', explode("\n", $result->stderr)),
+                static fn(string $line): bool => $line !== '' && !str_starts_with($line, '#')
+            ));
+            $reason = $errors === [] ? 'no key came back' : $errors[count($errors) - 1];
+            throw new RuntimeException(
+                "Could not get the ssh host keys of $host (port $port): $reason. "
+                . 'Check the address, and that this server can reach the host.'
+            );
         }
         return implode("\n", $lines) . "\n";
     }

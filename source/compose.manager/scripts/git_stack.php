@@ -66,6 +66,10 @@ try {
             }
             break;
 
+        case 'compose-folder':
+            echo $deploy->composeFolder() . "\n";
+            break;
+
         case 'up-arguments':
             foreach ($deploy->upArguments($args[2] ?? '') as $arg) {
                 echo $arg . "\n";

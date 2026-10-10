@@ -136,6 +136,9 @@ foreach ($config["networks"] ?? [] as $key => $network) {
 #   create_missing_external_networks docker compose -f compose.yaml -p mystack
 # A config that does not parse is skipped here; the compose command that follows reports it.
 # Returns 1 if any network could not be created (after trying them all, so each is named).
+# The docker network calls run through network_docker_command, plain docker unless the
+# caller sets it (compose.sh gitdeploy runs docker with its checks' environment).
+network_docker_command=(docker)
 create_missing_external_networks() {
     local config_json network failed=0
     if ! config_json=$("$@" config --format json 2>/dev/null); then
@@ -143,10 +146,10 @@ create_missing_external_networks() {
     fi
     while IFS= read -r network; do
         [ -n "$network" ] || continue
-        if docker network inspect "$network" > /dev/null 2>&1; then
+        if "${network_docker_command[@]}" network inspect "$network" > /dev/null 2>&1; then
             continue
         fi
-        if docker network create "$network" > /dev/null; then
+        if "${network_docker_command[@]}" network create "$network" > /dev/null; then
             echo "✓ Created missing external network: $network"
             composeLogger "Created missing external network: $network" info compose
         else

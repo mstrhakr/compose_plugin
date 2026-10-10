@@ -5,8 +5,9 @@ repository on your server, and deploying the stack means: fetch the latest commi
 images, and start the containers from it. To change the stack, you change the repository: commit, push,
 deploy.
 
-For now git stacks are managed from the command line with `compose-git`. Stacks made this way show up in
-the Compose page like any other stack, and Start, Stop and the rest work on them as usual.
+Git stacks are created and deployed from the Compose page (see [In the web UI](#in-the-web-ui)) or from the
+command line with `compose-git`; both run the same code. A git stack shows up in the Compose page like any
+other stack, and Start, Stop and the rest work on it as usual.
 
 ```bash
 /usr/local/emhttp/plugins/compose.manager/scripts/compose-git
@@ -21,7 +22,9 @@ to your shell profile.
 - [Quick start](#quick-start)
 - [Moving an existing stack into git](#moving-an-existing-stack-into-git)
 - [Day to day](#day-to-day)
+- [In the web UI](#in-the-web-ui)
 - [How to lay out your repositories](#how-to-lay-out-your-repositories)
+- [The stack's folder, and files outside it](#the-stacks-folder-and-files-outside-it)
 - [Private repositories](#private-repositories)
 - [Which .env is used](#which-env-is-used)
 - [Folders and files your containers need](#folders-and-files-your-containers-need)
@@ -58,6 +61,12 @@ to your shell profile.
 You need a repository with a compose file in it: a public one over `https://`, a private one (see
 [Private repositories](#private-repositories)), or one on this server under `/mnt` (see
 [step 2](#2-create-the-repository)).
+
+In the web UI: **Add New Stack**, choose **Git repository** as the compose source, and fill in the
+repository address and the compose file's path inside the repository. **Create** clones the repository; then
+choose **Pull and Redeploy** from the new stack's menu.
+
+Or from the command line:
 
 ```bash
 compose-git add whoami --url https://github.com/you/stacks.git --path whoami/compose.yaml
@@ -154,6 +163,9 @@ git push
 
 ### 6. Convert the stack
 
+In the web UI: **Edit Stack**, the **Sources** tab, **Move this stack into git...**. Or from the command
+line:
+
 ```bash
 compose-git convert myapp --url https://github.com/you/stacks.git --path stacks/myapp/compose.yaml
 ```
@@ -175,6 +187,8 @@ old compose file's location.
 
 ### 7. Deploy
 
+**Pull and Redeploy** from the stack's menu, or:
+
 ```bash
 compose-git deploy myapp
 ```
@@ -194,13 +208,28 @@ copy the backup folder's files back into it (they include the old `indirect` set
 
 1. Change the compose file (or its config files) in the repository, commit and push.
 2. See whether the server is behind: `compose-git check myapp` (or `--all`). Exit status 3 means a newer
-   commit is waiting.
+   commit changes the stack's folder; 4 means a newer commit changes only files outside it (see
+   [The stack's folder, and files outside it](#the-stacks-folder-and-files-outside-it)).
 3. Deploy it: `compose-git deploy myapp`.
 
 To go back to an older version, deploy its commit: `compose-git deploy myapp --commit <full commit id>`. A
 later plain `deploy` brings the stack back to the branch's latest.
 
 `compose-git status` shows every git stack: what is deployed, any failed commit, and local changes.
+
+## In the web UI
+
+| Where | What it does | Command line |
+|---|---|---|
+| Add New Stack, compose source **Git repository** | Clone a repository and make a new git stack. Not deployed yet. | `add` |
+| Edit Stack, Sources tab, **Move this stack into git...** | Turn an existing stack into a git stack. | `convert` |
+| Stack menu, **Check for Changes** | Compare the deployed commit with the branch on the remote. Says whether a newer commit changes the stack's folder, or only files outside it, and offers to deploy it either way (see [below](#the-stacks-folder-and-files-outside-it)). | `check` |
+| Stack menu, **Pull and Redeploy** | Deploy the branch's latest commit. If files in the clone were changed, or a commit was made in it by hand, offers to save them as a patch and discard them first. Not offered while the clone has a problem (missing or unreadable): the dialog says what it is. | `deploy` (with `--save-local-changes`) |
+| Stack menu, **Deploy Commit...** | Deploy a commit given by its full id, to go back to an older version. | `deploy --commit` |
+| Edit Stack, Sources tab | Shows the repository, branch, compose file, clone, the deployed and checked-out commits, a failed commit, files changed in the clone (also shown above the file on the Compose tab), and an ssh stack's deploy key. | `status`, `deploy-key` |
+| Stack list | Under the project name: the branch and deployed commit, and "failed" after a failed deploy. | `status` |
+
+Changing a stack's credential, pinning a changed ssh host key and recloning are done from the command line.
 
 ## How to lay out your repositories
 
@@ -219,7 +248,37 @@ big things:
   stacks.
 
 A change to another stack's folder in a shared repository is fetched by every stack, but only recreates the
-containers of the stack whose folder changed (see [below](#config-files-and-recreating-containers)).
+containers of the stack whose folder changed, and Check for Changes tells the two apart (see
+[The stack's folder, and files outside it](#the-stacks-folder-and-files-outside-it)).
+
+## The stack's folder, and files outside it
+
+A git stack's **folder** is the folder holding its compose file in the repository: `myapp/` for
+`myapp/compose.yaml`, or the whole repository when the compose file is at the top. Whether a new commit
+changes that folder decides two things:
+
+- **Check for Changes** (and `compose-git check`) gives one of three answers:
+  - **up to date**: the deployed commit is the branch's latest (exit status 0);
+  - **a newer commit changes the stack's folder**: deploy it (exit status 3). This is also the answer
+    (and the dialog says why) when its changes cannot be identified: nothing is deployed yet, or the deployed commit is no longer
+    in the clone (it was made again after a force-push, say);
+  - **a newer commit changes only files outside the stack's folder**: in a repository that holds several
+    stacks, that is usually a commit to another stack, and this stack has nothing to do (exit status 4).
+    Deploying is still offered, as **Deploy anyway**.
+- **A deploy recreates the stack's containers** only when it changes the stack's folder (see
+  [below](#config-files-and-recreating-containers)).
+
+**Files outside the folder are not counted.** A stack can use files from elsewhere in the repository: a
+bind mount such as `../shared/certs:/certs`, a build context of `..`, an `env_file`, `extends` or `include`
+in another folder. A commit that changes only those is reported as "outside the stack's folder", and a
+deploy of it does not recreate the containers. If a stack uses files like that, either:
+
+- deploy it anyway when such a file changes (and restart the stack if the change is to a mounted file), or
+- keep everything the stack uses inside its own folder (a copy per stack is fine for small files), or give
+  the stack a repository of its own.
+
+A script that should deploy whenever the branch moves, whatever the commit touches, treats exit status 4
+like 3.
 
 ## Private repositories
 
@@ -254,7 +313,11 @@ Deploy keys), then run the same command again. `compose-git deploy-key myapp` sh
 Until then the key is listed on the Credentials tab as used by no stack: leave it there, or the second run
 makes a new key, and the one you added to the repository no longer works.
 
-When the stack is added, the server's ssh host keys are pinned and their fingerprints printed. Compare them with
+Deleting a stack leaves its key on the Credentials tab. Delete the key there too before you add a new stack of
+the same name for another repository on the same host: otherwise the new stack reuses the old key, and GitHub
+refuses a deploy key that another repository already has.
+
+When the stack is added, the server's ssh host keys are pinned and their fingerprints shown. Compare them with
 the ones your git host publishes (GitHub, GitLab and Codeberg list theirs). Every later connection must match
 them. If the server is rebuilt and its keys change, deploys stop until you run `compose-git trust-host myapp`,
 which shows the old and new fingerprints and pins the new ones.
@@ -273,8 +336,9 @@ With no custom env file set for the stack, a git stack uses, in order:
 Only one of the two is used; they are not merged. Editing a `.env` that came from the repository changes the
 clone, so the next deploy stops with "local changes": make the change in the repository instead.
 
-Variables exported in the shell you run `compose-git deploy` from are not passed on, and `${PWD}` in the compose
-file is the compose file's folder in the clone: a deploy uses only what its checks saw. Put values in the `.env`.
+Variables exported in the shell you run `compose-git deploy` from (or in the environment of whatever else starts
+the deploy) are not passed on, and `${PWD}` in the compose file is the compose file's folder in the clone: a deploy
+uses only what its checks saw. Put values in the `.env`.
 
 If the `.env` sets `COMPOSE_FILE` with relative paths, they are relative to the folder the `.env` is in. For
 the stack folder's `.env` that is the stack folder, not the clone, so use paths relative to the clone only in
@@ -338,7 +402,7 @@ container too, even at the same commit: a container may still hold an edited fil
 stack folder holds a `git_discarded_changes` file that says so.
 
 Only the stack's own folder counts: a change to a shared folder elsewhere in the repository does not
-recreate anything yet. To turn the behaviour off, set `"recreateOnFolderChange": false` in the stack's
+recreate anything (see [The stack's folder, and files outside it](#the-stacks-folder-and-files-outside-it)). To turn the behaviour off, set `"recreateOnFolderChange": false` in the stack's
 `git.json`.
 
 ## Local changes on the server
@@ -349,7 +413,8 @@ deploy stops and lists the files. Then either:
 - undo the change by hand, or
 - deploy with `--save-local-changes`: the changes are saved as a patch in the stack folder's `git-changes`
   folder, then discarded, and the deploy goes ahead. Apply the patch to your own copy of the repository with
-  `git apply <patch>` if you want to keep it.
+  `git apply <patch>` if you want to keep it. In the web UI, Pull and Redeploy lists the changed files and
+  offers this.
 
 Files that are not part of the repository, such as data a container wrote into the clone, are never removed
 or overwritten, whether `.gitignore` lists them or not. If a new commit would put a file where one of them
@@ -412,7 +477,7 @@ otherwise make compose refuse the stack. The log names each one removed.
 | `credential <stack> <name>` or `credential <stack> --none` | Change or remove the HTTPS credential a stack uses. |
 | `deploy-key <stack>` | Show an ssh stack's public deploy key. |
 | `trust-host <stack>` | Pin an ssh stack's server host keys again, after they changed. |
-| `check <stack>` or `check --all` | Compare the deployed commit with the branch on the remote. Changes nothing. |
+| `check <stack>` or `check --all` | Compare the deployed commit with the branch on the remote, and say whether a newer commit changes the stack's folder or only files outside it. Fetches a newer commit into the clone; changes no container and no checked-out file. |
 | `deploy <stack> [--commit <id>] [--save-local-changes] [--wait\|--no-wait] [--wait-timeout <s>] [--profile <p>]...` | Deploy the branch's latest commit, or the given one. Waits for healthy containers when the stack's wait-for-healthy setting says so, unless `--wait` or `--no-wait` overrides it. |
 | `reclone <stack>` | Move the clone aside and clone again at the deployed commit. |
 | `status [<stack>\|--all] [--json]` | Show what is deployed, failed and changed locally, without asking the remote. |
@@ -426,11 +491,12 @@ stack always uses the deploy key made for it. `<stack>` is the stack's exact fol
 disk or pool, and the share must exist.
 
 Exit status: `0` success (for `check`: up to date), `1` failed, `2` the command line was not understood, `3`
-(`check`) a newer commit is available. `check --all` exits `3` if any stack is behind, even when another could
-not be checked. If another operation on the same stack is running (a Start or Update from the web UI, say),
+(`check`) a newer commit changes the stack's folder, `4` (`check`) a newer commit changes only files outside
+it. `check --all` exits `3` if any stack's folder changed, even when another could not be checked; otherwise
+`1` if any could not be checked; otherwise `4` if any has a newer commit outside its folder. If another operation on the same stack is running (a Start or Update from the web UI, say),
 `deploy` waits up to 30 seconds (`COMPOSE_LOCK_TIMEOUT`) for it to finish, then fails without changing
-anything. `convert` and `reclone` do not wait: they refuse to start while another operation on the stack is
-running, so run them again once it has finished.
+anything. `convert`, `reclone` and `check` (when it has a newer commit to fetch) do not wait: they refuse to
+start while another operation on the stack is running, so run them again once it has finished.
 
 Without `--profile`, `deploy` uses the profiles the stack is running with, or else its default profiles, the
 same as Update in the web UI.
@@ -445,17 +511,17 @@ deployed commit: only `compose-git deploy` does that.
 - **Delete** removes the stack folder and leaves the clone (see [Limitations](#limitations)).
 - **Backup** saves the stack folder, not the clone, as for any stack whose compose file lives elsewhere. The
   repository is the backup of the clone.
-- **Settings:** do not change the stack's external compose path. The next deploy refuses, because it no longer
-  matches `git.json`.
+- **Settings:** the Sources tab offers no compose path for a git stack. If the stack's `indirect` file is edited by
+  hand so it no longer names the compose file in the clone, the next deploy refuses, because it no longer matches
+  `git.json`.
 
 ## Limitations
 
 - **An `https` server needs a certificate this server trusts.** A self-hosted git server with a self-signed
   certificate is refused over `https`; reach it over ssh instead.
-- **No web UI yet.** Git stacks are created and deployed from the command line; the Compose page shows and
-  runs them like other stacks.
 - **No automatic deploys yet.** Use `check` and `deploy` from your own schedule or a git hook.
 - No submodules and no Git LFS: the clone checks out plain files only.
-- **The web UI's editor edits the file in the clone.** The next deploy treats that as a local change. Changes
-  that must survive deploys belong in the plugin's override or the stack folder's `.env`.
-- **Deleting a git stack leaves its clone** under the clones folder. Remove it by hand.
+- **The web UI's editor edits the file in the clone** (it says so above the file). The next deploy treats that
+  as a local change, and the editor lists it in a "Changed in the clone" box. Changes that must survive deploys belong in the plugin's override or the stack folder's
+  `.env`.
+- **Deleting a git stack leaves its clone** under the clones folder, and names it. Remove it by hand.

@@ -17,6 +17,40 @@ final class GitCloneNotOwnedException extends RuntimeException
 }
 
 /**
+ * Thrown when git clone itself failed, rather than a check before or after it. It keeps
+ * everything git said: a refused key and an unreachable host end in the same "fatal:"
+ * line, and only the lines before it tell them apart.
+ */
+final class GitCloneFailedException extends RuntimeException
+{
+    public function __construct(string $message, public readonly string $gitOutput)
+    {
+        parent::__construct($message);
+    }
+
+    /**
+     * Whether the server answered and refused access, which over ssh usually means it
+     * does not know the key. False for anything else: an unreachable host, a wrong host
+     * key, a missing branch. Each host words a refusal its own way:
+     *  - "Permission denied (publickey)": ssh itself, when no account has the key
+     *  - "Repository not found": GitHub, when the key belongs to another repository
+     *  - "you don't have permission to view it": GitLab
+     *  - "User permission denied": Gitea and Forgejo
+     *  - "repository access denied": Bitbucket
+     */
+    public function serverRefusedAccess(): bool
+    {
+        $output = strtolower($this->gitOutput);
+        foreach (['permission denied', 'repository not found', "you don't have permission", 'access denied'] as $wording) {
+            if (str_contains($output, $wording)) {
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
+/**
  * The plugin-owned git clone behind one git-backed stack.
  *
  * The clone is always checked out detached at a specific commit, and the
@@ -65,15 +99,16 @@ final class GitClone
     /**
      * Ask the remote which commit the branch points at, without changing anything.
      *
+     * @param int $timeoutSeconds How long to wait for the remote
      * @throws RuntimeException if the remote cannot be reached or the branch does not exist
      */
-    public function remoteBranchCommit(): string
+    public function remoteBranchCommit(int $timeoutSeconds = self::REMOTE_TIMEOUT_SECONDS): string
     {
         $ref = 'refs/heads/' . $this->settings->branch;
         $result = $this->git(
             ['ls-remote', '--heads', '--', $this->settings->url, $ref],
             null,
-            self::REMOTE_TIMEOUT_SECONDS
+            $timeoutSeconds
         );
         if (!$result->succeeded()) {
             throw new RuntimeException('Could not reach the repository: ' . $result->errorSummary());
@@ -95,7 +130,8 @@ final class GitClone
      * created is removed again, and nothing else is touched.
      *
      * @return string the commit checked out
-     * @throws RuntimeException naming the problem
+     * @throws GitCloneFailedException when git clone itself failed
+     * @throws RuntimeException naming any other problem
      */
     public function create(): string
     {
@@ -123,7 +159,7 @@ final class GitClone
 
             $result = $this->git($args, null, self::CLONE_TIMEOUT_SECONDS);
             if (!$result->succeeded()) {
-                throw new RuntimeException('Could not clone the repository: ' . $result->errorSummary());
+                throw new GitCloneFailedException('Could not clone the repository: ' . $result->errorSummary(), $result->stderr);
             }
             if (!is_dir($cloneDir . '/.git')) {
                 throw new RuntimeException("git reported success but $cloneDir/.git is missing.");
@@ -137,7 +173,7 @@ final class GitClone
             $commit = $this->resolveCommit('refs/remotes/origin/' . $this->settings->branch);
             if (!$this->composeFileExistsAt($commit)) {
                 throw new RuntimeException(
-                    "{$this->settings->composePath} does not exist on branch {$this->settings->branch}, so the clone was removed again."
+                    "{$this->settings->composePath} does not exist on branch {$this->settings->branch}, so no clone was made."
                 );
             }
             $this->runOrThrow(['checkout', '--detach', $commit], 'Could not check out the files');
@@ -559,6 +595,29 @@ final class GitClone
             throw new RuntimeException('Could not compare the commit with the branch: ' . $result->errorSummary());
         }
         return true;
+    }
+
+    /**
+     * Whether the checked-out commit was committed in the clone by hand.
+     *
+     * A checked-out commit that is on the branch came from the repository: the
+     * deployed one, one whose "up" failed, or one left checked out when a
+     * deploy was interrupted. The deployed and failed commits also count when a
+     * rewritten branch no longer holds them. Anything else was committed in the
+     * clone by hand. The deploy and the stack's status both ask this, so the
+     * web UI offers to save such a commit when the deploy would refuse it. One
+     * rare case differs: the deploy asks after a fetch and the status without
+     * one, so a commit left by an interrupted deploy on a branch that was then
+     * force-pushed is fine to the status and made by hand to the deploy, which
+     * refuses it with its own message.
+     *
+     * @throws RuntimeException if git cannot tell
+     */
+    public function isMadeByHand(string $checkedOut, ?string $deployedCommit, ?string $failedCommit): bool
+    {
+        return $checkedOut !== $deployedCommit
+            && $checkedOut !== $failedCommit
+            && !$this->isOnBranch($checkedOut);
     }
 
     /**

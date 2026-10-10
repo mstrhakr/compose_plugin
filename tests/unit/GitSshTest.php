@@ -62,6 +62,18 @@ final class GitSshTest extends TestCase
         GitSsh::publicKey($id);
     }
 
+    public function testHostThatGivesNoKeysIsRefusedWithAReason(): void
+    {
+        if (trim((string) shell_exec('command -v ssh-keyscan')) === '') {
+            $this->markTestSkipped('ssh-keyscan is not installed.');
+        }
+
+        // Nothing listens on port 9.
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/^Could not get the ssh host keys of 127\.0\.0\.1 \(port 9\): .+\. Check the address/');
+        GitSsh::scanHostKeys('127.0.0.1', 9);
+    }
+
     public function testFingerprintsOfPinnedKeys(): void
     {
         $key = GitSsh::generateKey('host key');

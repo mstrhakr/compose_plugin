@@ -112,7 +112,7 @@
             secretPlaceholder: 'Read-only access token',
             tokenUrl: '',
             tokenUrlLabel: '',
-            instructions: 'For a private repository that a git stack deploys from. Set the host to the git server only, such as <code>github.com</code> or <code>git.example.com:3000</code>. Use a token that can only read the repository, such as a GitHub fine-grained token with read access to its contents. Give it to a stack with <code>compose-git</code> (<code>--credential</code>).',
+            instructions: 'For a private repository that a git stack deploys from. Set the host to the git server only, such as <code>github.com</code> or <code>git.example.com:3000</code>. Use a token that can only read the repository, such as a GitHub fine-grained token with read access to its contents. Choose it when adding a git stack, or give it to a stack with <code>compose-git</code> (<code>--credential</code>).',
             canOAuth: false
         },
         'git-ssh': {
@@ -460,7 +460,7 @@
         if (!$body.length) return;
         $body.empty();
         if (!credentials.length) {
-            $body.append('<tr><td colspan="6" class="credential-empty">No registry credentials saved.</td></tr>');
+            $body.append('<tr><td colspan="6" class="credential-empty">No credentials saved.</td></tr>');
             return;
         }
         credentials.forEach(function(credential) {
@@ -557,7 +557,7 @@
     function populateSelect($select, selectedId) {
         $select.empty().append($('<option value="">').text('Anonymous / no credential'));
         credentials.forEach(function(credential) {
-            // Git repository credentials are not registry logins; git stacks choose theirs with compose-git.
+            // Git repository credentials are not registry logins; git stacks choose theirs elsewhere.
             if (credential.provider === 'git' || credential.provider === 'git-ssh') return;
             $select.append($('<option>').val(credential.id).text(credential.name + ' (' + credential.registry + ' / ' + credential.username + ')'));
         });

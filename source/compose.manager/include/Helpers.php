@@ -415,6 +415,176 @@ function echoComposeCommand($action, array $options = [])
 }
 
 /**
+ * The compose profiles a git deploy runs with.
+ *
+ * The profiles asked for when there are any. Otherwise the profiles the stack
+ * is running with, else its default profiles, as the web UI's Update does: a
+ * deploy without profiles would leave the running profile services on the
+ * old commit, and compose.sh would forget the stack's running profiles.
+ *
+ * @param string[] $requested Profiles named for this deploy, often none
+ * @return string[]
+ */
+function gitDeployProfiles(StackInfo $stack, array $requested): array
+{
+    if ($requested !== []) {
+        return array_values($requested);
+    }
+    $running = $stack->getRunningProfiles();
+    if ($running !== []) {
+        return array_values($running);
+    }
+    return array_values($stack->getDefaultProfiles());
+}
+
+/**
+ * compose.sh's command line for deploying a git stack (compose.sh gitdeploy).
+ * Used by both compose-git deploy and the web UI, so the two deploy alike.
+ *
+ * @param string|null $commit A full commit id to deploy, or null for the branch's latest
+ * @param string[] $profiles Compose profiles to enable
+ * @param string[] $waitArguments --wait and --wait-timeout, if the deploy waits for healthy containers
+ * @return string[]
+ */
+function buildGitDeployCommand(StackInfo $stack, ?string $commit, bool $saveLocalChanges, array $profiles, array $waitArguments): array
+{
+    $command = [dirname(__DIR__) . '/scripts/compose.sh', '-cgitdeploy', '-p' . $stack->projectName, '-s' . $stack->path];
+    $credentialId = trim((string) ($stack->getCredentialId() ?? ''));
+    if ($credentialId !== '') {
+        $command[] = '--credential-id';
+        $command[] = $credentialId;
+    }
+    foreach ($profiles as $profile) {
+        $command[] = '-g' . $profile;
+    }
+    if ($commit !== null) {
+        $command[] = '--git-commit';
+        $command[] = $commit;
+    }
+    if ($saveLocalChanges) {
+        $command[] = '--save-local-changes';
+    }
+    foreach ($waitArguments as $argument) {
+        $command[] = $argument;
+    }
+    return $command;
+}
+
+/**
+ * The profiles a git deploy from the web UI runs with. When the person chose
+ * them in the profile dialog (profileChosen=1), exactly those: an empty choice
+ * means the default services only. Otherwise the ones the stack runs with, as
+ * compose-git deploy does (gitDeployProfiles()).
+ *
+ * @param array<string, mixed> $post The request: profile, profileChosen
+ * @return string[]
+ */
+function gitDeployProfilesFromRequest(StackInfo $stack, array $post): array
+{
+    if (($post['profileChosen'] ?? '') != '1') {
+        return gitDeployProfiles($stack, []);
+    }
+    $names = array_map('trim', explode(',', (string) ($post['profile'] ?? '')));
+    return array_values(array_filter($names, static fn(string $name): bool => $name !== ''));
+}
+
+/**
+ * Deploy a git stack from the web UI: the stack menu's "Pull and Redeploy"
+ * and "Deploy Commit...". Echoes what echoComposeCommand() does: a ttyd
+ * viewer URL, {"background":true}, or a JSON error.
+ *
+ * POST parameters:
+ *   path: the stack folder (required)
+ *   commit: a full commit id to deploy (optional; the branch's latest otherwise)
+ *   saveLocalChanges: '1' to save files changed in the clone as a patch, then discard them
+ *   profile: optional comma-separated list of profiles to enable
+ *   profileChosen: '1' when profile is the person's choice (see gitDeployProfilesFromRequest())
+ *
+ * @param array<string, mixed> $options background
+ */
+function echoGitDeployCommand(array $options = []): void
+{
+    global $plugin_root;
+    global $sName;
+    global $compose_root;
+    $cfg = parse_plugin_cfg($sName);
+    $debug = ($cfg['DEBUG_TO_LOG'] ?? '') == "true";
+    $path = isset($_POST['path']) ? trim($_POST['path']) : '';
+    $commit = isset($_POST['commit']) ? strtolower(trim((string) $_POST['commit'])) : '';
+    $saveLocalChanges = isset($_POST['saveLocalChanges']) && $_POST['saveLocalChanges'] == '1';
+    $background = !empty($options['background']);
+
+    $unRaidVars = parse_ini_file("/var/local/emhttp/var.ini");
+    if ($unRaidVars['mdState'] != "STARTED") {
+        echo $plugin_root . "/scripts/arrayNotStarted.sh";
+        return;
+    }
+
+    try {
+        $stack = StackInfo::fromProject($compose_root, basename($path));
+    } catch (\Throwable $e) {
+        composeLogger("Cannot deploy: invalid stack", ['path' => $path, 'error' => $e->getMessage()], 'user', 'warning', 'compose');
+        echo json_encode(['error' => 'git', 'message' => 'There is no such stack.']);
+        return;
+    }
+    if (!$stack->isGitStack()) {
+        echo json_encode(['error' => 'git', 'message' => "'{$stack->projectFolder}' is not a git stack."]);
+        return;
+    }
+    if (!$stack->hasResolvedIdentity()) {
+        echo json_encode([
+            'error' => 'identity',
+            'project' => $stack->projectFolder,
+            'folderCandidate' => $stack->identity->folderCandidate,
+            'legacyCandidate' => $stack->identity->legacyCandidate,
+            'message' => $stack->getIdentityBlockReason(),
+        ]);
+        return;
+    }
+    // A full commit id only: the deploy refuses anything else too, but this
+    // way the person sees why at once, not in a terminal window.
+    require_once '/usr/local/emhttp/plugins/compose.manager/include/GitClone.php';
+    if ($commit !== '' && !GitClone::isCommitId($commit)) {
+        echo json_encode(['error' => 'git', 'message' => 'Enter the full commit id (40 characters), not a short one or a branch name.']);
+        return;
+    }
+
+    $profiles = gitDeployProfilesFromRequest($stack, $_POST);
+
+    // Waits for healthy containers as the stack's up does.
+    $waitArguments = [];
+    $waitSettings = resolveStackWaitSettings($stack->path, $cfg);
+    if (!empty($waitSettings['enabled'])) {
+        $waitArguments[] = '--wait';
+        if (preg_match('/^[1-9][0-9]{0,5}$/', (string) $waitSettings['timeout']) === 1) {
+            $waitArguments[] = '--wait-timeout';
+            $waitArguments[] = (string) $waitSettings['timeout'];
+        }
+    }
+
+    $composeCommand = buildGitDeployCommand($stack, $commit === '' ? null : $commit, $saveLocalChanges, $profiles, $waitArguments);
+    if ($debug) {
+        $composeCommand[] = '--debug';
+    }
+
+    if ($background) {
+        // As echoComposeCommand(): output goes to last_cmd.log and a notification is sent at the end.
+        $bgCmd = escapeshellarg($plugin_root . "scripts/compose_background.sh");
+        foreach ($composeCommand as $arg) {
+            $bgCmd .= ' ' . escapeshellarg($arg);
+        }
+        exec($bgCmd . ' > /dev/null 2>&1 &');
+        composeLogger("Background command: " . $bgCmd, ['command' => $bgCmd], 'user', 'debug', 'compose');
+        echo json_encode(['background' => true]);
+        return;
+    }
+
+    $composeCommandString = implode(' ', array_map('escapeshellarg', $composeCommand));
+    execComposeCommandInTTY($composeCommandString, $debug, getLastCmdLogFileForComposeAction('gitdeploy', $stack->path));
+    echo "/plugins/compose.manager/include/ShowTtyd.php?done=1";
+}
+
+/**
  * Build and echo a compose command for multiple stacks.
  *
  * @param string $action The compose action (up, down, update)

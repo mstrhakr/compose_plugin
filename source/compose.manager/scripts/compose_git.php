@@ -9,7 +9,8 @@
  *   0  success (for check: the deployed commit is the branch's latest)
  *   1  failed; the message says what changed, if anything
  *   2  the command line was not understood
- *   3  check only: the branch has a newer commit than the one deployed
+ *   3  check only: the branch has a newer commit that changes the stack's folder
+ *   4  check only: the branch has a newer commit, but it changes nothing in the stack's folder
  */
 
 declare(strict_types=1);
@@ -21,6 +22,7 @@ const COMPOSE_GIT_EXIT_OK = 0;
 const COMPOSE_GIT_EXIT_FAILED = 1;
 const COMPOSE_GIT_EXIT_USAGE = 2;
 const COMPOSE_GIT_EXIT_BEHIND = 3;
+const COMPOSE_GIT_EXIT_NEWER_ELSEWHERE = 4;
 
 /** The command line itself was not understood (as opposed to a value that was refused). */
 final class ComposeGitUsageError extends InvalidArgumentException
@@ -51,8 +53,8 @@ trust-host pins them again after the server's keys change.
 deploy waits for healthy containers when the stack's wait-for-healthy setting says so;
 --wait and --no-wait override it.
 
-Exit status: 0 success, 1 failed, 2 usage error, 3 (check) a newer commit is available.
-check --all exits 3 if any stack is behind, even when another could not be checked.
+Exit status: 0 success, 1 failed, 2 usage error; for check, 3 a newer commit changes the stack's
+folder, 4 a newer commit changes only files outside it. See 'compose-git check --help'.
 
 Run 'compose-git <command> --help' for what a command does and what each option means.
 TEXT;
@@ -160,18 +162,30 @@ Usage: compose-git check <stack>
        compose-git check --all
 
 Ask the repository for the newest commit on the stack's branch, and compare it with the
-deployed commit. Changes nothing, on the server or in the clone.
+deployed commit. When there is a newer one, it is fetched into the clone to see what it
+changes. No container and no checked-out file is changed.
+
+The stack's folder is the folder holding its compose file in the repository (the whole
+repository when the compose file is at the top). A newer commit that changes nothing in that
+folder is reported apart (exit 4): in a repository that holds several stacks, it is usually a
+commit to another stack. But a stack can use files from outside its folder: a bind mount of
+../shared, a build context of .., an env_file, extends or include in another folder. A change
+to those is not seen as a change to the stack, so deploy it anyway when the stack uses them.
 
 Options:
   --all   Check every git stack, one line each.
 
 Exit status:
   0  up to date
-  1  the stack or the repository could not be read
-  3  a newer commit is on the branch (or nothing is deployed yet); deploy it with
+  1  the stack or the repository could not be read (or another operation on the stack is
+     running)
+  3  a newer commit changes the stack's folder, or its changes cannot be identified (nothing
+     is deployed yet, or the deployed commit is no longer in the clone); deploy it with
      'compose-git deploy <stack>'
-With --all: 3 if any stack is behind, even when another could not be checked; otherwise 1 if
-any could not be checked.
+  4  a newer commit is on the branch, but it changes only files outside the stack's folder
+With --all: 3 if any stack's folder changed, even when another could not be checked;
+otherwise 1 if any could not be checked; otherwise 4 if any has a newer commit outside its
+folder. A script that should deploy whenever the branch moves treats 4 like 3.
 TEXT,
         'deploy' => <<<'TEXT'
 Usage: compose-git deploy <stack> [options]
@@ -349,33 +363,6 @@ function compose_git_wait_arguments(array $waitSettings, array $options): array
 }
 
 /**
- * compose.sh's -g (profile) arguments for a deploy.
- *
- * The --profile options when given. Otherwise the profiles the stack is
- * running with, else its default profiles, as the web UI's Update does: a
- * deploy without profiles would leave the running profile services on the
- * old commit, and compose.sh would forget the stack's running profiles.
- *
- * @param array<string, string|true|string[]> $options
- * @return string[]
- */
-function compose_git_profile_arguments(StackInfo $stack, array $options): array
-{
-    $profiles = (array) ($options['profile'] ?? []);
-    if ($profiles === []) {
-        $profiles = $stack->getRunningProfiles();
-    }
-    if ($profiles === []) {
-        $profiles = $stack->getDefaultProfiles();
-    }
-    $args = [];
-    foreach ($profiles as $profile) {
-        $args[] = '-g' . $profile;
-    }
-    return $args;
-}
-
-/**
  * The environment compose.sh gets for a git deploy: what DockerCommand gives the deploy's
  * checks, plus the documented lock settings. Nothing else of the caller's shell is passed on.
  *
@@ -427,26 +414,14 @@ function compose_git_deploy(GitStackManager $manager, string $folder, array $opt
         return COMPOSE_GIT_EXIT_FAILED;
     }
 
-    $command = [__DIR__ . '/compose.sh', '-cgitdeploy', '-p' . $stack->projectName, '-s' . $stack->path];
-    $credentialId = trim((string) ($stack->getCredentialId() ?? ''));
-    if ($credentialId !== '') {
-        $command[] = '--credential-id';
-        $command[] = $credentialId;
-    }
-    foreach (compose_git_profile_arguments($stack, $options) as $arg) {
-        $command[] = $arg;
-    }
-    if (isset($options['commit'])) {
-        $command[] = '--git-commit';
-        $command[] = (string) $options['commit'];
-    }
-    if (isset($options['save-local-changes'])) {
-        $command[] = '--save-local-changes';
-    }
     $waitSettings = resolveStackWaitSettings($stack->path, parse_plugin_cfg('compose.manager'));
-    foreach (compose_git_wait_arguments($waitSettings, $options) as $arg) {
-        $command[] = $arg;
-    }
+    $command = buildGitDeployCommand(
+        $stack,
+        isset($options['commit']) ? (string) $options['commit'] : null,
+        isset($options['save-local-changes']),
+        gitDeployProfiles($stack, array_map('strval', (array) ($options['profile'] ?? []))),
+        compose_git_wait_arguments($waitSettings, $options)
+    );
 
     // compose.sh runs with the same environment and folder as the deploy's checks, so a
     // variable exported in the caller's shell (or the folder it was run from, ${PWD})
@@ -485,6 +460,7 @@ function compose_git_unreadable_status(string $folder, string $problem): array
         'failedCommit' => null,
         'checkedOutCommit' => null,
         'localChanges' => [],
+        'commitMadeByHand' => false,
         'problem' => $problem,
     ];
 }
@@ -514,6 +490,9 @@ function compose_git_print_status(array $status): void
     echo '  checked out:  ' . $short($status['checkedOutCommit']) . "\n";
     if ($status['localChanges'] !== []) {
         echo '  local changes: ' . implode(', ', $status['localChanges']) . "\n";
+    }
+    if ($status['commitMadeByHand']) {
+        echo "  made by hand: the checked-out commit was committed in the clone (deploy --save-local-changes saves it)\n";
     }
     if ($status['problem'] !== null) {
         echo '  problem:      ' . $status['problem'] . "\n";
@@ -595,23 +574,44 @@ function compose_git_main(array $argv, string $composeRoot, $errors = null): int
             case 'check':
                 [$positional, $options] = compose_git_parse($args, [], ['all']);
                 $folders = isset($options['all']) ? $manager->listGitStacks() : [compose_git_one_stack($positional)];
-                $exit = COMPOSE_GIT_EXIT_OK;
+                $anyChanged = false;
+                $anyFailed = false;
+                $anyElsewhere = false;
                 foreach ($folders as $folder) {
                     try {
                         $result = $manager->check($folder);
                         $deployed = $result['deployedCommit'] === null ? 'nothing deployed yet' : substr($result['deployedCommit'], 0, 12) . ' deployed';
+                        $newer = substr($result['remoteCommit'], 0, 12) . " available on {$result['branch']}";
+                        $stackFolder = $result['stackFolder'] === '' ? 'the repository' : $result['stackFolder'] . '/';
                         if ($result['upToDate']) {
                             echo "$folder: up to date ($deployed)\n";
+                        } elseif ($result['deployedCommit'] === null) {
+                            echo "$folder: $newer ($deployed)\n";
+                            $anyChanged = true;
+                        } elseif ($result['deployedCommitMissing']) {
+                            echo "$folder: $newer ($deployed, but no longer in the clone, so the changes "
+                                . "cannot be identified)\n";
+                            $anyChanged = true;
+                        } elseif ($result['changesStack'] === true) {
+                            echo "$folder: $newer, changing $stackFolder ($deployed)\n";
+                            $anyChanged = true;
                         } else {
-                            echo "$folder: " . substr($result['remoteCommit'], 0, 12) . " available on {$result['branch']} ($deployed)\n";
-                            $exit = max($exit, COMPOSE_GIT_EXIT_BEHIND);
+                            echo "$folder: $newer, but it changes nothing in $stackFolder ($deployed); "
+                                . "deploy it anyway if the stack uses files outside that folder\n";
+                            $anyElsewhere = true;
                         }
                     } catch (RuntimeException | InvalidArgumentException $error) {
                         echo "$folder: could not check: " . $error->getMessage() . "\n";
-                        $exit = $exit === COMPOSE_GIT_EXIT_BEHIND ? $exit : COMPOSE_GIT_EXIT_FAILED;
+                        $anyFailed = true;
                     }
                 }
-                return $exit;
+                if ($anyChanged) {
+                    return COMPOSE_GIT_EXIT_BEHIND;
+                }
+                if ($anyFailed) {
+                    return COMPOSE_GIT_EXIT_FAILED;
+                }
+                return $anyElsewhere ? COMPOSE_GIT_EXIT_NEWER_ELSEWHERE : COMPOSE_GIT_EXIT_OK;
 
             case 'deploy':
                 [$positional, $options] = compose_git_parse($args, ['commit', 'wait-timeout', 'profile'], ['save-local-changes', 'wait', 'no-wait']);

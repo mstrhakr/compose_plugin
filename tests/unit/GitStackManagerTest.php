@@ -7,6 +7,7 @@ namespace ComposeManager\Tests;
 use ComposeManager\Tests\Support\FakeDocker;
 use GitClone;
 use GitCommand;
+use GitDeployKeyNotAddedException;
 use GitStackManager;
 use GitStackSettings;
 use GitStackState;
@@ -104,6 +105,20 @@ final class GitStackManagerTest extends TestCase
         }
         $this->assertSame([], glob($this->clonesRoot . '/*') ?: []);
         $this->assertDirectoryDoesNotExist($this->composeRoot . '/whoami');
+    }
+
+    public function testDeployKeyNotAddedKeepsTheCloneErrorAndTheKeyApart(): void
+    {
+        $cloneError = 'Could not clone the repository: fatal: Could not read from remote repository.';
+        $key = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample compose-manager whoami';
+        $error = new GitDeployKeyNotAddedException($cloneError, $key, new RuntimeException($cloneError));
+
+        // The web UI shows these two apart; compose-git prints the message, which has both.
+        $this->assertSame($cloneError, $error->cloneError);
+        $this->assertSame($key, $error->publicKey);
+        $this->assertStringStartsWith($cloneError . "\n\n", $error->getMessage());
+        $this->assertStringEndsWith("\n" . $key, $error->getMessage());
+        $this->assertSame(GitDeployKeyNotAddedException::messageWithKey($cloneError, $key), $error->getMessage());
     }
 
     public function testAddDoesNothingWhileTheArrayIsStopped(): void
@@ -304,6 +319,58 @@ final class GitStackManagerTest extends TestCase
         $this->assertSame($this->upstreamHead(), $result['remoteCommit']);
     }
 
+    public function testCheckTellsACommitToTheStacksFolderFromOneOutsideIt(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $stackDir = $this->composeRoot . '/' . $folder;
+        // Nothing deployed yet: whatever the branch has is new to the stack.
+        $this->assertTrue($this->manager->check($folder)['changesStack']);
+
+        (new GitStackState($this->upstreamHead(), null))->save($stackDir);
+        $upToDate = $this->manager->check($folder);
+        $this->assertNull($upToDate['changesStack']);
+        $this->assertSame('whoami', $upToDate['stackFolder']);
+
+        // A commit to another stack's folder in the same repository.
+        $this->writeAndPush(['other/compose.yaml' => "services: {}\n"], 'another stack');
+        $elsewhere = $this->manager->check($folder);
+        $this->assertFalse($elsewhere['upToDate']);
+        $this->assertFalse($elsewhere['changesStack']);
+
+        // Then one to this stack's folder (a config file, not the compose file).
+        $this->writeAndPush(['whoami/config.txt' => "setting=1\n"], 'this stack');
+        $this->assertTrue($this->manager->check($folder)['changesStack']);
+    }
+
+    public function testCheckSaysWhenTheDeployedCommitIsNoLongerInTheClone(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $stackDir = $this->composeRoot . '/' . $folder;
+        $this->assertFalse($this->manager->check($folder)['deployedCommitMissing']);
+
+        // As after a force-push and a reclone: the deployed commit is not in the clone.
+        (new GitStackState(str_repeat('deadbeef', 5), null))->save($stackDir);
+        $result = $this->manager->check($folder);
+
+        // What the new commit changes cannot be identified, so deploying it is offered.
+        $this->assertFalse($result['upToDate']);
+        $this->assertTrue($result['changesStack']);
+        $this->assertTrue($result['deployedCommitMissing']);
+    }
+
+    public function testCheckCountsEveryCommitForAComposeFileAtTheTopOfTheRepository(): void
+    {
+        $this->writeAndPush(['compose.yaml' => "services:\n  web:\n    image: traefik/whoami\n"], 'top-level stack');
+        $folder = $this->manager->add('top', $this->upstream, 'main', 'compose.yaml', $this->clonesRoot);
+        (new GitStackState($this->upstreamHead(), null))->save($this->composeRoot . '/' . $folder);
+
+        $this->writeAndPush(['whoami/config.txt' => "setting=1\n"], 'any folder');
+
+        $result = $this->manager->check($folder);
+        $this->assertTrue($result['changesStack']);
+        $this->assertSame('', $result['stackFolder']);
+    }
+
     public function testStatusShowsLocalChangesWithoutAskingTheRemote(): void
     {
         $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
@@ -436,7 +503,7 @@ final class GitStackManagerTest extends TestCase
 
         $this->assertNotNull($test);
         $this->assertFalse($test['valid']);
-        $this->assertStringContainsString("Could not reach https://127.0.0.1:9/team/stacks.git (used by '$folder')", $test['message']);
+        $this->assertStringStartsWith("https://127.0.0.1:9/team/stacks.git (used by '$folder'): Could not reach the repository", $test['message']);
     }
 
     public function testOnlyAnSshStackHasADeployKeyOrPinnedHostKeys(): void
@@ -634,6 +701,29 @@ final class GitStackManagerTest extends TestCase
         $this->assertSame(1, $this->runCli(['compose-git', 'check', 'nosuchstack']));
     }
 
+    public function testCommandLineCheckExitsWithFourForACommitOutsideTheStacksFolder(): void
+    {
+        $this->writeAndPush(['other/compose.yaml' => "services:\n  web:\n    image: traefik/whoami\n"], 'another stack');
+        $whoami = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $other = $this->manager->add('other', $this->upstream, 'main', 'other/compose.yaml', $this->clonesRoot);
+        (new GitStackState($this->upstreamHead(), null))->save($this->composeRoot . '/' . $whoami);
+        (new GitStackState($this->upstreamHead(), null))->save($this->composeRoot . '/' . $other);
+
+        $this->writeAndPush(['whoami/config.txt' => "setting=1\n"], 'whoami only');
+
+        [$exit, $output] = $this->runCliCapturingOutput(['compose-git', 'check', 'other']);
+        $this->assertSame(4, $exit);
+        $this->assertStringContainsString('changes nothing in other/', $output);
+        $this->assertStringContainsString('files outside that folder', $output);
+        $this->assertSame(3, $this->runCli(['compose-git', 'check', 'whoami']));
+        // --all: a stack whose folder changed decides it.
+        $this->assertSame(3, $this->runCli(['compose-git', 'check', '--all']));
+
+        // Once whoami has deployed it, only the commit outside other/ is left.
+        (new GitStackState($this->upstreamHead(), null))->save($this->composeRoot . '/' . $whoami);
+        $this->assertSame(4, $this->runCli(['compose-git', 'check', '--all']));
+    }
+
     public function testDeployWaitsAsTheStacksSettingSaysUnlessTheCommandLineOverrides(): void
     {
         $on = ['enabled' => true, 'timeout' => '120'];
@@ -687,6 +777,25 @@ final class GitStackManagerTest extends TestCase
         $this->assertSame('/', compose_git_deploy_directory(null));
     }
 
+    public function testDeployCommandRunsComposeShGitdeployForTheStack(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $stack = \StackInfo::fromProject($this->composeRoot, $folder);
+        $commit = str_repeat('a', 40);
+
+        $command = buildGitDeployCommand($stack, $commit, true, ['tools'], ['--wait', '--wait-timeout', '60']);
+
+        $this->assertStringEndsWith('/scripts/compose.sh', $command[0]);
+        $this->assertSame([
+            '-cgitdeploy', '-p' . $stack->projectName, '-s' . $stack->path,
+            '-gtools', '--git-commit', $commit, '--save-local-changes', '--wait', '--wait-timeout', '60',
+        ], array_slice($command, 1));
+        $this->assertSame(
+            ['-cgitdeploy', '-p' . $stack->projectName, '-s' . $stack->path],
+            array_slice(buildGitDeployCommand($stack, null, false, [], []), 1)
+        );
+    }
+
     public function testDeployRefusesWaitAndNoWaitTogether(): void
     {
         $this->expectException(\ComposeGitUsageError::class);
@@ -704,18 +813,18 @@ final class GitStackManagerTest extends TestCase
         };
 
         // Nothing running and no defaults: no profiles.
-        $this->assertSame([], compose_git_profile_arguments($stack(), []));
+        $this->assertSame([], gitDeployProfiles($stack(), []));
 
         // The default profiles, as the web UI's Update uses on a first run.
         file_put_contents($stackDir . '/default_profile', 'media');
-        $this->assertSame(['-gmedia'], compose_git_profile_arguments($stack(), []));
+        $this->assertSame(['media'], gitDeployProfiles($stack(), []));
 
         // The profiles the stack is running with come first.
         file_put_contents($stackDir . '/running_profiles', 'extras,tools');
-        $this->assertSame(['-gextras', '-gtools'], compose_git_profile_arguments($stack(), []));
+        $this->assertSame(['extras', 'tools'], gitDeployProfiles($stack(), []));
 
         // --profile replaces both.
-        $this->assertSame(['-gdebug'], compose_git_profile_arguments($stack(), ['profile' => ['debug']]));
+        $this->assertSame(['debug'], gitDeployProfiles($stack(), ['debug']));
     }
 
     public function testCommandLineStatusAsJson(): void

@@ -287,7 +287,7 @@ final class CredentialVaultTest extends TestCase
         $vault->materializeDockerConfig($saved['id']);
     }
 
-    public function testUseCredentialHandsTheSecretToTheCallbackOnly(): void
+    public function testUseCredentialReturnsWhatTheCallbackReturns(): void
     {
         $vault = new CredentialVault();
         $saved = $vault->saveCredential([

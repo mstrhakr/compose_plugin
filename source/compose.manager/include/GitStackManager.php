@@ -11,6 +11,32 @@ require_once '/usr/local/emhttp/plugins/compose.manager/include/GitClone.php';
 require_once '/usr/local/emhttp/plugins/compose.manager/include/CredentialVault.php';
 
 /**
+ * The server refused a new ssh stack's clone, and the usual reason is that the repository
+ * does not know the stack's deploy key yet. The message, which compose-git prints, ends with
+ * the key; the web UI shows the clone's error and the key apart.
+ */
+final class GitDeployKeyNotAddedException extends RuntimeException
+{
+    public function __construct(
+        public readonly string $cloneError,
+        public readonly string $publicKey,
+        Throwable $previous
+    ) {
+        parent::__construct(self::messageWithKey($cloneError, $publicKey), 0, $previous);
+    }
+
+    /**
+     * The clone's error, followed by the deploy key and what to do with it.
+     */
+    public static function messageWithKey(string $cloneError, string $publicKey): string
+    {
+        return $cloneError . "\n\nIf the repository does not know this stack's deploy key yet, add it as a "
+            . "read-only deploy key in the repository's settings, then try again:\n"
+            . $publicKey;
+    }
+}
+
+/**
  * Creates and looks after git stacks: what the compose-git command does,
  * apart from deploying (compose.sh gitdeploy does that).
  *
@@ -21,6 +47,12 @@ require_once '/usr/local/emhttp/plugins/compose.manager/include/CredentialVault.
 final class GitStackManager
 {
     public const DEFAULT_BRANCH = 'main';
+
+    /**
+     * How long the Credentials tab's Test waits for a repository: the browser waits for the
+     * answer, and the registry test waits at most 15 seconds too.
+     */
+    private const CREDENTIAL_TEST_TIMEOUT_SECONDS = 15;
 
     /** @var callable(string): void */
     private $say;
@@ -57,7 +89,7 @@ final class GitStackManager
         }
         $stackDir = $this->composeRoot . '/' . $folder;
         if (file_exists($stackDir) || @readlink($stackDir) !== false) {
-            throw new RuntimeException("A stack folder named '$folder' already exists. Choose another name, or use convert for that stack.");
+            throw new RuntimeException("A stack folder named '$folder' already exists. Choose another name, or move that stack into git (compose-git convert, or the button on its Sources tab).");
         }
         // Before the clone, so a projects folder whose mount is gone leaves nothing behind.
         $this->assertSafeToWriteStackFolder($stackDir);
@@ -237,31 +269,73 @@ final class GitStackManager
     }
 
     /**
-     * Compare the deployed commit with the branch on the remote, changing nothing.
+     * Compare the deployed commit with the branch on the remote. Changes no container and
+     * no file of the stack; when the branch has a newer commit, it is fetched into the
+     * clone (under the stack's lock, as a deploy would fetch it) to see what it changes.
      *
-     * @return array{stack: string, branch: string, remoteCommit: string, deployedCommit: ?string, failedCommit: ?string, upToDate: bool}
-     * @throws RuntimeException if the stack or the remote cannot be read
+     * changesStack is null when the stack is up to date. Otherwise it says whether the new
+     * commit changes anything in the stack's folder in the repository (the folder holding
+     * its compose file, or the whole repository for a compose file at the top). It is true
+     * when that cannot be identified: nothing deployed yet, or the clone no longer has the
+     * deployed commit (deployedCommitMissing says which, so the answer can say so). It is
+     * false when every change is outside the stack's folder, as a commit to another stack
+     * in a shared repository is. Files the stack uses from outside its folder (a ../shared
+     * bind mount, a build context of .., an env_file, extends or include in another folder)
+     * are not looked at, so false does not prove the new commit changes nothing the stack
+     * uses.
+     *
+     * stackFolder is that folder, relative to the top of the repository ('' for the top).
+     *
+     * @param int|null $timeoutSeconds How long to wait for the remote; null for git's usual limit
+     * @return array{stack: string, branch: string, remoteCommit: string, deployedCommit: ?string, failedCommit: ?string, upToDate: bool, changesStack: ?bool, deployedCommitMissing: bool, stackFolder: string}
+     * @throws RuntimeException if the stack or the remote cannot be read, or another operation on the stack is running
      */
-    public function check(string $folder): array
+    public function check(string $folder, ?int $timeoutSeconds = null): array
     {
         $stack = $this->stack($folder);
         $settings = $this->settings($stack);
         $state = GitStackState::load($stack->path);
-        $remote = (new GitClone($settings))->remoteBranchCommit();
+        $clone = new GitClone($settings);
+        $remote = $timeoutSeconds === null ? $clone->remoteBranchCommit() : $clone->remoteBranchCommit($timeoutSeconds);
+        $deployed = $state->deployedCommit;
+
+        $changesStack = null;
+        $deployedCommitMissing = false;
+        if ($deployed === null) {
+            // Nothing deployed yet: whatever the branch has is new to the stack.
+            $changesStack = true;
+        } elseif ($deployed !== $remote) {
+            [$changesStack, $deployedCommitMissing] = $this->withStackLock(
+                $stack,
+                /** @return array{bool, bool} changesStack, deployedCommitMissing */
+                static function () use ($clone, $deployed, $remote): array {
+                    $clone->fetch();
+                    if (!$clone->hasCommit($deployed)) {
+                        // Recloned since, after a force-push for one. Nothing to compare with.
+                        return [true, true];
+                    }
+                    return [$clone->stackFilesChanged($deployed, $remote), false];
+                }
+            );
+        }
+
         return [
             'stack' => $folder,
             'branch' => $settings->branch,
             'remoteCommit' => $remote,
-            'deployedCommit' => $state->deployedCommit,
+            'deployedCommit' => $deployed,
             'failedCommit' => $state->failedCommit,
-            'upToDate' => $state->deployedCommit === $remote,
+            'upToDate' => $deployed === $remote,
+            'changesStack' => $changesStack,
+            'deployedCommitMissing' => $deployedCommitMissing,
+            'stackFolder' => dirname($settings->composePath) === '.' ? '' : dirname($settings->composePath),
         ];
     }
 
     /**
      * What is known about a git stack locally, without asking the remote.
      *
-     * @return array{stack: string, url: string, branch: string, composePath: string, cloneDir: string, recreateOnFolderChange: bool, credential: ?string, deployedCommit: ?string, failedCommit: ?string, checkedOutCommit: ?string, localChanges: list<string>, problem: ?string}
+     * @return array{stack: string, url: string, branch: string, composePath: string, cloneDir: string, recreateOnFolderChange: bool, credential: ?string, deployedCommit: ?string, failedCommit: ?string, checkedOutCommit: ?string, localChanges: list<string>, commitMadeByHand: bool, problem: ?string}
      */
     public function status(string $folder): array
     {
@@ -270,11 +344,13 @@ final class GitStackManager
         $state = GitStackState::load($stack->path);
         $checkedOut = null;
         $changes = [];
+        $madeByHand = false;
         $problem = null;
         try {
             $clone = new GitClone($settings);
             $checkedOut = $clone->checkedOutCommit();
             $changes = $clone->locallyChangedFiles();
+            $madeByHand = $clone->isMadeByHand($checkedOut, $state->deployedCommit, $state->failedCommit);
         } catch (Throwable $error) {
             $problem = $error->getMessage();
         }
@@ -290,6 +366,7 @@ final class GitStackManager
             'failedCommit' => $state->failedCommit,
             'checkedOutCommit' => $checkedOut,
             'localChanges' => $changes,
+            'commitMadeByHand' => $madeByHand,
             'problem' => $problem,
         ];
     }
@@ -375,10 +452,10 @@ final class GitStackManager
             $summary = (new CredentialVault())->getCredentialSummary($credentialId);
             $result = ['id' => $credentialId, 'name' => $summary['name'], 'registry' => $summary['registry']];
             try {
-                (new GitClone($settings))->remoteBranchCommit();
+                (new GitClone($settings))->remoteBranchCommit(self::CREDENTIAL_TEST_TIMEOUT_SECONDS);
                 return $result + ['valid' => true, 'message' => "Reached {$settings->url} (used by '$folder')."];
             } catch (Throwable $error) {
-                return $result + ['valid' => false, 'message' => "Could not reach {$settings->url} (used by '$folder'): " . $error->getMessage()];
+                return $result + ['valid' => false, 'message' => "{$settings->url} (used by '$folder'): " . $error->getMessage()];
             }
         }
         return null;
@@ -467,6 +544,10 @@ final class GitStackManager
     /**
      * The stack's deploy key: the one made for it by an earlier attempt, or a new one.
      *
+     * The key is found by the stack's name and host. The vault does not record the repository,
+     * so a key left behind by a deleted stack of the same name is reused too; the message says
+     * what to do when that key belongs to another repository.
+     *
      * @param array{user: string, host: string, port: int, path: string} $address
      */
     private function deployKeyFor(string $folder, array $address): string
@@ -475,7 +556,11 @@ final class GitStackManager
         $host = $address['host'] . ($address['port'] === 22 ? '' : ':' . $address['port']);
         foreach ((new CredentialVault())->listCredentials() as $credential) {
             if ($credential['name'] === $name && $credential['provider'] === 'git-ssh' && $credential['registry'] === $host) {
-                ($this->say)("Using the deploy key made for '$folder' earlier.");
+                ($this->say)(
+                    "Using the deploy key made for '$folder' earlier ('$name' on the Credentials tab). If it was "
+                    . "made for another repository, by a stack of the same name that has since been deleted, "
+                    . "delete '$name' first: GitHub, for one, refuses a deploy key that another repository has."
+                );
                 return $credential['id'];
             }
         }
@@ -495,12 +580,16 @@ final class GitStackManager
     /**
      * Clone a new stack's repository. When an ssh clone fails, show the deploy
      * key: the usual reason is that it has not been added to the repository yet.
+     *
+     * Only a failure of git clone itself can be the key. A check before or after
+     * it (the folder already exists, the compose file is not on the branch) is
+     * passed on as it is.
      */
     private function createClone(GitStackSettings $settings): void
     {
         try {
             (new GitClone($settings))->create();
-        } catch (RuntimeException $error) {
+        } catch (GitCloneFailedException $error) {
             if (!$settings->isSsh() || $settings->credentialId === null) {
                 throw $error;
             }
@@ -510,10 +599,13 @@ final class GitStackManager
                 // Not a deploy key at all (the wrong --credential): the clone's own message says so.
                 throw $error;
             }
+            if ($error->serverRefusedAccess()) {
+                throw new GitDeployKeyNotAddedException($error->getMessage(), $publicKey, $error);
+            }
+            // Most likely something else (an unreachable host, a wrong branch), but a host may
+            // word a refusal in a way not recognised here, so the key still comes with the error.
             throw new RuntimeException(
-                $error->getMessage() . "\n\nIf the repository does not know this stack's deploy key yet, add it as a "
-                . "read-only deploy key in the repository's settings, then run the same command again:\n"
-                . $publicKey,
+                GitDeployKeyNotAddedException::messageWithKey($error->getMessage(), $publicKey),
                 0,
                 $error
             );

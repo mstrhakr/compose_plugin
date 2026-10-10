@@ -164,7 +164,194 @@ function updateAddStackValidity() {
         $fileErr.hide().text('');
     }
 
+    var $gitUrlErr = $('#compose-stack-git-url-error');
+    var $gitPathErr = $('#compose-stack-git-compose-path-error');
+    if (mode === 'git') {
+        // The server checks both properly; this only catches empty fields early.
+        var gitUrl = ($('#compose-stack-git-url').val() || '').trim();
+        if (!gitUrl) {
+            errors.push('git-url');
+            $gitUrlErr.text('Enter the repository address.').show();
+        } else {
+            $gitUrlErr.hide().text('');
+        }
+        var gitComposePath = ($('#compose-stack-git-compose-path').val() || '').trim();
+        if (!gitComposePath) {
+            errors.push('git-compose-path');
+            $gitPathErr.text('Enter the path of the compose file in the repository.').show();
+        } else if (gitComposePath.charAt(0) === '/') {
+            errors.push('git-compose-path');
+            $gitPathErr.text('Give the path from the top of the repository, without a leading /.').show();
+        } else {
+            $gitPathErr.hide().text('');
+        }
+    } else {
+        $gitUrlErr.hide().text('');
+        $gitPathErr.hide().text('');
+    }
+
     $('#compose-stack-create-btn').prop('disabled', errors.length > 0);
+}
+
+// Whether a repository address is an ssh one (ssh://... or user@host:path), as
+// GitStackSettings::isSshUrl() decides on the server.
+function isGitSshAddress(url) {
+    return /^ssh:\/\//i.test(url) || /^[^\/\s@]+@[^\/\s:]+:/.test(url);
+}
+
+// In the Add Stack dialog, show the fields that apply to the chosen source.
+// A git stack's compose file is in its clone and its .env in its stack
+// folder, so the env path and discovery choices are hidden for it. An ssh
+// repository gets a deploy key of its own, so the credential choice is for
+// https only.
+function updateAddStackFieldsForSource() {
+    var mode = ($('input[name="compose-stack-compose-source"]:checked').val()) || 'project';
+    var isGit = mode === 'git';
+    $('#compose-stack-env-path').closest('.settings-field').toggle(!isGit);
+    $('#compose-stack-discovery-mode-row').closest('.settings-field').toggle(!isGit);
+
+    var isSsh = isGitSshAddress(($('#compose-stack-git-url').val() || '').trim());
+    $('#compose-stack-git-credential-wrap').toggle(!isSsh);
+    $('#compose-stack-git-ssh-note').toggle(isSsh);
+}
+
+// Fill a git credential choice with the git tokens from the credential vault
+// (registry logins and deploy keys are left out). When the vault cannot be
+// read, say so in the choice, so it does not look as if there were no tokens.
+function fillGitCredentialSelect($select) {
+    var showUnreadable = function(message) {
+        $select.append($('<option>').val('').prop('disabled', true)
+            .text('Could not read the credentials' + (message ? ': ' + message : '')));
+    };
+    $.post(caURL, { action: 'listCredentials' }).then(function(data) {
+        var response = tryParseJson(data);
+        if (!response) {
+            showUnreadable('unexpected response from server');
+            return;
+        }
+        if (response.result !== 'success') {
+            showUnreadable(response.message || '');
+            return;
+        }
+        (response.credentials || []).forEach(function(credential) {
+            if (credential.provider !== 'git') {
+                return;
+            }
+            $select.append($('<option>').val(credential.id).text(credential.name + ' (' + credential.registry + ')'));
+        });
+    }).fail(function() {
+        showUnreadable('request failed');
+    });
+}
+
+// Fill the Add Stack dialog's git credential choice.
+function loadAddStackGitCredentials() {
+    fillGitCredentialSelect($('#compose-stack-git-credential'));
+}
+
+// Show a new ssh stack's deploy key in $panel, as the next step: the repository has
+// to know the key before the stack can be made. What git said goes underneath, smaller.
+// buttonName is the dialog's button to select again once the key is added.
+function showGitDeployKeyPanel($panel, publicKey, details, buttonName) {
+    var $key = $('<textarea class="compose-git-deploy-key" rows="3" readonly>').val(publicKey);
+    var $copy = $('<button type="button" class="btn btn-sm">').text('Copy key').on('click', function() {
+        // The clipboard API needs https, which Unraid often is not on, so copy the selection.
+        $key[0].select();
+        var copied = false;
+        try {
+            copied = document.execCommand('copy');
+        } catch (e) {
+            copied = false;
+        }
+        $copy.text(copied ? 'Copied' : 'Select the key and copy it');
+    });
+    $panel.empty().append(
+        $('<div class="compose-git-deploy-key-panel-title">').append(
+            $('<i class="fa fa-key">'),
+            $('<span>').text('Add this deploy key to the repository')
+        ),
+        $('<div>').text('In the repository\'s settings, add this key as a read-only deploy key (on GitHub: '
+            + 'Settings, then Deploy keys), then select ' + buttonName + ' again. The stack keeps this key, '
+            + 'so this is needed only once.'),
+        $key,
+        $copy,
+        $('<div class="compose-git-deploy-key-panel-details">').text(details)
+    ).show();
+    $panel[0].scrollIntoView({ block: 'nearest' });
+}
+
+// Create a git stack from the Add Stack dialog. Cloning can take a while, so
+// the dialog stays open with its buttons disabled, and an error is shown in
+// it. When the repository does not know an ssh stack's deploy key yet, the
+// key is shown as the next step instead. After an ssh stack is added, its
+// pinned host key fingerprints are shown.
+function submitGitStackFromAddStackModal(name, desc, overrideManagementAutomatic) {
+    var $modal = $('#compose-stack-modal-overlay');
+    var $error = $('#compose-stack-modal-error');
+    var $deployKeyPanel = $('#compose-stack-git-deploy-key-panel');
+    var $createButton = $('#compose-stack-create-btn');
+    var isSsh = isGitSshAddress(($('#compose-stack-git-url').val() || '').trim());
+    $error.hide().text('');
+    $deployKeyPanel.hide().empty();
+    $modal.find('button').prop('disabled', true);
+    $createButton.text('Cloning...');
+
+    var enableButtons = function() {
+        $modal.find('button').prop('disabled', false);
+        $createButton.text('Create');
+    };
+    var showError = function(message) {
+        enableButtons();
+        $error.css('white-space', 'pre-wrap').text(message).show();
+        $error[0].scrollIntoView({ block: 'nearest' });
+    };
+
+    $.post(caURL, {
+        action: 'addGitStack',
+        stackName: name,
+        stackDesc: desc,
+        gitUrl: ($('#compose-stack-git-url').val() || '').trim(),
+        gitBranch: ($('#compose-stack-git-branch').val() || '').trim(),
+        gitComposePath: ($('#compose-stack-git-compose-path').val() || '').trim(),
+        gitCredentialId: isSsh ? '' : ($('#compose-stack-git-credential').val() || ''),
+        overrideManagementAutomatic: overrideManagementAutomatic
+    }).then(function(data) {
+        var response;
+        try {
+            response = JSON.parse(data);
+        } catch (e) {
+            showError('Unexpected response from server.');
+            return;
+        }
+        // What the server said on the way (an ssh stack's pinned host key fingerprints,
+        // which deploy key it uses), as compose-git add prints it.
+        var messages = (response.messages || []).join('\n\n');
+        if (response.result !== 'success' && response.deployKey) {
+            enableButtons();
+            showGitDeployKeyPanel($deployKeyPanel, response.deployKey,
+                (messages ? messages + '\n\n' : '') + (response.message || ''), 'Create');
+            return;
+        }
+        if (response.result !== 'success') {
+            showError((messages ? messages + '\n\n' : '') + (response.message || 'The stack was not created.'));
+            return;
+        }
+        window.closeComposeStackModal();
+        composeLoadlist();
+        // Back to the stack list rather than the editor: a git stack's compose file is
+        // changed in the repository, not here. An https stack's messages only say it was
+        // cloned and created. An ssh stack's carry the fingerprints to compare and which
+        // deploy key it uses, so show them.
+        var shown = isSsh && messages !== '' ? messages + '\n\n' : '';
+        swal({
+            title: response.projectName + ' was added',
+            text: shown + 'Deploy it from its stack menu when you are ready.',
+            type: 'success'
+        });
+    }).fail(function() {
+        showError('Request failed. If the repository is large, the clone may still be running: '
+            + 'refresh the stack list before trying again.');
+    });
 }
 
 // Wiring for each surface that owns a Compose File Discovery badge+toggle.
@@ -1139,6 +1326,7 @@ var editorModal = {
     modifiedTabs: new Set(),
     currentProject: null,
     currentProjectName: null,
+    isGitStack: false,
     validationTimeout: null,
     // Settings state
     originalSettings: {},
@@ -1719,6 +1907,7 @@ var COMPOSE_SOURCE_SCOPE_CONFIGS = {
         fileInputId: 'compose-stack-external-file',
         pathWrapId: 'compose-stack-external-path-wrap',
         fileWrapId: 'compose-stack-external-file-wrap',
+        gitWrapId: 'compose-stack-git-wrap',
         infoBannerId: null,
         invalidWarningId: null,
         onFileClear: null
@@ -1730,7 +1919,8 @@ var COMPOSE_SOURCE_SCOPE_CONFIGS = {
 function setComposeSourceForScope(scope, mode, suppressChangeTracking) {
     var cfg = COMPOSE_SOURCE_SCOPE_CONFIGS[scope];
     if (!cfg) return;
-    mode = normalizeComposeSourceMode(mode);
+    // 'git' is a choice only where the scope has git inputs (the Add Stack dialog).
+    mode = (mode === 'git' && cfg.gitWrapId) ? 'git' : normalizeComposeSourceMode(mode);
     if (scope === 'settings') {
         editorModal.composeSourceMode = mode;
     }
@@ -1738,6 +1928,9 @@ function setComposeSourceForScope(scope, mode, suppressChangeTracking) {
     $('input[name="' + cfg.radioName + '"][value="' + mode + '"]').prop('checked', true);
     $('#' + cfg.pathWrapId).toggle(mode === 'folder');
     $('#' + cfg.fileWrapId).toggle(mode === 'file');
+    if (cfg.gitWrapId) {
+        $('#' + cfg.gitWrapId).toggle(mode === 'git');
+    }
 
     // Clear whichever input isn't the selected mode so the two states stay
     // mutually exclusive by construction (no save-time both-set error).
@@ -3449,6 +3642,7 @@ function addStack() {
                 </div>
                 <div class="compose-modal-body">
                     <div id="compose-stack-modal-error" class="compose-status-danger" style="margin-bottom:12px;display:none;"></div>
+                    <div id="compose-stack-git-deploy-key-panel" class="compose-git-deploy-key-panel" style="display:none;"></div>
 
                     <div class="settings-section">
                         <div class="settings-section-title"><i class="fa fa-info-circle"></i> Stack Identity</div>
@@ -3491,6 +3685,10 @@ function addStack() {
                                     <input type="radio" name="compose-stack-compose-source" value="file">
                                     <span>Specific compose file <span class="compose-text-muted" style="font-size:0.9em;">(point at one exact <code>.yml</code>/<code>.yaml</code>)</span></span>
                                 </label>
+                                <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+                                    <input type="radio" name="compose-stack-compose-source" value="git">
+                                    <span>Git repository <span class="compose-text-muted" style="font-size:0.9em;">(deploy from a branch of a git repository; the plugin keeps its own clone)</span></span>
+                                </label>
                             </div>
 
                             <div id="compose-stack-external-path-wrap" class="settings-compose-source-input" style="margin-top:10px;display:none;">
@@ -3503,6 +3701,29 @@ function addStack() {
                                 <input type="text" id="compose-stack-external-file" placeholder="/mnt/user/appdata/myapp/custom.compose.yml" data-pickroot="/" data-picktop="/mnt" data-pickcloseonfile="true" data-pickfilter="yml,yaml">
                                 <div id="compose-stack-external-file-error" class="compose-status-danger" style="margin-top:6px;display:none;font-size:0.9em;"></div>
                                 <div class="settings-field-help">Must be a <code>.yml</code>/<code>.yaml</code> file under <code>/mnt/</code> or <code>/boot/config/</code>.</div>
+                            </div>
+
+                            <div id="compose-stack-git-wrap" class="settings-compose-source-input" style="margin-top:10px;display:none;">
+                                <label for="compose-stack-git-url" style="font-weight:normal;">Repository address</label>
+                                <input type="text" id="compose-stack-git-url" placeholder="https://github.com/me/stacks.git">
+                                <div id="compose-stack-git-url-error" class="compose-status-danger" style="margin-top:6px;display:none;font-size:0.9em;"></div>
+                                <div class="settings-field-help">An <code>https://</code> address, an ssh address (<code>git@host:me/stacks.git</code>), or the path of a repository under <code>/mnt/</code>. No password or token in it.</div>
+                                <div id="compose-stack-git-ssh-note" class="settings-field-help" style="display:none;">An ssh repository needs no credential: a deploy key is made for the stack when you select Create, and shown here to add to the repository.</div>
+
+                                <label for="compose-stack-git-branch" style="font-weight:normal;margin-top:8px;">Branch</label>
+                                <input type="text" id="compose-stack-git-branch" value="main" placeholder="main">
+
+                                <label for="compose-stack-git-compose-path" style="font-weight:normal;margin-top:8px;">Compose file in the repository</label>
+                                <input type="text" id="compose-stack-git-compose-path" placeholder="myapp/compose.yaml">
+                                <div id="compose-stack-git-compose-path-error" class="compose-status-danger" style="margin-top:6px;display:none;font-size:0.9em;"></div>
+                                <div class="settings-field-help">The path from the top of the repository.</div>
+
+                                <div id="compose-stack-git-credential-wrap">
+                                    <label for="compose-stack-git-credential" style="font-weight:normal;margin-top:8px;">Credential</label>
+                                    <select id="compose-stack-git-credential"><option value="">None (a public repository)</option></select>
+                                    <div class="settings-field-help">For a private https repository, first add a git token on the Credentials tab of the plugin's settings, then choose it here. For an ssh repository, no credential is needed: a deploy key is made for the stack.</div>
+                                </div>
+                                <div class="settings-field-help">Create clones the repository but starts nothing. Deploy the stack from its menu when you are ready.</div>
                             </div>
                         </div>
 
@@ -3609,9 +3830,16 @@ function addStack() {
     });
     $('input[name="compose-stack-compose-source"]').off('change.addStackValidate').on('change.addStackValidate', function() {
         updateAddStackValidity();
+        updateAddStackFieldsForSource();
     });
+    $('#compose-stack-git-url, #compose-stack-git-compose-path').off('input.addStackValidate').on('input.addStackValidate', function() {
+        updateAddStackValidity();
+        updateAddStackFieldsForSource();
+    });
+    loadAddStackGitCredentials();
     updateAddStackSlugPreview();
     updateAddStackValidity();
+    updateAddStackFieldsForSource();
 
     window.closeComposeStackModal = function() {
         var overlay = document.getElementById('compose-stack-modal-overlay');
@@ -3633,6 +3861,11 @@ function addStack() {
         if (!name) {
             errorDiv.textContent = "Please enter a stack name.";
             errorDiv.style.display = "block";
+            return;
+        }
+        var sourceRadio = document.querySelector('input[name="compose-stack-compose-source"]:checked');
+        if (sourceRadio && sourceRadio.value === 'git') {
+            submitGitStackFromAddStackModal(name, desc, overrideManagementAutomatic);
             return;
         }
         // Mutual exclusion is enforced structurally by the Compose Source radio
@@ -4148,7 +4381,8 @@ function composeActionStateText(actionName) {
         pull: 'pulling...',
         update: 'updating...',
         forceUpdate: 'updating...',
-        composeUpPullBuild: 'pulling and rebuilding...'
+        composeUpPullBuild: 'pulling and rebuilding...',
+        gitDeploy: 'deploying...'
     };
     return map[actionName] || 'checking...';
 }
@@ -4269,6 +4503,21 @@ function performComposeAction(opts) {
                 setStackActionInProgress(stackName, false);
             }
             composeHandleIdentityError(parsed);
+            if (typeof onComplete === 'function') {
+                onComplete(parsed, data);
+            }
+            return;
+        }
+        // Any other refusal comes back as {error, message} instead of a terminal URL.
+        if (parsed && parsed.error && parsed.message) {
+            if (stackName) {
+                setStackActionInProgress(stackName, false);
+            }
+            swal({
+                title: title,
+                text: parsed.message,
+                type: 'error'
+            });
             if (typeof onComplete === 'function') {
                 onComplete(parsed, data);
             }
@@ -4858,6 +5107,258 @@ function UpdateStackConfirmed(path, opts) {
 
 function UpdateStack(path, profile = "") {
     showStackActionDialog('update', path, profile);
+}
+
+// Deploy a git stack from its stack menu: the branch's latest commit, or the
+// commit given. A stack with compose profiles is first asked which to use, as
+// Update asks, preselected from the profiles it runs with.
+function gitDeployStackChoosingProfiles(path, project, commit) {
+    var $row = $('#compose_stacks tr.compose-sortable').filter(function() {
+        return $(this).attr('data-path') === path;
+    }).first();
+    var profiles = $row.data('profiles') || [];
+    if (profiles.length === 0) {
+        gitDeployStack(path, project, commit, null);
+        return;
+    }
+    showProfileSelector('gitDeploy', path, profiles, $row.data('running-profile') || '', $row.data('default-profile') || '', {
+        project: project,
+        commit: commit
+    });
+}
+
+// Files changed in the clone would stop the deploy, so they are listed first,
+// with the choice to save them as a patch and discard them. profile is the
+// chosen profiles ('' for the default services only), or null when nothing was
+// chosen: the deploy then uses the profiles the stack runs with, as
+// compose-git deploy does.
+function gitDeployStack(path, project, commit, profile) {
+    $.post(caURL, {
+        action: 'getGitStackStatus',
+        script: project
+    }).then(function(data) {
+        var response = tryParseJson(data);
+        if (!response || response.result !== 'success') {
+            swal({
+                title: 'Cannot deploy ' + project,
+                text: (response && response.message) || 'Could not read the git stack.',
+                type: 'error'
+            });
+            return;
+        }
+        var git = response.git;
+        var target = commit ? 'commit ' + gitShortCommit(commit) : 'the latest commit on ' + git.branch;
+        var deployedNow = git.deployedCommit ? gitShortCommit(git.deployedCommit) : 'nothing yet';
+        var changes = git.localChanges || [];
+        // A problem found without asking the remote (the clone missing, say) stops the
+        // deploy, so say it here and offer no Deploy, rather than fail in the terminal window.
+        if (git.problem) {
+            swal({
+                title: 'Cannot deploy ' + project,
+                text: 'Problem found: ' + git.problem + '\n\nDeployed now: ' + deployedNow + '. Nothing was changed.',
+                type: 'error'
+            });
+            return;
+        }
+        if (changes.length === 0 && !git.commitMadeByHand) {
+            swal({
+                title: 'Deploy ' + project + '?',
+                text: 'Deploy will fetch ' + target + ' from ' + git.url + ', check it, and start the stack from it. Deployed now: ' + deployedNow + '.',
+                type: 'info',
+                showCancelButton: true,
+                confirmButtonText: 'Deploy'
+            }, function(confirmed) {
+                if (confirmed) {
+                    gitDeployConfirmed(path, commit, false, profile);
+                }
+            });
+            return;
+        }
+        // The deploy refuses either kind of change unless it may save and discard it.
+        var found = [];
+        if (git.commitMadeByHand) {
+            found.push('the checked-out commit ' + gitShortCommit(git.checkedOutCommit) + ' was made in the clone by hand');
+        }
+        if (changes.length > 0) {
+            found.push('these files differ from the repository: ' + changes.join(', '));
+        }
+        swal({
+            title: 'Changes made in the clone',
+            text: 'In the clone of ' + project + ', ' + found.join('; and ') +
+                '. Save the changes as a patch in the stack folder\'s git-changes folder, discard them, and deploy ' + target + '?',
+            type: 'warning',
+            showCancelButton: true,
+            confirmButtonText: 'Save, discard and deploy'
+        }, function(confirmed) {
+            if (confirmed) {
+                gitDeployConfirmed(path, commit, true, profile);
+            }
+        });
+    }).fail(function() {
+        swal({
+            title: 'Cannot deploy ' + project,
+            text: 'Could not read the git stack.',
+            type: 'error'
+        });
+    });
+}
+
+// Ask the repository whether a git stack's branch has a newer commit than the
+// deployed one, and offer to deploy it.
+function checkGitStack(path, project) {
+    swal({
+        title: 'Checking ' + project + '...',
+        text: 'Asking the repository for the latest commit.',
+        type: 'info',
+        showConfirmButton: false
+    });
+    $.post(caURL, {
+        action: 'checkGitStack',
+        script: project
+    }).then(function(data) {
+        var response = tryParseJson(data);
+        if (!response || response.result !== 'success') {
+            swal({
+                title: 'Could not check ' + project,
+                text: (response && response.message) || 'Unexpected response from server.',
+                type: 'error'
+            });
+            return;
+        }
+        var check = response.check;
+        if (check.upToDate) {
+            swal({
+                title: project + ' is up to date',
+                text: 'The latest commit on ' + check.branch + ' (' + gitShortCommit(check.remoteCommit) + ') is deployed.',
+                type: 'success'
+            });
+            return;
+        }
+        // One line per fact: the latest commit, the deployed one, then what changed between them.
+        var latestLine = 'Commit ' + gitShortCommit(check.remoteCommit) + ' is the latest on ' + check.branch + '.';
+        var deployedLine = check.deployedCommit
+            ? 'Commit ' + gitShortCommit(check.deployedCommit) + ' is currently deployed'
+            : '';
+        var dialog;
+        if (check.changesStack === false) {
+            // Usually a commit to another stack in the same repository. It can still matter
+            // to this one if it uses files from outside its folder, so deploying stays offered.
+            // A stack at the top of the repository gets this answer only for commits that change no file.
+            var unchanged = check.stackFolder
+                ? 'nothing in ' + check.stackFolder + '/, the folder holding this stack\'s compose file. In a repository '
+                    + 'with several stacks, that is usually a commit to another stack.'
+                : 'no files.';
+            dialog = {
+                title: 'A newer commit is on ' + check.branch + ', outside this stack\'s folder',
+                text: latestLine + '\n' + deployedLine + '.\n'
+                    + 'The commits since then change ' + unchanged
+                    + '\n\nDeploy it anyway if this stack uses files from outside that folder: '
+                    + 'a bind mount or build context of ../something, or an env_file, extends or include in another '
+                    + 'folder. Changes there are not counted as changes to this stack.',
+                confirmButtonText: 'Deploy anyway'
+            };
+        } else if (!check.deployedCommit) {
+            dialog = {
+                title: 'A commit is on ' + check.branch + ' to deploy',
+                text: 'Commit ' + gitShortCommit(check.remoteCommit) + ' on ' + check.branch + ' is ready to deploy.\n'
+                    + 'Nothing is currently deployed.',
+                confirmButtonText: 'Pull and Redeploy'
+            };
+        } else if (check.deployedCommitMissing) {
+            // The clone was made again since the deploy (after a force-push, say), so there is
+            // nothing to compare the new commit with.
+            dialog = {
+                title: 'A newer commit is on ' + check.branch,
+                text: latestLine + '\n' + deployedLine + ', but it is no longer in the clone, so the changes '
+                    + 'cannot be identified.',
+                confirmButtonText: 'Pull and Redeploy'
+            };
+        } else {
+            // The stack's folder is the folder holding its compose file in the repository.
+            var changed = check.stackFolder
+                ? check.stackFolder + '/, this stack\'s folder'
+                : 'this stack\'s files (its compose file is at the top of the repository)';
+            dialog = {
+                title: 'A newer commit is on ' + check.branch,
+                text: latestLine + '\n' + deployedLine + '.\nThe commits since then change ' + changed + '.',
+                confirmButtonText: 'Pull and Redeploy'
+            };
+        }
+        swal({
+            title: dialog.title,
+            text: dialog.text,
+            type: 'info',
+            showCancelButton: true,
+            confirmButtonText: dialog.confirmButtonText,
+            cancelButtonText: 'Not now'
+        }, function(confirmed) {
+            if (confirmed) {
+                // The deploy's own confirmation opens after this one has closed.
+                setTimeout(function() {
+                    gitDeployStackChoosingProfiles(path, project, '');
+                }, 200);
+            }
+        });
+    }).fail(function() {
+        swal({
+            title: 'Could not check ' + project,
+            text: 'Request failed.',
+            type: 'error'
+        });
+    });
+}
+
+// Ask for a commit id, then deploy that commit (to go back to an older version).
+function promptGitDeployCommit(path, project) {
+    swal({
+        title: 'Deploy a commit of ' + project,
+        text: 'Enter the full commit id (40 characters). A later Pull and Redeploy brings the stack back to the branch\'s latest.',
+        type: 'input',
+        inputPlaceholder: 'Full commit id',
+        showCancelButton: true,
+        closeOnConfirm: true,
+        confirmButtonText: 'Next'
+    }, function(commit) {
+        if (commit === false) {
+            return;
+        }
+        commit = String(commit || '').trim().toLowerCase();
+        if (!commit) {
+            return;
+        }
+        // The stack list shows short ids; the deploy needs the full one, so say so now.
+        if (!/^([0-9a-f]{40}|[0-9a-f]{64})$/.test(commit)) {
+            setTimeout(function() {
+                swal({
+                    title: 'Not a full commit id',
+                    text: 'Enter the full commit id (40 characters), not a short one or a branch name.',
+                    type: 'error'
+                });
+            }, 200);
+            return;
+        }
+        // The next dialog opens after this one has closed.
+        setTimeout(function() {
+            gitDeployStackChoosingProfiles(path, project, commit);
+        }, 200);
+    });
+}
+
+function gitDeployConfirmed(path, commit, saveLocalChanges, profile) {
+    confirmedComposeAction(path, {
+        actionName: 'gitDeploy',
+        titlePrefix: 'Deploy',
+        requestUrl: compURL,
+        payload: {
+            action: 'composeGitDeploy',
+            path: path,
+            commit: commit || '',
+            saveLocalChanges: saveLocalChanges ? 1 : 0,
+            profile: profile || '',
+            profileChosen: profile === null ? 0 : 1
+        },
+        pendingReload: true
+    });
 }
 
 // Start All Stacks function
@@ -5808,7 +6309,8 @@ function executeStackAction(action) {
     }
 }
 
-function showProfileSelector(action, path, profiles, runningProfile, defaultProfile) {
+// gitOptions is for action 'gitDeploy' only: {project, commit}.
+function showProfileSelector(action, path, profiles, runningProfile, defaultProfile, gitOptions) {
     if (typeof runningProfile === 'undefined') {
         runningProfile = '';
     }
@@ -5823,7 +6325,8 @@ function showProfileSelector(action, path, profiles, runningProfile, defaultProf
         'update': 'Update',
         'forceUpdate': 'Force Update',
         'pull': 'Compose Pull',
-        'logs': 'Compose Logs'
+        'logs': 'Compose Logs',
+        'gitDeploy': 'the git deploy'
     };
 
     // Build profile selection UI:
@@ -5920,6 +6423,13 @@ function showProfileSelector(action, path, profiles, runningProfile, defaultProf
                     case 'logs':
                         ComposeLogs(path, profileStr);
                         break;
+                    case 'gitDeploy':
+                        // gitDeployStack asks the server first and then opens a dialog; one opened
+                        // while this dialog is still fading out is hidden with it, so wait for that.
+                        setTimeout(function() {
+                            gitDeployStack(path, gitOptions.project, gitOptions.commit, profileStr);
+                        }, 200);
+                        break;
                 }
             }, 0);
         }
@@ -5990,6 +6500,9 @@ function openEditorModalByProject(project, projectName, initialTab) {
     $('#editor-validation-override').html('<i class="fa fa-check editor-validation-icon"></i> Ready').removeClass('valid error warning');
     $('#env-empty-state').hide();
     $('#env-editor-wrap').show();
+    // A git stack's Sources readout and banner are shown again from getStackSettings.
+    showGitSourceForStack(project, false);
+    $('#editor-compose-git-banner, #editor-compose-git-changed').hide();
 
     // Set modal title
     $('#editor-modal-title').text('Editing: ' + projectName);
@@ -6151,6 +6664,243 @@ function switchComposeFile(path) {
 }
 
 // Load settings data into the settings panel
+// The first 12 characters of a commit id, as git shows it, or a dash for none.
+function gitShortCommit(commit) {
+    return commit ? String(commit).substring(0, 12) : '-';
+}
+
+// On the Sources tab, show a git stack's repository and deploy state in place
+// of the Compose Source choice: a git stack's compose file is in its clone,
+// and is chosen by the stack's git settings, not here.
+function showGitSourceForStack(project, isGitStack) {
+    editorModal.isGitStack = isGitStack;
+    $('#editor-compose-git-changed').hide();
+    $('#settings-compose-source-field').toggle(!isGitStack);
+    $('#settings-git-source').toggle(isGitStack);
+    if (!isGitStack) {
+        return;
+    }
+
+    $('#settings-git-source-loading').show();
+    $('#settings-git-source-error, #settings-git-source-table, #settings-git-local-changes, #settings-git-problem, #settings-git-deploy-key-wrap').hide();
+    $.post(caURL, {
+        action: 'getGitStackStatus',
+        script: project
+    }).then(function(data) {
+        // The editor may have moved on to another stack while this loaded.
+        if (editorModal.currentProject !== project) {
+            return;
+        }
+        $('#settings-git-source-loading').hide();
+        var response;
+        try {
+            response = JSON.parse(data);
+        } catch (e) {
+            response = { result: 'error', message: 'Unexpected response from server.' };
+        }
+        if (response.result !== 'success') {
+            $('#settings-git-source-error').text(response.message || 'Could not read the git stack.').show();
+            return;
+        }
+        renderGitSource(response.git);
+    }).fail(function() {
+        if (editorModal.currentProject !== project) {
+            return;
+        }
+        $('#settings-git-source-loading').hide();
+        $('#settings-git-source-error').text('Could not read the git stack.').show();
+    });
+}
+
+// Fill a box with the changes made in a git stack's clone (a hand-made commit, changed
+// files), or leave it hidden when there are none.
+function showGitLocalChanges($box, git) {
+    var changes = git.localChanges || [];
+    if (!git.commitMadeByHand && changes.length === 0) {
+        $box.hide();
+        return;
+    }
+    $box.empty().append(
+        $('<div class="compose-git-warning-box-title">').append(
+            $('<i class="fa fa-exclamation-triangle">'),
+            $('<span>').text('Changed in the clone')
+        )
+    );
+    if (git.commitMadeByHand) {
+        $box.append($('<div>').text('The checked-out commit ' + gitShortCommit(git.checkedOutCommit)
+            + ' was made in the clone by hand, not in the repository.'));
+    }
+    if (changes.length > 0) {
+        $box.append($('<div>').text('Files changed: ' + changes.join(', ')));
+    }
+    $box.append($('<div style="margin-top:6px;">').text('The next deploy stops on these. Pull and Redeploy offers to '
+        + 'save them as a patch in the stack folder and discard them. To keep a change, make it in the repository.'));
+    $box.show();
+}
+
+// Turn the stack open in the editor into a git stack (the Sources tab's
+// "Move this stack into git..."), through the same code as compose-git convert.
+function openConvertToGitModal() {
+    var project = editorModal.currentProject;
+    if (!project) {
+        return;
+    }
+    if (editorModal.modifiedTabs.size + editorModal.modifiedSettings.size + editorModal.modifiedLabels.size > 0) {
+        swal({
+            title: 'Unsaved changes',
+            text: 'Save or discard the changes in the editor first.',
+            type: 'warning'
+        });
+        return;
+    }
+
+    var modalHtml = `
+        <div id="compose-convert-git-overlay" class="compose-modal-overlay" style="display:flex;z-index:100005;">
+            <div class="compose-modal" role="dialog" aria-modal="true" aria-labelledby="compose-convert-git-title" style="max-width:640px;">
+                <div class="compose-modal-header">
+                    <span id="compose-convert-git-title"></span>
+                    <button type="button" class="editor-btn editor-btn-cancel" onclick="closeConvertToGitModal()" aria-label="Close"><i class="fa fa-times"></i></button>
+                </div>
+                <div class="compose-modal-body">
+                    <div id="compose-convert-git-error" class="compose-status-danger" style="margin-bottom:12px;display:none;white-space:pre-wrap;"></div>
+                    <div id="compose-convert-git-deploy-key-panel" class="compose-git-deploy-key-panel" style="display:none;"></div>
+                    <div class="settings-field-help" style="margin-bottom:12px;">
+                        The stack keeps its name, its .env and the plugin's override. Its current compose file, when it
+                        is in the stack folder, is moved into a dated <code>pre-git-...</code> folder there, so this can
+                        be undone by hand (a compose file kept elsewhere stays where it is). Running containers are left
+                        alone until the stack is deployed.
+                    </div>
+                    <div class="settings-field">
+                        <label for="compose-convert-git-url">Repository address</label>
+                        <input type="text" id="compose-convert-git-url" placeholder="https://github.com/me/stacks.git">
+                        <div class="settings-field-help">An <code>https://</code> address, an ssh address (<code>git@host:me/stacks.git</code>), or the path of a repository under <code>/mnt/</code>.</div>
+                        <div id="compose-convert-git-ssh-note" class="settings-field-help" style="display:none;">An ssh repository needs no credential: a deploy key is made for the stack when you select Move into git, and shown here to add to the repository.</div>
+                    </div>
+                    <div class="settings-field">
+                        <label for="compose-convert-git-branch">Branch</label>
+                        <input type="text" id="compose-convert-git-branch" value="main" placeholder="main">
+                    </div>
+                    <div class="settings-field">
+                        <label for="compose-convert-git-compose-path">Compose file in the repository</label>
+                        <input type="text" id="compose-convert-git-compose-path" placeholder="myapp/compose.yaml">
+                    </div>
+                    <div class="settings-field" id="compose-convert-git-credential-wrap">
+                        <label for="compose-convert-git-credential">Credential</label>
+                        <select id="compose-convert-git-credential"><option value="">None (a public repository)</option></select>
+                        <div class="settings-field-help">For a private https repository, first add a git token on the Credentials tab of the plugin's settings, then choose it here. For an ssh repository, no credential is needed: a deploy key is made for the stack.</div>
+                    </div>
+                </div>
+                <div class="compose-modal-footer">
+                    <button class="editor-btn editor-btn-cancel" onclick="closeConvertToGitModal()">Cancel</button>
+                    <button class="editor-btn editor-btn-save-all" id="compose-convert-git-btn" onclick="submitConvertToGit()">Move into git</button>
+                </div>
+            </div>
+        </div>
+    `;
+    closeConvertToGitModal();
+    var holder = document.createElement('div');
+    holder.innerHTML = modalHtml;
+    document.body.appendChild(holder.firstElementChild);
+    $('#compose-convert-git-title').text('Move ' + (editorModal.currentProjectName || project) + ' into git');
+
+    $('#compose-convert-git-url').on('input', function() {
+        var isSsh = isGitSshAddress(($(this).val() || '').trim());
+        $('#compose-convert-git-credential-wrap').toggle(!isSsh);
+        $('#compose-convert-git-ssh-note').toggle(isSsh);
+    });
+    fillGitCredentialSelect($('#compose-convert-git-credential'));
+}
+
+function closeConvertToGitModal() {
+    $('#compose-convert-git-overlay').remove();
+}
+
+function submitConvertToGit() {
+    var project = editorModal.currentProject;
+    var projectName = editorModal.currentProjectName || project;
+    var url = ($('#compose-convert-git-url').val() || '').trim();
+    var composePath = ($('#compose-convert-git-compose-path').val() || '').trim();
+    var $error = $('#compose-convert-git-error');
+    if (!url || !composePath) {
+        $error.text('Enter the repository address and the path of the compose file in the repository.').show();
+        return;
+    }
+    var $buttons = $('#compose-convert-git-overlay button');
+    $buttons.prop('disabled', true);
+    $('#compose-convert-git-btn').text('Cloning...');
+    $error.hide();
+    $('#compose-convert-git-deploy-key-panel').hide().empty();
+
+    $.post(caURL, {
+        action: 'convertToGitStack',
+        script: project,
+        gitUrl: url,
+        gitBranch: ($('#compose-convert-git-branch').val() || '').trim(),
+        gitComposePath: composePath,
+        gitCredentialId: isGitSshAddress(url) ? '' : ($('#compose-convert-git-credential').val() || '')
+    }).then(function(data) {
+        var response = tryParseJson(data);
+        if (!response || response.result !== 'success') {
+            // What the server said before it stopped (an ssh stack's deploy key hint, say).
+            var messages = ((response && response.messages) || []).join('\n\n');
+            $buttons.prop('disabled', false);
+            $('#compose-convert-git-btn').text('Move into git');
+            if (response && response.deployKey) {
+                showGitDeployKeyPanel($('#compose-convert-git-deploy-key-panel'), response.deployKey,
+                    (messages ? messages + '\n\n' : '') + (response.message || ''), 'Move into git');
+                return;
+            }
+            $error.text((messages ? messages + '\n\n' : '') + ((response && response.message) || 'Unexpected response from server.')).show();
+            return;
+        }
+        closeConvertToGitModal();
+        // Reopen the editor on the stack as it is now, and refresh its row.
+        doCloseEditorModal();
+        composeLoadlist();
+        swal({
+            title: projectName + ' is now a git stack',
+            text: (response.messages || []).join('\n\n') + '\n\nDeploy it with Pull and Redeploy from its stack menu.',
+            type: 'success'
+        }, function() {
+            openEditorModalByProject(project, projectName, 'sources');
+        });
+    }).fail(function() {
+        $buttons.prop('disabled', false);
+        $('#compose-convert-git-btn').text('Move into git');
+        $error.text('Request failed. If the repository is large, the clone may still be running: '
+            + 'reopen the stack before trying again.').show();
+    });
+}
+
+// Fill the Sources tab's git readout from getGitStackStatus.
+function renderGitSource(git) {
+    $('#settings-git-url').text(git.url);
+    $('#settings-git-branch').text(git.branch);
+    $('#settings-git-compose-path').text(git.composePath);
+    $('#settings-git-clone-dir').text(git.cloneDir);
+    $('#settings-git-credential').text(git.credential || '');
+    $('#settings-git-credential-row').toggle(!!git.credential);
+    $('#settings-git-deployed').text(git.deployedCommit ? gitShortCommit(git.deployedCommit) : 'Not deployed yet');
+    $('#settings-git-failed').text(gitShortCommit(git.failedCommit) + ' (fix it and deploy again)');
+    $('#settings-git-failed-row').toggle(!!git.failedCommit);
+    $('#settings-git-checked-out').text(gitShortCommit(git.checkedOutCommit));
+    $('#settings-git-source-table').show();
+
+    // What the next deploy will stop on (or offer to save and discard, from the stack menu),
+    // on this tab and above the compose file, so it is seen where the file is edited.
+    showGitLocalChanges($('#settings-git-local-changes'), git);
+    showGitLocalChanges($('#editor-compose-git-changed'), git);
+    // The box above the compose file takes room from the editor, so it is sized again.
+    refreshEditorContents('compose');
+    if (git.problem) {
+        $('#settings-git-problem').text(git.problem).show();
+    }
+    if (git.deployKey) {
+        $('#settings-git-deploy-key').val(git.deployKey);
+        $('#settings-git-deploy-key-wrap').show();
+    }
+}
+
 function loadSettingsData(project, projectName) {
     // Set the name from projectName (display name)
     $('#settings-name').val(projectName || '');
@@ -6296,6 +7046,13 @@ function loadSettingsData(project, projectName) {
                         $('#settings-external-compose-info').hide();
                     }
                 }
+
+                // A git stack shows its repository instead of the Compose Source choice,
+                // and the Compose tab says where its file lives
+                showGitSourceForStack(project, response.isGitStack === true);
+                $('#editor-compose-git-banner').toggle(response.isGitStack === true);
+                // The banner takes room from the editor below it, which was sized without it.
+                refreshEditorContents('compose');
 
                 // Default profile
                 var defaultProfile = response.defaultProfile || '';
@@ -7259,6 +8016,12 @@ function saveTab(tabName, saveErrors) {
         // Regenerate profiles if compose file was saved
         if (tabName === 'compose') {
             generateProfiles(null, project);
+        }
+
+        // A git stack's files are in its clone, so saving one changes the clone:
+        // read its state again for the Sources tab and the "Changed in the clone" box.
+        if (editorModal.isGitStack) {
+            showGitSourceForStack(project, true);
         }
 
         return true;
@@ -8965,6 +9728,7 @@ function addComposeStackContext(elementId) {
     var defaultProfile = $row.data('default-profile') || '';
     var webuiUrl = $row.data('webui') || '';
     var hasBuild = $row.data('hasbuild') == "1";
+    var isGitStack = $row.data('gitstack') == "1";
     var hasExistingContainers = false;
     var hasKnownNetworks = false;
 
@@ -9190,6 +9954,37 @@ function addComposeStackContext(elementId) {
     opts.push({
         divider: true
     });
+
+    // A git stack deploys from its repository (see docs/git-stacks.md)
+    if (isGitStack) {
+        opts.push({
+            text: 'Check for Changes',
+            icon: 'fa-search',
+            action: function(e) {
+                e.preventDefault();
+                checkGitStack(path, project);
+            }
+        });
+        opts.push({
+            text: 'Pull and Redeploy',
+            icon: 'fa-code-fork',
+            action: function(e) {
+                e.preventDefault();
+                gitDeployStackChoosingProfiles(path, project, '');
+            }
+        });
+        opts.push({
+            text: 'Deploy Commit...',
+            icon: 'fa-history',
+            action: function(e) {
+                e.preventDefault();
+                promptGitDeployCommit(path, project);
+            }
+        });
+        opts.push({
+            divider: true
+        });
+    }
 
     // Check for Updates (always available)
     opts.push({
