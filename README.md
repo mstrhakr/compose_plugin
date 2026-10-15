@@ -172,7 +172,7 @@ With dcflachs Docker Compose Manager being depreciated, if you want to go back t
 
 ## Requirements
 
-- unRAID 6.9.0 or later
+- unRAID 6.12.0 or later (PHP 8 is required; first included in Unraid 6.12.0)
 
 > NOTE: This is untested on anything older than 7.2.3 currently. I will remove this note if I get a report that this IS compatible that far back. I am working on getting a machine setup for testing on the older versions. Any advice would be welcome, eg how to VM unraid easily.
 
@@ -343,7 +343,16 @@ Contributions are welcome — we added issue and PR templates to guide reports a
 
 ## License
 
-This project is open source. See the repository for license details.
+Original material owned and licensable by **Nick Szittai (mstrhakr)** is offered
+under the [MIT License](LICENSE). This is **not a blanket license for the plugin**:
+inherited dcflachs/compose_plugin code and independently owned contributions are
+excluded, and upstream permission remains unresolved. Changes to inherited files
+do not relicense their underlying material.
+
+See the [licensing and provenance audit](source/compose.manager/licenses/LICENSING.md)
+for surviving upstream code, scope, and required permissions. Third-party
+components retain their [own licenses and notices](source/compose.manager/licenses/THIRD-PARTY-NOTICES.md).
+The complete project is not yet cleared for unrestricted redistribution.
 
 ## Credits
 

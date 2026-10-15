@@ -228,6 +228,26 @@ NETWORKS_CONFIG_JSON='{"networks":{"internalnet":{"name":"stack_internalnet"},"s
     [[ "$(cat "$TEST_TEMP_DIR/created")" == "svc-real-name" ]]
 }
 
+@test "create_missing_external_networks tries every network and fails when one cannot be created" {
+    # shellcheck disable=SC1090
+    source "$COMMON_SCRIPT"
+    # Neither network exists; creating "svc-real-name" fails, creating "web" works.
+    docker() {
+        case "$*" in
+            "compose -p teststack config --format json") echo "$NETWORKS_CONFIG_JSON" ;;
+            "network inspect "*) return 1 ;;
+            "network create svc-real-name") return 1 ;;
+            "network create "*) echo "$3" >> "$TEST_TEMP_DIR/created" ;;
+        esac
+    }
+
+    run create_missing_external_networks docker compose -p teststack
+
+    assert_failure
+    assert_output_contains "Failed to create external network: svc-real-name"
+    [[ "$(cat "$TEST_TEMP_DIR/created")" == "web" ]]
+}
+
 @test "create_missing_external_networks does nothing when the compose config does not parse" {
     # shellcheck disable=SC1090
     source "$COMMON_SCRIPT"

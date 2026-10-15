@@ -22,8 +22,8 @@ function composeCronManager(): CronManager
     $syncDisabledEnv = getenv('COMPOSE_MANAGER_CRON_NOSYNC');
     $syncEnabled = ($syncDisabledEnv === false || $syncDisabledEnv === '');
 
-    global $plugin_root;
-    return new CronManager($cronFile, $plugin_root, $syncEnabled);
+    global $plugin_root, $compose_root;
+    return new CronManager($cronFile, $plugin_root, $syncEnabled, $compose_root);
 }
 
 class CronManager
@@ -31,23 +31,29 @@ class CronManager
     private const DEFAULT_CRON_FILE = '/boot/config/plugins/compose.manager/compose.manager.cron';
     private const MARKER_AUTOUPDATE = '#compose-autoupdate';
     private const MARKER_BACKUP = '#compose-backup';
+    private const MARKER_GITCHECK = '#compose-gitcheck';
     private string $cronFile;
     private string $pluginRoot;
     private bool $syncEnabled;
+    private ?string $composeRoot;
 
     /**
      * @param string|null $cronFile Override cron file path (for testing)
      * @param string|null $pluginRoot Override plugin root path (for testing)
      * @param bool $syncEnabled Whether to call update_cron after writing (disable in tests)
+     * @param string|null $composeRoot The projects folder, to find git stacks that are checked on a
+     *     schedule; null leaves the git check line out
      */
     public function __construct(
         ?string $cronFile = null,
         ?string $pluginRoot = null,
-        bool $syncEnabled = true
+        bool $syncEnabled = true,
+        ?string $composeRoot = null
     ) {
         $this->cronFile = $cronFile ?? self::DEFAULT_CRON_FILE;
         $this->pluginRoot = rtrim($pluginRoot ?? '/usr/local/emhttp/plugins/compose.manager/', '/') . '/';
         $this->syncEnabled = $syncEnabled;
+        $this->composeRoot = $composeRoot;
     }
 
     /**
@@ -79,6 +85,7 @@ class CronManager
             $lines[] = $backupLine;
             composeLogger('rebuild: backup cron line included', null, 'daemon', 'debug', 'cron');
         }
+        $this->addGitCheckLineIfWanted($lines);
 
         composeLogger('rebuild: writing ' . count($lines) . ' cron line(s)', null, 'daemon', 'debug', 'cron');
         return $this->writeCronFile($lines);
@@ -99,6 +106,7 @@ class CronManager
         if ($backupLine !== null) {
             $lines[] = $backupLine;
         }
+        $this->addGitCheckLineIfWanted($lines);
 
         return $this->writeCronFile($lines);
     }
@@ -118,6 +126,7 @@ class CronManager
         if ($backupLine !== null) {
             $lines[] = $backupLine;
         }
+        $this->addGitCheckLineIfWanted($lines);
 
         return $this->writeCronFile($lines);
     }
@@ -128,6 +137,14 @@ class CronManager
     public function isAutoupdateInstalled(): bool
     {
         return $this->hasMarker(self::MARKER_AUTOUPDATE);
+    }
+
+    /**
+     * Check if the scheduled git check's cron line is currently installed.
+     */
+    public function isGitCheckInstalled(): bool
+    {
+        return $this->hasMarker(self::MARKER_GITCHECK);
     }
 
     /**
@@ -208,6 +225,31 @@ class CronManager
         $runner = $this->pluginRoot . 'include/AutoUpdateRunner.php';
         return "*/15 * * * * " . escapeshellarg($phpBinary) . " "
             . escapeshellarg($runner) . " >/dev/null 2>&1 " . self::MARKER_AUTOUPDATE;
+    }
+
+    /**
+     * Add the scheduled git check's line (every 15 minutes) when any git stack
+     * asks for it: a stack whose git.json has autoDeploy set to anything but "off".
+     *
+     * @param string[] $lines
+     */
+    private function addGitCheckLineIfWanted(array &$lines): void
+    {
+        if ($this->composeRoot === null || $this->composeRoot === '') {
+            return;
+        }
+        foreach (glob(rtrim($this->composeRoot, '/') . '/*/git.json') ?: [] as $gitSettingsFile) {
+            // Read as plain JSON: the scheduled check itself validates each stack's settings.
+            $settings = json_decode((string) @file_get_contents($gitSettingsFile), true);
+            if (is_array($settings) && is_string($settings['autoDeploy'] ?? null) && $settings['autoDeploy'] !== 'off') {
+                $command = $this->pluginRoot . 'scripts/compose-git';
+                // Every 15 minutes, 7 minutes off the image auto-update's quarter hours, so a git
+                // deploy does not wait on the stack lock of that stack's own auto-update.
+                $lines[] = "7-59/15 * * * * " . escapeshellarg($command) . " scheduled-check >/dev/null 2>&1 " . self::MARKER_GITCHECK;
+                composeLogger('git check cron line included', null, 'daemon', 'debug', 'cron');
+                return;
+            }
+        }
     }
 
     /**

@@ -2,6 +2,12 @@
 # Compose Manager - Shared shell functions
 # Sourced by event scripts and other shell scripts that need common utilities.
 
+# The exit status of compose.sh gitdeploy when an automatic deploy (the scheduled
+# check's) no longer applies once it holds the stack's lock: nothing was changed,
+# and the next scheduled check decides again. GitDeploy::EXIT_SKIPPED in PHP.
+# shellcheck disable=SC2034 # used by the scripts that source this file
+GIT_DEPLOY_EXIT_SKIPPED=75
+
 # Shared logging function matching the PHP composeLogger() convention.
 # Usage: composeLogger "message" [level] [category] [type]
 #   level: info (default), debug, error, warning
@@ -135,24 +141,30 @@ foreach ($config["networks"] ?? [] as $key => $network) {
 # Arguments: the docker compose command that reads the stack's config, for example
 #   create_missing_external_networks docker compose -f compose.yaml -p mystack
 # A config that does not parse is skipped here; the compose command that follows reports it.
+# Returns 1 if any network could not be created (after trying them all, so each is named).
+# The docker network calls run through network_docker_command, plain docker unless the
+# caller sets it (compose.sh gitdeploy runs docker with its checks' environment).
+network_docker_command=(docker)
 create_missing_external_networks() {
-    local config_json network
+    local config_json network failed=0
     if ! config_json=$("$@" config --format json 2>/dev/null); then
         return 0
     fi
     while IFS= read -r network; do
         [ -n "$network" ] || continue
-        if docker network inspect "$network" > /dev/null 2>&1; then
+        if "${network_docker_command[@]}" network inspect "$network" > /dev/null 2>&1; then
             continue
         fi
-        if docker network create "$network" > /dev/null; then
+        if "${network_docker_command[@]}" network create "$network" > /dev/null; then
             echo "✓ Created missing external network: $network"
             composeLogger "Created missing external network: $network" info compose
         else
             echo "✗ Failed to create external network: $network"
             composeLogger "Failed to create external network: $network" error compose
+            failed=1
         fi
     done < <(printf '%s' "$config_json" | external_network_names)
+    return $failed
 }
 
 # Resolve effective env file for a stack.

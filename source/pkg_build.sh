@@ -216,7 +216,7 @@ compose.manager: compose stacks directly from the unRAID dashboard.
 compose.manager:
 compose.manager: Features: Docker Compose CLI, web-based stack management,
 compose.manager: autostart support, environment file support, profiles,
-compose.manager: built-in YAML editor, and Docker UI integration patches.
+compose.manager: built-in YAML editor, and Docker UI integration.
 compose.manager:
 compose.manager: https://github.com/mstrhakr/compose_plugin
 EOF

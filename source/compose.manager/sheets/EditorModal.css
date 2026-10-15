@@ -242,6 +242,63 @@
   opacity: 0.9;
 }
 
+/* A new ssh git stack's deploy key, shown as the next step when the repository does not
+   know it yet: styled like a settings section, with an orange edge so it stands out. */
+.compose-git-deploy-key-panel {
+  margin-bottom: 16px;
+  background-color: var(--dynamix-tablesorter-tbody-row-alt-bg-color);
+  border: 1px solid var(--brand-orange);
+  border-left-width: 5px;
+  border-radius: 8px;
+  padding: 16px 20px;
+}
+
+.compose-git-deploy-key-panel-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--brand-orange);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.compose-git-deploy-key-panel textarea.compose-git-deploy-key {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 10px 0 8px;
+  font-family: monospace;
+  font-size: 0.9em;
+  resize: none;
+}
+
+.compose-git-deploy-key-panel-details {
+  margin-top: 12px;
+  font-size: 0.85em;
+  opacity: 0.75;
+  white-space: pre-wrap;
+}
+
+/* Changes made in a git stack's clone, which the next deploy stops on: in the same orange
+   box as the deploy key panel, on the Sources tab and above the compose file. */
+.compose-git-warning-box {
+  background-color: var(--dynamix-tablesorter-tbody-row-alt-bg-color);
+  border: 1px solid var(--brand-orange);
+  border-left-width: 5px;
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.compose-git-warning-box-title {
+  font-weight: 600;
+  color: var(--brand-orange);
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .settings-field {
   margin-bottom: 24px;
   position: relative;
@@ -303,6 +360,28 @@
   font-size: 0.95rem;
   margin-top: 8px;
   line-height: 1.4;
+}
+
+/* A git stack's repository and deploy state on the Sources tab */
+.settings-git-source-table {
+  width: auto;
+  border-collapse: collapse;
+  font-size: 0.95rem;
+}
+
+.settings-git-source-table th {
+  text-align: left;
+  font-weight: normal;
+  color: var(--alt-text-color);
+  width: 1%;
+  padding: 2px 16px 2px 0;
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+.settings-git-source-table td {
+  padding: 2px 0;
+  word-break: break-all;
 }
 
 .settings-effective-command-wrap {
