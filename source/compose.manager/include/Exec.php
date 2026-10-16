@@ -201,7 +201,7 @@ if (!function_exists('composeBuildCredentialStackMap')) {
         }
         foreach (glob(rtrim($composeRoot, '/') . '/*/git.json') ?: [] as $gitSettingsFile) {
             // Read as plain JSON: a git.json that fails validation still keeps its credential in use.
-            $gitSettings = json_decode((string) @file_get_contents($gitSettingsFile), true);
+            $gitSettings = GitStackSettings::readAsPlainJson($gitSettingsFile);
             $credentialId = is_array($gitSettings) ? ($gitSettings['credentialId'] ?? null) : null;
             if (!is_string($credentialId) || $credentialId === '') {
                 continue;
@@ -212,6 +212,32 @@ if (!function_exists('composeBuildCredentialStackMap')) {
             }
         }
         return $map;
+    }
+}
+
+if (!function_exists('composeListUnreadableGitStacksThatMayUse')) {
+    /**
+     * The git stacks whose git.json cannot be read as JSON (a typo from a hand edit, say) but may
+     * still name this credential. composeBuildCredentialStackMap() cannot see them.
+     *
+     * Such a file may name it when its text contains the credential id, when the file cannot be
+     * read at all, or when it holds NUL bytes (saved as UTF-16, so the id cannot be searched for).
+     *
+     * @return string[] Stack folder names
+     */
+    function composeListUnreadableGitStacksThatMayUse(string $composeRoot, string $credentialId): array
+    {
+        $stacks = [];
+        foreach (glob(rtrim($composeRoot, '/') . '/*/git.json') ?: [] as $gitSettingsFile) {
+            if (GitStackSettings::readAsPlainJson($gitSettingsFile) !== null) {
+                continue;
+            }
+            $content = @file_get_contents($gitSettingsFile);
+            if ($content === false || str_contains($content, "\0") || str_contains($content, $credentialId)) {
+                $stacks[] = basename(dirname($gitSettingsFile));
+            }
+        }
+        return $stacks;
     }
 }
 
@@ -1074,13 +1100,47 @@ switch ($_POST['action']) {
     case 'deleteCredential':
         $credentialId = trim((string) ($_POST['id'] ?? ''));
         try {
-            $deleted = CredentialVault::withCredentialAssignmentLock(function () use ($compose_root, $credentialId): bool {
+            $refusal = null;
+            $deleted = CredentialVault::withCredentialAssignmentLock(function () use ($compose_root, $credentialId, &$refusal): bool {
+                // A projects folder on the array is gone while the array is stopped: no stack would be
+                // found, and every credential would look unused.
+                if (!is_dir($compose_root)) {
+                    $refusal = "The projects folder ($compose_root) is not there, so the stacks that use this credential "
+                        . 'cannot be checked. If it is on the array, start the array first.';
+                    return false;
+                }
                 $stacks = composeBuildCredentialStackMap($compose_root)[$credentialId] ?? [];
                 if (!empty($stacks)) {
                     throw new RuntimeException('Credential is assigned to: ' . implode(', ', $stacks));
                 }
+                // A git stack whose git.json cannot be read may use this credential: do not delete
+                // it from under that stack. Registry credentials are never in a git.json.
+                // Looked up in the list, not with getCredentialSummary(), so a missing id is still "not found".
+                $provider = '';
+                foreach ((new CredentialVault())->listCredentials() as $credential) {
+                    if (($credential['id'] ?? '') === $credentialId) {
+                        $provider = $credential['provider'] ?? '';
+                    }
+                }
+                $unreadable = in_array($provider, ['git', 'git-ssh'], true)
+                    ? composeListUnreadableGitStacksThatMayUse($compose_root, $credentialId)
+                    : [];
+                if (count($unreadable) === 1) {
+                    $refusal = "The git settings (git.json) of {$unreadable[0]} could not be read, so it may use this credential. "
+                        . "Fix the file first: the stack's Sources tab, or compose-git status, shows the error.";
+                    return false;
+                }
+                if (count($unreadable) > 1) {
+                    $refusal = 'The git settings (git.json) of ' . implode(', ', $unreadable) . ' could not be read, so they may use '
+                        . "this credential. Fix the files first: each stack's Sources tab, or compose-git status, shows the error.";
+                    return false;
+                }
                 return (new CredentialVault())->deleteCredential($credentialId);
             });
+            if ($refusal !== null) {
+                echo json_encode(['result' => 'error', 'message' => $refusal]);
+                break;
+            }
             if ($deleted) {
                 composeLogger('Deleted credential', ['id' => $credentialId], 'user', 'info', 'credential');
             }

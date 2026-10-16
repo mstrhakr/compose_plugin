@@ -314,6 +314,21 @@ class CronManagerTest extends TestCase
         }
     }
 
+    public function testGitCheckLineIsAddedForAGitJsonWithAByteOrderMark(): void
+    {
+        // As saved by a Windows editor. GitStackSettings::load() accepts it, so the cron must too.
+        $root = $this->projectsWithGitStack('deploy');
+        $file = $root . '/whoami/git.json';
+        file_put_contents($file, "\xEF\xBB\xBF" . file_get_contents($file));
+        try {
+            $cron = new CronManager($this->cronFile, '/usr/local/emhttp/plugins/compose.manager/', false, $root);
+            $cron->rebuild();
+            $this->assertTrue($cron->isGitCheckInstalled());
+        } finally {
+            $this->removeProjects($root);
+        }
+    }
+
     public function testNoGitCheckLineWhenNoGitStackAsksForIt(): void
     {
         foreach (['off', null] as $autoDeploy) {

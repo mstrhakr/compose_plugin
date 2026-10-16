@@ -411,6 +411,30 @@ final class GitStackSettingsTest extends TestCase
         $this->assertNotNull(GitStackSettings::load($this->stackDir));
     }
 
+    public function testReadAsPlainJsonGivesTheFileWithoutCheckingIt(): void
+    {
+        $file = $this->stackDir . '/git.json';
+        file_put_contents($file, '{"credentialId": "abc", "notASetting": true}');
+        $this->assertSame(['credentialId' => 'abc', 'notASetting' => true], GitStackSettings::readAsPlainJson($file));
+    }
+
+    public function testReadAsPlainJsonAcceptsAByteOrderMark(): void
+    {
+        $file = $this->stackDir . '/git.json';
+        file_put_contents($file, "\xEF\xBB\xBF" . '{"autoDeploy": "deploy"}');
+        $this->assertSame(['autoDeploy' => 'deploy'], GitStackSettings::readAsPlainJson($file));
+    }
+
+    public function testReadAsPlainJsonGivesNullForAMissingOrBrokenFile(): void
+    {
+        $file = $this->stackDir . '/git.json';
+        $this->assertNull(GitStackSettings::readAsPlainJson($file));
+        file_put_contents($file, '{not json');
+        $this->assertNull(GitStackSettings::readAsPlainJson($file));
+        file_put_contents($file, '"just a string"');
+        $this->assertNull(GitStackSettings::readAsPlainJson($file));
+    }
+
     /** @return array<string, array{callable(array<string, mixed>): mixed}> */
     public static function brokenFiles(): array
     {

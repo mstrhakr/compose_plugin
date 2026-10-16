@@ -548,10 +548,25 @@
         }
         swal({ title: 'Delete credential?', text: credential.name, type: 'warning', showCancelButton: true }, function(confirmed) {
             if (!confirmed) return;
-            $.post(window.caURL || '/plugins/compose.manager/include/Exec.php', { action: 'deleteCredential', id: credential.id }).done(function() {
+            $.post(window.caURL || '/plugins/compose.manager/include/Exec.php', { action: 'deleteCredential', id: credential.id }).done(function(data) {
+                var response;
+                try { response = typeof data === 'string' ? JSON.parse(data) : data; } catch (error) { response = {}; }
+                if (response.result !== 'success') {
+                    showDeleteError(response.message || 'Unknown error.');
+                }
+                loadCredentials();
+            }).fail(function() {
+                showDeleteError('Unable to reach credential service.');
                 loadCredentials();
             });
         });
+    }
+
+    function showDeleteError(message) {
+        // Wait for the confirm dialog to finish closing, or SweetAlert can hide this one with it.
+        setTimeout(function() {
+            swal({ title: 'Unable to delete credential', text: message, type: 'error' });
+        }, 300);
     }
 
     function populateSelect($select, selectedId) {

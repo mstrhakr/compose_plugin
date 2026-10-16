@@ -858,6 +858,123 @@ class ExecActionsTest extends TestCase
         $this->assertSame(['git-stack'], $deleteResult['stacks']);
     }
 
+    public function testCredentialUsedByAGitStackWhoseGitJsonHasAByteOrderMarkCannotBeDeleted(): void
+    {
+        // As saved by a Windows editor. GitStackSettings::load() accepts it, so the stack keeps working
+        // and its credential must not be deleted from under it.
+        $stackPath = $this->createTestStack('git-stack');
+        $saved = json_decode($this->executeAction('saveCredential', [
+            'name' => 'Git stacks', 'provider' => 'git', 'registry' => 'github.com',
+            'username' => 'bot', 'secret' => 'repository-token',
+        ]), true);
+        $credentialId = $saved['credential']['id'];
+        file_put_contents($stackPath . '/git.json', "\xEF\xBB\xBF" . json_encode(['credentialId' => $credentialId]));
+
+        $deleteResult = json_decode($this->executeAction('deleteCredential', ['id' => $credentialId]), true);
+        $this->assertSame('error', $deleteResult['result']);
+        $this->assertSame(['git-stack'], $deleteResult['stacks']);
+    }
+
+    public function testGitCredentialIsNotDeletedWhileAGitStacksSettingsCannotBeRead(): void
+    {
+        // A hand edit left a trailing comma: the stack may use this credential, but which one cannot be read.
+        $stackPath = $this->createTestStack('git-stack');
+        $saved = json_decode($this->executeAction('saveCredential', [
+            'name' => 'Git stacks', 'provider' => 'git', 'registry' => 'github.com',
+            'username' => 'bot', 'secret' => 'repository-token',
+        ]), true);
+        $credentialId = $saved['credential']['id'];
+        file_put_contents($stackPath . '/git.json', '{"credentialId": "' . $credentialId . '",}');
+
+        $deleteResult = json_decode($this->executeAction('deleteCredential', ['id' => $credentialId]), true);
+        $this->assertSame('error', $deleteResult['result']);
+        $this->assertStringContainsString('git-stack', $deleteResult['message']);
+        $this->assertStringContainsString('could not be read', $deleteResult['message']);
+        $this->assertCount(1, (new \CredentialVault())->listCredentials());
+
+        // Once the file is fixed, the stack counts as using it in the usual way.
+        file_put_contents($stackPath . '/git.json', '{"credentialId": "' . $credentialId . '"}');
+        $deleteResult = json_decode($this->executeAction('deleteCredential', ['id' => $credentialId]), true);
+        $this->assertSame(['git-stack'], $deleteResult['stacks']);
+    }
+
+    public function testRegistryCredentialCanBeDeletedWhileAGitStacksSettingsCannotBeRead(): void
+    {
+        // Only git credentials are named in a git.json, so a broken one does not hold up a registry credential,
+        // even one whose id it happens to contain.
+        $stackPath = $this->createTestStack('git-stack');
+        $saved = json_decode($this->executeAction('saveCredential', [
+            'name' => 'Work GitHub', 'provider' => 'github', 'registry' => 'ghcr.io',
+            'username' => 'octocat', 'secret' => 'read-only-token',
+        ]), true);
+        file_put_contents($stackPath . '/git.json', '{"credentialId": "' . $saved['credential']['id'] . '",}');
+
+        $deleteResult = json_decode($this->executeAction('deleteCredential', ['id' => $saved['credential']['id']]), true);
+        $this->assertSame('success', $deleteResult['result']);
+    }
+
+    public function testGitCredentialCanBeDeletedWhenNoGitStackNamesIt(): void
+    {
+        // A broken git.json that names another credential, and a readable one that names none, do not hold it up.
+        $brokenPath = $this->createTestStack('broken-stack');
+        $readablePath = $this->createTestStack('readable-stack');
+        $saved = json_decode($this->executeAction('saveCredential', [
+            'name' => 'Git stacks', 'provider' => 'git', 'registry' => 'github.com',
+            'username' => 'bot', 'secret' => 'repository-token',
+        ]), true);
+        file_put_contents($brokenPath . '/git.json', '{"credentialId": "' . str_repeat('cd', 16) . '",}');
+        file_put_contents($readablePath . '/git.json', '{"url": "https://github.com/owner/repo.git"}');
+
+        $deleteResult = json_decode($this->executeAction('deleteCredential', ['id' => $saved['credential']['id']]), true);
+        $this->assertSame('success', $deleteResult['result']);
+    }
+
+    public function testDeployKeyIsNotDeletedWhileTwoGitStacksSettingsCannotBeRead(): void
+    {
+        // One names the key; the other was saved as UTF-16, so its text cannot be searched and it may name it too.
+        $firstPath = $this->createTestStack('first-stack');
+        $secondPath = $this->createTestStack('second-stack');
+        $key = (new \CredentialVault())->saveCredential([
+            'name' => 'first-stack deploy key', 'provider' => 'git-ssh', 'registry' => 'github.com',
+            'username' => 'git', 'secret' => 'private key',
+        ]);
+        file_put_contents($firstPath . '/git.json', '{"credentialId": "' . $key['id'] . '",}');
+        $utf16 = '';
+        foreach (str_split('{"credentialId": "' . $key['id'] . '"}') as $character) {
+            $utf16 .= $character . "\0";
+        }
+        file_put_contents($secondPath . '/git.json', $utf16);
+
+        $deleteResult = json_decode($this->executeAction('deleteCredential', ['id' => $key['id']]), true);
+        $this->assertSame('error', $deleteResult['result']);
+        $this->assertStringContainsString('first-stack, second-stack could not be read, so they may use', $deleteResult['message']);
+        $this->assertCount(1, (new \CredentialVault())->listCredentials());
+    }
+
+    public function testCredentialIsNotDeletedWhileTheProjectsFolderIsMissing(): void
+    {
+        // As with the projects folder on the array while the array is stopped: the stack using it cannot be seen.
+        $stackPath = $this->createTestStack('test-stack');
+        $saved = json_decode($this->executeAction('saveCredential', [
+            'name' => 'Work GitHub', 'provider' => 'github', 'registry' => 'ghcr.io',
+            'username' => 'octocat', 'secret' => 'read-only-token',
+        ]), true);
+        file_put_contents($stackPath . '/credential_id', $saved['credential']['id']);
+        $this->recursiveDelete($this->testComposeRoot);
+
+        $deleteResult = json_decode($this->executeAction('deleteCredential', ['id' => $saved['credential']['id']]), true);
+        $this->assertSame('error', $deleteResult['result']);
+        $this->assertStringContainsString('start the array first', $deleteResult['message']);
+        $this->assertCount(1, (new \CredentialVault())->listCredentials());
+    }
+
+    public function testDeletingAMissingCredentialSaysItIsNotFound(): void
+    {
+        $deleteResult = json_decode($this->executeAction('deleteCredential', ['id' => str_repeat('ab', 16)]), true);
+        $this->assertSame('error', $deleteResult['result']);
+        $this->assertSame('Credential not found.', $deleteResult['message']);
+    }
+
     public function testGitCredentialIsNotTestedAsARegistryAndCannotBeARegistryCredential(): void
     {
         $stackPath = $this->createTestStack('test-stack');

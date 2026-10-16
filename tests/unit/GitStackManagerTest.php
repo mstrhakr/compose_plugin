@@ -808,6 +808,32 @@ final class GitStackManagerTest extends TestCase
         $this->assertStringContainsString("Using the deploy key of 'first'", $existing['message'] ?? '');
     }
 
+    public function testAStackWhoseGitJsonHasAByteOrderMarkStillSharesItsKey(): void
+    {
+        // As saved by a Windows editor. GitStackSettings::load() accepts it, so the stack is in use.
+        // The key has the old-style name, so only the stack's git.json can lead to it.
+        $key = $this->emptyVault()->saveCredential(['name' => 'first deploy key', 'provider' => 'git-ssh', 'registry' => 'github.com', 'username' => 'git', 'secret' => 'k']);
+        $this->makeSshStack('first', 'git@github.com:owner/repo.git', $key['id']);
+        $file = $this->composeRoot . '/first/git.json';
+        file_put_contents($file, "\xEF\xBB\xBF" . file_get_contents($file));
+
+        $existing = $this->manager->existingDeployKey('second', GitStackSettings::sshAddress('git@github.com:owner/repo.git'));
+
+        $this->assertSame($key['id'], $existing['id'] ?? null);
+        $this->assertStringContainsString("Using the deploy key of 'first'", $existing['message'] ?? '');
+    }
+
+    public function testAKeyUsedByAStackWhoseGitJsonHasAByteOrderMarkIsNotGivenToAnotherRepository(): void
+    {
+        // As in testAKeyNamedAfterTheStackIsNotUsedWhileAnotherStackUsesIt, with the mark on the user's git.json.
+        $key = $this->emptyVault()->saveCredential(['name' => 'myapp deploy key', 'provider' => 'git-ssh', 'registry' => 'github.com', 'username' => 'git', 'secret' => 'k']);
+        $this->makeSshStack('other', 'git@github.com:owner/repo.git', $key['id']);
+        $file = $this->composeRoot . '/other/git.json';
+        file_put_contents($file, "\xEF\xBB\xBF" . file_get_contents($file));
+
+        $this->assertNull($this->manager->existingDeployKey('myapp', GitStackSettings::sshAddress('git@github.com:owner/new.git')));
+    }
+
     public function testAStackWhoseSettingsCannotBeReadIsNamed(): void
     {
         $this->emptyVault();

@@ -182,6 +182,29 @@ final class GitStackSettings
     }
 
     /**
+     * Read a git.json as plain JSON, without checking its settings.
+     *
+     * For code that only needs one value and must not depend on the file being
+     * valid, such as finding which credentials are in use. Like load(), it
+     * accepts a file that starts with a byte order mark.
+     *
+     * @return array<mixed>|null null when the file cannot be read or is not a JSON object or list
+     */
+    public static function readAsPlainJson(string $file): ?array
+    {
+        $content = @file_get_contents($file);
+        if ($content === false) {
+            return null;
+        }
+        // A file saved by a Windows editor may start with a byte order mark.
+        if (str_starts_with($content, "\xEF\xBB\xBF")) {
+            $content = substr($content, 3);
+        }
+        $data = json_decode($content, true);
+        return is_array($data) ? $data : null;
+    }
+
+    /**
      * Load a stack's git settings.
      *
      * @return self|null null when the stack is not a git stack (no git.json)

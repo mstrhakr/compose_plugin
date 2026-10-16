@@ -9,6 +9,7 @@
 
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Defines.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Util.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/GitStackSettings.php");
 
 /**
  * Factory function to create a CronManager instance.
@@ -240,7 +241,7 @@ class CronManager
         }
         foreach (glob(rtrim($this->composeRoot, '/') . '/*/git.json') ?: [] as $gitSettingsFile) {
             // Read as plain JSON: the scheduled check itself validates each stack's settings.
-            $settings = json_decode((string) @file_get_contents($gitSettingsFile), true);
+            $settings = GitStackSettings::readAsPlainJson($gitSettingsFile);
             if (is_array($settings) && is_string($settings['autoDeploy'] ?? null) && $settings['autoDeploy'] !== 'off') {
                 $command = $this->pluginRoot . 'scripts/compose-git';
                 // Every 15 minutes, 7 minutes off the image auto-update's quarter hours, so a git

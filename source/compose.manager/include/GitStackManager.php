@@ -927,8 +927,7 @@ final class GitStackManager
      */
     private function readGitJson(string $folder): ?array
     {
-        $data = json_decode((string) @file_get_contents($this->composeRoot . '/' . $folder . '/' . GitStackSettings::FILE_NAME), true);
-        return is_array($data) ? $data : null;
+        return GitStackSettings::readAsPlainJson($this->composeRoot . '/' . $folder . '/' . GitStackSettings::FILE_NAME);
     }
 
     /**
