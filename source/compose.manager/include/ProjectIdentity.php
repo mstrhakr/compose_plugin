@@ -32,6 +32,7 @@ final class ProjectIdentity
     /** Per-stack metadata file holding the pinned runtime project name. */
     public const METADATA_FILE = 'project_name';
     public const STATE_FILE = 'project_identity.json';
+    public const REGISTRY_LOCK_FILE = '.project-identities.lock';
     public const MIGRATION_VERSION = 1;
     public const LEGACY_REVISION = '074a9af3a29d14b346e5dae8a700a0649cda601c';
 
@@ -143,10 +144,14 @@ final class ProjectIdentity
         if ($persisted !== null) {
             return $persisted;
         }
-        $lock = @fopen(rtrim($stackPath, '/') . '/project_identity.lock', 'c');
+        $registry = self::lockRegistry($stackPath);
+        $lock = $registry === false ? false : @fopen(rtrim($stackPath, '/') . '/project_identity.lock', 'c');
         if ($lock === false || !flock($lock, LOCK_EX)) {
             if (is_resource($lock)) {
                 fclose($lock);
+            }
+            if (is_resource($registry)) {
+                fclose($registry);
             }
             $identity = new self();
             $identity->projectFolder = $projectFolder;
@@ -160,6 +165,7 @@ final class ProjectIdentity
         } finally {
             flock($lock, LOCK_UN);
             fclose($lock);
+            fclose($registry);
         }
     }
 
@@ -344,8 +350,12 @@ final class ProjectIdentity
     public function chooseIdentity(string $stackPath, string $choice): void
     {
         $choice = trim($choice);
-        $lock = @fopen(rtrim($stackPath, '/') . '/project_identity.lock', 'c');
+        $registry = self::lockRegistry($stackPath);
+        $lock = $registry === false ? false : @fopen(rtrim($stackPath, '/') . '/project_identity.lock', 'c');
         if ($lock === false) {
+            if (is_resource($registry)) {
+                fclose($registry);
+            }
             throw new \RuntimeException("Failed to lock project identity for '$this->projectFolder'");
         }
         try {
@@ -372,6 +382,7 @@ final class ProjectIdentity
         } finally {
             flock($lock, LOCK_UN);
             fclose($lock);
+            fclose($registry);
         }
 
         $this->projectName = $choice;
@@ -597,11 +608,29 @@ final class ProjectIdentity
 
     public static function initializeNew(string $stackPath, string $projectName): void
     {
-        if (!compose_manager_is_valid_project_name($projectName)
-            || self::hasCompetingClaim($stackPath, $projectName)
-            || !self::pin($stackPath, $projectName, 'new', 'plus')) {
-            throw new \RuntimeException('Failed to initialize project identity');
+        $registry = self::lockRegistry($stackPath);
+        if ($registry === false) {
+            throw new \RuntimeException('Failed to lock project identity registry');
         }
+        try {
+            if (!compose_manager_is_valid_project_name($projectName)
+                || self::hasCompetingClaim($stackPath, $projectName)
+                || !self::pin($stackPath, $projectName, 'new', 'plus')) {
+                throw new \RuntimeException('Failed to initialize project identity');
+            }
+        } finally {
+            fclose($registry);
+        }
+    }
+
+    private static function lockRegistry(string $stackPath)
+    {
+        $lock = @fopen(dirname(rtrim($stackPath, '/')) . '/' . self::REGISTRY_LOCK_FILE, 'c');
+        if ($lock !== false && !flock($lock, LOCK_EX)) {
+            fclose($lock);
+            return false;
+        }
+        return $lock;
     }
 
     private static function matchesResourceDirectory(string $stackPath, string $projectName): bool

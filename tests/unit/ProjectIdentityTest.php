@@ -453,6 +453,47 @@ class ProjectIdentityTest extends TestCase
         $this->assertSame([], glob($path . '/.project-name-*'));
     }
 
+    public function testSharedOwnershipRegistrySerializesCompetingOwnerChoices(): void
+    {
+        $first = $this->makeStack('one', 'shared');
+        $second = $this->makeStack('two', 'shared');
+        \ProjectIdentity::initializeNew($first, 'one');
+        \ProjectIdentity::initializeNew($second, 'two');
+        $script = $this->createTempDir() . '/choose.php';
+        file_put_contents($script, '<?php require ' . var_export(dirname(__DIR__) . '/bootstrap.php', true)
+            . '; try { $identity = ProjectIdentity::resolve($argv[1], basename($argv[1]), "shared"); '
+            . '$identity->chooseIdentity($argv[1], "shared"); echo "chosen"; } catch (Throwable $error) { echo "blocked"; }');
+        $registry = fopen($this->tempRoot . '/' . \ProjectIdentity::REGISTRY_LOCK_FILE, 'c');
+        flock($registry, LOCK_EX);
+        $children = [];
+        try {
+            foreach ([$first, $second] as $path) {
+                $process = proc_open([PHP_BINARY, $script, $path], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+                $this->assertIsResource($process);
+                fclose($pipes[0]);
+                $children[] = [$process, $pipes];
+            }
+            $read = [$children[0][1][1], $children[1][1][1]];
+            $write = null;
+            $except = null;
+            $this->assertSame(0, stream_select($read, $write, $except, 0, 300000));
+        } finally {
+            flock($registry, LOCK_UN);
+            fclose($registry);
+        }
+        $outcomes = [];
+        foreach ($children as [$process, $pipes]) {
+            $outcomes[] = stream_get_contents($pipes[1]);
+            $error = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $this->assertSame(0, proc_close($process), $error);
+        }
+        sort($outcomes);
+        $this->assertSame(['blocked', 'chosen'], $outcomes);
+        $this->assertSame(1, count(array_filter([$first, $second], static fn(string $path): bool => file_get_contents($path . '/project_name') === 'shared')));
+    }
+
     public static function migrationEvents(): array
     {
         return [
