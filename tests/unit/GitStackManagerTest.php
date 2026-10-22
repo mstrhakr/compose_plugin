@@ -1,0 +1,1379 @@
+<?php
+
+declare(strict_types=1);
+
+namespace ComposeManager\Tests;
+
+use ComposeManager\Tests\Support\FakeDocker;
+use GitClone;
+use GitCommand;
+use GitDeployKeyNotAddedException;
+use GitStackManager;
+use GitStackSettings;
+use GitStackState;
+use PluginTests\TestCase;
+use RuntimeException;
+
+require_once '/usr/local/emhttp/plugins/compose.manager/include/GitStackManager.php';
+require_once __DIR__ . '/../../source/compose.manager/scripts/compose_git.php';
+require_once __DIR__ . '/support/FakeDocker.php';
+
+/**
+ * compose-git's add, convert, check, status and reclone, with real git.
+ */
+final class GitStackManagerTest extends TestCase
+{
+    private string $mnt;
+    private string $upstream;
+    private string $author;
+    private string $composeRoot;
+    private string $clonesRoot;
+    private GitStackManager $manager;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        \StackInfo::clearCache();
+        $this->mnt = COMPOSE_GIT_MNT_DIR;
+        FakeDocker::removeTree($this->mnt);
+        mkdir($this->mnt . '/user/appdata', 0755, true);
+        mkdir($this->mnt . '/user/repos', 0755, true);
+        file_put_contents(COMPOSE_UNRAID_VAR_INI, "mdState=\"STARTED\"\n");
+        file_put_contents(COMPOSE_MOUNTS_FILE, "rootfs {$this->mnt} rootfs rw 0 0\nshfs {$this->mnt}/user fuse.shfs rw 0 0\n");
+
+        $this->upstream = $this->mnt . '/user/repos/stacks.git';
+        $this->author = sys_get_temp_dir() . '/compose_git_manager_author';
+        FakeDocker::removeTree($this->author);
+        $this->git(['init', '-q', '--bare', '-b', 'main', $this->upstream], null);
+        $this->git(['clone', '-q', $this->upstream, $this->author], null);
+        $this->git(['checkout', '-q', '-b', 'main'], $this->author);
+        $this->writeAndPush(['whoami/compose.yaml' => "services:\n  whoami:\n    image: traefik/whoami\n"], 'first');
+
+        $this->composeRoot = sys_get_temp_dir() . '/compose_git_manager_projects';
+        FakeDocker::removeTree($this->composeRoot);
+        mkdir($this->composeRoot);
+        FakeDocker::removeTree(COMPOSE_LOCK_DIR);
+        $this->clonesRoot = $this->mnt . '/user/appdata/git';
+        $this->manager = new GitStackManager($this->composeRoot);
+    }
+
+    protected function tearDown(): void
+    {
+        FakeDocker::removeTree($this->mnt);
+        FakeDocker::removeTree($this->author);
+        FakeDocker::removeTree($this->composeRoot);
+        FakeDocker::removeTree(COMPOSE_LOCK_DIR);
+        parent::tearDown();
+    }
+
+    // ----- add -----
+
+    public function testAddClonesAndMakesAGitStack(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+
+        $stackDir = $this->composeRoot . '/' . $folder;
+        $settings = GitStackSettings::load($stackDir);
+        $this->assertNotNull($settings);
+        $this->assertSame($settings->composeFileInClone(), file_get_contents($stackDir . '/indirect'));
+        $this->assertSame('file', file_get_contents($stackDir . '/indirect_mode'));
+        $this->assertFileExists($settings->composeFileInClone());
+        $this->assertNull(GitStackState::load($stackDir)->deployedCommit);
+        $this->assertTrue(\StackInfo::fromProject($this->composeRoot, $folder)->isGitStack());
+    }
+
+    public function testAddRefusesAnExistingStackFolderAndClonesNothing(): void
+    {
+        mkdir($this->composeRoot . '/whoami');
+
+        try {
+            $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+            $this->fail('Added over an existing stack folder');
+        } catch (RuntimeException $error) {
+            $this->assertStringContainsString('already exists', $error->getMessage());
+        }
+        $this->assertDirectoryDoesNotExist($this->clonesRoot);
+    }
+
+    public function testAddWithAComposePathNotOnTheBranchLeavesNothingBehind(): void
+    {
+        try {
+            $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yml', $this->clonesRoot);
+            $this->fail('Added a stack whose compose file is not in the repository');
+        } catch (RuntimeException $error) {
+            $this->assertStringContainsString('does not exist on branch main', $error->getMessage());
+        }
+        $this->assertSame([], glob($this->clonesRoot . '/*') ?: []);
+        $this->assertDirectoryDoesNotExist($this->composeRoot . '/whoami');
+    }
+
+    public function testDeployKeyNotAddedKeepsTheCloneErrorAndTheKeyApart(): void
+    {
+        $cloneError = 'Could not clone the repository: fatal: Could not read from remote repository.';
+        $key = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample compose-manager whoami';
+        $error = new GitDeployKeyNotAddedException($cloneError, $key, new RuntimeException($cloneError));
+
+        // The web UI shows these two apart; compose-git prints the message, which has both.
+        $this->assertSame($cloneError, $error->cloneError);
+        $this->assertSame($key, $error->publicKey);
+        $this->assertStringStartsWith($cloneError . "\n\n", $error->getMessage());
+        $this->assertStringEndsWith("\n" . $key, $error->getMessage());
+        $this->assertSame(GitDeployKeyNotAddedException::messageWithKey($cloneError, $key), $error->getMessage());
+    }
+
+    public function testAddDoesNothingWhileTheArrayIsStopped(): void
+    {
+        file_put_contents(COMPOSE_UNRAID_VAR_INI, "mdState=\"STOPPED\"\n");
+        $this->expectException(RuntimeException::class);
+        $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+    }
+
+    public function testAddToAProjectsFolderWhoseMountIsGoneWritesNothing(): void
+    {
+        // A projects folder that is not on a mount (a pool that did not mount, while the
+        // folder is still there, in RAM): neither the clone nor the stack folder may be made.
+        // This used to make the stack folder first and fail only when saving its settings.
+        $composeRoot = $this->mnt . '/projects';
+        mkdir($composeRoot);
+        $manager = new GitStackManager($composeRoot);
+
+        try {
+            $manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+            $this->fail('The stack was added to a projects folder that is not on a mounted disk.');
+        } catch (RuntimeException $error) {
+            $this->assertStringContainsString('not on a mounted disk', $error->getMessage());
+        }
+        $this->assertDirectoryDoesNotExist($composeRoot . '/whoami');
+        $this->assertSame([], glob($this->clonesRoot . '/*') ?: []);
+    }
+
+    // ----- convert -----
+
+    public function testConvertMovesTheOldComposeFileAsideAndKeepsEnvAndOverride(): void
+    {
+        $stack = \StackInfo::createNew($this->composeRoot, 'myapp');
+        $stackDir = $this->composeRoot . '/' . $stack->projectFolder;
+        file_put_contents($stackDir . '/.env', "TZ=Europe/London\n");
+        file_put_contents($stackDir . '/compose.override.yaml', "services:\n  whoami:\n    labels:\n      net.unraid.docker.icon: x\n");
+        $oldCompose = (string) file_get_contents($stackDir . '/compose.yaml');
+
+        $backup = $this->manager->convert($stack->projectFolder, $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+
+        $this->assertSame($oldCompose, file_get_contents($backup . '/compose.yaml'));
+        $this->assertFileDoesNotExist($stackDir . '/compose.yaml');
+        $this->assertSame("TZ=Europe/London\n", file_get_contents($stackDir . '/.env'));
+        $this->assertStringContainsString('net.unraid.docker.icon', (string) file_get_contents($stackDir . '/compose.override.yaml'));
+
+        \StackInfo::clearCache();
+        $converted = \StackInfo::fromProject($this->composeRoot, $stack->projectFolder);
+        $this->assertTrue($converted->isGitStack());
+        $args = $converted->buildComposeArgs();
+        $this->assertSame(GitStackSettings::load($stackDir)->composeFileInClone(), $args['filePaths'][0]);
+        $this->assertSame($stackDir . '/compose.override.yaml', $args['filePaths'][1]);
+        $this->assertSame($stackDir . '/.env', $args['envFilePath']);
+    }
+
+    public function testConvertOfAnIndirectStackCopiesItsEnvIntoTheStackFolder(): void
+    {
+        $oldFolder = $this->mnt . '/user/appdata/legacy';
+        mkdir($oldFolder);
+        file_put_contents($oldFolder . '/compose.yaml', "services:\n  whoami:\n    image: traefik/whoami\n");
+        file_put_contents($oldFolder . '/.env', "SECRET=1\n");
+        $stack = \StackInfo::createNew($this->composeRoot, 'legacy', '', $oldFolder);
+        $stackDir = $this->composeRoot . '/' . $stack->projectFolder;
+
+        $backup = $this->manager->convert($stack->projectFolder, $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+
+        $this->assertSame("SECRET=1\n", file_get_contents($stackDir . '/.env'));
+        $this->assertSame("SECRET=1\n", file_get_contents($oldFolder . '/.env'));
+        $this->assertFileExists($oldFolder . '/compose.yaml');
+        $this->assertSame($oldFolder, file_get_contents($backup . '/indirect'));
+    }
+
+    public function testConvertOfAStackWithACustomEnvFileCopiesNoEnv(): void
+    {
+        $oldFolder = $this->mnt . '/user/appdata/legacy';
+        mkdir($oldFolder);
+        file_put_contents($oldFolder . '/compose.yaml', "services:\n  whoami:\n    image: traefik/whoami\n");
+        file_put_contents($oldFolder . '/.env', "NEXT_TO_COMPOSE=1\n");
+        $customEnv = $this->mnt . '/user/appdata/custom.env';
+        file_put_contents($customEnv, "CUSTOM=1\n");
+        $stack = \StackInfo::createNew($this->composeRoot, 'legacy', '', $oldFolder);
+        $stackDir = $this->composeRoot . '/' . $stack->projectFolder;
+        file_put_contents($stackDir . '/envpath', $customEnv);
+
+        $this->manager->convert($stack->projectFolder, $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+
+        // The stack's own env file setting still decides; nothing is copied next to it.
+        $this->assertFileDoesNotExist($stackDir . '/.env');
+        \StackInfo::clearCache();
+        $this->assertSame($customEnv, \StackInfo::fromProject($this->composeRoot, $stack->projectFolder)->getEffectiveEnvFilePath());
+    }
+
+    public function testConvertWithAnEnvPathToAMissingFileCopiesTheEnvInUse(): void
+    {
+        // An env file setting that names a file which is gone is ignored, and the .env next
+        // to the old compose file is used. That is the one to keep using after the convert.
+        $oldFolder = $this->mnt . '/user/appdata/legacy';
+        mkdir($oldFolder);
+        file_put_contents($oldFolder . '/compose.yaml', "services:\n  whoami:\n    image: traefik/whoami\n");
+        file_put_contents($oldFolder . '/.env', "NEXT_TO_COMPOSE=1\n");
+        $stack = \StackInfo::createNew($this->composeRoot, 'legacy', '', $oldFolder);
+        $stackDir = $this->composeRoot . '/' . $stack->projectFolder;
+        file_put_contents($stackDir . '/envpath', $this->mnt . '/user/appdata/moved-away.env');
+
+        $this->manager->convert($stack->projectFolder, $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+
+        $this->assertSame("NEXT_TO_COMPOSE=1\n", file_get_contents($stackDir . '/.env'));
+        \StackInfo::clearCache();
+        $this->assertSame($stackDir . '/.env', \StackInfo::fromProject($this->composeRoot, $stack->projectFolder)->getEffectiveEnvFilePath());
+    }
+
+    public function testConvertOfAnIndirectStackCarriesItsOverrideIntoTheStackFolder(): void
+    {
+        $oldFolder = $this->mnt . '/user/appdata/legacy';
+        mkdir($oldFolder);
+        file_put_contents($oldFolder . '/compose.yaml', "services:\n  whoami:\n    image: traefik/whoami\n");
+        $labels = "services:\n  whoami:\n    labels:\n      net.unraid.docker.icon: x\n";
+        file_put_contents($oldFolder . '/compose.override.yaml', $labels);
+        $stack = \StackInfo::createNew($this->composeRoot, 'legacy', '', $oldFolder);
+        $stackDir = $this->composeRoot . '/' . $stack->projectFolder;
+
+        $this->manager->convert($stack->projectFolder, $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+
+        // A git stack's override lives in the stack folder, not next to the old compose file.
+        $this->assertSame($labels, file_get_contents($stackDir . '/compose.override.yaml'));
+        $this->assertSame($labels, file_get_contents($oldFolder . '/compose.override.yaml'));
+    }
+
+    public function testConvertThatFailsPartWaySaysHowToUndoIt(): void
+    {
+        $stack = \StackInfo::createNew($this->composeRoot, 'myapp');
+        $stackDir = $this->composeRoot . '/' . $stack->projectFolder;
+        // A folder where indirect_mode must be written makes that write fail
+        // after the old compose file was moved into the backup folder.
+        mkdir($stackDir . '/indirect_mode');
+
+        try {
+            $this->manager->convert($stack->projectFolder, $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+            $this->fail('Converted although indirect_mode could not be written');
+        } catch (RuntimeException $error) {
+            $this->assertStringContainsString("Could not write $stackDir/indirect_mode.", $error->getMessage());
+            $this->assertStringContainsString('only partly converted', $error->getMessage());
+            $this->assertStringContainsString($stackDir . '/pre-git-', $error->getMessage());
+        }
+        $backups = glob($stackDir . '/pre-git-*') ?: [];
+        $this->assertCount(1, $backups);
+        $this->assertFileExists($backups[0] . '/compose.yaml');
+    }
+
+    public function testConvertRefusesAGitStack(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('already a git stack');
+        $this->manager->convert($folder, $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+    }
+
+    public function testConvertWaitsForNoOneElse(): void
+    {
+        $stack = \StackInfo::createNew($this->composeRoot, 'myapp');
+        mkdir(COMPOSE_LOCK_DIR, 0755, true);
+        $lock = fopen(COMPOSE_LOCK_DIR . '/' . $stack->projectName . '.lock', 'c');
+        $this->assertNotFalse($lock);
+        flock($lock, LOCK_EX);
+
+        try {
+            $this->manager->convert($stack->projectFolder, $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+            $this->fail('Converted while another operation held the lock');
+        } catch (RuntimeException $error) {
+            $this->assertStringContainsString('in progress', $error->getMessage());
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+        $this->assertFileExists($this->composeRoot . '/' . $stack->projectFolder . '/compose.yaml');
+    }
+
+    public function testStacksAreNamedExactly(): void
+    {
+        $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $this->expectException(RuntimeException::class);
+        $this->manager->status('Whoami');
+    }
+
+    // ----- check and status -----
+
+    public function testCheckComparesTheDeployedCommitWithTheRemote(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $stackDir = $this->composeRoot . '/' . $folder;
+        $this->assertFalse($this->manager->check($folder)['upToDate']);
+
+        (new GitStackState($this->upstreamHead(), null))->save($stackDir);
+        $this->assertTrue($this->manager->check($folder)['upToDate']);
+
+        $this->writeAndPush(['whoami/compose.yaml' => "services: {}\n"], 'change');
+        $result = $this->manager->check($folder);
+        $this->assertFalse($result['upToDate']);
+        $this->assertSame($this->upstreamHead(), $result['remoteCommit']);
+    }
+
+    public function testCheckReadsTheDeployedCommitOnlyWhenNoOneElseHoldsTheLock(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $stack = $this->manager->gitStack($folder);
+        // Up to date, so nothing needs fetching. A deploy holding the lock may still
+        // change the deployed commit, so the check does not answer from it.
+        (new GitStackState($this->upstreamHead(), null))->save($stack->path);
+        mkdir(COMPOSE_LOCK_DIR, 0755, true);
+        $lock = fopen(COMPOSE_LOCK_DIR . '/' . $stack->projectName . '.lock', 'c');
+        $this->assertNotFalse($lock);
+        flock($lock, LOCK_EX);
+
+        try {
+            $this->manager->check($folder);
+            $this->fail('Checked while another operation held the lock');
+        } catch (RuntimeException $error) {
+            $this->assertStringContainsString('in progress', $error->getMessage());
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+        $this->assertTrue($this->manager->check($folder)['upToDate']);
+    }
+
+    public function testDryRunIsRefusedWhileAnotherOperationHoldsTheLock(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $stack = $this->manager->gitStack($folder);
+        $clone = new GitClone(GitStackSettings::load($stack->path));
+        $checkedOut = $clone->checkedOutCommit();
+        $this->writeAndPush(['whoami/compose.yaml' => "services:\n  whoami:\n    image: traefik/whoami:v2\n"], 'bump');
+        mkdir(COMPOSE_LOCK_DIR, 0755, true);
+        $lock = fopen(COMPOSE_LOCK_DIR . '/' . $stack->projectName . '.lock', 'c');
+        $this->assertNotFalse($lock);
+        flock($lock, LOCK_EX);
+
+        try {
+            $this->manager->dryRun($folder, null, []);
+            $this->fail('Tried a deploy while another operation held the lock');
+        } catch (RuntimeException $error) {
+            $this->assertStringContainsString('in progress', $error->getMessage());
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+        $this->assertSame($checkedOut, $clone->checkedOutCommit());
+    }
+
+    public function testDryRunFromTheCommandLineSaysWhatTheDeployWouldDo(): void
+    {
+        $docker = new FakeDocker();
+        $docker->setConfig(['name' => 'whoami', 'services' => ['whoami' => ['image' => 'traefik/whoami']]]);
+        try {
+            $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+            $first = $this->upstreamHead();
+            $this->writeAndPush(['whoami/compose.yaml' => "services:\n  whoami:\n    image: traefik/whoami:v2\n"], 'bump');
+
+            [$exit, $output] = $this->runCliCapturingOutput(['compose-git', 'deploy', $folder, '--dry-run']);
+
+            $this->assertSame(0, $exit);
+            $short = substr($first, 0, 12);
+            $this->assertStringContainsString("Dry run of $folder: from $short (checked out now) to " . substr($this->upstreamHead(), 0, 12) . ".\n", $output);
+            $this->assertStringContainsString("Nothing has been deployed yet.\n", $output);
+            $this->assertStringContainsString("Every check passed. A dry run does not pull or build the images", $output);
+            $this->assertStringContainsString("+    image: traefik/whoami:v2\n", $output);
+            $this->assertStringEndsWith("Nothing was deployed, and the clone is back at $short.\n", $output);
+
+            // A problem makes the exit status 1.
+            $docker->setConfig([
+                'name' => 'whoami',
+                'services' => ['whoami' => ['image' => 'traefik/whoami']],
+                'networks' => ['proxy' => ['name' => 'zz-proxy', 'external' => true]],
+            ]);
+            [$exit, $output] = $this->runCliCapturingOutput(['compose-git', 'deploy', $folder, '--dry-run']);
+            $this->assertSame(1, $exit);
+            $this->assertStringContainsString("The deploy would stop:\n- ", $output);
+            $this->assertStringContainsString("network 'zz-proxy' does not exist", $output);
+        } finally {
+            $docker->cleanUp();
+        }
+    }
+
+    public function testDryRunTakesOnlyCommitAndProfile(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+
+        foreach ([['--wait'], ['--no-wait'], ['--save-local-changes'], ['--wait-timeout', '5']] as $option) {
+            [$exit, , $errors] = $this->runCliCapturingOutput(array_merge(['compose-git', 'deploy', $folder, '--dry-run'], $option));
+            $this->assertSame(2, $exit);
+            $this->assertStringStartsWith("--dry-run takes only --commit and --profile, not {$option[0]}", $errors);
+        }
+    }
+
+    public function testDryRunIsRefusedWhileTheStacksProjectIdentityIsUnresolved(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $stackDir = $this->composeRoot . '/' . $folder;
+        $clone = new GitClone(GitStackSettings::load($stackDir));
+        $checkedOut = $clone->checkedOutCommit();
+        $this->writeAndPush(['whoami/compose.yaml' => "services:\n  whoami:\n    image: traefik/whoami:v2\n"], 'bump');
+        // An older project name and docker that cannot be asked: the identity fails closed.
+        @unlink($stackDir . '/' . \ProjectIdentity::METADATA_FILE);
+        file_put_contents($stackDir . '/name', 'older_name');
+        \ProjectIdentity::setProbe(static fn() => null);
+        \StackInfo::clearCache();
+        try {
+            $this->manager->dryRun($folder, null, []);
+            $this->fail('Tried a deploy of a stack whose project name is not settled');
+        } catch (RuntimeException $error) {
+            $this->assertNotSame('', $error->getMessage());
+        } finally {
+            \ProjectIdentity::setProbe(static fn(): array => []);
+        }
+        $this->assertSame($checkedOut, $clone->checkedOutCommit());
+    }
+
+    public function testCheckTellsACommitToTheStacksFolderFromOneOutsideIt(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $stackDir = $this->composeRoot . '/' . $folder;
+        // Nothing deployed yet: whatever the branch has is new to the stack.
+        $this->assertTrue($this->manager->check($folder)['changesStack']);
+
+        (new GitStackState($this->upstreamHead(), null))->save($stackDir);
+        $upToDate = $this->manager->check($folder);
+        $this->assertNull($upToDate['changesStack']);
+        $this->assertSame('whoami', $upToDate['stackFolder']);
+
+        // A commit to another stack's folder in the same repository.
+        $this->writeAndPush(['other/compose.yaml' => "services: {}\n"], 'another stack');
+        $elsewhere = $this->manager->check($folder);
+        $this->assertFalse($elsewhere['upToDate']);
+        $this->assertFalse($elsewhere['changesStack']);
+
+        // Then one to this stack's folder (a config file, not the compose file).
+        $this->writeAndPush(['whoami/config.txt' => "setting=1\n"], 'this stack');
+        $this->assertTrue($this->manager->check($folder)['changesStack']);
+    }
+
+    public function testCheckSaysWhenTheDeployedCommitIsNoLongerInTheClone(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $stackDir = $this->composeRoot . '/' . $folder;
+        $this->assertFalse($this->manager->check($folder)['deployedCommitMissing']);
+
+        // As after a force-push and a reclone: the deployed commit is not in the clone.
+        (new GitStackState(str_repeat('deadbeef', 5), null))->save($stackDir);
+        $result = $this->manager->check($folder);
+
+        // What the new commit changes cannot be identified, so deploying it is offered.
+        $this->assertFalse($result['upToDate']);
+        $this->assertTrue($result['changesStack']);
+        $this->assertTrue($result['deployedCommitMissing']);
+    }
+
+    public function testCheckCountsEveryCommitForAComposeFileAtTheTopOfTheRepository(): void
+    {
+        $this->writeAndPush(['compose.yaml' => "services:\n  web:\n    image: traefik/whoami\n"], 'top-level stack');
+        $folder = $this->manager->add('top', $this->upstream, 'main', 'compose.yaml', $this->clonesRoot);
+        (new GitStackState($this->upstreamHead(), null))->save($this->composeRoot . '/' . $folder);
+
+        $this->writeAndPush(['whoami/config.txt' => "setting=1\n"], 'any folder');
+
+        $result = $this->manager->check($folder);
+        $this->assertTrue($result['changesStack']);
+        $this->assertSame('', $result['stackFolder']);
+    }
+
+    public function testStatusShowsLocalChangesWithoutAskingTheRemote(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $settings = GitStackSettings::load($this->composeRoot . '/' . $folder);
+        file_put_contents($settings->composeFileInClone(), "edited\n");
+        rename($this->upstream, $this->upstream . '.gone');
+
+        $status = $this->manager->status($folder);
+
+        $this->assertSame(['whoami/compose.yaml'], $status['localChanges']);
+        $this->assertNull($status['problem']);
+        $this->assertSame([$folder], $this->manager->listGitStacks());
+    }
+
+    // ----- credentials -----
+
+    public function testGitCredentialIsFoundByNameOrIdAndRegistryCredentialsAreIgnored(): void
+    {
+        $vault = $this->emptyVault();
+        $git = $vault->saveCredential(['name' => 'Forgejo', 'provider' => 'git', 'registry' => 'git.example.com', 'username' => 'bot', 'secret' => 't1']);
+        $vault->saveCredential(['name' => 'Docker', 'provider' => 'docker', 'registry' => 'docker.io', 'username' => 'bot', 'secret' => 't2']);
+
+        $this->assertSame($git['id'], $this->manager->findGitCredential('Forgejo'));
+        $this->assertSame($git['id'], $this->manager->findGitCredential($git['id']));
+        try {
+            $this->manager->findGitCredential('Docker');
+            $this->fail('Found a registry credential as a git credential');
+        } catch (RuntimeException $error) {
+            $this->assertStringContainsString('Git credentials: Forgejo', $error->getMessage());
+        }
+    }
+
+    public function testADeployKeyIsNotFoundAsAGitCredential(): void
+    {
+        // A deploy key belongs to the one stack it was made for: no other stack may pick it.
+        $vault = $this->emptyVault();
+        $token = $vault->saveCredential(['name' => 'Forgejo', 'provider' => 'git', 'registry' => 'git.example.com', 'username' => 'bot', 'secret' => 't1']);
+        $key = $vault->saveCredential(['name' => 'other deploy key', 'provider' => 'git-ssh', 'registry' => 'git.example.com', 'username' => 'git', 'secret' => 'k']);
+
+        foreach (['other deploy key', $key['id']] as $nameOrId) {
+            try {
+                $this->manager->findGitCredential($nameOrId);
+                $this->fail('Found a deploy key as a git credential');
+            } catch (RuntimeException $error) {
+                $this->assertStringContainsString('Git credentials: Forgejo.', $error->getMessage());
+            }
+        }
+        $this->assertSame($token['id'], $this->manager->findGitCredential('Forgejo'));
+    }
+
+    public function testAddingAnSshStackWithACredentialIsRefusedBeforeAnythingIsMade(): void
+    {
+        $token = $this->emptyVault()->saveCredential(['name' => 'Forgejo', 'provider' => 'git', 'registry' => 'github.com', 'username' => 'bot', 'secret' => 't1']);
+
+        try {
+            $this->manager->add('whoami', 'git@github.com:owner/repo.git', 'main', 'whoami/compose.yaml', $this->clonesRoot, '', $token['id']);
+            $this->fail('An ssh stack was added with another credential');
+        } catch (\InvalidArgumentException $error) {
+            $this->assertStringContainsString('deploy key the plugin keeps for its repository', $error->getMessage());
+        }
+        $this->assertDirectoryDoesNotExist($this->composeRoot . '/whoami');
+        $this->assertSame([], glob($this->clonesRoot . '/*') ?: []);
+        $this->assertCount(1, (new \CredentialVault())->listCredentials());
+    }
+
+    public function testTwoGitCredentialsWithTheSameNameAreNotGuessedBetween(): void
+    {
+        $vault = $this->emptyVault();
+        $vault->saveCredential(['name' => 'Bot', 'provider' => 'git', 'registry' => 'github.com', 'username' => 'a', 'secret' => 't1']);
+        $vault->saveCredential(['name' => 'Bot', 'provider' => 'git', 'registry' => 'gitlab.com', 'username' => 'b', 'secret' => 't2']);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage("Several git credentials are named 'Bot'");
+        $this->manager->findGitCredential('Bot');
+    }
+
+    public function testAddThatCannotReachAPrivateRepositoryLeavesNoCloneAndNoCredentialFile(): void
+    {
+        $credential = $this->emptyVault()->saveCredential(
+            ['name' => 'Local', 'provider' => 'git', 'registry' => '127.0.0.1:9', 'username' => 'bot', 'secret' => 'token']
+        );
+
+        try {
+            $this->manager->add('private', 'https://127.0.0.1:9/team/stacks.git', 'main', 'whoami/compose.yaml', $this->clonesRoot, '', $credential['id']);
+            $this->fail('Added a stack whose repository could not be reached');
+        } catch (RuntimeException $error) {
+            $this->assertStringContainsString('Could not clone', $error->getMessage());
+        }
+        $this->assertDirectoryDoesNotExist($this->composeRoot . '/private');
+        $this->assertSame([], glob($this->clonesRoot . '/*') ?: []);
+        $this->assertSame([], glob(COMPOSE_GIT_CREDENTIAL_DIR . '/*') ?: []);
+    }
+
+    public function testCredentialCanBeRemovedAndIsShownInStatus(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $this->assertNull($this->manager->status($folder)['credential']);
+
+        // A repository on this server never takes one.
+        $credential = $this->emptyVault()->saveCredential(
+            ['name' => 'Forgejo', 'provider' => 'git', 'registry' => 'git.example.com', 'username' => 'bot', 'secret' => 't1']
+        );
+        try {
+            $this->manager->setCredential($folder, $credential['id']);
+            $this->fail('Gave a repository on this server a credential');
+        } catch (\InvalidArgumentException $error) {
+            $this->assertStringContainsString('needs no credential', $error->getMessage());
+        }
+
+        $this->manager->setCredential($folder, null);
+        $this->assertNull(GitStackSettings::load($this->composeRoot . '/' . $folder)?->credentialId);
+    }
+
+    public function testCredentialTestReachesTheRepositoryOfAStackThatUsesIt(): void
+    {
+        $credential = $this->emptyVault()->saveCredential(
+            ['name' => 'Local', 'provider' => 'git', 'registry' => '127.0.0.1:9', 'username' => 'bot', 'secret' => 'token']
+        );
+        $this->assertNull($this->manager->testCredential($credential['id']));
+
+        // A stack whose repository cannot be reached (nothing listens on port 9).
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $stackDir = $this->composeRoot . '/' . $folder;
+        $data = json_decode((string) file_get_contents($stackDir . '/git.json'), true);
+        $data['url'] = 'https://127.0.0.1:9/team/stacks.git';
+        $data['credentialId'] = $credential['id'];
+        file_put_contents($stackDir . '/git.json', (string) json_encode($data));
+
+        $test = $this->manager->testCredential($credential['id']);
+
+        $this->assertNotNull($test);
+        $this->assertFalse($test['valid']);
+        $this->assertStringStartsWith("https://127.0.0.1:9/team/stacks.git (used by '$folder'): Could not reach the repository", $test['message']);
+    }
+
+    public function testOnlyAnSshStackHasADeployKeyOrPinnedHostKeys(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+
+        try {
+            $this->manager->deployKey($folder);
+            $this->fail('Showed a deploy key for a stack that does not use ssh');
+        } catch (RuntimeException $error) {
+            $this->assertStringContainsString('has no deploy key', $error->getMessage());
+        }
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('does not reach its repository over ssh');
+        $this->manager->trustHost($folder);
+    }
+
+    public function testAnSshStackCanOnlyBeGivenADeployKeyOfItsRepository(): void
+    {
+        $vault = $this->emptyVault();
+        $ownKey = $vault->saveCredential(['name' => 'whoami deploy key', 'provider' => 'git-ssh', 'registry' => 'github.com', 'username' => 'git', 'secret' => 'k1']);
+        $otherRepositoryKey = $vault->saveCredential(['name' => 'deploy key for git@github.com:owner/other.git', 'provider' => 'git-ssh', 'registry' => 'github.com', 'username' => 'git', 'secret' => 'k2']);
+        $unusedKey = $vault->saveCredential(['name' => 'spare deploy key', 'provider' => 'git-ssh', 'registry' => 'github.com', 'username' => 'git', 'secret' => 'k3']);
+        $token = $vault->saveCredential(['name' => 'Forgejo', 'provider' => 'git', 'registry' => 'github.com', 'username' => 'bot', 'secret' => 't1']);
+        $this->makeSshStack('whoami', 'git@github.com:owner/repo.git', $ownKey['id']);
+        $this->makeSshStack('other', 'git@github.com:owner/other.git', $otherRepositoryKey['id']);
+
+        // No key, a token, another repository's key, a key no stack of this repository uses.
+        foreach ([null, $token['id'], $otherRepositoryKey['id'], $unusedKey['id']] as $credentialId) {
+            try {
+                $this->manager->setCredential('whoami', $credentialId);
+                $this->fail('An ssh stack was given a credential that is not a deploy key of its repository.');
+            } catch (\InvalidArgumentException $error) {
+                $this->assertStringContainsString('can only be given a deploy key of the same repository', $error->getMessage());
+                $this->assertStringContainsString('and there is none', $error->getMessage());
+            }
+        }
+        $this->assertSame($ownKey['id'], GitStackSettings::load($this->composeRoot . '/whoami')->credentialId);
+    }
+
+    public function testAnSshStackIsOfferedTheDeployKeysOfItsRepositoryByName(): void
+    {
+        $vault = $this->emptyVault();
+        $firstKey = $vault->saveCredential(['name' => 'first deploy key', 'provider' => 'git-ssh', 'registry' => 'github.com', 'username' => 'git', 'secret' => 'k1']);
+        $secondKey = $vault->saveCredential(['name' => 'second deploy key', 'provider' => 'git-ssh', 'registry' => 'github.com', 'username' => 'git', 'secret' => 'k2']);
+        $repositoryKey = $vault->saveCredential(['name' => 'deploy key for git@github.com:owner/repo.git', 'provider' => 'git-ssh', 'registry' => 'github.com', 'username' => 'git', 'secret' => 'k3']);
+        $vault->saveCredential(['name' => 'Forgejo', 'provider' => 'git', 'registry' => 'github.com', 'username' => 'bot', 'secret' => 't1']);
+        // Two stacks of one repository, each with a key of its own, as an older version made them.
+        $this->makeSshStack('first', 'git@github.com:owner/repo.git', $firstKey['id']);
+        $this->makeSshStack('second', 'git@github.com:owner/repo.git', $secondKey['id']);
+
+        $this->assertSame(
+            [$secondKey['id'] => 'second deploy key', $repositoryKey['id'] => 'deploy key for git@github.com:owner/repo.git'],
+            $this->manager->repositoryDeployKeys('first', GitStackSettings::sshAddress('git@github.com:owner/repo.git'))
+        );
+        $this->assertSame($secondKey['id'], $this->manager->findCredentialFor('first', 'second deploy key'));
+        $this->assertSame($repositoryKey['id'], $this->manager->findCredentialFor('first', $repositoryKey['id']));
+
+        // An HTTPS token is not a deploy key, and the message names the keys there are.
+        try {
+            $this->manager->findCredentialFor('first', 'Forgejo');
+            $this->fail('An ssh stack was offered an HTTPS token.');
+        } catch (\InvalidArgumentException $error) {
+            $this->assertStringContainsString("'second deploy key', 'deploy key for git@github.com:owner/repo.git'", $error->getMessage());
+        }
+    }
+
+    public function testGivingAnSshStackTheKeyItUsesChangesNothing(): void
+    {
+        $key = $this->emptyVault()->saveCredential(['name' => 'first deploy key', 'provider' => 'git-ssh', 'registry' => 'github.com', 'username' => 'git', 'secret' => 'k1']);
+        $this->makeSshStack('first', 'git@github.com:owner/repo.git', $key['id']);
+        $said = [];
+        $manager = new GitStackManager($this->composeRoot, static function (string $message) use (&$said): void {
+            $said[] = $message;
+        });
+
+        // Its own key named after the stack is not one other stacks use, but naming it is no mistake.
+        $this->assertSame($key['id'], $manager->findCredentialFor('first', 'first deploy key'));
+        $manager->setCredential('first', $key['id']);
+
+        $this->assertSame(["'first' already uses the deploy key 'first deploy key'. Nothing was changed."], $said);
+        $this->assertSame($key['id'], GitStackSettings::load($this->composeRoot . '/first')->credentialId);
+    }
+
+    public function testAnHttpsStackIsStillGivenATokenByName(): void
+    {
+        $token = $this->emptyVault()->saveCredential(['name' => 'Forgejo', 'provider' => 'git', 'registry' => 'git.example.com', 'username' => 'bot', 'secret' => 't1']);
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+
+        $this->assertSame($token['id'], $this->manager->findCredentialFor($folder, 'Forgejo'));
+    }
+
+    public function testANewSshStackUsesTheDeployKeyOfAnotherStackOfTheSameRepository(): void
+    {
+        $vault = $this->emptyVault();
+        $key = $vault->saveCredential(['name' => 'deploy key for git@github.com:owner/repo.git', 'provider' => 'git-ssh', 'registry' => 'github.com', 'username' => 'git', 'secret' => 'k']);
+        $this->makeSshStack('first', 'git@github.com:owner/repo.git', $key['id']);
+
+        // The ssh:// spelling of the same address is the same repository.
+        foreach (['git@github.com:owner/repo.git', 'ssh://git@github.com/owner/repo.git'] as $url) {
+            $existing = $this->manager->existingDeployKey('second', GitStackSettings::sshAddress($url));
+            $this->assertNotNull($existing);
+            $this->assertSame($key['id'], $existing['id']);
+            $this->assertStringContainsString("Using the deploy key of 'first'", $existing['message']);
+            $this->assertStringContainsString('the repository knows it already', $existing['message']);
+        }
+    }
+
+    public function testAnotherRepositoryNeverGetsTheKey(): void
+    {
+        $vault = $this->emptyVault();
+        $key = $vault->saveCredential(['name' => 'deploy key for git@github.com:owner/repo.git', 'provider' => 'git-ssh', 'registry' => 'github.com', 'username' => 'git', 'secret' => 'k']);
+        $this->makeSshStack('first', 'git@github.com:owner/repo.git', $key['id']);
+
+        // Another path, user, port or host: GitHub refuses one key on two repositories.
+        foreach ([
+            'git@github.com:owner/other.git',
+            'git@github.com:other/repo.git',
+            'deploy@github.com:owner/repo.git',
+            'ssh://git@github.com:2222/owner/repo.git',
+            'git@gitlab.com:owner/repo.git',
+        ] as $url) {
+            $this->assertNull($this->manager->existingDeployKey('second', GitStackSettings::sshAddress($url)), $url);
+        }
+    }
+
+    public function testAKeyMadeForTheRepositoryEarlierIsUsedWhenNoStackHasIt(): void
+    {
+        // As after a first add whose clone failed because the key was not added yet.
+        $key = $this->emptyVault()->saveCredential(['name' => 'deploy key for ssh://git@git.example.com:2222/team/stacks.git', 'provider' => 'git-ssh', 'registry' => 'git.example.com:2222', 'username' => 'git', 'secret' => 'k']);
+
+        $existing = $this->manager->existingDeployKey('myapp', GitStackSettings::sshAddress('ssh://git@git.example.com:2222/team/stacks.git'));
+
+        $this->assertNotNull($existing);
+        $this->assertSame($key['id'], $existing['id']);
+        $this->assertStringContainsString('made for this repository earlier', $existing['message']);
+        $this->assertNull($this->manager->existingDeployKey('myapp', GitStackSettings::sshAddress('ssh://git@git.example.com:2222/team/other.git')));
+    }
+
+    public function testAKeyNamedAfterTheStackByAnOlderVersionIsStillUsed(): void
+    {
+        $key = $this->emptyVault()->saveCredential(['name' => 'myapp deploy key', 'provider' => 'git-ssh', 'registry' => 'github.com', 'username' => 'git', 'secret' => 'k']);
+
+        $existing = $this->manager->existingDeployKey('myapp', GitStackSettings::sshAddress('git@github.com:owner/repo.git'));
+
+        $this->assertNotNull($existing);
+        $this->assertSame($key['id'], $existing['id']);
+        // The vault does not record that key's repository, so the message says what to do if it is another one.
+        $this->assertStringContainsString("delete 'myapp deploy key' first", $existing['message']);
+        $this->assertNull($this->manager->existingDeployKey('otherapp', GitStackSettings::sshAddress('git@github.com:owner/repo.git')));
+    }
+
+    public function testAStackWhoseKeyIsGoneFromTheVaultIsPassedOver(): void
+    {
+        $this->emptyVault();
+        $this->makeSshStack('first', 'git@github.com:owner/repo.git', str_repeat('cd', 16));
+
+        $this->assertNull($this->manager->existingDeployKey('second', GitStackSettings::sshAddress('git@github.com:owner/repo.git')));
+    }
+
+    public function testAKeyNamedAfterTheStackIsNotUsedWhileAnotherStackUsesIt(): void
+    {
+        // 'myapp' had the old-style key; 'other' of the same repository came to share it; 'myapp' was
+        // deleted. A new 'myapp' for another repository must not get that key: it may not reach the
+        // new repository, and it could not be deleted to make way while 'other' uses it.
+        $key = $this->emptyVault()->saveCredential(['name' => 'myapp deploy key', 'provider' => 'git-ssh', 'registry' => 'github.com', 'username' => 'git', 'secret' => 'k']);
+        $this->makeSshStack('other', 'git@github.com:owner/repo.git', $key['id']);
+
+        $this->assertNull($this->manager->existingDeployKey('myapp', GitStackSettings::sshAddress('git@github.com:owner/new.git')));
+        // A stack of the repository that 'other' uses is still given it, by step 1.
+        $this->assertSame($key['id'], $this->manager->existingDeployKey('myapp', GitStackSettings::sshAddress('git@github.com:owner/repo.git'))['id'] ?? null);
+    }
+
+    public function testAStackWhoseSettingsFailACheckStillSharesItsKey(): void
+    {
+        $key = $this->emptyVault()->saveCredential(['name' => 'deploy key for git@github.com:owner/repo.git', 'provider' => 'git-ssh', 'registry' => 'github.com', 'username' => 'git', 'secret' => 'k']);
+        $this->makeSshStack('first', 'git@github.com:owner/repo.git', $key['id']);
+        $file = $this->composeRoot . '/first/git.json';
+        $data = json_decode((string) file_get_contents($file), true);
+        $data['branch'] = '';
+        file_put_contents($file, (string) json_encode($data));
+
+        $existing = $this->manager->existingDeployKey('second', GitStackSettings::sshAddress('git@github.com:owner/repo.git'));
+
+        $this->assertSame($key['id'], $existing['id'] ?? null);
+        $this->assertStringContainsString("Using the deploy key of 'first'", $existing['message'] ?? '');
+    }
+
+    public function testAStackWhoseGitJsonHasAByteOrderMarkStillSharesItsKey(): void
+    {
+        // As saved by a Windows editor. GitStackSettings::load() accepts it, so the stack is in use.
+        // The key has the old-style name, so only the stack's git.json can lead to it.
+        $key = $this->emptyVault()->saveCredential(['name' => 'first deploy key', 'provider' => 'git-ssh', 'registry' => 'github.com', 'username' => 'git', 'secret' => 'k']);
+        $this->makeSshStack('first', 'git@github.com:owner/repo.git', $key['id']);
+        $file = $this->composeRoot . '/first/git.json';
+        file_put_contents($file, "\xEF\xBB\xBF" . file_get_contents($file));
+
+        $existing = $this->manager->existingDeployKey('second', GitStackSettings::sshAddress('git@github.com:owner/repo.git'));
+
+        $this->assertSame($key['id'], $existing['id'] ?? null);
+        $this->assertStringContainsString("Using the deploy key of 'first'", $existing['message'] ?? '');
+    }
+
+    public function testAKeyUsedByAStackWhoseGitJsonHasAByteOrderMarkIsNotGivenToAnotherRepository(): void
+    {
+        // As in testAKeyNamedAfterTheStackIsNotUsedWhileAnotherStackUsesIt, with the mark on the user's git.json.
+        $key = $this->emptyVault()->saveCredential(['name' => 'myapp deploy key', 'provider' => 'git-ssh', 'registry' => 'github.com', 'username' => 'git', 'secret' => 'k']);
+        $this->makeSshStack('other', 'git@github.com:owner/repo.git', $key['id']);
+        $file = $this->composeRoot . '/other/git.json';
+        file_put_contents($file, "\xEF\xBB\xBF" . file_get_contents($file));
+
+        $this->assertNull($this->manager->existingDeployKey('myapp', GitStackSettings::sshAddress('git@github.com:owner/new.git')));
+    }
+
+    public function testAStackWhoseSettingsCannotBeReadIsNamed(): void
+    {
+        $this->emptyVault();
+        $this->makeSshStack('first', 'git@github.com:owner/repo.git', str_repeat('cd', 16));
+        file_put_contents($this->composeRoot . '/first/git.json', 'not json');
+        $said = [];
+        $manager = new GitStackManager($this->composeRoot, static function (string $message) use (&$said): void {
+            $said[] = $message;
+        });
+
+        $this->assertNull($manager->existingDeployKey('second', GitStackSettings::sshAddress('git@github.com:owner/repo.git')));
+        $this->assertContains("Could not read the git settings of 'first', so its deploy key is not looked at.", $said);
+    }
+
+    public function testCommandLineCredentialNeedsAStackAndANameOrNone(): void
+    {
+        $this->assertSame(2, $this->runCli(['compose-git', 'credential', 'whoami']));
+        $this->assertSame(2, $this->runCli(['compose-git', 'credential', 'whoami', 'Bot', '--none']));
+        $this->assertSame(1, $this->runCli(['compose-git', 'credential', 'whoami', 'No such credential']));
+    }
+
+    // ----- reclone -----
+
+    public function testRecloneMovesTheOldCloneAsideAndReturnsToTheDeployedCommit(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $stackDir = $this->composeRoot . '/' . $folder;
+        $deployed = $this->upstreamHead();
+        (new GitStackState($deployed, null))->save($stackDir);
+        $settings = GitStackSettings::load($stackDir);
+        file_put_contents($settings->cloneDir . '/whoami/data.db', "keep me\n");
+        $this->writeAndPush(['whoami/compose.yaml' => "services: {}\n"], 'newer');
+
+        $movedTo = $this->manager->reclone($folder);
+
+        $this->assertNotNull($movedTo);
+        $this->assertSame("keep me\n", file_get_contents($movedTo . '/whoami/data.db'));
+        $this->assertFileDoesNotExist($settings->cloneDir . '/whoami/data.db');
+        $this->assertSame($deployed, (new GitClone($settings))->checkedOutCommit());
+    }
+
+    public function testRecloneNamesTheUntrackedFilesLeftInTheOldClone(): void
+    {
+        $messages = [];
+        $manager = new GitStackManager($this->composeRoot, static function (string $message) use (&$messages): void {
+            $messages[] = $message;
+        });
+        $folder = $manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $settings = GitStackSettings::load($this->composeRoot . '/' . $folder);
+        mkdir($settings->cloneDir . '/whoami/data');
+        file_put_contents($settings->cloneDir . '/whoami/data/app.db', "keep me\n");
+
+        $manager->reclone($folder);
+
+        $this->assertStringContainsString('whoami/data/', implode("\n", $messages));
+    }
+
+    public function testRecloneAfterTheDeployedCommitWasRewrittenAwayStaysAtTheNewHead(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $stackDir = $this->composeRoot . '/' . $folder;
+        $this->writeAndPush(['whoami/compose.yaml' => "services: {}\n"], 'to be rewritten');
+        (new GitStackState($this->upstreamHead(), null))->save($stackDir);
+        $this->git(['reset', '-q', '--hard', 'HEAD~1'], $this->author);
+        file_put_contents($this->author . '/whoami/other.txt', "x\n");
+        $this->git(['add', '--', 'whoami/other.txt'], $this->author);
+        $this->git(['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'rewritten'], $this->author);
+        $this->git(['push', '-q', '-f', 'origin', 'main'], $this->author);
+        // Until the server prunes it, a rewritten-away commit can still be fetched.
+        $this->git(['--git-dir=' . $this->upstream, 'reflog', 'expire', '--expire=now', '--all'], null);
+        $this->git(['--git-dir=' . $this->upstream, 'gc', '-q', '--prune=now'], null);
+
+        $rewrittenAway = GitStackState::load($stackDir)->deployedCommit;
+        $this->manager->reclone($folder);
+
+        $settings = GitStackSettings::load($stackDir);
+        $this->assertSame($this->upstreamHead(), (new GitClone($settings))->checkedOutCommit());
+        // Still recorded: the next deploy sees it is gone from the clone and recreates every container.
+        $this->assertSame($rewrittenAway, GitStackState::load($stackDir)->deployedCommit);
+    }
+
+    public function testConvertNamesTheFoldersNextToTheOldComposeFile(): void
+    {
+        $messages = [];
+        $manager = new GitStackManager($this->composeRoot, static function (string $message) use (&$messages): void {
+            $messages[] = $message;
+        });
+        $oldFolder = $this->mnt . '/user/appdata/legacy';
+        mkdir($oldFolder . '/db', 0755, true);
+        file_put_contents($oldFolder . '/compose.yaml', "services:\n  whoami:\n    image: traefik/whoami\n");
+        $stack = \StackInfo::createNew($this->composeRoot, 'legacy', '', $oldFolder);
+
+        $manager->convert($stack->projectFolder, $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+
+        $this->assertStringContainsString('next to the old compose file: db.', implode("\n", $messages));
+    }
+
+    public function testRecloneThatFailsPutsTheOldCloneBack(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $settings = GitStackSettings::load($this->composeRoot . '/' . $folder);
+        rename($this->upstream, $this->upstream . '.gone');
+
+        try {
+            $this->manager->reclone($folder);
+            $this->fail('Recloned from a repository that is gone');
+        } catch (RuntimeException) {
+        }
+        $this->assertFileExists($settings->composeFileInClone());
+        (new GitClone($settings))->assertOwned();
+        $this->assertSame([], glob($settings->cloneDir . '.replaced-*') ?: []);
+    }
+
+    public function testRecloneLeavesASymlinkedCloneFolderAlone(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $settings = GitStackSettings::load($this->composeRoot . '/' . $folder);
+        rename($settings->cloneDir, $settings->cloneDir . '.real');
+        symlink($settings->cloneDir . '.real', $settings->cloneDir);
+
+        try {
+            $this->manager->reclone($folder);
+            $this->fail('Recloned through a symlink');
+        } catch (RuntimeException $error) {
+            $this->assertStringContainsString('is a symlink', $error->getMessage());
+        }
+        $this->assertSame($settings->cloneDir . '.real', readlink($settings->cloneDir));
+        $this->assertFileExists($settings->cloneDir . '.real/whoami/compose.yaml');
+        $this->assertSame([], glob($settings->cloneDir . '.replaced-*') ?: []);
+    }
+
+    public function testRecloneThatCannotPutTheOldCloneBackSaysWhereItIs(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $settings = GitStackSettings::load($this->composeRoot . '/' . $folder);
+        $messages = [];
+        // Something appears at the clone folder once the old clone is moved
+        // aside, so the new clone fails and the old one cannot go back.
+        $manager = new GitStackManager($this->composeRoot, static function (string $message) use (&$messages, $settings): void {
+            $messages[] = $message;
+            if (str_starts_with($message, 'Cloning ')) {
+                file_put_contents($settings->cloneDir, 'in the way');
+            }
+        });
+
+        try {
+            $manager->reclone($folder);
+            $this->fail('Recloned over a file in the way');
+        } catch (RuntimeException) {
+        }
+        $moved = glob($settings->cloneDir . '.replaced-*') ?: [];
+        $this->assertCount(1, $moved);
+        $this->assertContains("Could not move the old clone back. It is still at {$moved[0]}.", $messages);
+        $this->assertNotContains('Moved the old clone back.', $messages);
+    }
+
+    // ----- command line -----
+
+    public function testCommandLineUsageErrorsExitWithTwo(): void
+    {
+        $this->assertSame(2, $this->runCli(['compose-git', 'frobnicate']));
+        $this->assertSame(2, $this->runCli(['compose-git', 'add', 'whoami', '--path', 'whoami/compose.yaml']));
+        $this->assertSame(2, $this->runCli(['compose-git', 'status', 'whoami', '--colour']));
+    }
+
+    public function testCommandLineAddThenCheckReportsNothingDeployedYet(): void
+    {
+        $add = ['compose-git', 'add', 'whoami', '--url', $this->upstream, '--path', 'whoami/compose.yaml', '--clones-root', $this->clonesRoot];
+        $this->assertSame(0, $this->runCli($add));
+        $this->assertSame(3, $this->runCli(['compose-git', 'check', 'whoami']));
+        $this->assertSame(1, $this->runCli(['compose-git', 'check', 'nosuchstack']));
+    }
+
+    public function testCommandLineCheckExitsWithFourForACommitOutsideTheStacksFolder(): void
+    {
+        $this->writeAndPush(['other/compose.yaml' => "services:\n  web:\n    image: traefik/whoami\n"], 'another stack');
+        $whoami = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $other = $this->manager->add('other', $this->upstream, 'main', 'other/compose.yaml', $this->clonesRoot);
+        (new GitStackState($this->upstreamHead(), null))->save($this->composeRoot . '/' . $whoami);
+        (new GitStackState($this->upstreamHead(), null))->save($this->composeRoot . '/' . $other);
+
+        $this->writeAndPush(['whoami/config.txt' => "setting=1\n"], 'whoami only');
+
+        [$exit, $output] = $this->runCliCapturingOutput(['compose-git', 'check', 'other']);
+        $this->assertSame(4, $exit);
+        $this->assertStringContainsString('changes nothing in other/', $output);
+        $this->assertStringContainsString('files outside that folder', $output);
+        $this->assertSame(3, $this->runCli(['compose-git', 'check', 'whoami']));
+        // --all: a stack whose folder changed decides it.
+        $this->assertSame(3, $this->runCli(['compose-git', 'check', '--all']));
+
+        // Once whoami has deployed it, only the commit outside other/ is left.
+        (new GitStackState($this->upstreamHead(), null))->save($this->composeRoot . '/' . $whoami);
+        $this->assertSame(4, $this->runCli(['compose-git', 'check', '--all']));
+    }
+
+    public function testDeployWaitsAsTheStacksSettingSaysUnlessTheCommandLineOverrides(): void
+    {
+        $on = ['enabled' => true, 'timeout' => '120'];
+        $off = ['enabled' => false, 'timeout' => '300'];
+
+        $this->assertSame(['--wait', '--wait-timeout', '120'], compose_git_wait_arguments($on, []));
+        $this->assertSame([], compose_git_wait_arguments($off, []));
+        $this->assertSame([], compose_git_wait_arguments($on, ['no-wait' => true]));
+        $this->assertSame(['--wait', '--wait-timeout', '300'], compose_git_wait_arguments($off, ['wait' => true]));
+        $this->assertSame(['--wait', '--wait-timeout', '45'], compose_git_wait_arguments($off, ['wait-timeout' => '45']));
+        // A timeout file holding something other than a number is not passed on.
+        $this->assertSame(['--wait'], compose_git_wait_arguments(['enabled' => true, 'timeout' => '5m'], []));
+    }
+
+    public function testDeployRunsComposeWithTheSameEnvironmentAsTheChecks(): void
+    {
+        // Exported variables win over the stack's .env in compose, and PWD is the caller's
+        // folder: neither may reach the deploy, since the checks never saw them.
+        $callersShell = [
+            'PATH' => '/root/bin:/usr/bin',
+            'HOME' => '/root',
+            'PWD' => '/root/somewhere',
+            'PORT' => '8080',
+            'DOCKER_HOST' => 'tcp://elsewhere:2375',
+            'COMPOSE_PROFILES' => 'debug',
+            'COMPOSE_LOCK_TIMEOUT' => '5',
+            'DOCKER_CONFIG' => '/tmp/registry-login',
+        ];
+
+        $this->assertSame([
+            'PATH' => '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+            'HOME' => '/root',
+            'LC_ALL' => 'C',
+            'DOCKER_CONFIG' => '/tmp/registry-login',
+            'COMPOSE_LOCK_TIMEOUT' => '5',
+        ], compose_git_deploy_environment($callersShell));
+    }
+
+    public function testDeployRunsComposeInTheComposeFilesFolder(): void
+    {
+        $folder = $this->mnt . '/user/appdata/git/whoami/whoami';
+        mkdir($folder, 0755, true);
+        file_put_contents($folder . '/compose.yaml', "services: {}\n");
+        // A compose file that is a symlink: the folder of the file it leads to, as the checks use.
+        mkdir($this->mnt . '/user/appdata/git/whoami/linked', 0755, true);
+        symlink($folder . '/compose.yaml', $this->mnt . '/user/appdata/git/whoami/linked/compose.yaml');
+
+        $this->assertSame(realpath($folder), compose_git_deploy_directory($folder . '/compose.yaml'));
+        $this->assertSame(realpath($folder), compose_git_deploy_directory($this->mnt . '/user/appdata/git/whoami/linked/compose.yaml'));
+        $this->assertSame('/', compose_git_deploy_directory($folder . '/missing.yaml'));
+        $this->assertSame('/', compose_git_deploy_directory(null));
+    }
+
+    public function testDeployCommandRunsComposeShGitdeployForTheStack(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $stack = \StackInfo::fromProject($this->composeRoot, $folder);
+        $commit = str_repeat('a', 40);
+
+        $command = buildGitDeployCommand($stack, $commit, true, ['tools'], ['--wait', '--wait-timeout', '60']);
+
+        $this->assertStringEndsWith('/scripts/compose.sh', $command[0]);
+        $this->assertSame([
+            '-cgitdeploy', '-p' . $stack->projectName, '-s' . $stack->path,
+            '-gtools', '--git-commit', $commit, '--save-local-changes', '--wait', '--wait-timeout', '60',
+        ], array_slice($command, 1));
+        $this->assertSame(
+            ['-cgitdeploy', '-p' . $stack->projectName, '-s' . $stack->path],
+            array_slice(buildGitDeployCommand($stack, null, false, [], []), 1)
+        );
+    }
+
+    public function testDeployRefusesWaitAndNoWaitTogether(): void
+    {
+        $this->expectException(\ComposeGitUsageError::class);
+        compose_git_wait_arguments(['enabled' => false, 'timeout' => '300'], ['wait' => true, 'no-wait' => true]);
+    }
+
+    public function testDeployKeepsTheRunningProfilesUnlessTheCommandLineNamesSome(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $stackDir = $this->composeRoot . '/' . $folder;
+        // StackInfo caches what it reads, so read the stack again after each change.
+        $stack = function () use ($folder): \StackInfo {
+            \StackInfo::clearCache();
+            return $this->manager->gitStack($folder);
+        };
+
+        // Nothing running and no defaults: no profiles.
+        $this->assertSame([], gitDeployProfiles($stack(), []));
+
+        // The default profiles, as the web UI's Update uses on a first run.
+        file_put_contents($stackDir . '/default_profile', 'media');
+        $this->assertSame(['media'], gitDeployProfiles($stack(), []));
+
+        // The profiles the stack is running with come first.
+        file_put_contents($stackDir . '/running_profiles', 'extras,tools');
+        $this->assertSame(['extras', 'tools'], gitDeployProfiles($stack(), []));
+
+        // --profile replaces both.
+        $this->assertSame(['debug'], gitDeployProfiles($stack(), ['debug']));
+    }
+
+    public function testCommandLineAutoDeployChangesTheStacksSetting(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $stackDir = $this->composeRoot . '/' . $folder;
+        $cronFile = sys_get_temp_dir() . '/compose_git_manager_test.cron';
+        @unlink($cronFile);
+        putenv('COMPOSE_MANAGER_CRON_FILE=' . $cronFile);
+        putenv('COMPOSE_MANAGER_CRON_NOSYNC=1');
+        global $compose_root;
+        $savedComposeRoot = $compose_root;
+        $compose_root = $this->composeRoot;
+        try {
+            $this->assertSame(0, $this->runCli(['compose-git', 'auto-deploy', $folder, 'deploy']));
+            $this->assertStringContainsString('scheduled-check', (string) @file_get_contents($cronFile));
+            $this->assertSame(0, $this->runCli(['compose-git', 'auto-deploy', $folder, 'off']));
+            $this->assertFileDoesNotExist($cronFile);
+            $this->assertSame(0, $this->runCli(['compose-git', 'auto-deploy', $folder, 'deploy']));
+        } finally {
+            putenv('COMPOSE_MANAGER_CRON_FILE');
+            putenv('COMPOSE_MANAGER_CRON_NOSYNC');
+            $compose_root = $savedComposeRoot;
+            @unlink($cronFile);
+        }
+        $this->assertSame(GitStackSettings::AUTO_DEPLOY_DEPLOY, GitStackSettings::load($stackDir)->autoDeploy);
+        $this->assertSame('deploy', $this->manager->status($folder)['autoDeploy']);
+
+        $this->assertSame(1, $this->runCli(['compose-git', 'auto-deploy', $folder, 'always']));
+        $this->assertSame(2, $this->runCli(['compose-git', 'auto-deploy', $folder]));
+        $this->assertSame(GitStackSettings::AUTO_DEPLOY_DEPLOY, GitStackSettings::load($stackDir)->autoDeploy);
+    }
+
+    public function testResumeClearsAFailedDeployAndKeepsTheDeployedCommit(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $stackDir = $this->composeRoot . '/' . $folder;
+        $deployed = str_repeat('a', 40);
+        (new GitStackState($deployed, str_repeat('b', 40)))->save($stackDir);
+
+        $this->assertSame(0, $this->runCli(['compose-git', 'resume', $folder]));
+
+        $state = GitStackState::load($stackDir);
+        $this->assertSame($deployed, $state->deployedCommit);
+        $this->assertNull($state->failedCommit);
+        $this->assertFalse($this->manager->resume($folder));
+    }
+
+    public function testResumeSaysAutomaticDeploysResumeOnlyWhenTheyAreOn(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $stackDir = $this->composeRoot . '/' . $folder;
+
+        (new GitStackState(str_repeat('a', 40), str_repeat('b', 40)))->save($stackDir);
+        [, $output, $said] = $this->runCliCapturingOutput(['compose-git', 'resume', $folder]);
+        $output .= $said;
+        $this->assertStringContainsString('Cleared the failed deploy of bbbbbbbbbbbb.', $output);
+        $this->assertStringNotContainsString('resume', $output);
+
+        GitStackSettings::load($stackDir)->withAutoDeploy(GitStackSettings::AUTO_DEPLOY_NOTIFY)->save($stackDir);
+        (new GitStackState(str_repeat('a', 40), str_repeat('b', 40)))->save($stackDir);
+        [, $output, $said] = $this->runCliCapturingOutput(['compose-git', 'resume', $folder]);
+        $output .= $said;
+        $this->assertStringContainsString("Automatic deploys of '$folder' resume.", $output);
+    }
+
+    public function testCommandLineStatusAsJson(): void
+    {
+        $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $errors = fopen('php://memory', 'w');
+        ob_start();
+        $exit = compose_git_main(['compose-git', 'status', '--json'], $this->composeRoot, $errors);
+        $output = (string) ob_get_clean();
+        fclose($errors);
+
+        $this->assertSame(0, $exit);
+        $decoded = json_decode($output, true);
+        $this->assertSame('whoami', $decoded[0]['stack']);
+        $this->assertSame('main', $decoded[0]['branch']);
+    }
+
+    public function testCommandLineStatusOfAllShowsAStackWhoseSettingsCannotBeRead(): void
+    {
+        $good = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $bad = $this->manager->add('broken', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $gitJson = $this->composeRoot . '/' . $bad . '/git.json';
+        $settings = json_decode((string) file_get_contents($gitJson), true);
+        $settings['typo'] = true;
+        file_put_contents($gitJson, json_encode($settings));
+
+        [$exit, $output] = $this->runCliCapturingOutput(['compose-git', 'status', '--json']);
+
+        $this->assertSame(0, $exit);
+        $rows = array_column(json_decode($output, true), null, 'stack');
+        $this->assertSame('main', $rows[$good]['branch']);
+        $this->assertNull($rows[$bad]['url']);
+        $this->assertNotNull($rows[$bad]['problem']);
+        // Named on its own, the stack is still an error.
+        $this->assertSame(1, $this->runCli(['compose-git', 'status', $bad]));
+    }
+
+    /**
+     * @return array<string, array{0: string, 1: string[]}>
+     */
+    public static function commandsAndTheirOptions(): array
+    {
+        return [
+            'add' => ['add', ['--url', '--path', '--branch', '--clones-root', '--description', '--credential']],
+            'convert' => ['convert', ['--url', '--path', '--branch', '--clones-root', '--credential']],
+            'credential' => ['credential', ['--none']],
+            'deploy-key' => ['deploy-key', []],
+            'trust-host' => ['trust-host', []],
+            'check' => ['check', ['--all']],
+            'deploy' => ['deploy', ['--commit', '--save-local-changes', '--wait', '--no-wait', '--wait-timeout', '--profile', '--dry-run']],
+            'reclone' => ['reclone', []],
+            'status' => ['status', ['--all', '--json']],
+            'auto-deploy' => ['auto-deploy', ['off', 'notify', 'deploy']],
+            'resume' => ['resume', []],
+            'scheduled-check' => ['scheduled-check', []],
+        ];
+    }
+
+    /**
+     * @param string[] $options
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('commandsAndTheirOptions')]
+    public function testEachCommandHasHelpNamingEveryOption(string $command, array $options): void
+    {
+        [$exit, $output] = $this->runCliCapturingOutput(['compose-git', $command, '--help']);
+
+        $this->assertSame(0, $exit);
+        $this->assertStringStartsWith("Usage: compose-git $command", $output);
+        foreach ($options as $option) {
+            $this->assertStringContainsString($option, $output);
+        }
+        foreach (explode("\n", $output) as $line) {
+            $this->assertLessThanOrEqual(100, strlen($line), "Too long for a terminal: $line");
+        }
+        // The other ways to ask give the same text.
+        $this->assertSame($output, $this->runCliCapturingOutput(['compose-git', $command, '-h'])[1]);
+        $this->assertSame($output, $this->runCliCapturingOutput(['compose-git', 'help', $command])[1]);
+    }
+
+    public function testHelpWinsOverTheRestOfTheCommandLine(): void
+    {
+        // Nothing is cloned or checked: --help only prints.
+        [$exit, $output] = $this->runCliCapturingOutput(['compose-git', 'deploy', 'nosuchstack', '--help']);
+
+        $this->assertSame(0, $exit);
+        $this->assertStringStartsWith('Usage: compose-git deploy', $output);
+    }
+
+    public function testAMistakeInACommandShowsThatCommandsHelp(): void
+    {
+        [$exit, , $errors] = $this->runCliCapturingOutput(['compose-git', 'add', 'whoami', '--path', 'whoami/compose.yaml']);
+
+        $this->assertSame(2, $exit);
+        $this->assertStringStartsWith("--url is required.\n\nUsage: compose-git add", $errors);
+    }
+
+    public function testTheOverviewPointsToTheCommandHelp(): void
+    {
+        [$exit, $output] = $this->runCliCapturingOutput(['compose-git', '--help']);
+
+        $this->assertSame(0, $exit);
+        $this->assertStringContainsString("compose-git <command> --help", $output);
+        $this->assertSame(2, $this->runCli(['compose-git', 'help', 'frobnicate']));
+    }
+
+    // ----- helpers -----
+
+    /**
+     * @param string[] $argv
+     * @return array{0: int, 1: string, 2: string} The exit status, standard output and the errors
+     */
+    private function runCliCapturingOutput(array $argv): array
+    {
+        $errors = fopen('php://memory', 'w+');
+        ob_start();
+        $exit = compose_git_main($argv, $this->composeRoot, $errors);
+        $output = (string) ob_get_clean();
+        rewind($errors);
+        $errorText = (string) stream_get_contents($errors);
+        fclose($errors);
+        return [$exit, $output, $errorText];
+    }
+
+    /**
+     * A git stack whose settings say it reaches $url over ssh with the deploy key $credentialId. Its
+     * clone is a local one: nothing here reaches the address.
+     */
+    private function makeSshStack(string $name, string $url, string $credentialId): void
+    {
+        $folder = $this->manager->add($name, $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $stackDir = $this->composeRoot . '/' . $folder;
+        GitStackSettings::createNew($url, 'main', 'whoami/compose.yaml', $this->clonesRoot, $folder)
+            ->withCredentialId($credentialId)
+            ->withSshKnownHosts("github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n")
+            ->save($stackDir);
+    }
+
+    private function emptyVault(): \CredentialVault
+    {
+        @unlink(COMPOSE_CREDENTIAL_VAULT_FILE);
+        @unlink(COMPOSE_CREDENTIAL_KEY_FILE);
+        return new \CredentialVault();
+    }
+
+    /** @param string[] $argv */
+    private function runCli(array $argv): int
+    {
+        $errors = fopen('php://memory', 'w');
+        ob_start();
+        $exit = compose_git_main($argv, $this->composeRoot, $errors);
+        ob_end_clean();
+        fclose($errors);
+        return $exit;
+    }
+
+    /** @param array<string, string> $files */
+    private function writeAndPush(array $files, string $message): void
+    {
+        foreach ($files as $path => $content) {
+            $full = $this->author . '/' . $path;
+            if (!is_dir(dirname($full))) {
+                mkdir(dirname($full), 0755, true);
+            }
+            file_put_contents($full, $content);
+            $this->git(['add', '--', $path], $this->author);
+        }
+        $this->git(['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', $message], $this->author);
+        $this->git(['push', '-q', 'origin', 'main'], $this->author);
+    }
+
+    private function upstreamHead(): string
+    {
+        return trim(GitCommand::run(['--git-dir=' . $this->upstream, 'rev-parse', 'refs/heads/main'])->stdout);
+    }
+
+    /** @param string[] $args */
+    private function git(array $args, ?string $dir): void
+    {
+        $result = GitCommand::run($args, $dir);
+        $this->assertTrue($result->succeeded(), 'git ' . implode(' ', $args) . ': ' . $result->stderr);
+    }
+}

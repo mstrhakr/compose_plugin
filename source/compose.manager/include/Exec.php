@@ -5,6 +5,7 @@ require_once("/usr/local/emhttp/plugins/compose.manager/include/Util.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/ColumnLayout.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/CredentialVault.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/GitHubDeviceAuth.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/GitStackWebActions.php");
 require_once("/usr/local/emhttp/plugins/dynamix/include/Wrappers.php");
 require_once('/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php');
 
@@ -184,6 +185,7 @@ if (!function_exists('composeBuildCredentialStackMap')) {
     /**
      * Single-pass scan of every stack's `credential_id` file, grouped by credential id.
      * Avoids re-globbing/re-reading the compose root once per credential.
+     * A git stack's repository credential (`credentialId` in its git.json) counts too.
      *
      * @return array<string, string[]> Credential id => assigned stack names
      */
@@ -197,7 +199,45 @@ if (!function_exists('composeBuildCredentialStackMap')) {
             }
             $map[$credentialId][] = basename(dirname($credentialFile));
         }
+        foreach (glob(rtrim($composeRoot, '/') . '/*/git.json') ?: [] as $gitSettingsFile) {
+            // Read as plain JSON: a git.json that fails validation still keeps its credential in use.
+            $gitSettings = GitStackSettings::readAsPlainJson($gitSettingsFile);
+            $credentialId = is_array($gitSettings) ? ($gitSettings['credentialId'] ?? null) : null;
+            if (!is_string($credentialId) || $credentialId === '') {
+                continue;
+            }
+            $stack = basename(dirname($gitSettingsFile));
+            if (!in_array($stack, $map[$credentialId] ?? [], true)) {
+                $map[$credentialId][] = $stack;
+            }
+        }
         return $map;
+    }
+}
+
+if (!function_exists('composeListUnreadableGitStacksThatMayUse')) {
+    /**
+     * The git stacks whose git.json cannot be read as JSON (a typo from a hand edit, say) but may
+     * still name this credential. composeBuildCredentialStackMap() cannot see them.
+     *
+     * Such a file may name it when its text contains the credential id, when the file cannot be
+     * read at all, or when it holds NUL bytes (saved as UTF-16, so the id cannot be searched for).
+     *
+     * @return string[] Stack folder names
+     */
+    function composeListUnreadableGitStacksThatMayUse(string $composeRoot, string $credentialId): array
+    {
+        $stacks = [];
+        foreach (glob(rtrim($composeRoot, '/') . '/*/git.json') ?: [] as $gitSettingsFile) {
+            if (GitStackSettings::readAsPlainJson($gitSettingsFile) !== null) {
+                continue;
+            }
+            $content = @file_get_contents($gitSettingsFile);
+            if ($content === false || str_contains($content, "\0") || str_contains($content, $credentialId)) {
+                $stacks[] = basename(dirname($gitSettingsFile));
+            }
+        }
+        return $stacks;
     }
 }
 
@@ -472,6 +512,15 @@ switch ($_POST['action']) {
             'overrideManagementAutomatic' => $overrideManagementAutomatic,
         ]);
         break;
+    case 'addGitStack':
+        $result = (new GitStackWebActions($compose_root))->add($_POST);
+        if ($result['result'] === 'success') {
+            composeLogger('Created git stack: ' . $result['project'], null, 'user', 'info', 'stack');
+        } else {
+            composeLogger('Failed to create git stack: ' . $result['message'], null, 'user', 'error', 'stack');
+        }
+        echo json_encode($result);
+        break;
     case 'deleteStack':
         $stackName = isset($_POST['stackName']) ? basename(trim($_POST['stackName'])) : "";
         if (!$stackName) {
@@ -484,6 +533,13 @@ switch ($_POST['action']) {
         $isInvalidIndirect = !$isIndirect && is_file("$folderName/indirect.invalid");
         $filesRemain = $isIndirect ? file_get_contents("$folderName/indirect")
             : ($isInvalidIndirect ? file_get_contents("$folderName/indirect.invalid") : "");
+        // A git stack's indirect file points into its clone: name the clone instead, and say what it is.
+        $filesRemainNote = '';
+        $gitLeftBehind = GitStackWebActions::leftBehindByDelete($folderName);
+        if ($gitLeftBehind !== null) {
+            $filesRemain = $gitLeftBehind['path'] ?? $filesRemain;
+            $filesRemainNote = $gitLeftBehind['note'];
+        }
         composeLogger("Deleting stack: $stackName", [
             'folderName' => $folderName,
             'isIndirect' => $isIndirect,
@@ -524,14 +580,14 @@ switch ($_POST['action']) {
             composeSendNotification("Stack delete complete: $stackName", $message);
             echo json_encode(['result' => 'success', 'message' => '', 'cachePurge' => $cachePurgeMeta]);
         } else {
-            $message = "Stack '$stackName' was deleted. Files remain on disk at '$filesRemain'.";
+            $message = "Stack '$stackName' was deleted. Files remain on disk at '$filesRemain'." . ($filesRemainNote !== '' ? " $filesRemainNote" : '');
             composeLogger("Deleted stack: $stackName (indirect, external files remain at $filesRemain)", [
                 'deleteMeta' => $deleteMeta,
                 'filesRemain' => $filesRemain,
                 'cachePurgeMeta' => $cachePurgeMeta,
             ], 'user', 'warning', 'stack');
             composeSendNotification("Stack delete complete: $stackName", $message, 'warning');
-            echo json_encode(['result' => 'warning', 'message' => $filesRemain, 'cachePurge' => $cachePurgeMeta]);
+            echo json_encode(['result' => 'warning', 'message' => $filesRemain . ($filesRemainNote !== '' ? ". $filesRemainNote" : ''), 'cachePurge' => $cachePurgeMeta]);
         }
         break;
     case 'changeName':
@@ -895,27 +951,6 @@ switch ($_POST['action']) {
         echo json_encode(['result' => 'success']);
         break;
 
-    case 'runPatch':
-        $cmd = isset($_POST['cmd']) ? $_POST['cmd'] : 'apply';
-        if (!in_array($cmd, ['apply', 'remove'])) {
-            echo json_encode(['result' => 'error', 'message' => 'Invalid command']);
-            break;
-        }
-        $script = "$plugin_root/scripts/patch.sh";
-        // Quote each argument to preserve spaces and special characters and avoid the fragility of escapeshellcmd()
-        $fullcmd = escapeshellarg($script) . ' ' . escapeshellarg($cmd) . ' ' . escapeshellarg('--verbose') . ' 2>&1';
-        exec($fullcmd, $output, $rc);
-        // Save a copy to plugin log file
-        $logfile = "/boot/config/plugins/compose.manager/patch_last_run.log";
-        $ts = date('c');
-        $entry = "[{$ts}] runPatch {$cmd} exit={$rc}\n" . implode("\n", $output) . "\n\n";
-        @file_put_contents($logfile, $entry, FILE_APPEND);
-        foreach ($output as $line) {
-            composeLogger(escapeshellarg($cmd) . ' ' . $line, null, 'user', 'debug', 'patch.sh');
-        }
-        echo json_encode(['result' => $rc === 0 ? 'success' : 'error', 'output' => implode("\n", $output), 'rc' => $rc]);
-        break;
-
     case 'clearUpdateCache':
         // Clear the compose manager update status cache
         $composeUpdateStatusFile = COMPOSE_UPDATE_STATUS_FILE;
@@ -1040,6 +1075,10 @@ switch ($_POST['action']) {
         break;
     case 'saveCredential':
         try {
+            // Deploy keys are made by compose-git for a repository's ssh stacks, never on the Credentials tab.
+            if (strtolower(trim((string) ($_POST['provider'] ?? ''))) === 'git-ssh') {
+                throw new \InvalidArgumentException('A deploy key is made by compose-git for the ssh stacks of a repository, not added here.');
+            }
             $credential = (new CredentialVault())->saveCredential([
                 'id' => trim((string) ($_POST['id'] ?? '')),
                 'name' => trim((string) ($_POST['name'] ?? '')),
@@ -1049,7 +1088,7 @@ switch ($_POST['action']) {
                 'username' => trim((string) ($_POST['username'] ?? '')),
                 'secret' => trim((string) ($_POST['secret'] ?? '')),
             ]);
-            composeLogger('Saved registry credential', ['id' => $credential['id'], 'provider' => $credential['provider'], 'registry' => $credential['registry']], 'user', 'info', 'credentials');
+            composeLogger('Saved credential', ['id' => $credential['id'], 'provider' => $credential['provider'], 'registry' => $credential['registry']], 'user', 'info', 'credentials');
             echo json_encode(['result' => 'success', 'credential' => $credential]);
         } catch (\InvalidArgumentException $error) {
             echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);
@@ -1061,15 +1100,49 @@ switch ($_POST['action']) {
     case 'deleteCredential':
         $credentialId = trim((string) ($_POST['id'] ?? ''));
         try {
-            $deleted = CredentialVault::withCredentialAssignmentLock(function () use ($compose_root, $credentialId): bool {
+            $refusal = null;
+            $deleted = CredentialVault::withCredentialAssignmentLock(function () use ($compose_root, $credentialId, &$refusal): bool {
+                // A projects folder on the array is gone while the array is stopped: no stack would be
+                // found, and every credential would look unused.
+                if (!is_dir($compose_root)) {
+                    $refusal = "The projects folder ($compose_root) is not there, so the stacks that use this credential "
+                        . 'cannot be checked. If it is on the array, start the array first.';
+                    return false;
+                }
                 $stacks = composeBuildCredentialStackMap($compose_root)[$credentialId] ?? [];
                 if (!empty($stacks)) {
                     throw new RuntimeException('Credential is assigned to: ' . implode(', ', $stacks));
                 }
+                // A git stack whose git.json cannot be read may use this credential: do not delete
+                // it from under that stack. Registry credentials are never in a git.json.
+                // Looked up in the list, not with getCredentialSummary(), so a missing id is still "not found".
+                $provider = '';
+                foreach ((new CredentialVault())->listCredentials() as $credential) {
+                    if (($credential['id'] ?? '') === $credentialId) {
+                        $provider = $credential['provider'] ?? '';
+                    }
+                }
+                $unreadable = in_array($provider, ['git', 'git-ssh'], true)
+                    ? composeListUnreadableGitStacksThatMayUse($compose_root, $credentialId)
+                    : [];
+                if (count($unreadable) === 1) {
+                    $refusal = "The git settings (git.json) of {$unreadable[0]} could not be read, so it may use this credential. "
+                        . "Fix the file first: the stack's Sources tab, or compose-git status, shows the error.";
+                    return false;
+                }
+                if (count($unreadable) > 1) {
+                    $refusal = 'The git settings (git.json) of ' . implode(', ', $unreadable) . ' could not be read, so they may use '
+                        . "this credential. Fix the files first: each stack's Sources tab, or compose-git status, shows the error.";
+                    return false;
+                }
                 return (new CredentialVault())->deleteCredential($credentialId);
             });
+            if ($refusal !== null) {
+                echo json_encode(['result' => 'error', 'message' => $refusal]);
+                break;
+            }
             if ($deleted) {
-                composeLogger('Deleted registry credential', ['id' => $credentialId], 'user', 'info', 'credential');
+                composeLogger('Deleted credential', ['id' => $credentialId], 'user', 'info', 'credential');
             }
             echo json_encode(['result' => $deleted ? 'success' : 'error', 'message' => $deleted ? '' : 'Credential not found.']);
         } catch (\Throwable $error) {
@@ -1089,9 +1162,20 @@ switch ($_POST['action']) {
             break;
         }
         try {
-            $test = (new CredentialVault())->testCredential($credentialId);
+            if (in_array((new CredentialVault())->getCredentialSummary($credentialId)['provider'] ?? '', ['git', 'git-ssh'], true)) {
+                // A git credential is tested by reaching a repository that uses it, not with a registry handshake.
+                require_once("/usr/local/emhttp/plugins/compose.manager/include/GitStackManager.php");
+                $test = (new GitStackManager($compose_root))->testCredential($credentialId);
+                if ($test === null) {
+                    echo json_encode(['result' => 'error', 'message' => 'No git stack uses this credential yet. '
+                        . 'It is tested by reaching a repository: choose it for a git stack (when adding the stack, or with compose-git), then test it again.']);
+                    break;
+                }
+            } else {
+                $test = (new CredentialVault())->testCredential($credentialId);
+            }
             composeLogger(
-                "Tested registry credential '{$test['name']}': " . ($test['valid'] ? 'valid' : 'invalid') . ' - ' . $test['message'],
+                "Tested credential '{$test['name']}': " . ($test['valid'] ? 'valid' : 'invalid') . ' - ' . $test['message'],
                 null,
                 'user',
                 $test['valid'] ? 'info' : 'warning',
@@ -1249,7 +1333,54 @@ switch ($_POST['action']) {
             'projectPath' => "$compose_root/$script",
             'projectOverridePath' => $stackInfo->overrideInfo->getProjectOverridePath(),
             'effectiveOverridePath' => $stackInfo->getPreferredOverridePath(),
+            'isGitStack' => $stackInfo->isGitStack(),
         ]);
+        break;
+    case 'getGitStackStatus':
+        $script = getPostScript();
+        if (!$script) {
+            echo json_encode(['result' => 'error', 'message' => 'Stack not specified.']);
+            break;
+        }
+        echo json_encode((new GitStackWebActions($compose_root))->status($script));
+        break;
+    case 'convertToGitStack':
+        $script = getPostScript();
+        if (!$script) {
+            echo json_encode(['result' => 'error', 'message' => 'Stack not specified.']);
+            break;
+        }
+        $result = (new GitStackWebActions($compose_root))->convert($script, $_POST);
+        if ($result['result'] === 'success') {
+            composeLogger("Converted stack to a git stack: $script", ['backupDir' => $result['backupDir']], 'user', 'info', 'stack');
+        } else {
+            composeLogger("Failed to convert stack to a git stack: $script", ['error' => $result['message']], 'user', 'error', 'stack');
+        }
+        echo json_encode($result);
+        break;
+    case 'setGitAutoDeploy':
+        $script = getPostScript();
+        if (!$script) {
+            echo json_encode(['result' => 'error', 'message' => 'Stack not specified.']);
+            break;
+        }
+        echo json_encode((new GitStackWebActions($compose_root))->setAutoDeploy($script, trim((string) ($_POST['autoDeploy'] ?? ''))));
+        break;
+    case 'resumeGitStack':
+        $script = getPostScript();
+        if (!$script) {
+            echo json_encode(['result' => 'error', 'message' => 'Stack not specified.']);
+            break;
+        }
+        echo json_encode((new GitStackWebActions($compose_root))->resume($script));
+        break;
+    case 'checkGitStack':
+        $script = getPostScript();
+        if (!$script) {
+            echo json_encode(['result' => 'error', 'message' => 'Stack not specified.']);
+            break;
+        }
+        echo json_encode((new GitStackWebActions($compose_root))->check($script));
         break;
     case 'setLabelsViewMode':
         $script = getPostScript();
@@ -1359,6 +1490,15 @@ switch ($_POST['action']) {
         $externalComposePath = rtrim($externalComposePath, '/');
         $externalComposeFilePath = isset($_POST['externalComposeFilePath']) ? trim($_POST['externalComposeFilePath']) : "";
 
+        // A git stack's compose file is the one in its clone, set by git.json.
+        // The Sources tab cannot change it, so the form's values are ignored
+        // and the stack's indirect files are left as they are.
+        $isGitStack = is_file("$compose_root/$script/git.json");
+        if ($isGitStack) {
+            $externalComposePath = '';
+            $externalComposeFilePath = '';
+        }
+
         if (!empty($externalComposePath) && !empty($externalComposeFilePath)) {
             echo json_encode(['result' => 'error', 'message' => 'Set either External Compose Path or External Compose File, not both.']);
             break;
@@ -1451,6 +1591,9 @@ switch ($_POST['action']) {
                 CredentialVault::withCredentialAssignmentLock(function () use ($credentialId, $credentialIdFile): void {
                     if ($credentialId !== '' && !(new CredentialVault())->hasCredential($credentialId)) {
                         throw new RuntimeException('Selected credential no longer exists.');
+                    }
+                    if ($credentialId !== '' && in_array((new CredentialVault())->getCredentialSummary($credentialId)['provider'] ?? '', ['git', 'git-ssh'], true)) {
+                        throw new RuntimeException('A git repository credential cannot be used to pull images.');
                     }
                     if ($credentialId === '') {
                         if (is_file($credentialIdFile)) {
@@ -1575,7 +1718,9 @@ switch ($_POST['action']) {
             $indirectTarget = $externalComposePath;
         }
 
-        if ($indirectTarget === '') {
+        if ($isGitStack) {
+            // Left as they are (see above).
+        } elseif ($indirectTarget === '') {
             // Removing indirect: move compose file back to project folder if it only exists externally
             if (is_file($indirectFile)) {
                 $oldIndirectPath = trim(file_get_contents($indirectFile));

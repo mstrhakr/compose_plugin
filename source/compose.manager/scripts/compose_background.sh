@@ -87,6 +87,10 @@ if [ $RC -eq 0 ]; then
   if [ -x "$NOTIFY" ]; then
     "$NOTIFY" -e 'Compose Manager' -s "Stack $OPERATION complete: $PROJECT_NAME" -d "$MSG"
   fi
+elif [ "$OPERATION" = "gitdeploy" ] && [ $RC -eq "$GIT_DEPLOY_EXIT_SKIPPED" ]; then
+  # An automatic deploy that no longer applied changed nothing; the scheduled check
+  # that started it notifies, if anything needs saying, at its next pass.
+  composeLogger "Stack '$PROJECT_NAME' ($OPERATION) skipped: the automatic deploy no longer applied." info compose daemon
 else
   # Include last few lines of output in the notification for quick diagnosis
   TAIL=$(tail -n 10 "$LOG_FILE" 2>/dev/null | tr -cd '[:print:]\n\t')

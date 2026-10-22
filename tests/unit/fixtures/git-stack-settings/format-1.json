@@ -1,0 +1,9 @@
+{
+    "version": 1,
+    "url": "https://github.com/owner/repo.git",
+    "branch": "main",
+    "composePath": "whoami/compose.yaml",
+    "cloneId": "0123456789abcdef",
+    "cloneDir": "@MNT@/user/appdata/compose.manager/git/whoami-01234567",
+    "recreateOnFolderChange": true
+}

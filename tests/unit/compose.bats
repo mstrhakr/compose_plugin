@@ -189,8 +189,16 @@ test_setup() {
     assert_success
 }
 
+@test "compose.sh update falls back to rebuilding when buildable images can't be pulled" {
+    # Local-only images (build: + image:) fail a plain pull; retry skipping them and rebuild.
+    run sed -n '/^  update)/,/^    ;;/ p' "$COMPOSE_SCRIPT"
+    assert_success
+    [[ "$output" == *'"${compose_base[@]}" -p "$name" pull --ignore-buildable'* ]]
+    [[ "$output" == *'if [ $pull_exit -ne 0 ] && [ "$build_on_update" != true ]; then'* ]]
+}
+
 @test "compose.sh mutating commands have explicit final exit propagation" {
-    run grep -E '^\s*up\|down\|pull\|update\|stop\|logs\)' "$COMPOSE_SCRIPT"
+    run grep -E '^\s*up\|down\|pull\|update\|stop\|logs(\|gitdeploy)?\)' "$COMPOSE_SCRIPT"
     assert_success
 
     run grep -E '^\s*exit "\$\{operation_exit_code:-0\}"' "$COMPOSE_SCRIPT"

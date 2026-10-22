@@ -1011,6 +1011,99 @@ class StackInfoTest extends TestCase
         $this->assertSame([], $info->getProfiles());
     }
 
+    public function testAStackWithoutProfilesAsksComposeOnlyOnce(): void
+    {
+        $stackDir = $this->tempRoot . '/no-profiles';
+        mkdir($stackDir);
+        file_put_contents($stackDir . '/compose.yaml', "services:\n  web:\n    image: nginx\n");
+        // docker compose config --profiles prints nothing for a stack without profiles.
+        $calls = $this->withDockerStandIn(0, function () use ($stackDir): void {
+            $this->assertSame([], \StackInfo::fromProject($this->tempRoot, 'no-profiles')->getProfiles());
+            \StackInfo::clearCache();
+            $this->assertSame([], \StackInfo::fromProject($this->tempRoot, 'no-profiles')->getProfiles());
+        });
+
+        $this->assertCount(1, $calls);
+        $this->assertSame('[]', file_get_contents($stackDir . '/profiles'));
+    }
+
+    public function testProfilesAreNotCachedWhenComposeCannotReadTheStack(): void
+    {
+        $stackDir = $this->tempRoot . '/broken';
+        mkdir($stackDir);
+        file_put_contents($stackDir . '/compose.yaml', "services:\n  web:\n    image: nginx\n");
+        $calls = $this->withDockerStandIn(1, function (): void {
+            $this->assertSame([], \StackInfo::fromProject($this->tempRoot, 'broken')->getProfiles());
+            \StackInfo::clearCache();
+            $this->assertSame([], \StackInfo::fromProject($this->tempRoot, 'broken')->getProfiles());
+        });
+
+        // Asked again, since the failure might be fixed by the next read.
+        $this->assertCount(2, $calls);
+        $this->assertFileDoesNotExist($stackDir . '/profiles');
+    }
+
+    public function testContainersByProjectGroupsEveryProjectsContainersByItsLabel(): void
+    {
+        // docker ps --format json prints one row per line; Labels is one comma-separated string.
+        $psOutput = implode("\n", [
+            json_encode(['Names' => 'web-app-1', 'Labels' => 'com.docker.compose.project=web,com.docker.compose.service=app']),
+            // The project label is not always first, and other compose labels start the same way.
+            json_encode(['Names' => 'web-db-1', 'Labels' => 'com.docker.compose.project.working_dir=/mnt/web,com.docker.compose.project=web,com.docker.compose.service=db']),
+            json_encode(['Names' => 'media-plex-1', 'Labels' => 'com.docker.compose.service=plex,com.docker.compose.project=media']),
+        ]) . "\n";
+        $byProject = [];
+        $calls = $this->withDockerStandIn(0, function () use (&$byProject): void {
+            $byProject = \StackInfo::containersByProject();
+        }, $psOutput);
+
+        $this->assertSame(['web', 'media'], array_keys($byProject));
+        $this->assertSame(['web-app-1', 'web-db-1'], array_column($byProject['web'], 'Names'));
+        $this->assertSame(['media-plex-1'], array_column($byProject['media'], 'Names'));
+        // Every compose project: the label filter has no value.
+        $this->assertSame(['ps -a --filter label=com.docker.compose.project --format json'], $calls);
+    }
+
+    public function testContainersByProjectAsksDockerForOneProjectOnly(): void
+    {
+        $psOutput = json_encode(['Names' => 'web-app-1', 'Labels' => 'com.docker.compose.project=web']) . "\n";
+        $byProject = [];
+        $calls = $this->withDockerStandIn(0, function () use (&$byProject): void {
+            $byProject = \StackInfo::containersByProject('web');
+        }, $psOutput);
+
+        $this->assertSame(['web'], array_keys($byProject));
+        $this->assertSame(['ps -a --filter label=com.docker.compose.project=web --format json'], $calls);
+    }
+
+    /**
+     * Run $work with a docker on PATH that prints $output and exits with $exitCode,
+     * and return the arguments of every call made to it, one line per call.
+     *
+     * @return string[]
+     */
+    private function withDockerStandIn(int $exitCode, callable $work, string $output = ''): array
+    {
+        $binDir = $this->tempRoot . '/bin';
+        $callsFile = $this->tempRoot . '/docker-calls';
+        $outputFile = $this->tempRoot . '/docker-output';
+        mkdir($binDir);
+        file_put_contents($outputFile, $output);
+        file_put_contents(
+            $binDir . '/docker',
+            "#!/bin/sh\necho \"\$*\" >> " . escapeshellarg($callsFile) . "\ncat " . escapeshellarg($outputFile) . "\nexit $exitCode\n"
+        );
+        chmod($binDir . '/docker', 0755);
+        $originalPath = (string) getenv('PATH');
+        putenv('PATH=' . $binDir . ':' . $originalPath);
+        try {
+            $work();
+        } finally {
+            putenv('PATH=' . $originalPath);
+        }
+        return is_file($callsFile) ? file($callsFile, FILE_IGNORE_NEW_LINES) : [];
+    }
+
     public function testGetProfilesEmptyForInvalidJson(): void
     {
         $stack = 'bad-json';
@@ -1121,9 +1214,11 @@ class StackInfoTest extends TestCase
         $info = \StackInfo::fromProject($this->tempRoot, $stack);
         $args = $info->buildComposeArgs();
 
-        $this->assertSame(3, count($args['filePaths']));
+        $this->assertCount(2, $args['filePaths']);
         $this->assertStringContainsString('compose.debug.yaml', $args['files']);
         $this->assertContains($stackDir . '/compose.debug.yaml', $args['filePaths']);
+        $this->assertNotContains($stackDir . '/compose.override.yaml', $args['filePaths']);
+        $this->assertStringNotContainsString($stackDir . '/compose.override.yaml', $args['files']);
     }
 
     public function testProjectLoadsWhenComposeFileIsOnlyDeclaredInDotEnv(): void
@@ -1207,16 +1302,15 @@ class StackInfoTest extends TestCase
         $info = \StackInfo::fromProject($this->tempRoot, $stack);
         $args = $info->buildComposeArgs();
 
-        $this->assertSame(4, count($args['filePaths']));
+        $this->assertSame(3, count($args['filePaths']));
         $this->assertStringContainsString('compose.debug.yaml', $args['files']);
         $this->assertStringContainsString('compose.extra.yaml', $args['files']);
         $this->assertContains($stackDir . '/compose.debug.yaml', $args['filePaths']);
         $this->assertContains($stackDir . '/compose.extra.yaml', $args['filePaths']);
-        $this->assertContains($stackDir . '/compose.override.yaml', $args['filePaths']);
+        $this->assertNotContains($stackDir . '/compose.override.yaml', $args['filePaths']);
         $this->assertSame(
             implode(PATH_SEPARATOR, [
                 $stackDir . '/compose.yaml',
-                $stackDir . '/compose.override.yaml',
                 $stackDir . '/compose.debug.yaml',
                 $stackDir . '/compose.extra.yaml',
             ]),

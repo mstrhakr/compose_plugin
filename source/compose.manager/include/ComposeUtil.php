@@ -46,6 +46,11 @@ switch ($_POST['action']) {
             'background' => $background
         ]);
         break;
+    case 'composeGitDeploy':
+        echoGitDeployCommand([
+            'background' => $background
+        ]);
+        break;
     case 'composePull':
         echoComposeCommand('pull', [
             'background' => $background

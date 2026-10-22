@@ -87,6 +87,7 @@ cd /code/compose_plugin
 - `E2E_ENABLE_MUTATION_TESTS` (optional): `1` enables create/edit/start/stop/delete lifecycle spec
 - `E2E_TEST_STACK_PREFIX` (optional): prefix for generated GUID stack names (default `pw-e2e`)
 - `E2E_EXTERNAL_TEST_DIR` (optional): required to enable external-path mutation tests; if unset, those tests are skipped
+- `E2E_GIT_TEST_REPO` and `E2E_GIT_TEST_COMPOSE_PATH` (optional): required to enable the git stack mutation test: a repository the server can clone, and the path of a compose file in it that starts without a `.env` and uses no port another stack holds. `E2E_GIT_TEST_BRANCH` defaults to `main`. Deleting the test's git stack leaves its clone under the git clones folder; remove those by hand
 
 ## Why A Test Might Be Skipped
 
@@ -94,6 +95,7 @@ cd /code/compose_plugin
 - If `E2E_TEST_STACK` is set, tests skip/fail when that stack is not present.
 - Mutation lifecycle tests skip unless `E2E_ENABLE_MUTATION_TESTS=1`.
 - External-path tests skip unless `E2E_EXTERNAL_TEST_DIR` is explicitly set.
+- The git stack test skips unless `E2E_GIT_TEST_REPO` and `E2E_GIT_TEST_COMPOSE_PATH` are set.
 - This behavior is intentional to avoid touching unknown stacks.
 
 ## Mutation Safety Model

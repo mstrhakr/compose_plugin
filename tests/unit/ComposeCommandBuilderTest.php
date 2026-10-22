@@ -71,6 +71,26 @@ class ComposeCommandBuilderTest extends TestCase
         $this->assertSame($stackDir, $spec['stackPath']);
     }
 
+    public function testBuildForUpAndDownOmitsMissingOptionalOverride(): void
+    {
+        $stack = 'missing-override';
+        $stackDir = $this->tempRoot . '/' . $stack;
+        mkdir($stackDir);
+        file_put_contents($stackDir . '/compose.yaml', "services:\n  web:\n    image: nginx\n");
+
+        $info = \StackInfo::fromProject($this->tempRoot, $stack);
+        $overridePath = $info->getOverridePath();
+
+        $this->assertNotNull($overridePath);
+        $this->assertFileDoesNotExist($overridePath);
+        $upSpec = \ComposeCommandBuilder::buildForAction($info, 'up');
+        $downSpec = \ComposeCommandBuilder::buildForAction($info, 'down');
+
+        $this->assertSame([$stackDir . '/compose.yaml'], $upSpec['composeFiles']);
+        $this->assertSame([$stackDir . '/compose.yaml'], $downSpec['composeFiles']);
+        $this->assertSame($overridePath, $info->getOverridePath(), 'The preferred write target must remain available.');
+    }
+
     public function testBuildForActionUsesRunningProfilesForUpdate(): void
     {
         $stack = 'profiles-update-running';

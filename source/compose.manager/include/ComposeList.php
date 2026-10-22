@@ -8,6 +8,7 @@
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Defines.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Util.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/ColumnLayout.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/GitStackWebActions.php");
 
 $cfg = parse_plugin_cfg($sName);
 
@@ -176,11 +177,16 @@ if ($mode === 'row') {
         exit;
     }
     try {
-        $stackInfos = [StackInfo::fromProject($compose_root, $project)];
+        $stackInfo = StackInfo::fromProject($compose_root, $project);
     } catch (\Throwable $e) {
         echo json_encode(composeRowBuildFailurePayload($compose_root, $project, $e->getMessage()));
         exit;
     }
+    // The stack's containers from one docker ps call, as the full list gets them
+    // (StackInfo::allFromRoot()), rather than docker compose ps, which reads the
+    // compose files first and takes several times as long for every row.
+    $stackInfo->setContainerList(StackInfo::containersByProject($stackInfo->projectName)[$stackInfo->projectName] ?? []);
+    $stackInfos = [$stackInfo];
 } else {
     $stackInfos = StackInfo::allFromRoot($compose_root);
 }
@@ -345,8 +351,11 @@ foreach ($stackInfos as $stackInfo) {
     // Check if stack has build configurations (needs rebuild on update)
     $hasBuild = $stackInfo->hasBuildConfig() ? '1' : '0';
 
+    // A git stack's branch, deployed commit and state, read from its own files
+    $git = $stackInfo->isGitStack() ? GitStackWebActions::listSummary($stackInfo->path) : null;
+
     // Main row - Docker tab structure with expand arrow on left
-    $o .= "<tr class='compose-sortable' id='stack-row-$id' data-project='$projectHtml' data-projectname='$projectNameHtml' data-path='$pathHtml' data-isup='$isup' data-profiles='$profilesJson' data-running-profile='$runningProfilesHtml' data-default-profile='$defaultProfilesHtml' data-webui='$webuiUrlHtml' data-containers='$containerNamesAttr' data-ctids='$containerIdsAttr' data-hasbuild='$hasBuild' data-invalid-indirect='" . ($hasInvalidIndirect ? '1' : '0') . "' data-invalid-indirect-path='$invalidIndirectPathHtml' data-identity-blocked='" . ($identityBlocked ? '1' : '0') . "' data-identity-message='$identityMessageHtml' data-identity-folder='$identityFolderHtml' data-identity-legacy='$identityLegacyHtml'>";
+    $o .= "<tr class='compose-sortable' id='stack-row-$id' data-project='$projectHtml' data-projectname='$projectNameHtml' data-path='$pathHtml' data-isup='$isup' data-profiles='$profilesJson' data-running-profile='$runningProfilesHtml' data-default-profile='$defaultProfilesHtml' data-webui='$webuiUrlHtml' data-containers='$containerNamesAttr' data-ctids='$containerIdsAttr' data-hasbuild='$hasBuild' data-invalid-indirect='" . ($hasInvalidIndirect ? '1' : '0') . "' data-invalid-indirect-path='$invalidIndirectPathHtml' data-identity-blocked='" . ($identityBlocked ? '1' : '0') . "' data-identity-message='$identityMessageHtml' data-identity-folder='$identityFolderHtml' data-identity-legacy='$identityLegacyHtml' data-gitstack='" . ($git !== null ? '1' : '0') . "' data-gitfailed='" . ($git !== null && $git['checked'] && ($git['failedCommit'] !== null || $git['failedAutomaticCommit'] !== null) ? '1' : '0') . "'>";
 
     // Arrow column
     $o .= "<td class='col-arrow'>";
@@ -386,6 +395,32 @@ foreach ($stackInfos as $stackInfo) {
     $o .= "<div class='compose-text-muted' style='margin-top:4px;font-size:0.85em;'>";
     $o .= "Project: $projectHtml";
     $o .= "</div>";
+    // A git stack's branch and deployed commit
+    if ($git !== null) {
+        $o .= "<div class='compose-text-muted compose-git-line' style='font-size:0.85em;text-align:left;'><i class='fa fa-code-fork'></i> ";
+        if ($git['problem'] !== null) {
+            $o .= "<span class='orange-text' title='" . htmlspecialchars($git['problem'], ENT_QUOTES, 'UTF-8') . "'>git settings cannot be read</span>";
+        } else {
+            $o .= "<span style='white-space:nowrap;'>" . htmlspecialchars((string) $git['branch'], ENT_QUOTES, 'UTF-8') . ' @ ';
+            $o .= $git['deployedCommit'] === null
+                ? 'not deployed'
+                : "<span title='Deployed commit " . htmlspecialchars($git['deployedCommit'], ENT_QUOTES, 'UTF-8') . "'>"
+                    . htmlspecialchars(substr($git['deployedCommit'], 0, 7), ENT_QUOTES, 'UTF-8') . '</span>';
+            $o .= '</span>';
+            if ($git['behind']) {
+                $o .= " <span class='orange-text' title='A newer commit on the branch changes this stack.'>behind</span>";
+            }
+            if ($git['failedCommit'] !== null) {
+                $failedTitle = 'The deploy of commit ' . substr($git['failedCommit'], 0, 12) . ' failed. Fix it and deploy again.';
+                $o .= " <span class='red-text' title='" . htmlspecialchars($failedTitle, ENT_QUOTES, 'UTF-8') . "'>failed</span>";
+            } elseif ($git['failedAutomaticCommit'] !== null) {
+                $failedTitle = 'The automatic deploy of commit ' . substr($git['failedAutomaticCommit'], 0, 12)
+                    . ' failed before any container was started. Fix it and deploy again, or resume automatic deploys to try again.';
+                $o .= " <span class='red-text' title='" . htmlspecialchars($failedTitle, ENT_QUOTES, 'UTF-8') . "'>failed</span>";
+            }
+        }
+        $o .= "</div>";
+    }
     $o .= "</span>";
     $o .= "</td>";
 

@@ -9,7 +9,7 @@
 
 </div>
 
-Compose Manager installs the Docker Compose CLI plugin on your unRAID server and provides a comprehensive web-based interface to create, run, update, back up, and restore Compose stacks directly from the unRAID dashboard. It includes per-stack autostart, scheduled automatic image updates, a rich context menu mirroring the native Docker tab experience, an integrated terminal for live command output, background command execution with notifications, optional UI integration to hide Compose-managed containers, and tooling for testing and CI.
+Compose Manager installs the Docker Compose CLI plugin on your unRAID server and provides a comprehensive web-based interface to create, run, update, back up, and restore Compose stacks directly from the unRAID dashboard. It also supports Git-backed stacks, deploying a compose file from a repository branch, with optional scheduled change notifications or automatic deploys. Other features include per-stack autostart, scheduled image updates, an integrated terminal, background command execution with notifications, optional UI integration to hide Compose-managed containers, and tooling for testing and CI.
 
 ## Screenshots
 
@@ -88,14 +88,15 @@ The built-in editor provides multiple tabs for managing your compose stack:
 - **Profiles** - Full support for Docker Compose profiles, including multi-profile selection per action.
 - **External Paths** - Compose files and env files can live outside the default projects folder (external compose path and env path per stack).
 - **Override File Management** - Centralized management of override files (`compose.override.yaml`, `compose.override.yml`, `docker-compose.override.yaml`, `docker-compose.override.yml`) with service rename handling.
-- **Stack Editor** - Full-screen modal editor with four tabs: Compose (YAML with live validation), ENV, Web UI Labels (icon/WebUI/shell per service via override file), and Settings (name, description, icon URL, WebUI URL, default profile, external paths). Ctrl+S to save, Esc to close.
+- **Stack Editor** - Full-screen modal editor with five tabs: Compose (YAML with live validation), ENV, Web UI Labels (icon/WebUI/shell per service via override file), Sources (compose files, external paths, and Git settings), and Settings (name, description, icon URL, WebUI URL, and default profile). Ctrl+S to save, Esc to close.
+- **Git-Backed Stacks** - Create a stack from a Git repository or move an existing stack into Git. Review branch changes, deploy a selected commit, and optionally receive notifications or deploy new commits automatically. Private repositories support HTTPS credentials and SSH deploy keys. See [Git Stacks](docs/git-stacks.md).
 - **Column Customizer & Layout** - Choose which stack and service columns are visible and in what order; extra detail fields (for example SHA snippets and force-update links) follow your saved layout in the Compose tab.
 - **Compose File Discovery** - Automatically detects all four standard compose file names (`compose.yaml`, `docker-compose.yaml`, `compose.yml`, `docker-compose.yml`).
 - **Filename Preservation** - Existing compose and override filenames are preserved; upgrades do not auto-rename your stack files.
 - **Build Stack Support** - Stacks with a `build:` section in the compose file are detected automatically; context menu and update labels adapt ("Build", "Build & Up", "Update & Rebuild").
 - **Indirect Stack Support** - Register a stack pointing to a compose file stored anywhere on the array (outside the projects folder) using an "Indirect Path".
 - **Security Hardening** - Path traversal prevention, shell injection hardening with safe argument arrays, XSS escaping throughout, and strict input validation.
-- **Developer & Testing Tools** - Unit tests (PHPUnit), integration tests (BATS), static analysis (PHPStan), and CI workflows.
+- **Developer & Testing Tools** - Unit tests (PHPUnit), shell tests (BATS), live-server browser tests (Playwright), static analysis (PHPStan), and CI workflows.
 
 ## Installation
 
@@ -125,7 +126,7 @@ Beta Release:
 https://raw.githubusercontent.com/mstrhakr/compose_plugin/dev/compose.manager.plg
 ```
 
-### Migration from dcflachs Docker Compose Manager (Depreciated)
+### Migrating from the Original Docker Compose Manager
 
 When migrating from the original Compose Manager plugin, you can simply press reinstall on Compose Manager Plus to remove the old plugin and install the new one. The plugins both have the same name internally and cannot be installed at the same time. Compose Manager Plus also uses the exact same project folder structure so it will detect all your existing stacks automatically.
 
@@ -149,17 +150,17 @@ The standard way in upgrade.
 
 > NOTE: I have tested upgrading in place by clicking "reinstall" in the CA app store without stopping the stacks and have has no issues personally. The only time this could be an issue is if your project is running with a project name that is different from the sanitized version of your folder name. Thats why it is safest to stop/down all stacks before migration.
 
-### Remove Compose Manager Plus and Re-Install dcflachs Docker Compose Manager
+### Return to the Original Docker Compose Manager
 
-With dcflachs Docker Compose Manager being depreciated, if you want to go back to it you will need to do the following:
+The original dcflachs Docker Compose Manager is deprecated. If you need to return to it, follow these steps:
 
-#### Disable 'Hide Depreciated Applications' in CA
+#### Show Deprecated Applications in Community Applications
 
 - Go to `Apps` tab (Community Applications/CA)
 - Go to `Settings` in the bottom of the left sidebar
 - Set `Hide Deprecated Applications` to `No`.
 
-![Screenshot of Hide Depreciated Applications setting set to no](docs/images/reinstall-setting.png)
+![Screenshot of Hide Deprecated Applications setting set to no](docs/images/reinstall-setting.png)
 
 #### Remove 'Compose Manager Plus' and reinstall 'Docker Compose Manager'
 
@@ -168,15 +169,12 @@ With dcflachs Docker Compose Manager being depreciated, if you want to go back t
 - Find currently installed version and press `Actions`->`Uninstall` to uninstall.
 - Find `Docker Compose Manager` and press `Actions`->`(Re)Install` to install.
 
-![Screenshot of Actions Menu for dcflachs Compose Manager plugin with depreciated status flag](docs/images/reinstall-actions.png)
+![Screenshot of the Actions menu for the deprecated dcflachs Compose Manager plugin](docs/images/reinstall-actions.png)
 
 ## Requirements
 
-- unRAID 6.9.0 or later
-
-> NOTE: This is untested on anything older than 7.2.3 currently. I will remove this note if I get a report that this IS compatible that far back. I am working on getting a machine setup for testing on the older versions. Any advice would be welcome, eg how to VM unraid easily.
-
-- Docker service enabled
+- PHP 8 and the Docker service (PHP 8 is included in unRAID 6.12.0 and later).
+- Verified on unRAID 7.2.3 and later; earlier versions are not currently verified.
 
 ## Configuration
 
@@ -205,6 +203,14 @@ Access **Settings → Compose** in the unRAID web UI. Key options:
 4. Optionally expand **Advanced Options** and enter an **Indirect Path** if the compose file lives outside the default projects folder
 5. The stack editor opens automatically — add your `compose.yaml` content
 6. Click **Compose Up** to start the stack
+
+### Git-Backed Stacks
+
+To create a Git-backed stack, choose **Git repository** as the compose source in **Add New Stack**, then enter the repository URL and compose file path. The plugin clones the repository onto the array; the new stack is not deployed until you choose **Pull and Redeploy**. To convert an existing stack, use **Edit Stack → Sources → Move this stack into git...**.
+
+From the stack menu, check for branch changes, deploy the latest commit, or deploy a specific commit. In the editor's **Sources** tab, automatic deploys can be set to **Off**, **Notify**, or **Deploy**; checks run every 15 minutes. Private repositories can use an HTTPS token from the plugin's Credentials settings or an SSH deploy key. Keep secrets out of the repository; the stack's `.env` stays in its project folder. Make changes in the repository rather than the server clone, since local clone changes must be resolved before the next deploy.
+
+See the [Git Stacks guide](docs/git-stacks.md) for setup, conversion, repository layout, credentials, and deploy behavior.
 
 ### Managing Stacks
 
@@ -281,21 +287,24 @@ For detailed guides, see the [docs](docs/) folder:
 - [User Guide](docs/user-guide.md)
 - [Configuration](docs/configuration.md)
 - [Profiles](docs/profiles.md)
+- [Git Stacks](docs/git-stacks.md)
 
 ## Development & Testing 🔧
 
 Quick start:
 
-- Install PHP dependencies: `composer install` (required to install PHPUnit and tooling).
-- Run unit tests: `php vendor/bin/phpunit --config phpunit.xml` (or `php vendor/bin/phpunit --testsuite unit`).
-- Run a single test file: `php vendor/bin/phpunit --config phpunit.xml tests/unit/ExampleTest.php`.
+- Install PHP dependencies: `composer install`.
+- Initialize the test framework submodule: `git submodule update --init --recursive`.
+- Run PHPUnit tests: `composer test:unit` (or `composer test`).
+- Run one test file: `vendor/bin/phpunit tests/unit/ExampleTest.php`.
 
-Integration tests:
+Shell tests:
 
-- Add and initialize the `plugin-tests` submodule (if not already present):
-  - If the submodule is configured: `git submodule update --init --recursive`
-  - Or add it manually: `git submodule add https://github.com/mstrhakr/plugin-tests.git tests/plugin-tests && git submodule update --init --recursive`
-- See `tests/plugin-tests/README.md` for running integration suites and environment setup.
+- BATS tests are in `tests/unit`; see [the test guide](docs/testing.md) for how to run them.
+
+Live-server browser tests:
+
+- Playwright tests are in `tests/e2e`; see [the E2E guide](tests/e2e/README.md) for setup and safety notes.
 
 Static analysis:
 
@@ -343,7 +352,16 @@ Contributions are welcome — we added issue and PR templates to guide reports a
 
 ## License
 
-This project is open source. See the repository for license details.
+Original material owned and licensable by **Nick Szittai (mstrhakr)** is offered
+under the [MIT License](LICENSE). This is **not a blanket license for the plugin**:
+inherited dcflachs/compose_plugin code and independently owned contributions are
+excluded, and upstream permission remains unresolved. Changes to inherited files
+do not relicense their underlying material.
+
+See the [licensing and provenance audit](source/compose.manager/licenses/LICENSING.md)
+for surviving upstream code, scope, and required permissions. Third-party
+components retain their [own licenses and notices](source/compose.manager/licenses/THIRD-PARTY-NOTICES.md).
+The complete project is not yet cleared for unrestricted redistribution.
 
 ## Credits
 

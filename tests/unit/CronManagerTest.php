@@ -264,6 +264,88 @@ class CronManagerTest extends TestCase
     // Factory function
     // ---------------------------------------------------------------
 
+    // ---------------------------------------------------------------
+    // Scheduled git check
+    // ---------------------------------------------------------------
+
+    /**
+     * A projects folder with one git stack whose autoDeploy is $autoDeploy (null: not set).
+     */
+    private function projectsWithGitStack(?string $autoDeploy): string
+    {
+        $root = sys_get_temp_dir() . '/cron_manager_projects_' . getmypid();
+        @mkdir($root . '/whoami', 0755, true);
+        $settings = ['version' => 1, 'url' => 'https://example.com/r.git'];
+        if ($autoDeploy !== null) {
+            $settings['autoDeploy'] = $autoDeploy;
+        }
+        file_put_contents($root . '/whoami/git.json', (string) json_encode($settings));
+        return $root;
+    }
+
+    private function removeProjects(string $root): void
+    {
+        @unlink($root . '/whoami/git.json');
+        @rmdir($root . '/whoami');
+        @rmdir($root);
+    }
+
+    public function testGitCheckLineIsAddedWhileAGitStackAsksForIt(): void
+    {
+        $root = $this->projectsWithGitStack('notify');
+        try {
+            $cron = new CronManager($this->cronFile, '/usr/local/emhttp/plugins/compose.manager/', false, $root);
+
+            $this->assertTrue($cron->rebuild());
+            $content = (string) file_get_contents($this->cronFile);
+            $this->assertStringContainsString("7-59/15 * * * * '/usr/local/emhttp/plugins/compose.manager/scripts/compose-git' scheduled-check", $content);
+            $this->assertStringContainsString('#compose-gitcheck', $content);
+            $this->assertTrue($cron->isGitCheckInstalled());
+
+            // Turning image auto-update on and off keeps it.
+            $cron->enableAutoupdate();
+            $this->assertTrue($cron->isGitCheckInstalled());
+            $this->assertTrue($cron->isAutoupdateInstalled());
+            $cron->disableAutoupdate();
+            $this->assertTrue($cron->isGitCheckInstalled());
+            $this->assertFalse($cron->isAutoupdateInstalled());
+        } finally {
+            $this->removeProjects($root);
+        }
+    }
+
+    public function testGitCheckLineIsAddedForAGitJsonWithAByteOrderMark(): void
+    {
+        // As saved by a Windows editor. GitStackSettings::load() accepts it, so the cron must too.
+        $root = $this->projectsWithGitStack('deploy');
+        $file = $root . '/whoami/git.json';
+        file_put_contents($file, "\xEF\xBB\xBF" . file_get_contents($file));
+        try {
+            $cron = new CronManager($this->cronFile, '/usr/local/emhttp/plugins/compose.manager/', false, $root);
+            $cron->rebuild();
+            $this->assertTrue($cron->isGitCheckInstalled());
+        } finally {
+            $this->removeProjects($root);
+        }
+    }
+
+    public function testNoGitCheckLineWhenNoGitStackAsksForIt(): void
+    {
+        foreach (['off', null] as $autoDeploy) {
+            $root = $this->projectsWithGitStack($autoDeploy);
+            try {
+                $cron = new CronManager($this->cronFile, '/usr/local/emhttp/plugins/compose.manager/', false, $root);
+                $cron->rebuild();
+                $this->assertFalse($cron->isGitCheckInstalled());
+            } finally {
+                $this->removeProjects($root);
+            }
+        }
+        // Without a projects folder there is nothing to look at.
+        $this->cron->rebuild();
+        $this->assertFalse($this->cron->isGitCheckInstalled());
+    }
+
     public function testFactoryFunctionRespectsEnvVars(): void
     {
         putenv('COMPOSE_MANAGER_CRON_FILE=' . $this->cronFile);

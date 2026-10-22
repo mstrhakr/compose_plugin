@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Unraid 6.9.0 or later
+- Unraid 6.12.0 or later (PHP 8 is required; first included in Unraid 6.12.0)
 - Docker service enabled
 
 ## Installation
