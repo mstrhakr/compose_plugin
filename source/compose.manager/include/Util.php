@@ -3112,6 +3112,11 @@ class StackInfo
         }
         $legacyFiles = $this->getLegacyComposeFilePaths();
         if ($legacyFiles !== null) {
+            foreach ($this->getExtraComposeFiles() as $extraFile) {
+                if (!in_array($extraFile, $legacyFiles, true)) {
+                    $legacyFiles[] = $extraFile;
+                }
+            }
             return $legacyFiles;
         }
         $paths = [];
@@ -3173,9 +3178,7 @@ class StackInfo
     private function getLegacyComposeFilePaths(): ?array
     {
         if ($this->identity->origin !== 'dcflachs' || $this->isGitStack()
-            || $this->readMetadata('use_default_compose_files') !== null
-            || $this->readMetadata('extra_compose_files') !== null
-            || $this->readMetadata('indirect_mode') !== null) {
+            || $this->readMetadata('compose_input_mode') === 'plus') {
             return null;
         }
         $files = [];

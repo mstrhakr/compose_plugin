@@ -173,6 +173,50 @@ class ExecActionsTest extends TestCase
         $this->assertArrayNotHasKey('envFilePath', \StackInfo::fromProject($this->testComposeRoot, 'legacy-env')->buildComposeArgs());
     }
 
+    public function testUnrelatedSettingsPreserveCompleteMigratedInputOrder(): void
+    {
+        file_put_contents(COMPOSE_LEGACY_ORIGIN_FILE, \ProjectIdentity::LEGACY_REVISION);
+        $fixture = $this->createAllowedSymlinkedPathFixture();
+        $source = $fixture['target'];
+        $files = [$source . '/docker-compose.extra.yml', $source . '/docker-compose.yml'];
+        foreach ($files as $file) {
+            file_put_contents($file, "services: {}\n");
+        }
+        $path = $this->createTestStack('ordered', ['indirect' => $source, 'name' => 'ordered']);
+        \ProjectIdentity::setProbe(static fn(): ?array => \ProjectIdentity::parseProbeOutput('containers ' . json_encode([
+            'project' => 'ordered', 'workingDir' => $source, 'configFiles' => implode(',', $files),
+        ]) . "\n__rc=0"));
+        $this->assertSame($files, \StackInfo::fromProject($this->testComposeRoot, 'ordered')->buildComposeArgs()['filePaths']);
+
+        $saved = json_decode($this->executeAction('setStackSettings', [
+            'script' => 'ordered', 'externalComposePath' => $source, 'externalComposeFilePath' => '',
+            'iconUrl' => 'https://example.com/icon.png', 'defaultProfile' => 'worker',
+            'extraComposeFiles' => '', 'useDefaultComposeFiles' => 'false',
+        ]), true);
+
+        $this->assertSame('success', $saved['result']);
+        $this->assertFileDoesNotExist($path . '/indirect_mode');
+        $this->assertFileDoesNotExist($path . '/compose_input_mode');
+        $this->assertSame($files, \StackInfo::fromProject($this->testComposeRoot, 'ordered')->buildComposeArgs()['filePaths']);
+        $this->assertFileExists($path . '/compose.yaml');
+        $saved = json_decode($this->executeAction('setStackSettings', ['script' => 'ordered', 'iconUrl' => 'https://example.com/other.png']), true);
+        $this->assertSame('success', $saved['result']);
+        $this->assertSame($source, file_get_contents($path . '/indirect'));
+        $this->assertSame($files, \StackInfo::fromProject($this->testComposeRoot, 'ordered')->buildComposeArgs()['filePaths']);
+
+        file_put_contents($source . '/compose.added.yaml', "services: {}\n");
+        $saved = json_decode($this->executeAction('setStackSettings', ['script' => 'ordered', 'extraComposeFiles' => 'compose.added.yaml']), true);
+        $this->assertSame('success', $saved['result']);
+        $this->assertSame([...$files, $source . '/compose.added.yaml'], \StackInfo::fromProject($this->testComposeRoot, 'ordered')->buildComposeArgs()['filePaths']);
+
+        $replacement = $this->createAllowedSymlinkedPathFixture(true)['target'];
+        $saved = json_decode($this->executeAction('setStackSettings', ['script' => 'ordered', 'externalComposePath' => $replacement, 'extraComposeFiles' => '']), true);
+        $this->assertSame('success', $saved['result']);
+        $this->assertSame('plus', file_get_contents($path . '/compose_input_mode'));
+        $this->assertSame([$replacement . '/compose.yaml'], \StackInfo::fromProject($this->testComposeRoot, 'ordered')->buildComposeArgs()['filePaths']);
+        \ProjectIdentity::setProbe(static fn(): array => []);
+    }
+
     /**
      * Prepare a symlink path under an allowed root (/mnt or /boot/config).
      *

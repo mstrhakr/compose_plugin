@@ -1583,6 +1583,16 @@ switch ($_POST['action']) {
 
         // --- All validation passed, now write everything ---
 
+        $sourceSelectionProvided = array_key_exists('externalComposePath', $_POST) || array_key_exists('externalComposeFilePath', $_POST);
+        $indirectMetadataFile = "$compose_root/$script/indirect";
+        $previousTarget = is_file($indirectMetadataFile) ? trim((string) file_get_contents($indirectMetadataFile)) : '';
+        $requestedTarget = $externalComposeFilePath !== '' ? $externalComposeFilePath : $externalComposePath;
+        $sourceSelectionChanged = $sourceSelectionProvided && $previousTarget !== $requestedTarget
+            && !Path::refersToSamePath($previousTarget, $requestedTarget);
+        $discoveryFile = "$compose_root/$script/use_default_compose_files";
+        $previousDiscovery = is_file($discoveryFile) && trim((string) file_get_contents($discoveryFile)) === 'true';
+        $discoveryChanged = array_key_exists('useDefaultComposeFiles', $_POST) && $previousDiscovery !== $useDefaultComposeFiles;
+
         // Assign or clear credentials before persisting any other settings. A
         // stale credential ID must reject the request without partial updates.
         if ($credentialIdProvided) {
@@ -1701,10 +1711,10 @@ switch ($_POST['action']) {
 
         // Set compose file discovery mode
         $useDefaultComposeFilesFile = "$compose_root/$script/use_default_compose_files";
-        if ($useDefaultComposeFiles) {
-            file_put_contents($useDefaultComposeFilesFile, 'true');
-        } else {
-            if (is_file($useDefaultComposeFilesFile)) {
+        if (array_key_exists('useDefaultComposeFiles', $_POST)) {
+            if ($useDefaultComposeFiles) {
+                file_put_contents($useDefaultComposeFilesFile, 'true');
+            } elseif (is_file($useDefaultComposeFilesFile)) {
                 @unlink($useDefaultComposeFilesFile);
             }
         }
@@ -1720,7 +1730,7 @@ switch ($_POST['action']) {
             $indirectTarget = $externalComposePath;
         }
 
-        if ($isGitStack) {
+        if ($isGitStack || !$sourceSelectionChanged) {
             // Left as they are (see above).
         } elseif ($indirectTarget === '') {
             // Removing indirect: move compose file back to project folder if it only exists externally
@@ -1765,6 +1775,9 @@ switch ($_POST['action']) {
             }
         }
 
+        if ($sourceSelectionChanged || $discoveryChanged) {
+            file_put_contents("$compose_root/$script/compose_input_mode", 'plus');
+        }
         StackInfo::clearCache();
         echo json_encode(['result' => 'success', 'message' => 'Settings saved']);
         break;
