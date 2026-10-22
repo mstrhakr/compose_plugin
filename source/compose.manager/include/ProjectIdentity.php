@@ -566,7 +566,7 @@ final class ProjectIdentity
             if ($probe === null) {
                 throw new \RuntimeException('Docker could not be queried to verify historical Compose file order.');
             }
-            if (!self::matchesResourceDirectory($stackPath, $this->projectName)) {
+            if (($state['source'] ?? null) !== 'owner' && !self::matchesResourceDirectory($stackPath, $this->projectName)) {
                 throw new \RuntimeException('Runtime Compose directory conflicts with the imported stack.');
             }
             $lists = self::$projectFileLists[$this->projectName] ?? [];
@@ -574,7 +574,8 @@ final class ProjectIdentity
             if (count($lists) > 1) {
                 throw new \RuntimeException('Conflicting runtime Compose file lists. Resolve historical inputs before running any action.');
             }
-            if (count($discovered) > 1 && (($lists === [] && self::hasResources(self::countsFor($probe, $this->projectName)))
+            $inputCount = max(count($discovered), count($lists[0] ?? []));
+            if ($inputCount > 1 && (($lists === [] && self::hasResources(self::countsFor($probe, $this->projectName)))
                 || (self::$missingFileEvidence[$this->projectName] ?? false))) {
                 throw new \RuntimeException('Historical Compose file order cannot be verified for this imported stack.');
             }

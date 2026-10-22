@@ -413,6 +413,54 @@ class ProjectIdentityTest extends TestCase
         \ComposeCommandBuilder::fromProject($this->tempRoot, 'legacy-stack', 'up');
     }
 
+    public function testRuntimeMultifileCountCannotBypassPartialEvidenceGuard(): void
+    {
+        [$path, $files] = $this->makeOrderedIndirectImport();
+        $custom = dirname($files[0]) . '/production.yaml';
+        rename($files[1], $custom);
+        $files[1] = $custom;
+        \ProjectIdentity::setProbe(fn(): ?array => \ProjectIdentity::parseProbeOutput(
+            $this->configEvidence($files) . "\ncontainers {\"project\":\"legacy_stack\"}\n__rc=0"
+        ));
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Historical Compose file order cannot be verified');
+        \ComposeCommandBuilder::fromProject($this->tempRoot, 'legacy-stack', 'up');
+    }
+
+    public static function confirmedDirectoryCases(): array
+    {
+        return [['valid'], ['missing-input'], ['partial-evidence'], ['conflicting-lists']];
+    }
+
+    #[DataProvider('confirmedDirectoryCases')]
+    public function testExplicitDirectoryConfirmationPreservesOtherInputGuards(string $mode): void
+    {
+        [$path, $files] = $this->makeOrderedIndirectImport();
+        $details = ['project' => 'legacy_stack', 'workingDir' => '/previous/mount', 'configFiles' => implode(',', $files)];
+        $evidence = 'containers ' . json_encode($details);
+        if ($mode === 'partial-evidence') {
+            $evidence .= "\ncontainers {\"project\":\"legacy_stack\"}";
+        } elseif ($mode === 'conflicting-lists') {
+            $details['configFiles'] = implode(',', array_reverse($files));
+            $evidence .= "\ncontainers " . json_encode($details);
+        }
+        \ProjectIdentity::setProbe(static fn(): ?array => \ProjectIdentity::parseProbeOutput($evidence . "\n__rc=0"));
+        $stack = \StackInfo::fromProject($this->tempRoot, 'legacy-stack');
+        $this->assertSame(\ProjectIdentity::CONFLICT_DIRECTORY_MISMATCH, $stack->identity->conflictReason);
+        $stack->applyIdentityChoice('legacy_stack');
+        if ($mode === 'missing-input') {
+            unlink($files[1]);
+        }
+        \StackInfo::clearCache();
+        if ($mode !== 'valid') {
+            $this->expectException(\RuntimeException::class);
+        }
+        $spec = \ComposeCommandBuilder::fromProject($this->tempRoot, 'legacy-stack', 'up');
+        $this->assertSame('legacy_stack', $spec['projectName']);
+        $this->assertSame($files, $spec['composeFiles']);
+    }
+
     public function testPinnedOrderDoesNotAdoptNewlyDiscoveredFiles(): void
     {
         [$path, $files] = $this->makeOrderedIndirectImport();
