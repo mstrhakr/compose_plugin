@@ -2786,7 +2786,7 @@ class StackInfo
         return null;
     }
 
-    private function getConfiguredEnvPath(): ?string
+    public function getConfiguredEnvPath(): ?string
     {
         $path = $this->readMetadata('envpath');
         return $path === null && $this->identity->origin === 'dcflachs'

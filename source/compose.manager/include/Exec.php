@@ -1201,8 +1201,7 @@ switch ($_POST['action']) {
             break;
         }
         // Get env path
-        $envPathFile = "$compose_root/$script/envpath";
-        $envPath = is_file($envPathFile) ? trim(file_get_contents($envPathFile)) : "";
+        $envPath = $stackInfo->getConfiguredEnvPath() ?? '';
 
         // Get icon URL
         $iconUrlFile = "$compose_root/$script/icon_url";
@@ -1613,11 +1612,13 @@ switch ($_POST['action']) {
 
         // Set env path
         $envPathFile = "$compose_root/$script/envpath";
-        if (empty($envPath)) {
-            if (is_file($envPathFile))
+        if (array_key_exists('envPath', $_POST)) {
+            $hasLegacyEnv = is_file("$compose_root/$script/envPath") || is_file("$compose_root/$script/envToUse");
+            if ($envPath !== '' || $hasLegacyEnv) {
+                file_put_contents($envPathFile, $envPath);
+            } elseif (is_file($envPathFile)) {
                 @unlink($envPathFile);
-        } else {
-            file_put_contents($envPathFile, $envPath);
+            }
         }
 
         // Set icon URL
@@ -1764,6 +1765,7 @@ switch ($_POST['action']) {
             }
         }
 
+        StackInfo::clearCache();
         echo json_encode(['result' => 'success', 'message' => 'Settings saved']);
         break;
     case 'saveProfiles':

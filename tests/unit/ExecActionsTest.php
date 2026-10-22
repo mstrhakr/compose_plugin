@@ -150,6 +150,29 @@ class ExecActionsTest extends TestCase
         $this->assertFalse(\StackInfo::fromProject($this->testComposeRoot, 'repairable')->hasResolvedIdentity());
     }
 
+    public function testLegacyEnvSelectionIsVisibleAndClearingDoesNotReactivateIt(): void
+    {
+        file_put_contents(COMPOSE_LEGACY_ORIGIN_FILE, \ProjectIdentity::LEGACY_REVISION);
+        $path = $this->createTestStack('legacy-env', [
+            'docker-compose.yml' => "services: {}\n",
+            'name' => 'legacy-env',
+            'envToUse' => '/missing/legacy.env',
+        ]);
+        $settings = json_decode($this->executeAction('getStackSettings', ['script' => 'legacy-env']), true);
+        $this->assertSame('success', $settings['result']);
+        $this->assertSame('/missing/legacy.env', $settings['envPath']);
+
+        $saved = json_decode($this->executeAction('setStackSettings', ['script' => 'legacy-env', 'envPath' => '']), true);
+
+        $this->assertSame('success', $saved['result']);
+        $this->assertFileExists($path . '/envpath');
+        $this->assertSame('', file_get_contents($path . '/envpath'));
+        $this->assertSame('/missing/legacy.env', file_get_contents($path . '/envToUse'));
+        $settings = json_decode($this->executeAction('getStackSettings', ['script' => 'legacy-env']), true);
+        $this->assertSame('', $settings['envPath']);
+        $this->assertArrayNotHasKey('envFilePath', \StackInfo::fromProject($this->testComposeRoot, 'legacy-env')->buildComposeArgs());
+    }
+
     /**
      * Prepare a symlink path under an allowed root (/mnt or /boot/config).
      *
