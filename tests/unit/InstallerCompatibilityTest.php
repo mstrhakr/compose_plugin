@@ -8,6 +8,58 @@ use PHPUnit\Framework\TestCase;
 
 class InstallerCompatibilityTest extends TestCase
 {
+    public function testLegacyOriginIsCapturedBeforePackageReplacement(): void
+    {
+        $plugin = simplexml_load_file(dirname(__DIR__, 2) . '/compose.manager.plg', \SimpleXMLElement::class, LIBXML_NOENT);
+        $this->assertNotFalse($plugin);
+        $preInstall = (string) $plugin->FILE[0]->INLINE;
+        $this->assertStringContainsString('/php/util.php', $preInstall);
+        $this->assertStringContainsString('legacy-origin', $preInstall);
+        $this->assertStringContainsString('! -f /usr/local/emhttp/plugins/compose.manager/include/ProjectIdentity.php', $preInstall);
+        $installer = file_get_contents(dirname(__DIR__, 2) . '/install.sh');
+        $this->assertLessThan(strpos($installer, 'if plugin remove'), strpos($installer, '/legacy-origin'));
+    }
+
+    public function testLegacyDetectionLeavesProjectDataUntouched(): void
+    {
+        $plugin = simplexml_load_file(dirname(__DIR__, 2) . '/compose.manager.plg', \SimpleXMLElement::class, LIBXML_NOENT);
+        $this->assertNotFalse($plugin);
+        $preInstall = (string) $plugin->FILE[0]->INLINE;
+        $capture = substr($preInstall, 0, strpos($preInstall, '# Remove all but current'));
+        $root = sys_get_temp_dir() . '/cm183-installer-' . bin2hex(random_bytes(6));
+        $runtime = $root . '/runtime';
+        $persistent = $root . '/persistent';
+        mkdir($runtime . '/php', 0755, true);
+        mkdir($persistent . '/projects/legacy-stack', 0755, true);
+        file_put_contents($runtime . '/php/util.php', '<?php');
+        $projectFile = $persistent . '/projects/legacy-stack/docker-compose.yml';
+        file_put_contents($projectFile, "services: {}\n");
+        try {
+            $script = str_replace(
+                ['/usr/local/emhttp/plugins/compose.manager', '/boot/config/plugins/compose.manager'],
+                [$runtime, $persistent],
+                $capture
+            );
+            $output = [];
+            $status = 0;
+            exec('bash -c ' . escapeshellarg($script), $output, $status);
+            $this->assertSame(0, $status, implode("\n", $output));
+            $this->assertSame("dcflachs\n", file_get_contents($persistent . '/legacy-origin'));
+            $this->assertSame("services: {}\n", file_get_contents($projectFile));
+            $this->assertStringNotContainsString('docker ', $script);
+        } finally {
+            @unlink($runtime . '/php/util.php');
+            @unlink($projectFile);
+            @unlink($persistent . '/legacy-origin');
+            @rmdir($runtime . '/php');
+            @rmdir($runtime);
+            @rmdir($persistent . '/projects/legacy-stack');
+            @rmdir($persistent . '/projects');
+            @rmdir($persistent);
+            @rmdir($root);
+        }
+    }
+
     public function testMinimumUnraidVersionRequiresPhp8(): void
     {
         $plugin = simplexml_load_file(dirname(__DIR__, 2) . '/compose.manager.plg', \SimpleXMLElement::class, LIBXML_NOENT);

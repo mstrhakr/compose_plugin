@@ -4395,15 +4395,15 @@ function composeActionStateText(actionName) {
 // picks one; this prompt is how they do it.
 function composeShowIdentityChooser(info) {
     var project = info.project || '';
-    var legacy = info.legacyCandidate || '';
-    var folder = info.folderCandidate || '';
+    var candidates = Array.isArray(info.candidates) ? info.candidates : [];
     var html = composeEscapeHtml(info.message || 'This stack has an ambiguous Docker Compose project name.');
 
-    if (project && legacy && folder) {
-        html += "<br><br><button type='button' class='compose-identity-choice' data-project='" + composeEscapeAttr(project) +
-            "' data-choice='" + composeEscapeAttr(legacy) + "'>Keep imported: " + composeEscapeHtml(legacy) + "</button>" +
-            " <button type='button' class='compose-identity-choice' data-project='" + composeEscapeAttr(project) +
-            "' data-choice='" + composeEscapeAttr(folder) + "'>Use folder: " + composeEscapeHtml(folder) + "</button>";
+    if (project && info.canChoose && candidates.length) {
+        html += '<br><br>';
+        candidates.forEach(function (candidate) {
+            html += " <button type='button' class='compose-identity-choice' data-project='" + composeEscapeAttr(project) +
+                "' data-choice='" + composeEscapeAttr(candidate) + "'>Use project: " + composeEscapeHtml(candidate) + "</button>";
+        });
     }
 
     swal({
@@ -4418,7 +4418,7 @@ function composeShowIdentityChooser(info) {
 }
 
 function composeHandleIdentityError(info) {
-    var hasChoices = info && info.project && info.legacyCandidate && info.folderCandidate;
+    var hasChoices = info && info.project && info.canChoose && Array.isArray(info.candidates);
     if (hasChoices) {
         composeShowIdentityChooser(info);
         return;
@@ -4437,7 +4437,9 @@ $(document).on('click', '.compose-identity-warning', function (event) {
         project: $row.data('project'),
         message: $row.data('identity-message'),
         folderCandidate: $row.data('identity-folder'),
-        legacyCandidate: $row.data('identity-legacy')
+        legacyCandidate: $row.data('identity-legacy'),
+        candidates: ($row.data('identity-info') || {}).candidates,
+        canChoose: ($row.data('identity-info') || {}).canChoose
     });
 });
 
@@ -4469,7 +4471,9 @@ function composeIdentityBlocked(path) {
         project: $row.data('project'),
         message: $row.data('identity-message'),
         folderCandidate: $row.data('identity-folder'),
-        legacyCandidate: $row.data('identity-legacy')
+        legacyCandidate: $row.data('identity-legacy'),
+        candidates: ($row.data('identity-info') || {}).candidates,
+        canChoose: ($row.data('identity-info') || {}).canChoose
     });
     return true;
 }

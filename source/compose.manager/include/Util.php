@@ -2251,6 +2251,11 @@ class StackInfo
             $this->invalidIndirectPath = $this->indirectPath;
         }
 
+        $legacyFiles = $this->getLegacyComposeFilePaths();
+        if ($legacyFiles !== null) {
+            $this->composeFilePath = $legacyFiles[0] ?? null;
+        }
+
         // Resolve compose file
         if ($this->composeFilePath === null) {
             if ($this->invalidIndirectPath !== null) {
@@ -3079,6 +3084,10 @@ class StackInfo
 
     private function getComposeFilePaths(): array
     {
+        $legacyFiles = $this->getLegacyComposeFilePaths();
+        if ($legacyFiles !== null) {
+            return $legacyFiles;
+        }
         $paths = [];
         $mainComposeFile = $this->composeFilePath ?? ($this->composeSource . '/' . COMPOSE_FILE_NAMES[0]);
         $paths[] = $mainComposeFile;
@@ -3133,6 +3142,43 @@ class StackInfo
         }
 
         return $normalized;
+    }
+
+    private function getLegacyComposeFilePaths(): ?array
+    {
+        if ($this->identity->origin !== 'dcflachs' || $this->isGitStack()
+            || $this->readMetadata('use_default_compose_files') !== null
+            || $this->readMetadata('extra_compose_files') !== null
+            || $this->readMetadata('indirect_mode') !== null) {
+            return null;
+        }
+        $files = [];
+        if ($this->isIndirect) {
+            if (!is_dir($this->composeSource)) {
+                return [];
+            }
+            $directory = @opendir($this->composeSource);
+            if ($directory === false) {
+                return [];
+            }
+            try {
+                while (($entry = readdir($directory)) !== false) {
+                    $path = $this->composeSource . '/' . $entry;
+                    if (fnmatch('*compose*.yml', $entry) && is_file($path) && !is_link($path)) {
+                        $files[] = $path;
+                    }
+                }
+            } finally {
+                closedir($directory);
+            }
+        } elseif (is_file($this->path . '/docker-compose.yml')) {
+            $files[] = $this->path . '/docker-compose.yml';
+        }
+        $override = $this->path . '/docker-compose.override.yml';
+        if ($files !== [] && is_file($override) && !in_array($override, $files, true)) {
+            $files[] = $override;
+        }
+        return $files;
     }
 
     /**
@@ -3744,6 +3790,16 @@ class StackInfo
      */
     public function buildComposeArgs(): array
     {
+        if ($this->identity->origin === 'dcflachs') {
+            $envPath = $this->readMetadata('envpath');
+            if ($envPath !== null && trim($envPath) !== '' && $this->getExplicitEnvFilePath() === null) {
+                throw new \RuntimeException('The imported stack env file is unavailable. Restore it before running any action.');
+            }
+            if (($this->readMetadata('indirect') !== null && !$this->isIndirect)
+                || $this->invalidIndirectPath !== null || $this->getComposeFilePaths() === []) {
+                throw new \RuntimeException('The imported stack Compose source is unavailable. Restore it before running any action.');
+            }
+        }
         $useDefaultDiscovery = $this->useDefaultComposeFileDiscovery();
         $files = $this->buildComposeFileFlags();
         $envFile = $this->buildEnvFileFlag();
@@ -4037,10 +4093,7 @@ class StackInfo
         // Pin the runtime identity up front. Without this a collision-suffixed
         // folder (my-stack-001) would look like a legacy stack whose display
         // name resolves to an existing project (my-stack) and could adopt it.
-        file_put_contents(
-            $path . '/' . ProjectIdentity::METADATA_FILE,
-            self::sanitizeProjectString(basename($path))
-        );
+        ProjectIdentity::initializeNew($path, self::sanitizeProjectString(basename($path)));
         if ($description !== '') {
             file_put_contents("$path/description", $description);
         }

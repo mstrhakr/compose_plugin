@@ -15,6 +15,10 @@ set -u
 
 # This script is expected to run on the remote unRAID host.
 mkdir -p /boot/config/plugins
+if [[ -f /usr/local/emhttp/plugins/compose.manager/php/util.php && ! -f /usr/local/emhttp/plugins/compose.manager/include/ProjectIdentity.php ]]; then
+  mkdir -p /boot/config/plugins/compose.manager
+  printf '%s\n' 'dcflachs' > /boot/config/plugins/compose.manager/legacy-origin
+fi
 echo "=== Uninstalling plugin via 'plugin remove compose.manager.plg' ==="
 if plugin remove compose.manager.plg; then
   echo "=== 'plugin remove' succeeded ==="

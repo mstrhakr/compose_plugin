@@ -45,6 +45,11 @@
 <!-- The 'pre-install' script. -->
 <FILE Run="/bin/bash">
 <INLINE>
+if [ -f &emhttpLOC;/php/util.php ] &amp;&amp; [ ! -f &emhttpLOC;/include/ProjectIdentity.php ]; then
+    mkdir -p &pluginLOC;
+    printf '%s\n' 'dcflachs' &gt; &pluginLOC;/legacy-origin
+fi
+
 # Remove all but current package file and ace zip from plugin root
 rm -f $(ls &pluginLOC;/&name;*.txz 2>/dev/null|grep -v '&packageVER;')
 rm -f $(ls &pluginLOC;/ace-v*.zip 2>/dev/null|grep -v '&aceZIP;')
