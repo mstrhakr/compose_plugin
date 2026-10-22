@@ -253,7 +253,13 @@ class ProjectIdentityTest extends TestCase
         foreach ($contents as $file => $content) {
             file_put_contents($file, $content);
         }
-        \ProjectIdentity::setProbe(fn(): array => $this->containers(['legacy_stack' => 1]));
+        $ordered = [
+            $source . '/docker-compose.yml',
+            $source . '/docker-compose.extra.yml',
+            $source . '/docker-compose.override.yml',
+            $path . '/docker-compose.override.yml',
+        ];
+        \ProjectIdentity::setProbe(fn(): ?array => \ProjectIdentity::parseProbeOutput($this->configEvidence($ordered) . "\n__rc=0"));
 
         $spec = \ComposeCommandBuilder::fromProject($this->tempRoot, 'legacy-stack', 'up');
 
@@ -282,6 +288,229 @@ class ProjectIdentityTest extends TestCase
         $this->assertSame([$path . '/docker-compose.yml'], $spec['composeFiles']);
     }
 
+    private function makeOrderedIndirectImport(): array
+    {
+        file_put_contents(COMPOSE_LEGACY_ORIGIN_FILE, \ProjectIdentity::LEGACY_REVISION);
+        $path = $this->makeStack('legacy-stack', 'legacy-stack');
+        $source = $this->createTempDir() . '/external';
+        mkdir($source);
+        $files = [$source . '/docker-compose.yml', $source . '/docker-compose.extra.yml'];
+        foreach ($files as $file) {
+            file_put_contents($file, "services: {}\n");
+        }
+        file_put_contents($path . '/indirect', $source);
+        return [$path, $files];
+    }
+
+    private function configEvidence(array $files): string
+    {
+        return 'containers ' . json_encode([
+            'project' => 'legacy_stack',
+            'workingDir' => dirname($files[0]),
+            'configFiles' => implode(',', $files),
+        ]);
+    }
+
+    public function testRuntimeComposeOrderIsPinnedAcrossReloadWithoutDocker(): void
+    {
+        [$path, $files] = $this->makeOrderedIndirectImport();
+        $files = array_reverse($files);
+        \ProjectIdentity::setProbe(fn(): ?array => \ProjectIdentity::parseProbeOutput($this->configEvidence($files) . "\n__rc=0"));
+
+        $spec = \ComposeCommandBuilder::fromProject($this->tempRoot, 'legacy-stack', 'up');
+
+        $this->assertSame($files, $spec['composeFiles']);
+        $state = json_decode(file_get_contents($path . '/' . \ProjectIdentity::STATE_FILE), true);
+        $this->assertSame($files, $state['composeFiles']);
+        $this->assertSame('runtime-labels', $state['composeFilesSource']);
+        \StackInfo::clearCache();
+        \ProjectIdentity::setProbe(function (): array {
+            $this->fail('Persisted file order must not depend on a later Docker probe');
+        });
+        $this->assertSame($files, \ComposeCommandBuilder::fromProject($this->tempRoot, 'legacy-stack', 'up')['composeFiles']);
+    }
+
+    public function testConflictingRuntimeComposeOrdersBlockMutation(): void
+    {
+        [$path, $files] = $this->makeOrderedIndirectImport();
+        \ProjectIdentity::setProbe(fn(): ?array => \ProjectIdentity::parseProbeOutput(
+            $this->configEvidence($files) . "\n" . $this->configEvidence(array_reverse($files)) . "\n__rc=0"
+        ));
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Conflicting runtime Compose file lists');
+        \ComposeCommandBuilder::fromProject($this->tempRoot, 'legacy-stack', 'up');
+    }
+
+    public function testMissingPinnedComposeInputCannotBeSilentlyDropped(): void
+    {
+        [$path, $files] = $this->makeOrderedIndirectImport();
+        \ProjectIdentity::setProbe(fn(): ?array => \ProjectIdentity::parseProbeOutput($this->configEvidence($files) . "\n__rc=0"));
+        \ComposeCommandBuilder::fromProject($this->tempRoot, 'legacy-stack', 'up');
+        unlink($files[1]);
+        \StackInfo::clearCache();
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Migrated Compose input is unavailable');
+        \ComposeCommandBuilder::fromProject($this->tempRoot, 'legacy-stack', 'up');
+    }
+
+    public function testLiveMultifileImportWithoutOrderEvidenceIsBlocked(): void
+    {
+        $this->makeOrderedIndirectImport();
+        \ProjectIdentity::setProbe(fn(): array => $this->containers(['legacy_stack' => 1]));
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Historical Compose file order cannot be verified');
+        \ComposeCommandBuilder::fromProject($this->tempRoot, 'legacy-stack', 'up');
+    }
+
+    public function testPartialRuntimeFileEvidenceCannotProveOrder(): void
+    {
+        [$path, $files] = $this->makeOrderedIndirectImport();
+        \ProjectIdentity::setProbe(fn(): ?array => \ProjectIdentity::parseProbeOutput(
+            $this->configEvidence($files) . "\ncontainers {\"project\":\"legacy_stack\"}\n__rc=0"
+        ));
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Historical Compose file order cannot be verified');
+        \ComposeCommandBuilder::fromProject($this->tempRoot, 'legacy-stack', 'up');
+    }
+
+    public function testPinnedOrderDoesNotAdoptNewlyDiscoveredFiles(): void
+    {
+        [$path, $files] = $this->makeOrderedIndirectImport();
+        \ProjectIdentity::setProbe(fn(): ?array => \ProjectIdentity::parseProbeOutput($this->configEvidence($files) . "\n__rc=0"));
+        \ComposeCommandBuilder::fromProject($this->tempRoot, 'legacy-stack', 'up');
+        file_put_contents(dirname($files[0]) . '/docker-compose.new.yml', "services: {}\n");
+        \StackInfo::clearCache();
+
+        $this->assertSame($files, \ComposeCommandBuilder::fromProject($this->tempRoot, 'legacy-stack', 'up')['composeFiles']);
+    }
+
+    public function testConcurrentMigrationReadersLeaveCompleteReceipt(): void
+    {
+        [$path, $files] = $this->makeOrderedIndirectImport();
+        $script = $this->createTempDir() . '/resolve.php';
+        file_put_contents($script, '<?php require ' . var_export(dirname(__DIR__) . '/bootstrap.php', true)
+            . '; require_once "/usr/local/emhttp/plugins/compose.manager/include/ComposeCommandBuilder.php"; '
+            . 'echo json_encode(ComposeCommandBuilder::fromProject(' . var_export($this->tempRoot, true) . ', "legacy-stack", "up"));');
+        $children = [];
+        for ($index = 0; $index < 2; $index++) {
+            $process = proc_open([PHP_BINARY, $script], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+            $this->assertIsResource($process);
+            fclose($pipes[0]);
+            $children[] = [$process, $pipes];
+        }
+        foreach ($children as [$process, $pipes]) {
+            $output = stream_get_contents($pipes[1]);
+            $error = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $this->assertSame(0, proc_close($process), $error);
+            $this->assertSame($files, json_decode($output, true)['composeFiles']);
+        }
+        $state = json_decode(file_get_contents($path . '/' . \ProjectIdentity::STATE_FILE), true);
+        $this->assertSame('legacy_stack', $state['projectName']);
+        $this->assertSame($files, $state['composeFiles']);
+        $this->assertSame('legacy_stack', file_get_contents($path . '/project_name'));
+        $this->assertSame([], glob($path . '/.project-name-*'));
+    }
+
+    public static function migrationEvents(): array
+    {
+        return [
+            'autostart' => ['docker_started', false],
+            'shutdown' => ['stopping_docker', false],
+            'blocked autostart' => ['docker_started', true],
+            'blocked shutdown' => ['stopping_docker', true],
+        ];
+    }
+
+    #[DataProvider('migrationEvents')]
+    public function testActualEventHandlersPreserveMigratedCommandArguments(string $event, bool $blocked): void
+    {
+        [$path, $files] = $this->makeOrderedIndirectImport();
+        $files = array_reverse($files);
+        \ProjectIdentity::setProbe(fn(): ?array => \ProjectIdentity::parseProbeOutput($this->configEvidence($files) . "\n__rc=0"));
+        \ComposeCommandBuilder::fromProject($this->tempRoot, 'legacy-stack', 'up');
+        file_put_contents($path . '/autostart', 'true');
+        file_put_contents($path . '/default_profile', 'worker');
+        $envFile = $path . '/custom env';
+        file_put_contents($envFile, "TOKEN=original\n");
+        file_put_contents($path . '/envpath', $envFile);
+        if ($blocked) {
+            file_put_contents($path . '/project_name', '../invalid');
+        }
+
+        $repository = dirname(__DIR__, 2);
+        $runtime = $this->createTempDir();
+        mkdir($runtime . '/scripts');
+        mkdir($runtime . '/bin');
+        $marker = $runtime . '/commands.jsonl';
+        $recorder = "#!/usr/bin/env php\n<?php\nif ((\$argv[1] ?? '') === 'info') exit(0);\nfile_put_contents(" . var_export($marker, true)
+            . ", json_encode(array_slice(\$argv, 1)) . PHP_EOL, FILE_APPEND);\n";
+        foreach ([$runtime . '/scripts/compose.sh', $runtime . '/bin/docker'] as $binary) {
+            file_put_contents($binary, $recorder);
+            chmod($binary, 0755);
+        }
+        file_put_contents($runtime . '/bin/logger', "#!/bin/sh\nexit 0\n");
+        chmod($runtime . '/bin/logger', 0755);
+        $phpWrapper = $runtime . '/bin/test-php';
+        file_put_contents($phpWrapper, "#!/bin/sh\nexec " . escapeshellarg(PHP_BINARY) . ' -d auto_prepend_file='
+            . escapeshellarg($repository . '/tests/bootstrap.php') . ' "$@"' . "\n");
+        chmod($phpWrapper, 0755);
+        copy($repository . '/source/compose.manager/scripts/compose_args.php', $runtime . '/scripts/compose_args.php');
+        $common = file_get_contents($repository . '/source/compose.manager/scripts/common.sh');
+        file_put_contents($runtime . '/scripts/common.sh', str_replace('/usr/local/emhttp/plugins/compose.manager', $runtime, $common));
+        file_put_contents($runtime . '/default.cfg', 'PROJECTS_FOLDER=' . escapeshellarg($this->tempRoot) . "\nAUTOSTART_DOCKER_WAIT_TIMEOUT=1\n");
+        file_put_contents($runtime . '/config.cfg', '');
+        $eventSource = file_get_contents($repository . '/source/compose.manager/event/' . $event);
+        $eventSource = str_replace(
+            ['/usr/local/emhttp/plugins/compose.manager', '/boot/config/plugins/compose.manager/compose.manager.cfg', '/var/log/compose.manager.log'],
+            [$runtime, $runtime . '/config.cfg', $runtime . '/events.log'],
+            $eventSource
+        );
+        file_put_contents($runtime . '/event', $eventSource);
+        $environment = array_merge(getenv(), [
+            'PATH' => $runtime . '/bin:' . getenv('PATH'),
+            'COMPOSE_MANAGER_PHP' => $phpWrapper,
+            'COMPOSE_MANAGER_AUTOSTART_CHILD' => '1',
+        ]);
+        $process = proc_open(['bash', $runtime . '/event'], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, $environment);
+        $this->assertIsResource($process);
+        fclose($pipes[0]);
+        $output = stream_get_contents($pipes[1]) . stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $status = proc_close($process);
+        if ($blocked) {
+            $this->assertFileDoesNotExist($marker);
+            $this->assertStringContainsString('skipping', file_get_contents($runtime . '/events.log'));
+            return;
+        }
+        $this->assertSame(0, $status, $output);
+        $this->assertFileExists($marker);
+        $commands = array_values(array_filter(explode("\n", trim(file_get_contents($marker)))));
+        $this->assertCount(1, $commands);
+        $arguments = json_decode($commands[0], true);
+        $this->assertSame('legacy_stack', $arguments[array_search('-p', $arguments, true) + 1]);
+        $actualFiles = [];
+        foreach ($arguments as $index => $argument) {
+            if ($argument === '-f') {
+                $actualFiles[] = $arguments[$index + 1];
+            }
+        }
+        $this->assertSame($files, $actualFiles);
+        $envOption = $event === 'docker_started' ? '-e' : '--env-file';
+        $this->assertSame($envFile, $arguments[array_search($envOption, $arguments, true) + 1]);
+        if ($event === 'docker_started') {
+            $this->assertSame('worker', $arguments[array_search('-g', $arguments, true) + 1]);
+        } else {
+            $this->assertSame('stop', $arguments[count($arguments) - 1]);
+        }
+    }
+
     public function testConfirmedImportNeverFallsBackFromMissingExplicitEnv(): void
     {
         file_put_contents(COMPOSE_LEGACY_ORIGIN_FILE, \ProjectIdentity::LEGACY_REVISION);
@@ -292,6 +521,46 @@ class ProjectIdentityTest extends TestCase
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('env file is unavailable');
         \ComposeCommandBuilder::fromProject($this->tempRoot, 'stack', 'up');
+    }
+
+    public static function olderEnvMetadataCases(): array
+    {
+        return [['envToUse'], ['envPath']];
+    }
+
+    #[DataProvider('olderEnvMetadataCases')]
+    public function testOlderArchivedMetadataIsPreservedWithoutRenamingInputs(string $envMetadata): void
+    {
+        file_put_contents(COMPOSE_LEGACY_ORIGIN_FILE, \ProjectIdentity::LEGACY_REVISION);
+        $path = $this->makeStack('old-stack');
+        unlink($path . '/docker-compose.yml');
+        file_put_contents($path . '/compose.yml', "services: {}\n");
+        file_put_contents($path . '/Name', 'Old-Stack');
+        $env = $path . '/original.env';
+        file_put_contents($env, "TOKEN=original\n");
+        file_put_contents($path . '/' . $envMetadata, $env);
+
+        $spec = \ComposeCommandBuilder::fromProject($this->tempRoot, 'old-stack', 'up');
+
+        $this->assertSame('old_stack', $spec['projectName']);
+        $this->assertSame([$path . '/compose.yml'], $spec['composeFiles']);
+        $this->assertSame($env, $spec['envFilePath']);
+        $this->assertSame('Old-Stack', \StackInfo::fromProject($this->tempRoot, 'old-stack')->displayName);
+        $this->assertSame('Old-Stack', file_get_contents($path . '/Name'));
+        $this->assertSame($env, file_get_contents($path . '/' . $envMetadata));
+        $this->assertFileDoesNotExist($path . '/docker-compose.yml');
+    }
+
+    public function testCurrentEnvMetadataOverridesOlderEnvToUse(): void
+    {
+        file_put_contents(COMPOSE_LEGACY_ORIGIN_FILE, \ProjectIdentity::LEGACY_REVISION);
+        $path = $this->makeStack('stack', 'stack');
+        file_put_contents($path . '/current.env', "TOKEN=current\n");
+        file_put_contents($path . '/envpath', $path . '/current.env');
+        file_put_contents($path . '/envPath', '/missing/intermediate.env');
+        file_put_contents($path . '/envToUse', '/missing/obsolete.env');
+
+        $this->assertSame($path . '/current.env', \ComposeCommandBuilder::fromProject($this->tempRoot, 'stack', 'up')['envFilePath']);
     }
 
     public function testConfirmedImportNeverFallsBackFromInvalidIndirect(): void
@@ -350,38 +619,82 @@ class ProjectIdentityTest extends TestCase
         \ComposeCommandBuilder::buildForAction($stack, $action);
     }
 
+    public static function dockerMigrationCases(): array
+    {
+        return [['running', false], ['stopped', false], ['volume-only', false], ['named-container-and-bind', true]];
+    }
+
     #[Group('migration-docker')]
-    public function testIsolatedDockerMigrationPreservesContainersAndVolumeData(): void
+    #[DataProvider('dockerMigrationCases')]
+    public function testIsolatedDockerMigrationPreservesContainersAndVolumeData(string $mode, bool $withBind): void
     {
         if (getenv('COMPOSE_MIGRATION_DOCKER_TESTS') !== '1') {
             $this->markTestSkipped('Set COMPOSE_MIGRATION_DOCKER_TESTS=1 for isolated Docker migration validation.');
         }
         $suffix = bin2hex(random_bytes(6));
         $folder = 'cm183-' . $suffix;
-        $runtime = 'cm183_' . $suffix;
-        $path = $this->makeStack($folder, $folder);
-        file_put_contents($path . '/docker-compose.yml', "services:\n  app:\n    image: alpine:3.20\n    command: [sleep, '300']\n    volumes: [data:/data]\nvolumes:\n  data: {}\n");
-        $compose = ['compose', '-f', $path . '/docker-compose.yml', '-p', $runtime];
+        $runtime = 'cm183___' . $suffix;
+        file_put_contents(COMPOSE_LEGACY_ORIGIN_FILE, \ProjectIdentity::LEGACY_REVISION);
+        $path = $this->makeStack($folder, $runtime);
+        $files = [$path . '/docker-compose.yml'];
+        if ($mode !== 'volume-only') {
+            file_put_contents($path . '/docker-compose.override.yml', "services:\n  app:\n    environment: [MIGRATION_ORDER=override]\n");
+            $files = [$path . '/docker-compose.override.yml', ...$files];
+        }
+        $compose = ['compose'];
+        foreach ($files as $file) {
+            $compose = [...$compose, '-f', $file];
+        }
+        $compose = [...$compose, '-p', $runtime];
+        $bindVolume = null;
         try {
+            $mounts = ['data:/data'];
+            if ($withBind) {
+                $bindVolume = 'cm183_bind_' . $suffix;
+                $this->dockerCommand(['volume', 'create', $bindVolume]);
+                $mounts[] = trim($this->dockerCommand(['volume', 'inspect', '--format', '{{.Mountpoint}}', $bindVolume])) . ':/bind';
+            }
+            $containerName = $withBind ? '    container_name: cm183_named_' . $suffix . "\n" : '';
+            file_put_contents($path . '/docker-compose.yml', "services:\n  app:\n    image: alpine:3.20\n" . $containerName
+                . "    command: [sleep, '300']\n    environment: [MIGRATION_ORDER=historical]\n    volumes: " . json_encode($mounts, JSON_UNESCAPED_SLASHES)
+                . "\nvolumes:\n  data: {}\n");
             $this->dockerCommand([...$compose, 'up', '-d']);
             $container = trim($this->dockerCommand([...$compose, 'ps', '-q']));
             $this->assertNotSame('', $container);
             $this->dockerCommand([...$compose, 'exec', '-T', 'app', 'sh', '-c', 'printf preserved > /data/migration-sentinel']);
+            if ($withBind) {
+                $this->dockerCommand([...$compose, 'exec', '-T', 'app', 'sh', '-c', 'printf bind-preserved > /bind/migration-sentinel']);
+            }
+            if ($mode === 'stopped') {
+                $this->dockerCommand([...$compose, 'stop']);
+            } elseif ($mode === 'volume-only') {
+                $this->dockerCommand([...$compose, 'down']);
+            }
             \ProjectIdentity::setProbe(null);
 
             $stack = \StackInfo::fromProject($this->tempRoot, $folder);
             $spec = \ComposeCommandBuilder::buildForAction($stack, 'up');
 
             $this->assertSame($runtime, $spec['projectName']);
-            $this->assertSame($container, trim($this->dockerCommand([...$compose, 'ps', '-q'])));
+            $this->assertSame($files, $spec['composeFiles']);
+            if ($mode !== 'volume-only') {
+                $this->assertSame($container, trim($this->dockerCommand([...$compose, 'ps', '-a', '-q'])));
+                $this->assertSame($mode === 'stopped' ? 'false' : 'true', trim($this->dockerCommand(['inspect', '--format', '{{.State.Running}}', $container])));
+            }
             $migrated = ['compose'];
             foreach ($spec['composeFiles'] as $file) {
                 $migrated = [...$migrated, '-f', $file];
             }
             $migrated = [...$migrated, '-p', $spec['projectName']];
             $this->dockerCommand([...$migrated, 'up', '-d']);
-            $this->assertSame($container, trim($this->dockerCommand([...$migrated, 'ps', '-q'])));
+            if ($mode !== 'volume-only') {
+                $this->assertSame($container, trim($this->dockerCommand([...$migrated, 'ps', '-q'])));
+            }
             $this->assertSame('preserved', $this->dockerCommand([...$migrated, 'exec', '-T', 'app', 'cat', '/data/migration-sentinel']));
+            $this->assertSame('historical', $this->dockerCommand([...$migrated, 'exec', '-T', 'app', 'printenv', 'MIGRATION_ORDER']));
+            if ($withBind) {
+                $this->assertSame('bind-preserved', $this->dockerCommand([...$migrated, 'exec', '-T', 'app', 'cat', '/bind/migration-sentinel']));
+            }
 
             $this->dockerCommand([...$migrated, 'down']);
             \StackInfo::clearCache();
@@ -389,7 +702,13 @@ class ProjectIdentityTest extends TestCase
             $this->dockerCommand([...$migrated, 'up', '-d']);
             $this->assertSame('preserved', $this->dockerCommand([...$migrated, 'exec', '-T', 'app', 'cat', '/data/migration-sentinel']));
         } finally {
-            $this->dockerCommand([...$compose, 'down', '-v', '--remove-orphans']);
+            try {
+                $this->dockerCommand([...$compose, 'down', '-v', '--remove-orphans']);
+            } finally {
+                if ($bindVolume !== null) {
+                    $this->dockerCommand(['volume', 'rm', $bindVolume]);
+                }
+            }
         }
     }
 

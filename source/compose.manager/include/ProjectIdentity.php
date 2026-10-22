@@ -88,6 +88,10 @@ final class ProjectIdentity
     private static bool $probeCached = false;
     /** @var array<string, list<string>> */
     private static array $projectDirectories = [];
+    /** @var array<string, list<list<string>>> */
+    private static array $projectFileLists = [];
+    /** @var array<string, bool> */
+    private static array $missingFileEvidence = [];
 
     private function __construct()
     {
@@ -119,6 +123,8 @@ final class ProjectIdentity
         self::$probeCache = null;
         self::$probeCached = false;
         self::$projectDirectories = [];
+        self::$projectFileLists = [];
+        self::$missingFileEvidence = [];
     }
 
     /**
@@ -158,10 +164,7 @@ final class ProjectIdentity
         $identity = new self();
         $identity->projectFolder = $projectFolder;
         $identity->folderCandidate = compose_manager_sanitize_project_name($projectFolder);
-        $originFile = defined('COMPOSE_LEGACY_ORIGIN_FILE')
-            ? COMPOSE_LEGACY_ORIGIN_FILE
-            : '/boot/config/plugins/compose.manager/legacy-origin';
-        $identity->origin = is_file($originFile) ? 'dcflachs' : 'unknown';
+        $identity->origin = self::hasLegacyOrigin() ? 'dcflachs' : 'unknown';
 
         $rawLegacy = trim($displayName ?? $projectFolder);
         if ($rawLegacy === '') {
@@ -269,6 +272,14 @@ final class ProjectIdentity
         );
 
         return $identity;
+    }
+
+    public static function hasLegacyOrigin(): bool
+    {
+        $originFile = defined('COMPOSE_LEGACY_ORIGIN_FILE')
+            ? COMPOSE_LEGACY_ORIGIN_FILE
+            : '/boot/config/plugins/compose.manager/legacy-origin';
+        return is_file($originFile);
     }
 
     private static function candidateNames(string $projectFolder, string $rawLegacy): array
@@ -438,6 +449,9 @@ final class ProjectIdentity
                 continue;
             }
             $raw = @file_get_contents($sibling . '/name');
+            if ($raw === false && self::hasLegacyOrigin()) {
+                $raw = @file_get_contents($sibling . '/Name');
+            }
             $name = is_string($raw) && trim($raw) !== '' ? trim($raw) : basename($sibling);
             if (in_array($projectName, self::candidateNames(basename($sibling), $name), true)) {
                 return true;
@@ -459,15 +473,91 @@ final class ProjectIdentity
                 return false;
             }
         }
-        $state = json_encode([
+        $state = [
             'version' => self::MIGRATION_VERSION,
             'projectName' => $projectName,
             'source' => $source,
             'origin' => $origin,
             'legacyRevision' => $origin === 'dcflachs' ? self::LEGACY_REVISION : null,
-        ], JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
-        return is_string($state) && self::atomicWrite($file, $projectName)
-            && self::atomicWrite(rtrim($stackPath, '/') . '/' . self::STATE_FILE, $state . "\n");
+        ];
+        $stateFile = rtrim($stackPath, '/') . '/' . self::STATE_FILE;
+        $previousRaw = @file_get_contents($stateFile);
+        $previousState = is_string($previousRaw) ? json_decode($previousRaw, true) : null;
+        if (is_array($previousState) && ($previousState['projectName'] ?? null) === $projectName
+            && isset($previousState['composeFiles'], $previousState['composeFilesSource'])) {
+            $state['composeFiles'] = $previousState['composeFiles'];
+            $state['composeFilesSource'] = $previousState['composeFilesSource'];
+        }
+        $encoded = json_encode($state, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+        return is_string($encoded) && self::atomicWrite($file, $projectName)
+            && self::atomicWrite($stateFile, $encoded . "\n");
+    }
+
+    public function resolveLegacyComposeFiles(string $stackPath, array $discovered): array
+    {
+        if (!$this->resolved) {
+            return $discovered;
+        }
+        $lock = @fopen(rtrim($stackPath, '/') . '/project_identity.lock', 'c');
+        if ($lock === false) {
+            throw new \RuntimeException('Could not lock migrated Compose file metadata.');
+        }
+        try {
+            if (!flock($lock, LOCK_EX)) {
+                throw new \RuntimeException('Could not lock migrated Compose file metadata.');
+            }
+            $file = rtrim($stackPath, '/') . '/' . self::STATE_FILE;
+            $raw = @file_get_contents($file);
+            $state = is_string($raw) ? json_decode($raw, true) : null;
+            if (!is_array($state) || ($state['projectName'] ?? null) !== $this->projectName
+                || self::readPinned($stackPath) !== $this->projectName) {
+                throw new \RuntimeException('Project identity changed while resolving migrated Compose files.');
+            }
+            if (array_key_exists('composeFiles', $state)) {
+                return self::validateComposeFiles($state['composeFiles']);
+            }
+            $probe = self::probe();
+            if ($probe === null) {
+                throw new \RuntimeException('Docker could not be queried to verify historical Compose file order.');
+            }
+            if (!self::matchesResourceDirectory($stackPath, $this->projectName)) {
+                throw new \RuntimeException('Runtime Compose directory conflicts with the imported stack.');
+            }
+            $lists = self::$projectFileLists[$this->projectName] ?? [];
+            $lists = array_values(array_unique($lists, SORT_REGULAR));
+            if (count($lists) > 1) {
+                throw new \RuntimeException('Conflicting runtime Compose file lists. Resolve historical inputs before running any action.');
+            }
+            if (count($discovered) > 1 && (($lists === [] && self::hasResources(self::countsFor($probe, $this->projectName)))
+                || (self::$missingFileEvidence[$this->projectName] ?? false))) {
+                throw new \RuntimeException('Historical Compose file order cannot be verified for this imported stack.');
+            }
+            $files = self::validateComposeFiles($lists[0] ?? $discovered);
+            $state['composeFiles'] = $files;
+            $state['composeFilesSource'] = $lists === [] ? 'archived-discovery' : 'runtime-labels';
+            $encoded = json_encode($state, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+            if (!is_string($encoded) || !self::atomicWrite($file, $encoded . "\n")) {
+                throw new \RuntimeException('Could not save migrated Compose file order.');
+            }
+            return $files;
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+    }
+
+    private static function validateComposeFiles(mixed $files): array
+    {
+        if (!is_array($files) || !array_is_list($files) || $files === []) {
+            throw new \RuntimeException('Migrated Compose file list is invalid.');
+        }
+        foreach ($files as $file) {
+            if (!is_string($file) || !str_starts_with($file, '/') || strpbrk($file, "\r\n") !== false
+                || !is_file($file) || !is_readable($file)) {
+                throw new \RuntimeException('Migrated Compose input is unavailable. Restore the original file before running any action.');
+            }
+        }
+        return $files;
     }
 
     public static function initializeNew(string $stackPath, string $projectName): void
@@ -507,6 +597,9 @@ final class ProjectIdentity
     private function legacyDisplayName(string $stackPath): string
     {
         $raw = @file_get_contents(rtrim($stackPath, '/') . '/name');
+        if ($raw === false && $this->origin === 'dcflachs') {
+            $raw = @file_get_contents(rtrim($stackPath, '/') . '/Name');
+        }
         return is_string($raw) && trim($raw) !== '' ? trim($raw) : $this->projectFolder;
     }
 
@@ -570,7 +663,7 @@ final class ProjectIdentity
         self::$probeCache = null;
 
         $label = 'com.docker.compose.project';
-        $containerFormat = 'containers {"project":{{json (.Label "com.docker.compose.project")}},"workingDir":{{json (.Label "com.docker.compose.project.working_dir")}}}';
+        $containerFormat = 'containers {"project":{{json (.Label "com.docker.compose.project")}},"workingDir":{{json (.Label "com.docker.compose.project.working_dir")}},"configFiles":{{json (.Label "com.docker.compose.project.config_files")}}}';
         $cmd = 'docker ps -a --filter label=' . $label . ' --format ' . escapeshellarg($containerFormat) . ' 2>/dev/null'
             . ' && docker volume ls --filter label=' . $label . ' --format "volumes {{.Labels}}" 2>/dev/null'
             . ' && docker network ls --filter label=' . $label . ' --format "networks {{.Labels}}" 2>/dev/null'
@@ -600,6 +693,8 @@ final class ProjectIdentity
 
         $counts = [];
         self::$projectDirectories = [];
+        self::$projectFileLists = [];
+        self::$missingFileEvidence = [];
         foreach (explode("\n", $output) as $line) {
             if (!preg_match('/^(containers|volumes|networks)\s+(.*)$/', trim($line), $m)) {
                 continue;
@@ -610,11 +705,19 @@ final class ProjectIdentity
                 if (isset($details['workingDir']) && is_string($details['workingDir']) && $details['workingDir'] !== '') {
                     self::$projectDirectories[$project][] = $details['workingDir'];
                 }
+                if (isset($details['configFiles']) && is_string($details['configFiles']) && $details['configFiles'] !== '') {
+                    self::$projectFileLists[$project][] = explode(',', $details['configFiles']);
+                } elseif ($m[1] === 'containers') {
+                    self::$missingFileEvidence[$project] = true;
+                }
             } else {
                 if (!preg_match('/(?:^|,)com\.docker\.compose\.project=([^,]+)/', $m[2], $projectLabel)) {
                     continue;
                 }
                 $project = trim($projectLabel[1]);
+                if ($m[1] === 'containers') {
+                    self::$missingFileEvidence[$project] = true;
+                }
             }
             if ($project === '') {
                 continue;

@@ -62,12 +62,12 @@ See `tests/e2e/README.md` for details and safety guardrails.
 
 ### Archived Plugin Migration
 
-The ordinary identity tests use temporary stack metadata and injected Docker evidence. The real-Docker regression is opt-in and creates only a random `cm183_` project, then removes its test containers, network and volume. It requires Docker Compose and access to the `alpine:3.20` image.
+The ordinary identity tests use temporary stack metadata and injected Docker evidence. Event integration cases execute real scripts against a temporary runtime and fake Docker; scheduler cases verify blocked migrations remain retryable. The opt-in real-Docker matrix creates random `cm183_` projects, then removes their test containers, networks and volumes. Its bind-data case uses a disposable Docker volume's host path, not a user directory. It requires Docker Compose and access to the `alpine:3.20` image.
 
 Run the focused PHP and shell regressions from the repository root:
 
 ```bash
-vendor/bin/phpunit --no-coverage --no-logging tests/unit/ProjectIdentityTest.php tests/unit/InstallerCompatibilityTest.php
+vendor/bin/phpunit --no-coverage --no-logging tests/unit/ProjectIdentityTest.php tests/unit/InstallerCompatibilityTest.php tests/unit/AutoupdateRunnerTest.php tests/unit/AutoupdateTest.php
 bats tests/unit/common.bats tests/unit/compose.bats
 ```
 

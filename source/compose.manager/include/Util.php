@@ -2567,6 +2567,9 @@ class StackInfo
     public function getDisplayName(): string
     {
         $displayName = $this->readMetadata('name') ?? null;
+        if ($displayName === null && ProjectIdentity::hasLegacyOrigin()) {
+            $displayName = $this->readMetadata('Name');
+        }
         if ($displayName === null || $displayName === '') {
             // If no display name is set, initialize it from the project folder name.
             $displayName = $this->projectFolder;
@@ -2687,7 +2690,7 @@ class StackInfo
      */
     public function getEnvFilePath(): ?string
     {
-        $val = $this->readMetadata('envpath');
+        $val = $this->getConfiguredEnvPath();
         if ($val === null || $val === '') {
             return $this->isGitStack() ? $this->gitStackDefaultEnvPath() : null;
         }
@@ -2739,7 +2742,7 @@ class StackInfo
      */
     private function getExplicitEnvFilePath(): ?string
     {
-        $rawEnvPath = $this->readMetadata('envpath');
+        $rawEnvPath = $this->getConfiguredEnvPath();
         if ($rawEnvPath === null) {
             return null;
         }
@@ -2769,6 +2772,14 @@ class StackInfo
         ], 'user', 'debug', 'stack');
         composeLogger("Ignoring invalid envpath for stack $this->projectFolder: file not found", ['envpath' => $rawEnvPath], 'user', 'warning', 'stack');
         return null;
+    }
+
+    private function getConfiguredEnvPath(): ?string
+    {
+        $path = $this->readMetadata('envpath');
+        return $path === null && $this->identity->origin === 'dcflachs'
+            ? ($this->readMetadata('envPath') ?? $this->readMetadata('envToUse'))
+            : $path;
     }
 
     /**
@@ -3173,12 +3184,17 @@ class StackInfo
             }
         } elseif (is_file($this->path . '/docker-compose.yml')) {
             $files[] = $this->path . '/docker-compose.yml';
+        } elseif (is_file($this->path . '/compose.yml')) {
+            $files[] = $this->path . '/compose.yml';
         }
         $override = $this->path . '/docker-compose.override.yml';
         if ($files !== [] && is_file($override) && !in_array($override, $files, true)) {
             $files[] = $override;
         }
-        return $files;
+        if ($files === [] && $this->invalidIndirectPath !== null) {
+            return [];
+        }
+        return $this->identity->resolveLegacyComposeFiles($this->path, $files);
     }
 
     /**
@@ -3791,7 +3807,7 @@ class StackInfo
     public function buildComposeArgs(): array
     {
         if ($this->identity->origin === 'dcflachs') {
-            $envPath = $this->readMetadata('envpath');
+            $envPath = $this->getConfiguredEnvPath();
             if ($envPath !== null && trim($envPath) !== '' && $this->getExplicitEnvFilePath() === null) {
                 throw new \RuntimeException('The imported stack env file is unavailable. Restore it before running any action.');
             }
@@ -4459,26 +4475,28 @@ class StackInfo
      */
     public static function fromComposePath(string $composeRoot, string $composePath): ?self
     {
-        // Static cache: [composeRoot => [composeSourcePath => StackInfo]]
-        static $cacheByRoot = [];
-
         $composeRoot = rtrim($composeRoot, '/');
         $normalizedPath = rtrim($composePath, '/');
-
-        if (isset($cacheByRoot[$composeRoot])) {
-            return $cacheByRoot[$composeRoot][$normalizedPath] ?? null;
-        }
-
-        $cacheByRoot[$composeRoot] = [];
-
-        foreach (self::allFromRoot($composeRoot) as $stackInfo) {
-            $sourcePath = rtrim($stackInfo->composeSource, '/');
-            if ($sourcePath !== '') {
-                $cacheByRoot[$composeRoot][$sourcePath] = $stackInfo;
+        $matches = [];
+        foreach (self::listProjectFolders($composeRoot) as $folder) {
+            $stackPath = $composeRoot . '/' . $folder;
+            $sources = [$stackPath];
+            $indirect = @file_get_contents($stackPath . '/indirect');
+            if (is_string($indirect) && trim($indirect) !== '') {
+                $target = trim($indirect);
+                $sources[] = is_file($target) || preg_match('/\.ya?ml$/i', $target) === 1 ? dirname($target) : $target;
+            }
+            foreach ($sources as $source) {
+                if ($normalizedPath === rtrim($source, '/') || Path::refersToSamePath($normalizedPath, $source)) {
+                    $matches[] = $folder;
+                    break;
+                }
             }
         }
-
-        return $cacheByRoot[$composeRoot][$normalizedPath] ?? null;
+        if (count($matches) > 1) {
+            throw new \RuntimeException('Multiple managed stacks use this Compose path. Select a stack explicitly.');
+        }
+        return $matches === [] ? null : self::fromProject($composeRoot, $matches[0]);
     }
 }
 

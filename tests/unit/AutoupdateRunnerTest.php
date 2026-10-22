@@ -6,6 +6,9 @@ declare(strict_types=1);
 namespace ComposeManager\Tests;
 
 use PluginTests\TestCase;
+use PHPUnit\Framework\Attributes\DataProvider;
+
+require_once '/usr/local/emhttp/plugins/compose.manager/include/Util.php';
 
 class AutoupdateRunnerTest extends TestCase
 {
@@ -22,7 +25,8 @@ class AutoupdateRunnerTest extends TestCase
 
         // TestCase::setUp() resets plugin config mocks. Re-seed compose root so
         // AutoUpdateRunner path validation uses a writable test directory.
-        $compose_root = sys_get_temp_dir() . '/compose_test_runner_projects';
+        $compose_root = $this->createTempDir();
+        \StackInfo::clearCache();
         if (!is_dir($compose_root)) {
             mkdir($compose_root, 0755, true);
         }
@@ -44,6 +48,8 @@ if ($marker) {
         'argv' => $argv,
         'parallelLimit' => getenv('COMPOSE_PARALLEL_LIMIT'),
         'credentialId' => getenv('COMPOSE_CREDENTIAL_ID'),
+        'composeFiles' => getenv('COMPOSE_FILE_LIST'),
+        'envFile' => getenv('COMPOSE_ENV_FILE'),
     ]));
 }
 exit(0);
@@ -63,6 +69,9 @@ PHP;
         putenv('COMPOSE_MANAGER_SH');
         putenv('AUTOTEST_MARKER');
         putenv('COMPOSE_MANAGER_AUTOUPDATE_FILE');
+        @unlink(COMPOSE_LEGACY_ORIGIN_FILE);
+        \ProjectIdentity::setProbe(static fn(): array => []);
+        \StackInfo::clearCache();
 
         if ($this->autoUpdateConfigFile !== null && is_file($this->autoUpdateConfigFile)) {
             unlink($this->autoUpdateConfigFile);
@@ -134,5 +143,65 @@ PHP;
         $this->assertArrayHasKey($path, $updated);
         $this->assertArrayHasKey('last_run', $updated[$path]);
         $this->assertGreaterThan(0, (int) $updated[$path]['last_run']);
+    }
+
+    public static function migratedScheduleCases(): array
+    {
+        return [['ready'], ['invalid-pin'], ['missing-input']];
+    }
+
+    #[DataProvider('migratedScheduleCases')]
+    public function testMigratedSchedulePreservesInputsAndRetriesBlockedStacks(string $mode): void
+    {
+        global $plugin_root, $compose_root;
+        file_put_contents(COMPOSE_LEGACY_ORIGIN_FILE, \ProjectIdentity::LEGACY_REVISION);
+        $folder = 'legacy-stack';
+        $runtime = 'legacy___stack';
+        $path = $compose_root . '/' . $folder;
+        $this->testStackPath = $path;
+        mkdir($path);
+        $files = [$path . '/docker-compose.yml', $path . '/docker-compose.override.yml'];
+        foreach ($files as $file) {
+            file_put_contents($file, "services: {}\n");
+        }
+        file_put_contents($path . '/name', 'legacy___stack');
+        $env = $path . '/original env';
+        file_put_contents($env, "TOKEN=original\n");
+        file_put_contents($path . '/envpath', $env);
+        \ProjectIdentity::setProbe(static fn(): ?array => \ProjectIdentity::parseProbeOutput('containers ' . json_encode([
+            'project' => $runtime,
+            'workingDir' => $path,
+            'configFiles' => implode(',', $files),
+        ]) . "\n__rc=0"));
+        \StackInfo::fromProject($compose_root, $folder);
+        if ($mode === 'invalid-pin') {
+            file_put_contents($path . '/project_name', '../invalid');
+        } elseif ($mode === 'missing-input') {
+            unlink($files[1]);
+        }
+        \StackInfo::clearCache();
+        file_put_contents((string) $this->autoUpdateConfigFile, json_encode([
+            $path => ['enabled' => true, 'schedule' => 'daily', 'time' => '00:00'],
+        ]));
+        putenv('COMPOSE_MANAGER_SH=' . PHP_BINARY . ' ' . escapeshellarg((string) $this->wrapperPath));
+
+        include $plugin_root . 'include/AutoUpdateRunner.php';
+
+        $updated = json_decode(file_get_contents((string) $this->autoUpdateConfigFile), true);
+        if ($mode !== 'ready') {
+            $this->assertArrayNotHasKey('last_run', $updated[$path]);
+            $this->assertFileDoesNotExist($this->markerPath);
+            return;
+        }
+        $deadline = microtime(true) + 3;
+        while (!is_file((string) $this->markerPath) && microtime(true) < $deadline) {
+            usleep(10000);
+        }
+        $this->assertFileExists($this->markerPath);
+        $payload = json_decode(file_get_contents((string) $this->markerPath), true);
+        $this->assertSame($runtime, $payload['argv'][2]);
+        $this->assertSame(implode(PATH_SEPARATOR, $files), $payload['composeFiles']);
+        $this->assertSame($env, $payload['envFile']);
+        $this->assertArrayHasKey('last_run', $updated[$path]);
     }
 }
