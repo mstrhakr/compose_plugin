@@ -401,6 +401,48 @@ class ProjectIdentityTest extends TestCase
         \ComposeCommandBuilder::fromProject($this->tempRoot, 'legacy-stack', 'up');
     }
 
+    public function testInputMigrationFailureLeavesStackAvailableForRepair(): void
+    {
+        [$path, $files] = $this->makeOrderedIndirectImport();
+        \ProjectIdentity::setProbe(fn(): array => $this->containers(['legacy_stack' => 1]));
+
+        $stack = \StackInfo::fromProject($this->tempRoot, 'legacy-stack');
+
+        $this->assertFalse($stack->hasResolvedIdentity());
+        $this->assertStringContainsString('Historical Compose file order', $stack->getIdentityBlockReason());
+        $this->assertSame($files, $stack->getEditableComposeFiles());
+        $this->assertContains($stack, \StackInfo::allFromRoot($this->tempRoot, true));
+        $this->expectException(\RuntimeException::class);
+        $stack->buildComposeArgs();
+    }
+
+    public static function nonstandardSourceCases(): array
+    {
+        return [[false], [true]];
+    }
+
+    #[DataProvider('nonstandardSourceCases')]
+    public function testArchivedNonstandardFilenameClearsOnlyInferredInvalidSource(bool $explicitWarning): void
+    {
+        [$path, $files] = $this->makeOrderedIndirectImport();
+        unlink($files[1]);
+        $custom = dirname($files[0]) . '/app-compose.yml';
+        rename($files[0], $custom);
+        if ($explicitWarning) {
+            file_put_contents($path . '/indirect.invalid', '/explicit/warning');
+        }
+        $stack = \StackInfo::fromProject($this->tempRoot, 'legacy-stack');
+        $this->assertSame($custom, $stack->composeFilePath);
+        if ($explicitWarning) {
+            $this->assertSame('/explicit/warning', $stack->invalidIndirectPath);
+            $this->expectException(\RuntimeException::class);
+            $stack->buildComposeArgs();
+        } else {
+            $this->assertNull($stack->invalidIndirectPath);
+            $this->assertSame([$custom], $stack->buildComposeArgs()['filePaths']);
+        }
+    }
+
     public function testPartialRuntimeFileEvidenceCannotProveOrder(): void
     {
         [$path, $files] = $this->makeOrderedIndirectImport();

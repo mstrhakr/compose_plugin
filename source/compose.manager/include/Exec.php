@@ -1323,6 +1323,7 @@ switch ($_POST['action']) {
             'credentialId' => $credentialId,
             'composeFileCandidates' => $composeFileCandidates,
             'editableComposeFiles' => $stackInfo->getEditableComposeFiles(),
+            'migrationInputError' => $stackInfo->inputMigrationError,
             'labelsViewMode' => $labelsViewMode,
             'useDefaultComposeFiles' => $useDefaultComposeFiles,
             'indirectMode' => $stackInfo->indirectMode,

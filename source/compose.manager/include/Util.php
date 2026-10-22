@@ -2144,6 +2144,9 @@ class StackInfo
     public string $projectName;
     /** @var ProjectIdentity Resolved (and pinned) runtime project identity */
     public ProjectIdentity $identity;
+    public ?string $inputMigrationError = null;
+    /** @var list<string> */
+    private array $legacyComposeCandidates = [];
     /** @var string Display name (from ./name) */
     public string $displayName;
     /** @var string Full path to the stack directory ($composeRoot/$project) */
@@ -2251,14 +2254,23 @@ class StackInfo
             $this->invalidIndirectPath = $this->indirectPath;
         }
 
-        $legacyFiles = $this->getLegacyComposeFilePaths();
-        if ($legacyFiles !== null) {
-            $this->composeFilePath = $legacyFiles[0] ?? null;
+        try {
+            $legacyFiles = $this->getLegacyComposeFilePaths();
+            if ($legacyFiles !== null) {
+                $this->composeFilePath = $legacyFiles[0] ?? null;
+                if ($legacyFiles !== [] && $this->readInvalidIndirect() === null) {
+                    $this->invalidIndirectPath = null;
+                }
+            }
+        } catch (\RuntimeException $error) {
+            $this->inputMigrationError = $error->getMessage();
+            $this->composeFilePath = $this->legacyComposeCandidates[0] ?? $this->composeFilePath;
+            composeLogger('Imported stack inputs need repair', ['project' => $projectFolder, 'error' => $error->getMessage()], 'user', 'warning', 'migration');
         }
 
         // Resolve compose file
         if ($this->composeFilePath === null) {
-            if ($this->invalidIndirectPath !== null) {
+            if ($this->invalidIndirectPath !== null || $this->inputMigrationError !== null) {
                 // Stack has a broken indirect reference — allow degraded construction
                 // so the user can fix it in the Settings editor.
                 composeLogger('Preparing degraded stack load due to invalid indirect path', [
@@ -2602,7 +2614,7 @@ class StackInfo
      */
     public function hasResolvedIdentity(): bool
     {
-        return $this->identity->resolved;
+        return $this->identity->resolved && $this->inputMigrationError === null;
     }
 
     /**
@@ -2610,7 +2622,7 @@ class StackInfo
      */
     public function getIdentityBlockReason(): ?string
     {
-        return $this->identity->resolved ? null : $this->identity->getMessage();
+        return $this->inputMigrationError ?? ($this->identity->resolved ? null : $this->identity->getMessage());
     }
 
     /**
@@ -3095,6 +3107,9 @@ class StackInfo
 
     private function getComposeFilePaths(): array
     {
+        if ($this->inputMigrationError !== null) {
+            return array_values(array_filter($this->legacyComposeCandidates, 'is_file'));
+        }
         $legacyFiles = $this->getLegacyComposeFilePaths();
         if ($legacyFiles !== null) {
             return $legacyFiles;
@@ -3194,6 +3209,7 @@ class StackInfo
         if ($files === [] && $this->invalidIndirectPath !== null) {
             return [];
         }
+        $this->legacyComposeCandidates = $files;
         return $this->identity->resolveLegacyComposeFiles($this->path, $files);
     }
 
@@ -3806,6 +3822,9 @@ class StackInfo
      */
     public function buildComposeArgs(): array
     {
+        if ($this->inputMigrationError !== null) {
+            throw new \RuntimeException($this->inputMigrationError);
+        }
         if ($this->identity->origin === 'dcflachs') {
             $envPath = $this->getConfiguredEnvPath();
             if ($envPath !== null && trim($envPath) !== '' && $this->getExplicitEnvFilePath() === null) {
@@ -3855,6 +3874,9 @@ class StackInfo
      */
     public function buildComposeFileList(): string
     {
+        if ($this->inputMigrationError !== null) {
+            throw new \RuntimeException($this->inputMigrationError);
+        }
         if ($this->useDefaultComposeFileDiscovery()) {
             return '';
         }

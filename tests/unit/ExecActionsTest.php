@@ -31,6 +31,7 @@ class ExecActionsTest extends TestCase
     {
         parent::setUp();
         \StackInfo::clearCache();
+        @unlink(COMPOSE_LEGACY_ORIGIN_FILE);
         
         // Create test compose root
         $this->testComposeRoot = sys_get_temp_dir() . '/compose_exec_test_' . getmypid();
@@ -53,6 +54,7 @@ class ExecActionsTest extends TestCase
 
     protected function tearDown(): void
     {
+        @unlink(COMPOSE_LEGACY_ORIGIN_FILE);
         if (is_dir($this->testComposeRoot)) {
             $this->recursiveDelete($this->testComposeRoot);
         }
@@ -126,6 +128,26 @@ class ExecActionsTest extends TestCase
         }
         
         return $stackPath;
+    }
+
+    public function testImportedInputFailureDoesNotHideStackSettings(): void
+    {
+        file_put_contents(COMPOSE_LEGACY_ORIGIN_FILE, \ProjectIdentity::LEGACY_REVISION);
+        $path = $this->createTestStack('repairable', [
+            'docker-compose.yml' => "services: {}\n",
+            'docker-compose.override.yml' => "services: {}\n",
+            'name' => 'repairable',
+        ]);
+        \StackInfo::fromProject($this->testComposeRoot, 'repairable');
+        unlink($path . '/docker-compose.override.yml');
+        \StackInfo::clearCache();
+
+        $response = json_decode($this->executeAction('getStackSettings', ['script' => 'repairable']), true);
+
+        $this->assertSame('success', $response['result']);
+        $this->assertStringContainsString('Migrated Compose input is unavailable', $response['migrationInputError']);
+        $this->assertContains($path . '/docker-compose.yml', $response['editableComposeFiles']);
+        $this->assertFalse(\StackInfo::fromProject($this->testComposeRoot, 'repairable')->hasResolvedIdentity());
     }
 
     /**
