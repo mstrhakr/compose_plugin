@@ -160,8 +160,8 @@ class ProjectIdentityTest extends TestCase
 
         $stack = \StackInfo::fromProject($this->tempRoot, 'moodle-ctgaia2');
 
-        $this->assertFalse($stack->hasResolvedIdentity());
-        $this->assertSame(\ProjectIdentity::CONFLICT_PIN_MISMATCH, $stack->identity->conflictReason);
+        $this->assertTrue($stack->hasResolvedIdentity());
+        $this->assertSame('plus', $stack->identity->origin);
         $this->assertSame('moodle-ctgaia2', file_get_contents($path . '/project_name'));
         $stack->applyIdentityChoice('moodle_ctgaia2');
         $this->assertSame('moodle-ctgaia2', file_get_contents($path . '/project_name.pre-migration'));
@@ -182,7 +182,7 @@ class ProjectIdentityTest extends TestCase
         $this->assertSame('../Other Stack', file_get_contents($path . '/project_name'));
     }
 
-    public function testUnversionedPinCannotBypassOfflineProbe(): void
+    public function testUnversionedStablePinDoesNotRequireDocker(): void
     {
         $path = $this->makeStack('legacy-folder', 'legacy_runtime');
         file_put_contents($path . '/project_name', 'legacy-folder');
@@ -190,13 +190,15 @@ class ProjectIdentityTest extends TestCase
 
         $stack = \StackInfo::fromProject($this->tempRoot, 'legacy-folder');
 
-        $this->assertFalse($stack->hasResolvedIdentity());
+        $this->assertTrue($stack->hasResolvedIdentity());
+        $this->assertSame('legacy-folder', $stack->projectName);
+        $this->assertSame('plus', $stack->identity->origin);
         $this->assertFileDoesNotExist($path . '/' . \ProjectIdentity::STATE_FILE);
         $this->expectException(\RuntimeException::class);
         $stack->applyIdentityChoice('legacy_runtime');
     }
 
-    public function testIncompleteReceiptIsReaudited(): void
+    public function testMismatchedReceiptDoesNotReauditExistingStablePin(): void
     {
         $path = $this->makeStack('legacy-folder', 'legacy_runtime');
         file_put_contents($path . '/project_name', 'legacy-folder');
@@ -205,8 +207,42 @@ class ProjectIdentityTest extends TestCase
 
         $stack = \StackInfo::fromProject($this->tempRoot, 'legacy-folder');
 
-        $this->assertFalse($stack->hasResolvedIdentity());
-        $this->assertSame(\ProjectIdentity::CONFLICT_PIN_MISMATCH, $stack->identity->conflictReason);
+        $this->assertTrue($stack->hasResolvedIdentity());
+        $this->assertSame('legacy-folder', $stack->projectName);
+        $this->assertSame('plus', $stack->identity->origin);
+    }
+
+    public static function stableUpgradeCases(): array
+    {
+        return [['prod-api', false], ['prod__api--', false], ['prod__api--', true]];
+    }
+
+    #[DataProvider('stableUpgradeCases')]
+    public function testStableUpgradePreservesValidPinWithoutProbesOrMetadataWrites(string $runtime, bool $staleLegacyMarker): void
+    {
+        $path = $this->makeStack('folder', 'Renamed Display');
+        file_put_contents($path . '/project_name', $runtime);
+        file_put_contents($path . '/extra_compose_files', 'compose.extra.yaml');
+        file_put_contents($path . '/compose.extra.yaml', "services: {}\n");
+        file_put_contents($path . '/default_profile', 'worker');
+        if ($staleLegacyMarker) {
+            file_put_contents(COMPOSE_LEGACY_ORIGIN_FILE, \ProjectIdentity::LEGACY_REVISION);
+        }
+        \ProjectIdentity::setProbe(function (): array {
+            $this->fail('A normal Plus upgrade must not query migration evidence');
+        });
+
+        foreach (['up', 'down', 'stop', 'pull'] as $action) {
+            \StackInfo::clearCache();
+            $spec = \ComposeCommandBuilder::fromProject($this->tempRoot, 'folder', $action);
+            $this->assertSame($runtime, $spec['projectName']);
+            $this->assertSame([$path . '/docker-compose.yml', $path . '/compose.extra.yaml'], $spec['composeFiles']);
+        }
+        $this->assertSame($runtime, file_get_contents($path . '/project_name'));
+        $this->assertSame('Renamed Display', file_get_contents($path . '/name'));
+        $this->assertSame('worker', file_get_contents($path . '/default_profile'));
+        $this->assertFileDoesNotExist($path . '/' . \ProjectIdentity::STATE_FILE);
+        $this->assertFileDoesNotExist($path . '/project_identity.lock');
     }
 
     public function testFailedReceiptWriteBlocksMutations(): void

@@ -139,6 +139,10 @@ final class ProjectIdentity
      */
     public static function resolve(string $stackPath, string $projectFolder, ?string $displayName): self
     {
+        $persisted = self::persistedIdentity($stackPath, $projectFolder, $displayName);
+        if ($persisted !== null) {
+            return $persisted;
+        }
         $lock = @fopen(rtrim($stackPath, '/') . '/project_identity.lock', 'c');
         if ($lock === false || !flock($lock, LOCK_EX)) {
             if (is_resource($lock)) {
@@ -161,6 +165,10 @@ final class ProjectIdentity
 
     private static function resolveLocked(string $stackPath, string $projectFolder, ?string $displayName): self
     {
+        $persisted = self::persistedIdentity($stackPath, $projectFolder, $displayName);
+        if ($persisted !== null) {
+            return $persisted;
+        }
         $identity = new self();
         $identity->projectFolder = $projectFolder;
         $identity->folderCandidate = compose_manager_sanitize_project_name($projectFolder);
@@ -271,6 +279,33 @@ final class ProjectIdentity
             'identity'
         );
 
+        return $identity;
+    }
+
+    private static function persistedIdentity(string $stackPath, string $projectFolder, ?string $displayName): ?self
+    {
+        $pinned = self::readPinned($stackPath);
+        if ($pinned === null || !compose_manager_is_valid_project_name($pinned)) {
+            return null;
+        }
+        $identity = new self();
+        $identity->projectFolder = $projectFolder;
+        $identity->folderCandidate = compose_manager_sanitize_project_name($projectFolder);
+        $rawLegacy = trim($displayName ?? $projectFolder);
+        $identity->legacyCandidate = strtolower(str_replace(['.', ' ', '-'], '_', $rawLegacy));
+        $identity->candidates = array_values(array_unique([...self::candidateNames($projectFolder, $rawLegacy), $pinned]));
+        $identity->projectName = $pinned;
+        $identity->source = self::SOURCE_PERSISTED;
+        $identity->origin = 'plus';
+        $identity->resolved = true;
+        $raw = @file_get_contents(rtrim($stackPath, '/') . '/' . self::STATE_FILE);
+        $state = is_string($raw) ? json_decode($raw, true) : null;
+        if (is_array($state) && ($state['version'] ?? null) === self::MIGRATION_VERSION
+            && ($state['projectName'] ?? null) === $pinned
+            && in_array($state['origin'] ?? null, ['dcflachs', 'plus', 'unknown'], true)
+            && is_string($state['source'] ?? null)) {
+            $identity->origin = $state['origin'];
+        }
         return $identity;
     }
 
@@ -489,8 +524,8 @@ final class ProjectIdentity
             $state['composeFilesSource'] = $previousState['composeFilesSource'];
         }
         $encoded = json_encode($state, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
-        return is_string($encoded) && self::atomicWrite($file, $projectName)
-            && self::atomicWrite($stateFile, $encoded . "\n");
+        return is_string($encoded) && self::atomicWrite($stateFile, $encoded . "\n")
+            && self::atomicWrite($file, $projectName);
     }
 
     public function resolveLegacyComposeFiles(string $stackPath, array $discovered): array
