@@ -98,6 +98,8 @@ test_setup() {
 @test "compose.sh preserves exact migrated project identity" {
     export -f _mock_docker_compose
     export MOCK_DOCKER_COMPOSE_EXIT
+    export COMPOSE_LOCK_DIR="$TEST_TEMP_DIR/compose-locks"
+    mkdir -p "$COMPOSE_LOCK_DIR"
     run bash "$COMPOSE_SCRIPT" -c stop -p legacy___stack--
 
     assert_success
