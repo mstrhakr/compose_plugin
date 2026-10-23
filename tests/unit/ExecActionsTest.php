@@ -1534,4 +1534,36 @@ class ExecActionsTest extends TestCase
         $this->assertEquals('success', $result['result']);
         $this->assertFalse($result['locked']);
     }
+
+    public function testCheckStackLockUsesExactMigratedProjectIdentity(): void
+    {
+        $path = $this->createTestStack('prod-api', [
+            'name' => 'prod__api',
+            'project_name' => 'prod__api',
+            'project_identity.json' => json_encode([
+                'version' => \ProjectIdentity::MIGRATION_VERSION,
+                'projectName' => 'prod__api',
+                'source' => 'owner',
+                'origin' => 'unknown',
+            ]),
+        ]);
+        $lockDir = $this->testComposeRoot . '/locks';
+        mkdir($lockDir);
+        $GLOBALS['compose_lock_dir'] = $lockDir;
+        $lock = fopen($lockDir . '/prod__api.lock', 'c');
+        $this->assertIsResource($lock);
+        $this->assertTrue(flock($lock, LOCK_EX | LOCK_NB));
+        fwrite($lock, json_encode(['pid' => getmypid(), 'stack' => 'prod__api']));
+        fflush($lock);
+        try {
+            $result = json_decode($this->executeAction('checkStackLock', ['script' => 'prod-api']), true);
+            $this->assertSame('success', $result['result']);
+            $this->assertTrue($result['locked']);
+            $this->assertSame('prod__api', $result['info']['stack']);
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+            unset($GLOBALS['compose_lock_dir']);
+        }
+    }
 }

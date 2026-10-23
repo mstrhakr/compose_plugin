@@ -4599,10 +4599,16 @@ function releaseStackLock($fp)
  * @param string $stackName The stack name/folder
  * @return array|false Lock info if locked, false if not locked
  */
-function isStackLocked($stackName)
+function isStackLocked($stackName, bool $exactProjectName = false)
 {
+    $lockName = $exactProjectName
+        ? trim((string) $stackName)
+        : StackInfo::sanitizeProjectString($stackName);
+    if ($exactProjectName && !compose_manager_is_valid_project_name($lockName)) {
+        return false;
+    }
     $lockDir = getLockDir();
-    $lockFile = "$lockDir/" . StackInfo::sanitizeProjectString($stackName) . ".lock";
+    $lockFile = "$lockDir/" . $lockName . ".lock";
 
     if (!is_file($lockFile)) {
         return false;

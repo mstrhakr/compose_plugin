@@ -2464,7 +2464,14 @@ switch ($_POST['action']) {
             break;
         }
 
-        $lockInfo = isStackLocked($script);
+        try {
+            $stackInfo = StackInfo::fromProject($compose_root, $script);
+        } catch (\Throwable $error) {
+            echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);
+            break;
+        }
+        $lockName = $stackInfo !== null ? $stackInfo->projectName : $script;
+        $lockInfo = isStackLocked($lockName, $stackInfo !== null);
         if ($lockInfo) {
             echo json_encode([
                 'result' => 'success',
