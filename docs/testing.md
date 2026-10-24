@@ -60,6 +60,32 @@ npm test
 
 See `tests/e2e/README.md` for details and safety guardrails.
 
+### Archived Plugin Migration
+
+The ordinary identity tests use temporary stack metadata and injected Docker evidence. Event integration cases execute real scripts against a temporary runtime and fake Docker; scheduler cases verify blocked migrations remain retryable. The opt-in real-Docker matrix creates random `cm183_` projects, then removes their test containers, networks and volumes. Its bind-data case uses a disposable Docker volume's host path, not a user directory. It requires Docker Compose and access to the `alpine:3.20` image.
+
+Run the focused PHP and shell regressions from the repository root:
+
+```bash
+vendor/bin/phpunit --no-coverage --no-logging tests/unit/ProjectIdentityTest.php tests/unit/InstallerCompatibilityTest.php tests/unit/AutoupdateRunnerTest.php tests/unit/AutoupdateTest.php
+bats tests/unit/common.bats tests/unit/compose.bats
+```
+
+Run the isolated resource-continuity test:
+
+```bash
+COMPOSE_MIGRATION_DOCKER_TESTS=1 vendor/bin/phpunit --no-coverage --no-logging --group migration-docker tests/unit/ProjectIdentityTest.php
+```
+
+Run the isolated identity chooser test without a live server or authentication:
+
+```bash
+cd tests/e2e
+npx playwright test tests/compose-ui-operation-flows.spec.ts --grep 'migration identity chooser' --project chromium
+```
+
+See [legacy migration](legacy-migration.md) for the compatibility contract and outstanding release gates.
+
 ## VS Code Integration
 
 The workspace is configured with PHPUnit Test Explorer. After opening the project:
