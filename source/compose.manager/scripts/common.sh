@@ -85,6 +85,7 @@ validate_project_name() {
     local php_cmd="${COMPOSE_MANAGER_PHP:-php}"
     local helper_file
     helper_file="$(dirname "${BASH_SOURCE[0]}")/../include/ProjectNameSanitizer.php"
+    # shellcheck disable=SC2016  # $argv[] are PHP variables, not shell — single quotes are intentional.
     "$php_cmd" -r '
 require_once $argv[1];
 exit(compose_manager_is_valid_project_name((string) ($argv[2] ?? "")) ? 0 : 1);
