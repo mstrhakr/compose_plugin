@@ -4458,6 +4458,71 @@ $(document).on('click', '.compose-identity-choice', function () {
     });
 });
 
+// Owner-triggered Docker check across every stack. Normal action dispatch
+// never probes Docker once a pin exists (the stable-upgrade fast path), so
+// an old bad pin from #183 can still report resolved=true; this explicitly
+// audits every pin against live evidence and offers the same chooser for
+// any mismatch it finds.
+function composeAuditProjectIdentities() {
+    $.post(caURL, { action: 'getProjectIdentities' }, function (data) {
+        var parsed = tryParseJson(data);
+        if (!parsed || parsed.result !== 'success') {
+            swal('Error', (parsed && parsed.message) || 'Failed to audit project identities.', 'error');
+            return;
+        }
+        var flagged = (parsed.identities || []).filter(function (identity) {
+            return identity.canChoose;
+        });
+        if (!flagged.length) {
+            swal('Project identities confirmed', "Every stack's saved project name matches its live Docker resources.", 'success');
+            return;
+        }
+        var html = 'The following stacks need an owner decision:<br><br>';
+        flagged.forEach(function (identity) {
+            html += '<div style="margin-bottom:10px;"><strong>' + composeEscapeHtml(identity.displayName || identity.projectFolder) + '</strong><br>' +
+                composeEscapeHtml(identity.message || '') + '<br>';
+            (identity.candidates || []).forEach(function (candidate) {
+                html += " <button type='button' class='compose-identity-choice' data-project='" + composeEscapeAttr(identity.projectFolder) +
+                    "' data-choice='" + composeEscapeAttr(candidate) + "'>Use project: " + composeEscapeHtml(candidate) + "</button>";
+            });
+            html += '</div>';
+        });
+        swal({
+            title: 'Project identities need attention',
+            text: html,
+            html: true,
+            type: 'warning',
+            showConfirmButton: false,
+            showCancelButton: true,
+            cancelButtonText: 'Close'
+        });
+    });
+}
+
+function composeAddIdentityAuditLauncher() {
+    if ($('#compose-identity-audit-wrap').length) {
+        return;
+    }
+    var launcherHtml = '' +
+        '<div id="compose-identity-audit-wrap" class="ToggleViewMode compose-identity-audit-wrap">' +
+        '<a href="#" class="compose-identity-audit-launcher" title="Check every stack\u2019s saved project identity against live Docker resources" onclick="event.preventDefault(); composeAuditProjectIdentities();">' +
+        '<i class="fa fa-shield" aria-hidden="true"></i>' +
+        '<span>Audit Identities</span>' +
+        '</a>' +
+        '</div>';
+    var $launcher = $(launcherHtml);
+    var $tableWrapper = $('#compose_stacks').closest('.TableContainer');
+    if ($tableWrapper.length) {
+        $tableWrapper.before($launcher);
+    } else if ($('#compose_stacks').length) {
+        $('#compose_stacks').before($launcher);
+    }
+}
+
+$(function () {
+    composeAddIdentityAuditLauncher();
+});
+
 // Returns true (and prompts) when the stack's runtime project identity is
 // unproven, so no compose action should be dispatched.
 function composeIdentityBlocked(path) {

@@ -13,7 +13,7 @@ Migration must preserve existing Docker identity and effective configuration, no
 - Competing stack folders cannot automatically adopt the same runtime identity during migration.
 - Installers atomically capture a `legacy-origin` marker from original runtime code or parsed active/removed manifests. An active Plus manifest takes precedence over stale original files. Confirmed imports preserve the PHP-derived legacy name even when no labelled resources remain.
 - New Plus stacks record their own provenance and do not adopt legacy identities based on display names.
-- A valid existing `project_name` is authoritative Plus metadata: stable/beta updates do not probe Docker, create migration receipts/locks or reinterpret Compose inputs. Suspected old incorrect pins require explicit recovery, not an automatic upgrade audit.
+- A valid existing `project_name` is authoritative Plus metadata: stable/beta updates do not probe Docker, create migration receipts/locks or reinterpret Compose inputs. These pins are *not* automatically blocked pending confirmation. Suspected old incorrect pins require an owner-triggered audit (`getProjectIdentities`/"Audit Identities"), which probes Docker and offers the chooser only when the pin disagrees with live evidence; it never reinterprets a pin on its own.
 - Identity metadata is written under a per-stack lock using atomic file replacement. A versioned `project_identity.json` receipt records name, origin and decision source. Later display renames do not change an audited identity.
 - Replacing a pin preserves its original contents as `project_name.pre-migration`. Migration receipts are published before new pins; failed persistence blocks the initiating migration/repair. A valid preexisting pin is never silently rewritten because its receipt is missing or inconsistent.
 - Confirmed imports recover exact ordered Compose inputs from container `config_files` labels and persist that list in the identity receipt. Conflicting lists, partial evidence on live multi-file stacks and unavailable pinned inputs block actions. New files discovered later do not silently join a pinned list. Explicit Plus file-selection settings opt into normal Plus behavior.
@@ -24,7 +24,7 @@ Migration must preserve existing Docker identity and effective configuration, no
 
 ## Recovery and Limitations
 
-Existing pins predate provenance tracking, so an explicit old choice cannot reliably be distinguished from a bad automatic pin. Those ambiguous repairs require owner confirmation. Never automatically rename containers, volumes, networks, stack folders or display names to resolve this uncertainty.
+Existing pins predate provenance tracking, so an explicit old choice cannot reliably be distinguished from a bad automatic pin. Those ambiguous repairs require owner confirmation via the explicit audit control, not an automatic probe on every page load or action. Never automatically rename containers, volumes, networks, stack folders or display names to resolve this uncertainty.
 
 Working-directory labels can be absent, particularly when only volumes or networks remain. Matching resource names then remain weaker evidence. No automatic algorithm can reconstruct an arbitrarily renamed historical project from a lost metadata directory.
 

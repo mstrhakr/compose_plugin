@@ -217,6 +217,47 @@ class ExecActionsTest extends TestCase
         \ProjectIdentity::setProbe(static fn(): array => []);
     }
 
+    public function testExplicitProjectFolderSelectionClearsStaleInvalidMarkerWhenTargetWasAlreadyEmpty(): void
+    {
+        $path = $this->createTestStack('invalid-folder', [
+            'indirect.invalid' => '/mnt/missing/path',
+        ]);
+
+        $saved = json_decode($this->executeAction('setStackSettings', [
+            'script' => 'invalid-folder', 'externalComposePath' => '', 'externalComposeFilePath' => '',
+        ]), true);
+
+        $this->assertSame('success', $saved['result']);
+        $this->assertFileDoesNotExist($path . '/indirect.invalid');
+    }
+
+    public function testResubmittingUnchangedExternalPathClearsStaleInvalidMarkerWithoutDiscardingFileOrder(): void
+    {
+        $fixture = $this->createAllowedSymlinkedPathFixture();
+        $source = $fixture['target'];
+        $files = [$source . '/docker-compose.yml'];
+        file_put_contents($files[0], "services: {}\n");
+        $path = $this->createTestStack('restored-source', [
+            'indirect' => $source,
+            'indirect.invalid' => $source,
+        ]);
+        \ProjectIdentity::setProbe(static fn(): ?array => \ProjectIdentity::parseProbeOutput('containers ' . json_encode([
+            'project' => 'restored-source', 'workingDir' => $source, 'configFiles' => implode(',', $files),
+        ]) . "\n__rc=0"));
+        \StackInfo::fromProject($this->testComposeRoot, 'restored-source');
+
+        $saved = json_decode($this->executeAction('setStackSettings', [
+            'script' => 'restored-source', 'externalComposePath' => $source, 'externalComposeFilePath' => '',
+        ]), true);
+
+        $this->assertSame('success', $saved['result']);
+        $this->assertFileDoesNotExist($path . '/indirect.invalid');
+        $this->assertSame($source, file_get_contents($path . '/indirect'));
+        \StackInfo::clearCache();
+        $this->assertSame($files, \StackInfo::fromProject($this->testComposeRoot, 'restored-source')->buildComposeArgs()['filePaths']);
+        \ProjectIdentity::setProbe(static fn(): array => []);
+    }
+
     /**
      * Prepare a symlink path under an allowed root (/mnt or /boot/config).
      *

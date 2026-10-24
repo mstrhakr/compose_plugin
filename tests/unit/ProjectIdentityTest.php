@@ -170,6 +170,42 @@ class ProjectIdentityTest extends TestCase
         $this->assertSame('owner', $state['source']);
     }
 
+    public function testAuditAgainstRuntimeExposesRecoveryForExistingBadPin(): void
+    {
+        $path = $this->makeStack('moodle-ctgaia2', 'moodle-ctgaia2');
+        file_put_contents($path . '/project_name', 'moodle-ctgaia2');
+        \ProjectIdentity::setProbe(fn(): array => $this->containers(['moodle_ctgaia2' => 3]));
+
+        $stack = \StackInfo::fromProject($this->tempRoot, 'moodle-ctgaia2');
+
+        // The stable-upgrade fast path still reports this as resolved with no chooser...
+        $this->assertTrue($stack->hasResolvedIdentity());
+        $this->assertFalse($stack->identity->toArray()['canChoose']);
+
+        // ...but an explicit, owner-triggered audit surfaces the mismatch.
+        $audit = $stack->identity->auditAgainstRuntime();
+        $this->assertTrue($audit['canChoose']);
+        $this->assertSame(\ProjectIdentity::CONFLICT_PIN_MISMATCH, $audit['conflictReason']);
+        $this->assertContains('moodle_ctgaia2', $audit['candidates']);
+
+        // Applying the recovered candidate still goes through the normal choice path.
+        $stack->applyIdentityChoice('moodle_ctgaia2');
+        $this->assertSame('moodle_ctgaia2', file_get_contents($path . '/project_name'));
+    }
+
+    public function testAuditAgainstRuntimeConfirmsMatchingPinWithoutChooser(): void
+    {
+        $path = $this->makeStack('folder', 'folder');
+        file_put_contents($path . '/project_name', 'folder');
+        \ProjectIdentity::setProbe(fn(): array => $this->containers(['folder' => 2]));
+
+        $stack = \StackInfo::fromProject($this->tempRoot, 'folder');
+        $audit = $stack->identity->auditAgainstRuntime();
+
+        $this->assertFalse($audit['canChoose']);
+        $this->assertNull($audit['conflictReason']);
+    }
+
     public function testInvalidPinBlocksRatherThanChangingIdentity(): void
     {
         $path = $this->makeStack('stack', 'stack');
@@ -364,6 +400,30 @@ class ProjectIdentityTest extends TestCase
             $this->fail('Persisted file order must not depend on a later Docker probe');
         });
         $this->assertSame($files, \ComposeCommandBuilder::fromProject($this->tempRoot, 'legacy-stack', 'up')['composeFiles']);
+    }
+
+    public function testExplicitlySavedOverrideIsRegisteredIntoFrozenComposeInputList(): void
+    {
+        [$path, $files] = $this->makeOrderedIndirectImport();
+        \ProjectIdentity::setProbe(fn(): ?array => \ProjectIdentity::parseProbeOutput($this->configEvidence($files) . "\n__rc=0"));
+        $spec = \ComposeCommandBuilder::fromProject($this->tempRoot, 'legacy-stack', 'up');
+        $this->assertSame($files, $spec['composeFiles']);
+
+        // Save a project override the original migration snapshot never saw.
+        $overridePath = $path . '/docker-compose.override.yml';
+        file_put_contents($overridePath, "services: {}\n");
+        \StackInfo::clearCache();
+        $stack = \StackInfo::fromProject($this->tempRoot, 'legacy-stack');
+        $this->assertNotContains($overridePath, $stack->getEditableComposeFiles());
+
+        $stack->identity->registerComposeFile($path, $overridePath);
+        \StackInfo::clearCache();
+        $stack = \StackInfo::fromProject($this->tempRoot, 'legacy-stack');
+
+        $this->assertContains($overridePath, $stack->getEditableComposeFiles());
+        $this->assertSame([...$files, $overridePath], \ComposeCommandBuilder::fromProject($this->tempRoot, 'legacy-stack', 'up')['composeFiles']);
+        $state = json_decode(file_get_contents($path . '/' . \ProjectIdentity::STATE_FILE), true);
+        $this->assertContains($overridePath, $state['composeFiles']);
     }
 
     public function testConflictingRuntimeComposeOrdersBlockMutation(): void

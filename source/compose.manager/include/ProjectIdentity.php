@@ -392,6 +392,101 @@ final class ProjectIdentity
     }
 
     /**
+     * Register an explicitly saved file into a frozen migrated Compose input list.
+     *
+     * `resolveLegacyComposeFiles()` freezes the historical file order the
+     * first time it is pinned, by design: later directory contents never
+     * silently join it. Saving a new override through the Labels/override
+     * editor writes a real file outside that discovery, though, and it must
+     * not be dropped from every later command just because it postdates the
+     * migration snapshot. This updates the receipt in place; it is a no-op
+     * for stacks with no pinned Compose input list, or when the file is
+     * already registered.
+     */
+    public function registerComposeFile(string $stackPath, string $file): void
+    {
+        $registry = self::lockRegistry($stackPath);
+        $lock = $registry === false ? false : @fopen(rtrim($stackPath, '/') . '/project_identity.lock', 'c');
+        if ($lock === false) {
+            if (is_resource($registry)) {
+                fclose($registry);
+            }
+            return;
+        }
+        try {
+            if (!flock($lock, LOCK_EX)) {
+                return;
+            }
+            if (self::readPinned($stackPath) !== $this->projectName) {
+                return;
+            }
+            $stateFile = rtrim($stackPath, '/') . '/' . self::STATE_FILE;
+            $raw = @file_get_contents($stateFile);
+            $state = is_string($raw) ? json_decode($raw, true) : null;
+            if (!is_array($state) || ($state['projectName'] ?? null) !== $this->projectName
+                || !array_key_exists('composeFiles', $state) || !is_array($state['composeFiles'])
+                || in_array($file, $state['composeFiles'], true)) {
+                return;
+            }
+            $state['composeFiles'][] = $file;
+            $encoded = json_encode($state, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+            if (is_string($encoded)) {
+                self::atomicWrite($stateFile, $encoded . "\n");
+            }
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+            if (is_resource($registry)) {
+                fclose($registry);
+            }
+        }
+    }
+
+    /**
+     * Owner-triggered recovery check for an already-pinned identity.
+     *
+     * `resolve()`/`toArray()` never probe Docker once a pin exists — that is
+     * the intentional stable-upgrade fast path. Old pins mis-migrated before
+     * provenance tracking existed (#183) still report `resolved: true` and
+     * `canChoose: false`, so the owner has no way to recover them. This is an
+     * explicit, on-demand check: it probes live Docker evidence and, only
+     * when the pin disagrees with it, surfaces the real candidate with
+     * `canChoose: true` so the existing chooser can offer it. It never
+     * changes the persisted identity itself; `chooseIdentity()` still does
+     * that.
+     *
+     * @return array<string, mixed> Same shape as toArray()
+     */
+    public function auditAgainstRuntime(): array
+    {
+        $result = $this->toArray();
+        if ($this->source !== self::SOURCE_PERSISTED) {
+            return $result;
+        }
+        self::clearProbeCache();
+        $probe = self::probe();
+        if ($probe === null) {
+            return $result;
+        }
+        $owners = [];
+        $evidence = [];
+        foreach ($this->candidates as $candidate) {
+            $evidence[$candidate] = self::countsFor($probe, $candidate);
+            if (self::hasResources($evidence[$candidate])) {
+                $owners[] = $candidate;
+            }
+        }
+        $result['evidence'] = $evidence;
+        if (count($owners) === 1 && $owners[0] !== $this->projectName) {
+            $result['canChoose'] = true;
+            $result['conflictReason'] = self::CONFLICT_PIN_MISMATCH;
+            $result['message'] = "The saved project name '$this->projectName' owns no Docker resources, but "
+                . "'{$owners[0]}' does. Choose the existing runtime identity before running any action.";
+        }
+        return $result;
+    }
+
+    /**
      * Human-readable summary for the migration preview and UI warnings.
      *
      * @return array<string, mixed>

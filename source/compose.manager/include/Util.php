@@ -3117,6 +3117,14 @@ class StackInfo
                     $legacyFiles[] = $extraFile;
                 }
             }
+            // Explicitly saved overrides are registered into the frozen list
+            // itself (see registerComposeFile()); this only adds the
+            // generated icon-normalization layer, which is derived content
+            // rather than a Compose input and so is never part of that list.
+            $iconNormalizePath = $this->getIconNormalizationOverridePath();
+            if ($iconNormalizePath !== null && !in_array($iconNormalizePath, $legacyFiles, true)) {
+                $legacyFiles[] = $iconNormalizePath;
+            }
             return $legacyFiles;
         }
         $paths = [];

@@ -845,6 +845,11 @@ switch ($_POST['action']) {
         }
 
         file_put_contents($overridePath, $scriptContents);
+        // A migrated stack's historical Compose input list is otherwise
+        // frozen; without this, a newly saved override would never be
+        // passed to compose on later start/update commands.
+        $stackInfo->identity->registerComposeFile($stackInfo->path, $overridePath);
+        StackInfo::clearCache();
         echo "$overridePath saved";
         break;
     case 'clearIconCache':
@@ -1731,7 +1736,16 @@ switch ($_POST['action']) {
         }
 
         if ($isGitStack || !$sourceSelectionChanged) {
-            // Left as they are (see above).
+            // Left as they are (see above), but an explicitly (re-)submitted
+            // source already passed the validation above, so a stale
+            // `indirect.invalid` marker must not survive just because the
+            // target text itself is unchanged (e.g. the project folder was
+            // already implicit, or the same restored external path was
+            // resubmitted). Do not otherwise treat this as a new selection:
+            // the pinned Compose file order must stay untouched.
+            if (!$isGitStack && $sourceSelectionProvided && is_file($invalidIndirectFile)) {
+                @unlink($invalidIndirectFile);
+            }
         } elseif ($indirectTarget === '') {
             // Removing indirect: move compose file back to project folder if it only exists externally
             if (is_file($indirectFile)) {
@@ -2807,20 +2821,23 @@ switch ($_POST['action']) {
         break;
 
     case 'getProjectIdentities':
-        // Read-only migration preview: folder, display name, effective runtime
-        // project, live-container match, and whether owner input is required.
+        // Owner-triggered migration audit: folder, display name, effective
+        // runtime project, and whether owner input is required. Unlike normal
+        // action dispatch, this explicitly probes Docker for already-pinned
+        // identities, so an old bad pin from #183 can still be recovered.
         $identities = [];
         foreach (StackInfo::allFromRoot($compose_root, true) as $stackInfo) {
-            $identity = $stackInfo->identity->toArray();
+            $identity = $stackInfo->identity->auditAgainstRuntime();
             $identity['displayName'] = $stackInfo->getName();
             $identities[] = $identity;
         }
         echo json_encode([
             'result' => 'success',
             'identities' => $identities,
-            'blocked' => count(array_filter($identities, static fn(array $i): bool => !$i['resolved'])),
+            'blocked' => count(array_filter($identities, static fn(array $i): bool => !$i['resolved'] || !empty($i['conflictReason']))),
         ]);
         break;
+
 
     case 'setProjectIdentity':
         // Owner decision for a stack whose runtime identity could not be proven.
