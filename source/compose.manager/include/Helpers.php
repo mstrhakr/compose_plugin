@@ -302,6 +302,8 @@ function echoComposeCommand($action, array $options = [])
                 'project' => $stackInfo->projectFolder,
                 'folderCandidate' => $stackInfo->identity->folderCandidate,
                 'legacyCandidate' => $stackInfo->identity->legacyCandidate,
+                'candidates' => $stackInfo->identity->candidates,
+                'canChoose' => $stackInfo->identity->toArray()['canChoose'],
                 'message' => $stackInfo->getIdentityBlockReason(),
             ]);
             return;
@@ -556,6 +558,8 @@ function echoGitDeployCommand(array $options = []): void
             'project' => $stack->projectFolder,
             'folderCandidate' => $stack->identity->folderCandidate,
             'legacyCandidate' => $stack->identity->legacyCandidate,
+            'candidates' => $stack->identity->candidates,
+            'canChoose' => $stack->identity->toArray()['canChoose'],
             'message' => $stack->getIdentityBlockReason(),
         ]);
         return;
