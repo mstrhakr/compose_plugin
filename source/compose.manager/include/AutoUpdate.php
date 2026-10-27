@@ -144,7 +144,14 @@ switch ($action) {
             break;
         }
         // Resolve project name - always use compose-safe sanitized projectName.
-        $stackInfo = StackInfo::fromComposePath($compose_root, $path);
+        try {
+            $stackInfo = StackInfo::fromComposePath($compose_root, $path);
+        } catch (\Throwable $error) {
+            composeLogger('Blocked manual auto-update: ' . $error->getMessage(), ['path' => $path], 'user', 'warning', 'autoupdate');
+            http_response_code(409);
+            echo json_encode(['error' => $error->getMessage()]);
+            break;
+        }
         if ($stackInfo !== null) {
             if (!$stackInfo->hasResolvedIdentity()) {
                 composeLogger(
@@ -171,8 +178,15 @@ switch ($action) {
 
         $script = $plugin_root . "scripts/compose_autoupdate.sh";
         if ($stackInfo !== null) {
-            $args = $stackInfo->buildComposeArgs();
-            $composeFileList = $stackInfo->buildComposeFileList();
+            try {
+                $args = $stackInfo->buildComposeArgs();
+                $composeFileList = $stackInfo->buildComposeFileList();
+            } catch (\Throwable $error) {
+                composeLogger('Blocked manual auto-update: ' . $error->getMessage(), ['path' => $path], 'user', 'warning', 'autoupdate');
+                http_response_code(409);
+                echo json_encode(['error' => $error->getMessage()]);
+                break;
+            }
             $envFilePath = $args['envFilePath'] ?? null;
             $projectDirectory = $args['projectDirectory'];
             $credentialId = $stackInfo->getCredentialId();

@@ -280,9 +280,8 @@ fi
 # which is the behavior the project was validated against.
 compose_base=(docker compose "${env_args[@]}" "${file_args[@]}" "${profile_args[@]}")
 
-# Canonicalize project name through shared PHP sanitizer.
-if ! name=$(canonicalize_project_name "$name"); then
-  log_msg "ERROR" "Could not canonicalize project name"
+if ! validate_project_name "$name"; then
+  log_msg "ERROR" "Invalid resolved project name"
   exit 1
 fi
 

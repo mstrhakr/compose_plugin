@@ -45,6 +45,24 @@
 <!-- The 'pre-install' script. -->
 <FILE Run="/bin/bash">
 <INLINE>
+if [ ! -f &emhttpLOC;/include/ProjectIdentity.php ] &amp;&amp; php -r '
+libxml_use_internal_errors(true);
+foreach (array_slice($argv, 1, 2) as $manifest) {
+    if (!is_file($manifest)) continue;
+    $plugin = simplexml_load_file($manifest, SimpleXMLElement::class, LIBXML_NONET);
+    if ($plugin === false) exit(1);
+    exit((string) $plugin["name"] === "compose.manager" &amp;&amp; (string) $plugin["author"] === "dcflachs" ? 0 : 1);
+}
+exit(is_file($argv[3]) ? 0 : 1);
+' /boot/config/plugins/compose.manager.plg /boot/config/plugins-removed/compose.manager.plg &emhttpLOC;/php/util.php; then
+    mkdir -p &pluginLOC; || exit 1
+    origin_tmp=$(mktemp &pluginLOC;/.legacy-origin.XXXXXX) || exit 1
+    if ! printf '%s\n' 'dcflachs' &gt; "$origin_tmp" || ! mv -f "$origin_tmp" &pluginLOC;/legacy-origin; then
+        rm -f "$origin_tmp"
+        exit 1
+    fi
+fi
+
 # Remove all but current package file and ace zip from plugin root
 rm -f $(ls &pluginLOC;/&name;*.txz 2>/dev/null|grep -v '&packageVER;')
 rm -f $(ls &pluginLOC;/ace-v*.zip 2>/dev/null|grep -v '&aceZIP;')

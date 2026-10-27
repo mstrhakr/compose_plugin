@@ -2144,6 +2144,9 @@ class StackInfo
     public string $projectName;
     /** @var ProjectIdentity Resolved (and pinned) runtime project identity */
     public ProjectIdentity $identity;
+    public ?string $inputMigrationError = null;
+    /** @var list<string> */
+    private array $legacyComposeCandidates = [];
     /** @var string Display name (from ./name) */
     public string $displayName;
     /** @var string Full path to the stack directory ($composeRoot/$project) */
@@ -2251,9 +2254,23 @@ class StackInfo
             $this->invalidIndirectPath = $this->indirectPath;
         }
 
+        try {
+            $legacyFiles = $this->getLegacyComposeFilePaths();
+            if ($legacyFiles !== null) {
+                $this->composeFilePath = $legacyFiles[0] ?? null;
+                if ($legacyFiles !== [] && $this->readInvalidIndirect() === null) {
+                    $this->invalidIndirectPath = null;
+                }
+            }
+        } catch (\RuntimeException $error) {
+            $this->inputMigrationError = $error->getMessage();
+            $this->composeFilePath = $this->legacyComposeCandidates[0] ?? $this->composeFilePath;
+            composeLogger('Imported stack inputs need repair', ['project' => $projectFolder, 'error' => $error->getMessage()], 'user', 'warning', 'migration');
+        }
+
         // Resolve compose file
         if ($this->composeFilePath === null) {
-            if ($this->invalidIndirectPath !== null) {
+            if ($this->invalidIndirectPath !== null || $this->inputMigrationError !== null) {
                 // Stack has a broken indirect reference — allow degraded construction
                 // so the user can fix it in the Settings editor.
                 composeLogger('Preparing degraded stack load due to invalid indirect path', [
@@ -2562,6 +2579,9 @@ class StackInfo
     public function getDisplayName(): string
     {
         $displayName = $this->readMetadata('name') ?? null;
+        if ($displayName === null && ProjectIdentity::hasLegacyOrigin()) {
+            $displayName = $this->readMetadata('Name');
+        }
         if ($displayName === null || $displayName === '') {
             // If no display name is set, initialize it from the project folder name.
             $displayName = $this->projectFolder;
@@ -2594,7 +2614,7 @@ class StackInfo
      */
     public function hasResolvedIdentity(): bool
     {
-        return $this->identity->resolved;
+        return $this->identity->resolved && $this->inputMigrationError === null;
     }
 
     /**
@@ -2602,7 +2622,7 @@ class StackInfo
      */
     public function getIdentityBlockReason(): ?string
     {
-        return $this->identity->resolved ? null : $this->identity->getMessage();
+        return $this->inputMigrationError ?? ($this->identity->resolved ? null : $this->identity->getMessage());
     }
 
     /**
@@ -2682,7 +2702,7 @@ class StackInfo
      */
     public function getEnvFilePath(): ?string
     {
-        $val = $this->readMetadata('envpath');
+        $val = $this->getConfiguredEnvPath();
         if ($val === null || $val === '') {
             return $this->isGitStack() ? $this->gitStackDefaultEnvPath() : null;
         }
@@ -2734,7 +2754,7 @@ class StackInfo
      */
     private function getExplicitEnvFilePath(): ?string
     {
-        $rawEnvPath = $this->readMetadata('envpath');
+        $rawEnvPath = $this->getConfiguredEnvPath();
         if ($rawEnvPath === null) {
             return null;
         }
@@ -2764,6 +2784,14 @@ class StackInfo
         ], 'user', 'debug', 'stack');
         composeLogger("Ignoring invalid envpath for stack $this->projectFolder: file not found", ['envpath' => $rawEnvPath], 'user', 'warning', 'stack');
         return null;
+    }
+
+    public function getConfiguredEnvPath(): ?string
+    {
+        $path = $this->readMetadata('envpath');
+        return $path === null && $this->identity->origin === 'dcflachs'
+            ? ($this->readMetadata('envPath') ?? $this->readMetadata('envToUse'))
+            : $path;
     }
 
     /**
@@ -3079,6 +3107,26 @@ class StackInfo
 
     private function getComposeFilePaths(): array
     {
+        if ($this->inputMigrationError !== null) {
+            return array_values(array_filter($this->legacyComposeCandidates, 'is_file'));
+        }
+        $legacyFiles = $this->getLegacyComposeFilePaths();
+        if ($legacyFiles !== null) {
+            foreach ($this->getExtraComposeFiles() as $extraFile) {
+                if (!in_array($extraFile, $legacyFiles, true)) {
+                    $legacyFiles[] = $extraFile;
+                }
+            }
+            // Explicitly saved overrides are registered into the frozen list
+            // itself (see registerComposeFile()); this only adds the
+            // generated icon-normalization layer, which is derived content
+            // rather than a Compose input and so is never part of that list.
+            $iconNormalizePath = $this->getIconNormalizationOverridePath();
+            if ($iconNormalizePath !== null && !in_array($iconNormalizePath, $legacyFiles, true)) {
+                $legacyFiles[] = $iconNormalizePath;
+            }
+            return $legacyFiles;
+        }
         $paths = [];
         $mainComposeFile = $this->composeFilePath ?? ($this->composeSource . '/' . COMPOSE_FILE_NAMES[0]);
         $paths[] = $mainComposeFile;
@@ -3133,6 +3181,47 @@ class StackInfo
         }
 
         return $normalized;
+    }
+
+    private function getLegacyComposeFilePaths(): ?array
+    {
+        if ($this->identity->origin !== 'dcflachs' || $this->isGitStack()
+            || $this->readMetadata('compose_input_mode') === 'plus') {
+            return null;
+        }
+        $files = [];
+        if ($this->isIndirect) {
+            if (!is_dir($this->composeSource)) {
+                return [];
+            }
+            $directory = @opendir($this->composeSource);
+            if ($directory === false) {
+                return [];
+            }
+            try {
+                while (($entry = readdir($directory)) !== false) {
+                    $path = $this->composeSource . '/' . $entry;
+                    if (fnmatch('*compose*.yml', $entry) && is_file($path) && !is_link($path)) {
+                        $files[] = $path;
+                    }
+                }
+            } finally {
+                closedir($directory);
+            }
+        } elseif (is_file($this->path . '/docker-compose.yml')) {
+            $files[] = $this->path . '/docker-compose.yml';
+        } elseif (is_file($this->path . '/compose.yml')) {
+            $files[] = $this->path . '/compose.yml';
+        }
+        $override = $this->path . '/docker-compose.override.yml';
+        if ($files !== [] && is_file($override) && !in_array($override, $files, true)) {
+            $files[] = $override;
+        }
+        if ($files === [] && $this->invalidIndirectPath !== null) {
+            return [];
+        }
+        $this->legacyComposeCandidates = $files;
+        return $this->identity->resolveLegacyComposeFiles($this->path, $files);
     }
 
     /**
@@ -3744,6 +3833,19 @@ class StackInfo
      */
     public function buildComposeArgs(): array
     {
+        if ($this->inputMigrationError !== null) {
+            throw new \RuntimeException($this->inputMigrationError);
+        }
+        if ($this->identity->origin === 'dcflachs') {
+            $envPath = $this->getConfiguredEnvPath();
+            if ($envPath !== null && trim($envPath) !== '' && $this->getExplicitEnvFilePath() === null) {
+                throw new \RuntimeException('The imported stack env file is unavailable. Restore it before running any action.');
+            }
+            if (($this->readMetadata('indirect') !== null && !$this->isIndirect)
+                || $this->invalidIndirectPath !== null || $this->getComposeFilePaths() === []) {
+                throw new \RuntimeException('The imported stack Compose source is unavailable. Restore it before running any action.');
+            }
+        }
         $useDefaultDiscovery = $this->useDefaultComposeFileDiscovery();
         $files = $this->buildComposeFileFlags();
         $envFile = $this->buildEnvFileFlag();
@@ -3783,6 +3885,9 @@ class StackInfo
      */
     public function buildComposeFileList(): string
     {
+        if ($this->inputMigrationError !== null) {
+            throw new \RuntimeException($this->inputMigrationError);
+        }
         if ($this->useDefaultComposeFileDiscovery()) {
             return '';
         }
@@ -4037,10 +4142,7 @@ class StackInfo
         // Pin the runtime identity up front. Without this a collision-suffixed
         // folder (my-stack-001) would look like a legacy stack whose display
         // name resolves to an existing project (my-stack) and could adopt it.
-        file_put_contents(
-            $path . '/' . ProjectIdentity::METADATA_FILE,
-            self::sanitizeProjectString(basename($path))
-        );
+        ProjectIdentity::initializeNew($path, self::sanitizeProjectString(basename($path)));
         if ($description !== '') {
             file_put_contents("$path/description", $description);
         }
@@ -4406,26 +4508,28 @@ class StackInfo
      */
     public static function fromComposePath(string $composeRoot, string $composePath): ?self
     {
-        // Static cache: [composeRoot => [composeSourcePath => StackInfo]]
-        static $cacheByRoot = [];
-
         $composeRoot = rtrim($composeRoot, '/');
         $normalizedPath = rtrim($composePath, '/');
-
-        if (isset($cacheByRoot[$composeRoot])) {
-            return $cacheByRoot[$composeRoot][$normalizedPath] ?? null;
-        }
-
-        $cacheByRoot[$composeRoot] = [];
-
-        foreach (self::allFromRoot($composeRoot) as $stackInfo) {
-            $sourcePath = rtrim($stackInfo->composeSource, '/');
-            if ($sourcePath !== '') {
-                $cacheByRoot[$composeRoot][$sourcePath] = $stackInfo;
+        $matches = [];
+        foreach (self::listProjectFolders($composeRoot) as $folder) {
+            $stackPath = $composeRoot . '/' . $folder;
+            $sources = [$stackPath];
+            $indirect = @file_get_contents($stackPath . '/indirect');
+            if (is_string($indirect) && trim($indirect) !== '') {
+                $target = trim($indirect);
+                $sources[] = is_file($target) || preg_match('/\.ya?ml$/i', $target) === 1 ? dirname($target) : $target;
+            }
+            foreach ($sources as $source) {
+                if ($normalizedPath === rtrim($source, '/') || Path::refersToSamePath($normalizedPath, $source)) {
+                    $matches[] = $folder;
+                    break;
+                }
             }
         }
-
-        return $cacheByRoot[$composeRoot][$normalizedPath] ?? null;
+        if (count($matches) > 1) {
+            throw new \RuntimeException('Multiple managed stacks use this Compose path. Select a stack explicitly.');
+        }
+        return $matches === [] ? null : self::fromProject($composeRoot, $matches[0]);
     }
 }
 
@@ -4503,10 +4607,16 @@ function releaseStackLock($fp)
  * @param string $stackName The stack name/folder
  * @return array|false Lock info if locked, false if not locked
  */
-function isStackLocked($stackName)
+function isStackLocked($stackName, bool $exactProjectName = false)
 {
+    $lockName = $exactProjectName
+        ? trim((string) $stackName)
+        : StackInfo::sanitizeProjectString($stackName);
+    if ($exactProjectName && !compose_manager_is_valid_project_name($lockName)) {
+        return false;
+    }
     $lockDir = getLockDir();
-    $lockFile = "$lockDir/" . StackInfo::sanitizeProjectString($stackName) . ".lock";
+    $lockFile = "$lockDir/" . $lockName . ".lock";
 
     if (!is_file($lockFile)) {
         return false;

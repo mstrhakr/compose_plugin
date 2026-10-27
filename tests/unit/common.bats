@@ -74,6 +74,23 @@ assert_canonical_case() {
     [[ "$output" == "stack-one" ]]
 }
 
+@test "validate_project_name accepts exact legacy separators" {
+    source "$COMMON_SCRIPT"
+
+    run validate_project_name "legacy___stack--"
+
+    assert_success
+}
+
+@test "validate_project_name rejects unsafe or invalid runtime identities" {
+    source "$COMMON_SCRIPT"
+
+    for identity in "" "Legacy" "stack name" "../stack" "-stack" "stack;echo"; do
+        run validate_project_name "$identity"
+        assert_failure
+    done
+}
+
 @test "canonicalize_project_name collapses repeated separators" {
     # shellcheck disable=SC1090
     source "$COMMON_SCRIPT"
