@@ -122,6 +122,30 @@ final class GitStackWebActions
     }
 
     /**
+     * Choose whether a deploy that changes the stack's folder recreates every
+     * container (Sources tab), as compose-git recreate-on-folder-change does.
+     *
+     * @param string $recreateOnFolderChange 'true' or 'false', as the browser sends it
+     * @return array<string, mixed>
+     */
+    public function setRecreateOnFolderChange(string $folder, string $recreateOnFolderChange): array
+    {
+        if ($recreateOnFolderChange !== 'true' && $recreateOnFolderChange !== 'false') {
+            return ['result' => 'error', 'message' => "The setting must be true or false, not '$recreateOnFolderChange'."];
+        }
+        $messages = [];
+        $manager = new GitStackManager($this->composeRoot, static function (string $message) use (&$messages): void {
+            $messages[] = $message;
+        });
+        try {
+            $manager->setRecreateOnFolderChange($folder, $recreateOnFolderChange === 'true');
+        } catch (Throwable $error) {
+            return ['result' => 'error', 'message' => $error->getMessage()];
+        }
+        return ['result' => 'success', 'messages' => $messages];
+    }
+
+    /**
      * Clear a stack's failed deploy (stack menu), as compose-git resume does.
      *
      * @return array<string, mixed>

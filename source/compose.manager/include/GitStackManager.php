@@ -571,6 +571,30 @@ final class GitStackManager
     }
 
     /**
+     * Choose whether a deploy that changes anything in the stack's folder in the
+     * repository recreates every container of the stack (on, the default), or
+     * leaves it to docker compose up, which recreates only the containers whose
+     * compose definition changed (off).
+     *
+     * @throws RuntimeException naming why nothing was changed
+     */
+    public function setRecreateOnFolderChange(string $folder, bool $recreateOnFolderChange): void
+    {
+        $this->assertArrayStarted();
+        $stack = $this->stack($folder);
+        // Fail with "not a git stack" before trying the lock, as the other settings changes do.
+        $this->settings($stack);
+
+        // Read the settings again under the lock, so a change another operation saved meanwhile is kept.
+        $this->withStackLock($stack, function () use ($stack, $recreateOnFolderChange): void {
+            $this->settings($stack)->withRecreateOnFolderChange($recreateOnFolderChange)->save($stack->path);
+        });
+        ($this->say)($recreateOnFolderChange
+            ? "A deploy that changes anything in the folder of '$folder' recreates every container of the stack."
+            : "A deploy of '$folder' recreates only the containers whose compose definition changed.");
+    }
+
+    /**
      * Clear a git stack's failed deploy, so the scheduled check deploys it again.
      *
      * After a failed deploy the stack is paused: the scheduled check leaves it

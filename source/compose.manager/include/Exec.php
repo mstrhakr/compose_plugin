@@ -1371,6 +1371,14 @@ switch ($_POST['action']) {
         }
         echo json_encode((new GitStackWebActions($compose_root))->setAutoDeploy($script, trim((string) ($_POST['autoDeploy'] ?? ''))));
         break;
+    case 'setGitRecreateOnFolderChange':
+        $script = getPostScript();
+        if (!$script) {
+            echo json_encode(['result' => 'error', 'message' => 'Stack not specified.']);
+            break;
+        }
+        echo json_encode((new GitStackWebActions($compose_root))->setRecreateOnFolderChange($script, trim((string) ($_POST['recreateOnFolderChange'] ?? ''))));
+        break;
     case 'resumeGitStack':
         $script = getPostScript();
         if (!$script) {

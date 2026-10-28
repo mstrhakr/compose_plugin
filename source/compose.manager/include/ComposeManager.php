@@ -654,6 +654,14 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                                 <span id="settings-git-auto-deploy-saved" class="compose-text-muted" style="display:none;margin-left:8px;"></span>
                                 <div class="settings-field-help">Checked every 15 minutes. Saved as soon as it is changed. A failed deploy pauses automatic deploys until a deploy works, or Resume Automatic Deploys in the stack menu.</div>
                             </div>
+                            <div style="margin-top:10px;">
+                                <label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal;">
+                                    <input type="checkbox" id="settings-git-recreate-on-folder-change" onchange="saveGitRecreateOnFolderChange(this.checked)">
+                                    <span>Recreate every container when a deploy changes this stack's folder in the repository</span>
+                                </label>
+                                <span id="settings-git-recreate-on-folder-change-saved" class="compose-text-muted" style="display:none;margin-left:8px;"></span>
+                                <div class="settings-field-help">So a changed config file that a container mounts takes effect. Unchecked, a deploy recreates only the containers whose compose definition changed, also after local changes were discarded. Saved as soon as it is changed; applies from the next deploy.</div>
+                            </div>
                             <div id="settings-git-local-changes" class="compose-git-warning-box" style="display:none;margin-top:8px;"></div>
                             <div id="settings-git-problem" class="compose-status-danger" style="display:none;margin-top:8px;"></div>
                             <div id="settings-git-deploy-key-wrap" style="display:none;margin-top:8px;">
