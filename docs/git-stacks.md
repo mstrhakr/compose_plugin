@@ -232,6 +232,7 @@ later plain `deploy` brings the stack back to the branch's latest.
 | Stack menu, **Deploy Commit...** | Deploy a commit given by its full id, to go back to an older version. | `deploy --commit` |
 | Edit Stack, Sources tab | Shows the repository, branch, compose file, clone, the deployed and checked-out commits, a failed commit, files changed in the clone (also shown above the file on the Compose tab), and an ssh stack's deploy key. | `status`, `deploy-key` |
 | Edit Stack, Sources tab, **Automatic deploys** | Off, notify me, or deploy (see [Automatic deploys](#automatic-deploys)). Saved at once. | `auto-deploy` |
+| Edit Stack, Sources tab, **Recreate every container when a deploy changes this stack's folder in the repository** | On by default (see [Config files and recreating containers](#config-files-and-recreating-containers)). Saved at once. | `recreate-on-folder-change` |
 | Stack menu, **Resume Automatic Deploys** (after a failed deploy) | Clear the failure, so automatic deploys go on. | `resume` |
 | Stack list | Under the project name: the branch and deployed commit, "behind" when the scheduled check saw a newer commit that changes the stack, and "failed" after a failed deploy. | `status` |
 
@@ -477,9 +478,11 @@ stack folder holds a `git_discarded_changes` file that says so.
 Only the stack's own folder counts: a change to a shared folder elsewhere in the repository does not
 recreate anything (see [The stack's folder, and files outside it](#the-stacks-folder-and-files-outside-it)).
 
-To turn the behaviour off for a stack, run `compose-git recreate-on-folder-change myapp off` (and `on` to turn
-it back on). A deploy then leaves it to `docker compose up`, which recreates only the containers whose compose
-definition changed. The setting is kept in the stack's `git.json` as `"recreateOnFolderChange"`, and
+To turn the behaviour off for a stack, uncheck **Recreate every container when a deploy changes this stack's
+folder in the repository** on the Sources tab of Edit Stack, or run
+`compose-git recreate-on-folder-change myapp off` (and `on` to turn it back on). A deploy then leaves it to
+`docker compose up`, which recreates only the containers whose compose definition changed, also after local
+changes were discarded or the branch was rewritten. The setting is kept in the stack's `git.json` as `"recreateOnFolderChange"`, and
 `compose-git status` shows it. It applies from the next deploy; no container is changed when it is set.
 
 ## Local changes on the server
