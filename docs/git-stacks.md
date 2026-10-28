@@ -468,13 +468,19 @@ a config file the container mounts would otherwise be checked out but never take
 So by default, **when a deploy changes anything in the stack's folder in the repository, every container in
 the stack is recreated**, and the new config takes effect.
 
-A deploy that saves local changes in the stack's folder as a patch and discards them recreates every
-container too, even at the same commit: a container may still hold an edited file. Until a deploy works, the
+While the setting below is on, a deploy that saves local changes in the stack's folder as a patch and discards
+them recreates every container too, even at the same commit: a container may still hold an edited file. So
+does a deploy after the branch was rewritten, when the old commit is gone and the change cannot be measured.
+Until a deploy works, the
 stack folder holds a `git_discarded_changes` file that says so.
 
 Only the stack's own folder counts: a change to a shared folder elsewhere in the repository does not
-recreate anything (see [The stack's folder, and files outside it](#the-stacks-folder-and-files-outside-it)). To turn the behaviour off, set `"recreateOnFolderChange": false` in the stack's
-`git.json`.
+recreate anything (see [The stack's folder, and files outside it](#the-stacks-folder-and-files-outside-it)).
+
+To turn the behaviour off for a stack, run `compose-git recreate-on-folder-change myapp off` (and `on` to turn
+it back on). A deploy then leaves it to `docker compose up`, which recreates only the containers whose compose
+definition changed. The setting is kept in the stack's `git.json` as `"recreateOnFolderChange"`, and
+`compose-git status` shows it. It applies from the next deploy; no container is changed when it is set.
 
 ## Local changes on the server
 
@@ -563,6 +569,7 @@ otherwise make compose refuse the stack. The log names each one removed.
 | `convert <stack> --url <url> --path <file> [--branch <b>] [--clones-root <folder>] [--credential <name>]` | Turn an existing stack into a git stack (see above). |
 | `credential <stack> <name>` or `credential <stack> --none` | Change or remove the HTTPS credential a stack uses, or move an ssh stack onto another deploy key of its repository. |
 | `auto-deploy <stack> off\|notify\|deploy` | Choose what the scheduled check does when a new commit changes the stack. |
+| `recreate-on-folder-change <stack> on\|off` | Choose whether a deploy that changes the stack's folder recreates every container of the stack (on, the default). |
 | `resume <stack>` | Clear a failed deploy, so automatic deploys of the stack go on. |
 | `scheduled-check` | Run the scheduled check of every stack whose automatic deploys are not off, now. |
 | `deploy-key <stack>` | Show an ssh stack's public deploy key. |
