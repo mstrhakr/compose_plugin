@@ -422,6 +422,32 @@ final class GitStackWebActionsTest extends TestCase
         }
     }
 
+    public function testSetRecreateOnFolderChangeSavesTheChoice(): void
+    {
+        $folder = $this->addGitStack('whoami');
+        $stackDir = $this->composeRoot . '/' . $folder;
+        $this->assertTrue(GitStackSettings::load($stackDir)->recreateOnFolderChange);
+
+        $result = $this->executeAction('setGitRecreateOnFolderChange', ['script' => $folder, 'recreateOnFolderChange' => 'false']);
+        $this->assertSame('success', $result['result'], $result['message'] ?? '');
+        $this->assertFalse(GitStackSettings::load($stackDir)->recreateOnFolderChange);
+
+        // The Sources tab reads the setting back from the stack's status.
+        $status = $this->executeAction('getGitStackStatus', ['script' => $folder]);
+        $this->assertFalse($status['git']['recreateOnFolderChange']);
+
+        $result = $this->executeAction('setGitRecreateOnFolderChange', ['script' => $folder, 'recreateOnFolderChange' => 'true']);
+        $this->assertSame('success', $result['result'], $result['message'] ?? '');
+        $this->assertTrue(GitStackSettings::load($stackDir)->recreateOnFolderChange);
+
+        // Anything but true or false is refused, and changes nothing.
+        foreach (['', 'off', '0'] as $refusedValue) {
+            $refused = $this->executeAction('setGitRecreateOnFolderChange', ['script' => $folder, 'recreateOnFolderChange' => $refusedValue]);
+            $this->assertSame('error', $refused['result']);
+        }
+        $this->assertTrue(GitStackSettings::load($stackDir)->recreateOnFolderChange);
+    }
+
     public function testResumeClearsAFailedDeploy(): void
     {
         $folder = $this->addGitStack('whoami');
