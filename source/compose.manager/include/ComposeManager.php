@@ -846,6 +846,15 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                             </label>
                             <div class="settings-field-help">Enable only for stacks whose images are built locally. Leave unchecked for stacks that publish an image alongside a <code>build:</code> section &mdash; those are pulled instead, matching plain <code>docker compose up</code>.</div>
                         </div>
+
+                        <div class="settings-field">
+                            <label for="settings-auto-container-name">Automatic Container Names</label>
+                            <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+                                <input type="checkbox" id="settings-auto-container-name">
+                                <span>Name containers after the project name</span>
+                            </label>
+                            <div class="settings-field-help">Services without a <code>container_name</code> get one built from the compose project name (the sanitized stack name): the service named like the project gets the project name, every other service gets <code>&lt;project&gt;-&lt;service&gt;</code>. A <code>container_name</code> you set is kept. Not available with default compose file discovery. Containers are renamed the next time the stack is brought up.</div>
+                        </div>
                     </div>
 
                     <!-- Labels & Overrides -->

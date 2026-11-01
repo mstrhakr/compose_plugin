@@ -2175,6 +2175,12 @@ class StackInfo
     /** @var bool Whether getIconNormalizationOverridePath() has already run this request */
     private bool $iconNormalizeOverrideComputed = false;
 
+    /** @var string|null Cached path to the generated container-name override, computed once per request */
+    private ?string $autoContainerNameOverridePath = null;
+
+    /** @var bool Whether getAutoContainerNameOverridePath() has already run this request */
+    private bool $autoContainerNameOverrideComputed = false;
+
     /** @var array<string, StackInfo> Static instance cache keyed by composeRoot/project */
     private static array $instances = [];
 
@@ -2977,6 +2983,115 @@ class StackInfo
         return $targetPath;
     }
 
+    /**
+     * Container name pattern Docker accepts.
+     */
+    public const CONTAINER_NAME_PATTERN = '/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/';
+
+    /**
+     * Whether this stack generates container names (opt-in `auto_container_name` file).
+     */
+    public function usesAutoContainerNames(): bool
+    {
+        return strtolower((string) $this->readMetadata('auto_container_name')) === 'true';
+    }
+
+    /**
+     * Container names for services that have none: the service named like the
+     * project gets the project name, every other service gets
+     * `<project>-<service>`. The project name is the sanitized one the plugin
+     * passes as `-p`, so it is always a valid container name start.
+     *
+     * @param array<string, mixed> $services Service definitions from `docker compose config`
+     * @return array<string, string> Service name => container name
+     */
+    public static function buildAutoContainerNames(string $mainName, array $services): array
+    {
+        $names = [];
+        foreach ($services as $service => $definition) {
+            $service = (string) $service;
+            $definition = is_array($definition) ? $definition : [];
+            if (isset($definition['container_name']) && $definition['container_name'] !== '') {
+                continue; // a name the user set always wins
+            }
+            // Compose refuses container_name on a service that runs more than one replica.
+            $replicas = (int) ($definition['scale'] ?? ($definition['deploy']['replicas'] ?? 1));
+            if ($replicas > 1) {
+                continue;
+            }
+            $name = ($service === $mainName) ? $mainName : $mainName . '-' . $service;
+            // Compose service names are normally valid here; skip any that would not be.
+            if (preg_match(self::CONTAINER_NAME_PATTERN, $name) === 1) {
+                $names[$service] = $name;
+            }
+        }
+        return $names;
+    }
+
+    /**
+     * Build (or clean up) a transient override that sets `container_name` on
+     * services that have none, when the stack opted in.
+     *
+     * Added as the last `-f` layer, like the icon override. It goes last
+     * because compose takes the project directory from the first file, and
+     * because only services without a container_name get an entry, so nothing
+     * the user set is overridden. The user's compose and override files are
+     * not touched.
+     *
+     * @return string|null Path to the transient override file, or null if unneeded
+     */
+    private function getAutoContainerNameOverridePath(): ?string
+    {
+        if ($this->autoContainerNameOverrideComputed) {
+            return $this->autoContainerNameOverridePath;
+        }
+        // Set first: listing the services below builds the file list again.
+        $this->autoContainerNameOverrideComputed = true;
+
+        $targetPath = rtrim(COMPOSE_ICON_NORMALIZE_DIR, '/') . '/' . $this->projectName . '.container-names.yaml';
+
+        if (
+            !$this->usesAutoContainerNames()
+            || $this->useDefaultComposeFileDiscovery()
+        ) {
+            @unlink($targetPath);
+            return null;
+        }
+
+        $cmd = 'docker compose ' . $this->buildComposeFileFlagsLeaving([$targetPath]);
+        $envFlag = $this->buildEnvFileFlag();
+        if ($envFlag !== '') {
+            $cmd .= ' ' . $envFlag;
+        }
+        $cmd .= " --profile '*' config --format json 2>/dev/null";
+        $config = json_decode((string) shell_exec($cmd), true);
+        $names = is_array($config)
+            ? self::buildAutoContainerNames($this->projectName, (array) ($config['services'] ?? []))
+            : [];
+        if (empty($names)) {
+            @unlink($targetPath);
+            return null;
+        }
+
+        $yaml = "services:\n";
+        foreach ($names as $service => $containerName) {
+            $yaml .= '  ' . json_encode($service) . ":\n";
+            $yaml .= '    container_name: ' . json_encode($containerName) . "\n";
+        }
+
+        if (!is_dir(dirname($targetPath)) && !@mkdir(dirname($targetPath), 0755, true) && !is_dir(dirname($targetPath))) {
+            composeLogger("Failed to create container-name directory for stack $this->projectFolder", ['dir' => dirname($targetPath)], 'user', 'warning', 'stack');
+            return null;
+        }
+        if (@file_put_contents($targetPath, $yaml) === false) {
+            composeLogger("Failed to write container-name override for stack $this->projectFolder", ['path' => $targetPath], 'user', 'warning', 'stack');
+            return null;
+        }
+
+        $this->autoContainerNameOverridePath = $targetPath;
+        return $targetPath;
+    }
+
     private function getExtraComposeFiles(): array
     {
         $raw = $this->readMetadata('extra_compose_files');
@@ -3120,6 +3235,11 @@ class StackInfo
         $iconNormalizePath = $this->getIconNormalizationOverridePath();
         if ($iconNormalizePath !== null) {
             $paths[] = $iconNormalizePath;
+        }
+
+        $containerNamePath = $this->getAutoContainerNameOverridePath();
+        if ($containerNamePath !== null) {
+            $paths[] = $containerNamePath;
         }
 
         $normalized = [];
@@ -3703,8 +3823,23 @@ class StackInfo
      */
     private function buildComposeFileFlagsWithoutManagedOverride(): string
     {
+        return $this->buildComposeFileFlagsLeaving([
+            $this->overrideInfo->getProjectOverridePath(),
+            $this->getIconNormalizationOverridePath(),
+            $this->getAutoContainerNameOverridePath(),
+        ]);
+    }
+
+    /**
+     * The -f flags for this stack, leaving out the given files.
+     *
+     * @param array<int, string|null> $leftOutPaths
+     * @return string
+     */
+    private function buildComposeFileFlagsLeaving(array $leftOutPaths): string
+    {
         $leftOut = [];
-        foreach ([$this->overrideInfo->getProjectOverridePath(), $this->getIconNormalizationOverridePath()] as $path) {
+        foreach ($leftOutPaths as $path) {
             if ($path !== null) {
                 $leftOut[$this->normalizeComposeFilePath($path)] = true;
             }
