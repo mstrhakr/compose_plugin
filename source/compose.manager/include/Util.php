@@ -2997,27 +2997,10 @@ class StackInfo
     }
 
     /**
-     * Why the stack name cannot be used as the main container name, or null when it can.
-     *
-     * The stack name is used as typed. It is never rewritten, because a silent
-     * change would give containers a name the user did not choose.
-     */
-    public static function autoContainerNameProblem(string $stackName): ?string
-    {
-        $stackName = trim($stackName);
-        if ($stackName === '') {
-            return 'Automatic container names need a stack name.';
-        }
-        if (preg_match(self::CONTAINER_NAME_PATTERN, $stackName) !== 1) {
-            return "Automatic container names use the stack name, but '$stackName' is not a valid container name. "
-                . 'Use only letters, digits, underscore, dot and hyphen, starting with a letter or digit.';
-        }
-        return null;
-    }
-
-    /**
      * Container names for services that have none: the service named like the
-     * stack gets the stack name, every other service gets `<stack>-<service>`.
+     * project gets the project name, every other service gets
+     * `<project>-<service>`. The project name is the sanitized one the plugin
+     * passes as `-p`, so it is always a valid container name start.
      *
      * @param array<string, mixed> $services Service definitions from `docker compose config`
      * @return array<string, string> Service name => container name
@@ -3037,6 +3020,7 @@ class StackInfo
                 continue;
             }
             $name = ($service === $mainName) ? $mainName : $mainName . '-' . $service;
+            // Compose service names are normally valid here; skip any that would not be.
             if (preg_match(self::CONTAINER_NAME_PATTERN, $name) === 1) {
                 $names[$service] = $name;
             }
@@ -3069,7 +3053,6 @@ class StackInfo
         if (
             !$this->usesAutoContainerNames()
             || $this->useDefaultComposeFileDiscovery()
-            || self::autoContainerNameProblem($this->getDisplayName()) !== null
         ) {
             @unlink($targetPath);
             return null;
@@ -3083,7 +3066,7 @@ class StackInfo
         $cmd .= " --profile '*' config --format json 2>/dev/null";
         $config = json_decode((string) shell_exec($cmd), true);
         $names = is_array($config)
-            ? self::buildAutoContainerNames(trim($this->getDisplayName()), (array) ($config['services'] ?? []))
+            ? self::buildAutoContainerNames($this->projectName, (array) ($config['services'] ?? []))
             : [];
         if (empty($names)) {
             @unlink($targetPath);

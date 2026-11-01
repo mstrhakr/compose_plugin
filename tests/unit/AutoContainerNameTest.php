@@ -44,27 +44,17 @@ final class AutoContainerNameTest extends TestCase
     /**
      * @param array<string, mixed> $services What `docker compose config` reports
      */
-    private function makeStack(string $name, array $services, bool $optIn = true): string
+    private function makeStack(string $name, array $services, bool $optIn = true, ?string $displayName = null): string
     {
         $stackDir = $this->root . '/' . $name;
         mkdir($stackDir);
-        file_put_contents($stackDir . '/name', $name);
+        file_put_contents($stackDir . '/name', $displayName ?? $name);
         file_put_contents($stackDir . '/compose.yaml', "services:\n  web:\n    image: nginx\n");
         if ($optIn) {
             file_put_contents($stackDir . '/auto_container_name', 'true');
         }
         file_put_contents($this->bin . '/config.json', json_encode(['services' => $services]));
         return $stackDir;
-    }
-
-    public function testStackNameMustBeAValidContainerName(): void
-    {
-        $this->assertNull(\StackInfo::autoContainerNameProblem('app'));
-        $this->assertNull(\StackInfo::autoContainerNameProblem('My_App.2-b'));
-        $this->assertNotNull(\StackInfo::autoContainerNameProblem(''));
-        $this->assertNotNull(\StackInfo::autoContainerNameProblem('My App'));
-        $this->assertNotNull(\StackInfo::autoContainerNameProblem('-app'));
-        $this->assertStringContainsString("'My App'", (string) \StackInfo::autoContainerNameProblem('My App'));
     }
 
     public function testServiceNamedLikeTheStackGetsTheStackNameAndOthersAreSuffixed(): void
@@ -118,21 +108,47 @@ final class AutoContainerNameTest extends TestCase
         $this->assertSame([$stackDir . '/compose.yaml'], $spec['composeFiles']);
     }
 
-    public function testInvalidStackNameIsRefusedForUpAndNotRewritten(): void
+    public function testNamesUseTheProjectNameNotTheFreeTextDisplayName(): void
     {
-        $stackDir = $this->makeStack('badname', ['web' => []]);
-        file_put_contents($stackDir . '/name', 'Bad Name');
+        // 'My Media' sanitizes to the project name 'my_media' (what `-p` gets).
+        $stackDir = $this->makeStack('my_media', ['my_media' => [], 'db' => []], true, 'My Media');
 
-        try {
-            \ComposeCommandBuilder::fromProject($this->root, 'badname', 'up');
-            $this->fail('up should be refused');
-        } catch (\RuntimeException $e) {
-            $this->assertStringContainsString("'Bad Name' is not a valid container name", $e->getMessage());
-        }
+        $spec = \ComposeCommandBuilder::fromProject($this->root, 'my_media', 'up');
 
-        // Stopping must still work, and no names are generated.
-        $spec = \ComposeCommandBuilder::fromProject($this->root, 'badname', 'down');
-        $this->assertSame([$stackDir . '/compose.yaml'], $spec['composeFiles']);
+        $this->assertSame('my_media', $spec['projectName']);
+        $generated = (string) end($spec['composeFiles']);
+        $this->assertStringEndsWith('/my_media.container-names.yaml', $generated);
+        $content = (string) file_get_contents($generated);
+        $this->assertStringContainsString("\"my_media\":\n    container_name: \"my_media\"", $content);
+        $this->assertStringContainsString("\"db\":\n    container_name: \"my_media-db\"", $content);
+        $this->assertStringNotContainsString('My Media', $content);
+        @unlink($generated);
+    }
+
+    public function testDisplayNameWithSpacesAndCapitalsStillWorksForUpAndDown(): void
+    {
+        $stackDir = $this->makeStack('my_media', ['web' => []], true, 'My Media');
+
+        $up = \ComposeCommandBuilder::fromProject($this->root, 'my_media', 'up');
+        $this->assertStringEndsWith('/my_media.container-names.yaml', (string) end($up['composeFiles']));
+        @unlink((string) end($up['composeFiles']));
+    }
+
+    public function testServiceNameThatIsNotAValidContainerNameIsSkipped(): void
+    {
+        $names = \StackInfo::buildAutoContainerNames('app', ['ok' => [], 'bad name' => [], 'bad/slash' => []]);
+        $this->assertSame(['ok' => 'app-ok'], $names);
+    }
+
+    public function testNoNamesAreGeneratedWithDefaultComposeFileDiscovery(): void
+    {
+        $stackDir = $this->makeStack('disc', ['web' => []]);
+        file_put_contents($stackDir . '/use_default_compose_files', 'true');
+
+        $spec = \ComposeCommandBuilder::fromProject($this->root, 'disc', 'up');
+
+        $this->assertSame([], $spec['composeFiles']);
+        $this->assertFileDoesNotExist(rtrim(COMPOSE_ICON_NORMALIZE_DIR, '/') . '/disc.container-names.yaml');
     }
 
     public function testNoFileIsKeptWhenEveryServiceHasAName(): void

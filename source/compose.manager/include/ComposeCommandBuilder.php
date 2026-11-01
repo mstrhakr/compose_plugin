@@ -25,7 +25,6 @@ class ComposeCommandBuilder
         $action = strtolower(trim($action));
         self::assertSupportedAction($action);
         self::assertResolvedIdentity($stackInfo, $action);
-        self::assertAutoContainerNameUsable($stackInfo, $action);
 
         $args = $stackInfo->buildComposeArgs();
         $credentialId = in_array($action, ['up', 'update', 'pull'], true)
@@ -89,21 +88,6 @@ class ComposeCommandBuilder
         $allowed = ['up', 'down', 'update', 'pull', 'stop', 'logs'];
         if (!in_array($action, $allowed, true)) {
             throw new \InvalidArgumentException('Unsupported compose action: ' . $action);
-        }
-    }
-
-    /**
-     * Refuse to create containers for a stack that asks for automatic container
-     * names while its stack name is not a valid container name.
-     */
-    private static function assertAutoContainerNameUsable(StackInfo $stackInfo, string $action): void
-    {
-        if (!in_array($action, ['up', 'update'], true) || !$stackInfo->usesAutoContainerNames()) {
-            return;
-        }
-        $problem = StackInfo::autoContainerNameProblem($stackInfo->getDisplayName());
-        if ($problem !== null) {
-            throw new \RuntimeException($problem);
         }
     }
 

@@ -1491,15 +1491,9 @@ switch ($_POST['action']) {
             && strtolower(trim((string) $_POST['useDefaultComposeFiles'])) === 'true';
         $autoContainerName = isset($_POST['autoContainerName'])
             && strtolower(trim((string) $_POST['autoContainerName'])) === 'true';
-        if ($autoContainerName) {
-            $nameProblem = StackInfo::autoContainerNameProblem(StackInfo::fromProject($compose_root, $script)->getDisplayName());
-            if ($nameProblem === null && $useDefaultComposeFiles) {
-                $nameProblem = 'Automatic container names cannot be used with default compose file discovery.';
-            }
-            if ($nameProblem !== null) {
-                echo json_encode(['result' => 'error', 'message' => $nameProblem]);
-                break;
-            }
+        if ($autoContainerName && $useDefaultComposeFiles) {
+            echo json_encode(['result' => 'error', 'message' => 'Automatic container names cannot be used with default compose file discovery.']);
+            break;
         }
 
         $externalComposePath = isset($_POST['externalComposePath']) ? trim($_POST['externalComposePath']) : "";

@@ -1143,21 +1143,6 @@ class ExecActionsTest extends TestCase
         $this->assertFileDoesNotExist($stackPath . '/auto_container_name');
     }
 
-    public function testSetStackSettingsRefusesAutoContainerNamesForAnInvalidStackName(): void
-    {
-        $stackPath = $this->createTestStack('test-stack');
-        file_put_contents($stackPath . '/name', 'My Stack');
-
-        $result = json_decode($this->executeAction('setStackSettings', [
-            'script' => 'test-stack',
-            'autoContainerName' => 'true',
-        ]), true);
-
-        $this->assertSame('error', $result['result']);
-        $this->assertStringContainsString("'My Stack' is not a valid container name", $result['message']);
-        $this->assertFileDoesNotExist($stackPath . '/auto_container_name');
-    }
-
     public function testSetStackSettingsRefusesAutoContainerNamesWithDefaultComposeFileDiscovery(): void
     {
         $stackPath = $this->createTestStack('test-stack');
@@ -1169,7 +1154,22 @@ class ExecActionsTest extends TestCase
         ]), true);
 
         $this->assertSame('error', $result['result']);
+        $this->assertStringContainsString('default compose file discovery', $result['message']);
         $this->assertFileDoesNotExist($stackPath . '/auto_container_name');
+    }
+
+    public function testSetStackSettingsAcceptsAutoContainerNamesForADisplayNameWithSpaces(): void
+    {
+        $stackPath = $this->createTestStack('test-stack');
+        file_put_contents($stackPath . '/name', 'My Stack');
+
+        $result = json_decode($this->executeAction('setStackSettings', [
+            'script' => 'test-stack',
+            'autoContainerName' => 'true',
+        ]), true);
+
+        $this->assertSame('success', $result['result']);
+        $this->assertSame('true', trim((string) file_get_contents($stackPath . '/auto_container_name')));
     }
 
     public function testSetStackSettingsRejectsMissingCredentialBeforePersistingOtherSettings(): void
