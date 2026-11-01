@@ -1125,6 +1125,53 @@ class ExecActionsTest extends TestCase
         $this->assertEquals('success', $result['result']);
     }
 
+    public function testSetStackSettingsSavesAutoContainerNames(): void
+    {
+        $stackPath = $this->createTestStack('test-stack');
+
+        $saved = json_decode($this->executeAction('setStackSettings', [
+            'script' => 'test-stack',
+            'autoContainerName' => 'true',
+        ]), true);
+        $this->assertSame('success', $saved['result']);
+        $this->assertSame('true', trim((string) file_get_contents($stackPath . '/auto_container_name')));
+
+        $read = json_decode($this->executeAction('getStackSettings', ['script' => 'test-stack']), true);
+        $this->assertTrue($read['autoContainerName']);
+
+        $this->executeAction('setStackSettings', ['script' => 'test-stack', 'autoContainerName' => 'false']);
+        $this->assertFileDoesNotExist($stackPath . '/auto_container_name');
+    }
+
+    public function testSetStackSettingsRefusesAutoContainerNamesForAnInvalidStackName(): void
+    {
+        $stackPath = $this->createTestStack('test-stack');
+        file_put_contents($stackPath . '/name', 'My Stack');
+
+        $result = json_decode($this->executeAction('setStackSettings', [
+            'script' => 'test-stack',
+            'autoContainerName' => 'true',
+        ]), true);
+
+        $this->assertSame('error', $result['result']);
+        $this->assertStringContainsString("'My Stack' is not a valid container name", $result['message']);
+        $this->assertFileDoesNotExist($stackPath . '/auto_container_name');
+    }
+
+    public function testSetStackSettingsRefusesAutoContainerNamesWithDefaultComposeFileDiscovery(): void
+    {
+        $stackPath = $this->createTestStack('test-stack');
+
+        $result = json_decode($this->executeAction('setStackSettings', [
+            'script' => 'test-stack',
+            'autoContainerName' => 'true',
+            'useDefaultComposeFiles' => 'true',
+        ]), true);
+
+        $this->assertSame('error', $result['result']);
+        $this->assertFileDoesNotExist($stackPath . '/auto_container_name');
+    }
+
     public function testSetStackSettingsRejectsMissingCredentialBeforePersistingOtherSettings(): void
     {
         $stackPath = $this->createTestStack('test-stack');
