@@ -16,22 +16,25 @@ require_once(__DIR__ . '/ProjectNameSanitizer.php');
  *
  * This class performs a one-time, evidence-based migration:
  *
- *  - When the two candidates agree there is nothing to migrate.
+ *  - Candidates include the archived PHP and event-script naming rules.
  *  - When they differ, live Docker resources labelled
  *    `com.docker.compose.project` decide the winner.
  *  - When exactly one candidate owns resources it is preserved and pinned.
- *  - When neither owns anything there is nothing to strand, so the canonical
- *    folder-derived name is pinned.
- *  - When both own resources, or Docker cannot be probed, the identity is left
+ *  - Confirmed imports retain their legacy name even without labelled resources.
+ *  - When multiple candidates own resources, or Docker cannot be probed, the identity is left
  *    UNRESOLVED and every mutating action must refuse to run (fail closed).
  *
- * The winning value is persisted to the per-stack `project_name` file so the
- * decision is made once and every later code path reads the same identity.
+ * The winning value and a versioned receipt are persisted so old pins can be
+ * audited once without changing later owner choices or display-name renames.
  */
 final class ProjectIdentity
 {
     /** Per-stack metadata file holding the pinned runtime project name. */
     public const METADATA_FILE = 'project_name';
+    public const STATE_FILE = 'project_identity.json';
+    public const REGISTRY_LOCK_FILE = '.project-identities.lock';
+    public const MIGRATION_VERSION = 1;
+    public const LEGACY_REVISION = '074a9af3a29d14b346e5dae8a700a0649cda601c';
 
     /** Identity read from the pinned `project_name` file. */
     public const SOURCE_PERSISTED = 'persisted';
@@ -50,6 +53,11 @@ final class ProjectIdentity
     public const CONFLICT_AMBIGUOUS = 'ambiguous';
     /** Docker could not be queried, so absence of evidence proves nothing. */
     public const CONFLICT_PROBE_FAILED = 'probe-failed';
+    public const CONFLICT_INVALID_PIN = 'invalid-pin';
+    public const CONFLICT_PERSIST_FAILED = 'persist-failed';
+    public const CONFLICT_PIN_MISMATCH = 'pin-mismatch';
+    public const CONFLICT_SHARED_IDENTITY = 'shared-identity';
+    public const CONFLICT_DIRECTORY_MISMATCH = 'directory-mismatch';
 
     /** @var string Stack directory basename */
     public string $projectFolder;
@@ -57,6 +65,9 @@ final class ProjectIdentity
     public string $folderCandidate;
     /** @var string Sanitized `name`-file candidate (the original plugin's identity) */
     public string $legacyCandidate;
+    /** @var list<string> Valid identities used by archived and Plus execution paths */
+    public array $candidates = [];
+    public string $origin = 'unknown';
     /** @var string Effective project name to hand to `docker compose -p` */
     public string $projectName;
     /** @var string One of the SOURCE_* constants */
@@ -76,6 +87,12 @@ final class ProjectIdentity
 
     /** @var bool Whether $probeCache holds a completed probe (null result means Docker was unreachable) */
     private static bool $probeCached = false;
+    /** @var array<string, list<string>> */
+    private static array $projectDirectories = [];
+    /** @var array<string, list<list<string>>> */
+    private static array $projectFileLists = [];
+    /** @var array<string, bool> */
+    private static array $missingFileEvidence = [];
 
     private function __construct()
     {
@@ -106,6 +123,9 @@ final class ProjectIdentity
     {
         self::$probeCache = null;
         self::$probeCached = false;
+        self::$projectDirectories = [];
+        self::$projectFileLists = [];
+        self::$missingFileEvidence = [];
     }
 
     /**
@@ -120,59 +140,105 @@ final class ProjectIdentity
      */
     public static function resolve(string $stackPath, string $projectFolder, ?string $displayName): self
     {
+        $persisted = self::persistedIdentity($stackPath, $projectFolder, $displayName);
+        if ($persisted !== null) {
+            return $persisted;
+        }
+        $registry = self::lockRegistry($stackPath);
+        $lock = $registry === false ? false : @fopen(rtrim($stackPath, '/') . '/project_identity.lock', 'c');
+        if ($lock === false || !flock($lock, LOCK_EX)) {
+            if (is_resource($lock)) {
+                fclose($lock);
+            }
+            if (is_resource($registry)) {
+                fclose($registry);
+            }
+            $identity = new self();
+            $identity->projectFolder = $projectFolder;
+            $identity->folderCandidate = compose_manager_sanitize_project_name($projectFolder);
+            $identity->projectName = $identity->folderCandidate;
+            $identity->conflictReason = self::CONFLICT_PERSIST_FAILED;
+            return $identity;
+        }
+        try {
+            return self::resolveLocked($stackPath, $projectFolder, $displayName);
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+            fclose($registry);
+        }
+    }
+
+    private static function resolveLocked(string $stackPath, string $projectFolder, ?string $displayName): self
+    {
+        $persisted = self::persistedIdentity($stackPath, $projectFolder, $displayName);
+        if ($persisted !== null) {
+            return $persisted;
+        }
         $identity = new self();
         $identity->projectFolder = $projectFolder;
         $identity->folderCandidate = compose_manager_sanitize_project_name($projectFolder);
+        $identity->origin = self::hasLegacyOrigin() ? 'dcflachs' : 'unknown';
 
-        $rawLegacy = ($displayName === null) ? '' : trim($displayName);
-        $identity->legacyCandidate = ($rawLegacy === '')
-            ? $identity->folderCandidate
-            : compose_manager_sanitize_project_name($rawLegacy);
+        $rawLegacy = trim($displayName ?? $projectFolder);
+        if ($rawLegacy === '') {
+            $rawLegacy = $projectFolder;
+        }
+        $identity->legacyCandidate = strtolower(str_replace(['.', ' ', '-'], '_', $rawLegacy));
+        $identity->candidates = self::candidateNames($projectFolder, $rawLegacy);
 
         $pinned = self::readPinned($stackPath);
         if ($pinned !== null) {
+            if (!compose_manager_is_valid_project_name($pinned)) {
+                $identity->projectName = $identity->folderCandidate;
+                $identity->conflictReason = self::CONFLICT_INVALID_PIN;
+                return $identity;
+            }
             $identity->projectName = $pinned;
             $identity->source = self::SOURCE_PERSISTED;
-            $identity->resolved = true;
-            return $identity;
+            $stateRaw = @file_get_contents(rtrim($stackPath, '/') . '/' . self::STATE_FILE);
+            $state = is_string($stateRaw) ? json_decode($stateRaw, true) : null;
+            if (is_array($state) && ($state['version'] ?? null) === self::MIGRATION_VERSION
+                && ($state['projectName'] ?? null) === $pinned
+                && in_array($state['origin'] ?? null, ['dcflachs', 'plus', 'unknown'], true)
+                && is_string($state['source'] ?? null)) {
+                $identity->origin = $state['origin'];
+                $identity->resolved = true;
+                return $identity;
+            }
+            $identity->candidates = array_values(array_unique([...$identity->candidates, $pinned]));
         }
 
-        // Candidates agree: the Plus identity is already the legacy identity.
-        if ($identity->legacyCandidate === $identity->folderCandidate) {
-            $identity->projectName = $identity->folderCandidate;
-            $identity->source = self::SOURCE_CANONICAL;
-            $identity->resolved = true;
-            self::pin($stackPath, $identity->projectName);
+        if (count($identity->candidates) === 1) {
+            $identity->projectName = $pinned ?? $identity->folderCandidate;
+            $identity->source = $pinned === null ? self::SOURCE_CANONICAL : self::SOURCE_PERSISTED;
+            $identity->persist($stackPath);
             return $identity;
         }
 
         $probe = self::probe();
         if ($probe === null) {
-            // Docker is unreachable: "no containers found" would be a lie, so
-            // refuse to pin anything and block mutations until we can prove it.
-            $identity->projectName = $identity->folderCandidate;
+            $identity->projectName = $pinned ?? $identity->folderCandidate;
             $identity->source = self::SOURCE_UNRESOLVED;
             $identity->conflictReason = self::CONFLICT_PROBE_FAILED;
-            $identity->resolved = false;
             return $identity;
         }
 
-        $identity->evidence = [
-            $identity->folderCandidate => self::countsFor($probe, $identity->folderCandidate),
-            $identity->legacyCandidate => self::countsFor($probe, $identity->legacyCandidate),
-        ];
+        $owners = [];
+        foreach ($identity->candidates as $candidate) {
+            $identity->evidence[$candidate] = self::countsFor($probe, $candidate);
+            if (self::hasResources($identity->evidence[$candidate])) {
+                $owners[] = $candidate;
+            }
+        }
 
-        $folderOwns = self::hasResources($identity->evidence[$identity->folderCandidate]);
-        $legacyOwns = self::hasResources($identity->evidence[$identity->legacyCandidate]);
-
-        if ($folderOwns && $legacyOwns) {
-            $identity->projectName = $identity->folderCandidate;
+        if (count($owners) > 1) {
+            $identity->projectName = $pinned ?? $identity->folderCandidate;
             $identity->source = self::SOURCE_UNRESOLVED;
             $identity->conflictReason = self::CONFLICT_AMBIGUOUS;
-            $identity->resolved = false;
             composeLogger(
                 "Ambiguous compose project identity for '$projectFolder'; mutating actions are blocked until an identity is chosen",
-                ['folderCandidate' => $identity->folderCandidate, 'legacyCandidate' => $identity->legacyCandidate, 'evidence' => $identity->evidence],
+                ['candidates' => $identity->candidates, 'evidence' => $identity->evidence],
                 'user',
                 'warning',
                 'identity'
@@ -180,28 +246,97 @@ final class ProjectIdentity
             return $identity;
         }
 
-        if ($legacyOwns) {
-            $identity->projectName = $identity->legacyCandidate;
-            $identity->source = self::SOURCE_LEGACY_RUNTIME;
-        } elseif ($folderOwns) {
-            $identity->projectName = $identity->folderCandidate;
-            $identity->source = self::SOURCE_FOLDER_RUNTIME;
+        if (count($owners) === 1 && !self::matchesResourceDirectory($stackPath, $owners[0])) {
+            $identity->projectName = $pinned ?? $identity->folderCandidate;
+            $identity->source = self::SOURCE_UNRESOLVED;
+            $identity->conflictReason = self::CONFLICT_DIRECTORY_MISMATCH;
+            return $identity;
+        }
+
+        if ($pinned !== null && count($owners) === 1 && $owners[0] !== $pinned) {
+            $identity->projectName = $pinned;
+            $identity->source = self::SOURCE_UNRESOLVED;
+            $identity->conflictReason = self::CONFLICT_PIN_MISMATCH;
+            return $identity;
+        }
+
+        if ($pinned !== null) {
+            $identity->projectName = $pinned;
+            $identity->source = self::SOURCE_PERSISTED;
+        } elseif (count($owners) === 1) {
+            $identity->projectName = $owners[0];
+            $identity->source = $owners[0] === $identity->folderCandidate
+                ? self::SOURCE_FOLDER_RUNTIME
+                : self::SOURCE_LEGACY_RUNTIME;
         } else {
-            $identity->projectName = $identity->folderCandidate;
+            $identity->projectName = $identity->origin === 'dcflachs'
+                && compose_manager_is_valid_project_name($identity->legacyCandidate)
+                ? $identity->legacyCandidate
+                : $identity->folderCandidate;
             $identity->source = self::SOURCE_UNUSED;
         }
 
-        $identity->resolved = true;
-        self::pin($stackPath, $identity->projectName);
+        $identity->persist($stackPath);
         composeLogger(
-            "Pinned compose project identity '{$identity->projectName}' for '$projectFolder' ({$identity->source})",
-            ['folderCandidate' => $identity->folderCandidate, 'legacyCandidate' => $identity->legacyCandidate, 'evidence' => $identity->evidence],
+            "Compose project identity '{$identity->projectName}' for '$projectFolder' ({$identity->source})",
+            ['candidates' => $identity->candidates, 'evidence' => $identity->evidence, 'resolved' => $identity->resolved],
             'user',
             'info',
             'identity'
         );
 
         return $identity;
+    }
+
+    private static function persistedIdentity(string $stackPath, string $projectFolder, ?string $displayName): ?self
+    {
+        $pinned = self::readPinned($stackPath);
+        if ($pinned === null || !compose_manager_is_valid_project_name($pinned)) {
+            return null;
+        }
+        $identity = new self();
+        $identity->projectFolder = $projectFolder;
+        $identity->folderCandidate = compose_manager_sanitize_project_name($projectFolder);
+        $rawLegacy = trim($displayName ?? $projectFolder);
+        $identity->legacyCandidate = strtolower(str_replace(['.', ' ', '-'], '_', $rawLegacy));
+        $identity->candidates = array_values(array_unique([...self::candidateNames($projectFolder, $rawLegacy), $pinned]));
+        $identity->projectName = $pinned;
+        $identity->source = self::SOURCE_PERSISTED;
+        $identity->origin = 'plus';
+        $identity->resolved = true;
+        $raw = @file_get_contents(rtrim($stackPath, '/') . '/' . self::STATE_FILE);
+        $state = is_string($raw) ? json_decode($raw, true) : null;
+        if (is_array($state) && ($state['version'] ?? null) === self::MIGRATION_VERSION
+            && ($state['projectName'] ?? null) === $pinned
+            && in_array($state['origin'] ?? null, ['dcflachs', 'plus', 'unknown'], true)
+            && is_string($state['source'] ?? null)) {
+            $identity->origin = $state['origin'];
+        }
+        return $identity;
+    }
+
+    public static function hasLegacyOrigin(): bool
+    {
+        $originFile = defined('COMPOSE_LEGACY_ORIGIN_FILE')
+            ? COMPOSE_LEGACY_ORIGIN_FILE
+            : '/boot/config/plugins/compose.manager/legacy-origin';
+        return is_file($originFile);
+    }
+
+    private static function candidateNames(string $projectFolder, string $rawLegacy): array
+    {
+        $startupWords = preg_split('/[\x20\t\r\n]+/', $rawLegacy) ?: [$rawLegacy];
+        $startupCandidate = strtolower($startupWords[0]);
+        $startupCandidate = preg_replace('/\./', '_', $startupCandidate, 1) ?? '';
+        $startupCandidate = preg_replace('/-/', '_', $startupCandidate, 1) ?? '';
+        return array_values(array_unique(array_filter([
+            compose_manager_sanitize_project_name($projectFolder),
+            strtolower(str_replace(['.', ' ', '-'], '_', $rawLegacy)),
+            compose_manager_sanitize_project_name($rawLegacy),
+            $startupCandidate,
+            strtolower(str_replace(' ', '_', $rawLegacy)),
+        ], 'compose_manager_is_valid_project_name')));
+
     }
 
     /**
@@ -214,18 +349,141 @@ final class ProjectIdentity
      */
     public function chooseIdentity(string $stackPath, string $choice): void
     {
-        $choice = compose_manager_sanitize_project_name(trim($choice));
-        if ($choice !== $this->folderCandidate && $choice !== $this->legacyCandidate) {
-            throw new \RuntimeException("Project identity '$choice' is not a candidate for '$this->projectFolder'");
+        $choice = trim($choice);
+        $registry = self::lockRegistry($stackPath);
+        $lock = $registry === false ? false : @fopen(rtrim($stackPath, '/') . '/project_identity.lock', 'c');
+        if ($lock === false) {
+            if (is_resource($registry)) {
+                fclose($registry);
+            }
+            throw new \RuntimeException("Failed to lock project identity for '$this->projectFolder'");
         }
-        if (!self::pin($stackPath, $choice)) {
-            throw new \RuntimeException("Failed to persist project identity for '$this->projectFolder'");
+        try {
+            if (!flock($lock, LOCK_EX)) {
+                throw new \RuntimeException("Failed to lock project identity for '$this->projectFolder'");
+            }
+            $current = self::resolveLocked($stackPath, $this->projectFolder, $this->legacyDisplayName($stackPath));
+            self::clearProbeCache();
+            if (self::probe() === null) {
+                throw new \RuntimeException('Docker could not be queried. Project identity was not changed.');
+            }
+            if ($current->conflictReason === self::CONFLICT_SHARED_IDENTITY) {
+                throw new \RuntimeException($current->getMessage());
+            }
+            if (!in_array($choice, $current->candidates, true)) {
+                throw new \RuntimeException("Project identity '$choice' is not a candidate for '$this->projectFolder'");
+            }
+            if (self::hasCompetingClaim($stackPath, $choice)) {
+                throw new \RuntimeException('Another stack folder also claims this project identity.');
+            }
+            if (!self::pin($stackPath, $choice, 'owner', $current->origin)) {
+                throw new \RuntimeException("Failed to persist project identity for '$this->projectFolder'");
+            }
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+            fclose($registry);
         }
 
         $this->projectName = $choice;
         $this->source = self::SOURCE_PERSISTED;
         $this->resolved = true;
         $this->conflictReason = null;
+    }
+
+    /**
+     * Register an explicitly saved file into a frozen migrated Compose input list.
+     *
+     * `resolveLegacyComposeFiles()` freezes the historical file order the
+     * first time it is pinned, by design: later directory contents never
+     * silently join it. Saving a new override through the Labels/override
+     * editor writes a real file outside that discovery, though, and it must
+     * not be dropped from every later command just because it postdates the
+     * migration snapshot. This updates the receipt in place; it is a no-op
+     * for stacks with no pinned Compose input list, or when the file is
+     * already registered.
+     */
+    public function registerComposeFile(string $stackPath, string $file): void
+    {
+        $registry = self::lockRegistry($stackPath);
+        $lock = $registry === false ? false : @fopen(rtrim($stackPath, '/') . '/project_identity.lock', 'c');
+        if ($lock === false) {
+            if (is_resource($registry)) {
+                fclose($registry);
+            }
+            return;
+        }
+        try {
+            if (!flock($lock, LOCK_EX)) {
+                return;
+            }
+            if (self::readPinned($stackPath) !== $this->projectName) {
+                return;
+            }
+            $stateFile = rtrim($stackPath, '/') . '/' . self::STATE_FILE;
+            $raw = @file_get_contents($stateFile);
+            $state = is_string($raw) ? json_decode($raw, true) : null;
+            if (!is_array($state) || ($state['projectName'] ?? null) !== $this->projectName
+                || !array_key_exists('composeFiles', $state) || !is_array($state['composeFiles'])
+                || in_array($file, $state['composeFiles'], true)) {
+                return;
+            }
+            $state['composeFiles'][] = $file;
+            $encoded = json_encode($state, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+            if (is_string($encoded)) {
+                self::atomicWrite($stateFile, $encoded . "\n");
+            }
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+            if (is_resource($registry)) {
+                fclose($registry);
+            }
+        }
+    }
+
+    /**
+     * Owner-triggered recovery check for an already-pinned identity.
+     *
+     * `resolve()`/`toArray()` never probe Docker once a pin exists — that is
+     * the intentional stable-upgrade fast path. Old pins mis-migrated before
+     * provenance tracking existed (#183) still report `resolved: true` and
+     * `canChoose: false`, so the owner has no way to recover them. This is an
+     * explicit, on-demand check: it probes live Docker evidence and, only
+     * when the pin disagrees with it, surfaces the real candidate with
+     * `canChoose: true` so the existing chooser can offer it. It never
+     * changes the persisted identity itself; `chooseIdentity()` still does
+     * that.
+     *
+     * @return array<string, mixed> Same shape as toArray()
+     */
+    public function auditAgainstRuntime(): array
+    {
+        $result = $this->toArray();
+        if ($this->source !== self::SOURCE_PERSISTED) {
+            return $result;
+        }
+        self::clearProbeCache();
+        $probe = self::probe();
+        if ($probe === null) {
+            return $result;
+        }
+        $owners = [];
+        $evidence = [];
+        foreach ($this->candidates as $candidate) {
+            $evidence[$candidate] = self::countsFor($probe, $candidate);
+            if (self::hasResources($evidence[$candidate])) {
+                $owners[] = $candidate;
+            }
+        }
+        $result['evidence'] = $evidence;
+        if (count($owners) === 1 && $owners[0] !== $this->projectName) {
+            $result['canChoose'] = true;
+            $result['conflictReason'] = self::CONFLICT_PIN_MISMATCH;
+            $result['message'] = "The saved project name '$this->projectName' owns no Docker resources, but "
+                . "'{$owners[0]}' does. Choose the existing runtime identity before running any action.";
+        }
+        return $result;
     }
 
     /**
@@ -240,6 +498,10 @@ final class ProjectIdentity
             'projectName' => $this->projectName,
             'folderCandidate' => $this->folderCandidate,
             'legacyCandidate' => $this->legacyCandidate,
+            'candidates' => $this->candidates,
+            'origin' => $this->origin,
+            'migrationVersion' => self::MIGRATION_VERSION,
+            'canChoose' => in_array($this->conflictReason, [self::CONFLICT_AMBIGUOUS, self::CONFLICT_INVALID_PIN, self::CONFLICT_PIN_MISMATCH, self::CONFLICT_DIRECTORY_MISMATCH], true),
             'source' => $this->source,
             'resolved' => $this->resolved,
             'conflictReason' => $this->conflictReason,
@@ -253,8 +515,19 @@ final class ProjectIdentity
     {
         switch ($this->conflictReason) {
             case self::CONFLICT_AMBIGUOUS:
-                return "Both '$this->folderCandidate' and '$this->legacyCandidate' own live Docker resources. "
+                return 'Multiple candidate project names own live Docker resources. '
                     . 'Choose which one this stack should use before running any action.';
+            case self::CONFLICT_INVALID_PIN:
+                return 'The saved project identity is invalid. Choose a valid project identity before running any action.';
+            case self::CONFLICT_PIN_MISMATCH:
+                return "The saved project name '$this->projectName' owns no Docker resources, but another candidate does. "
+                    . 'Choose the existing runtime identity before running any action.';
+            case self::CONFLICT_SHARED_IDENTITY:
+                return "Another stack folder also claims project '$this->projectName'. Resolve the duplicate stack metadata before running any action.";
+            case self::CONFLICT_DIRECTORY_MISMATCH:
+                return 'Matching Docker resources reference a different Compose directory. Confirm ownership before choosing a project identity.';
+            case self::CONFLICT_PERSIST_FAILED:
+                return 'The project identity could not be saved. Actions are blocked until stack metadata is writable.';
             case self::CONFLICT_PROBE_FAILED:
                 return 'Docker could not be queried, so the runtime project name of this imported stack cannot be verified. '
                     . 'Actions are blocked until Docker is reachable.';
@@ -281,19 +554,231 @@ final class ProjectIdentity
             return null;
         }
         $raw = @file_get_contents($file);
-        if ($raw === false || trim($raw) === '') {
-            return null;
+        return $raw === false ? '' : trim($raw);
+    }
+
+    private function persist(string $stackPath): void
+    {
+        if (self::hasCompetingClaim($stackPath, $this->projectName)) {
+            $this->source = self::SOURCE_UNRESOLVED;
+            $this->conflictReason = self::CONFLICT_SHARED_IDENTITY;
+            return;
         }
-        return compose_manager_sanitize_project_name(trim($raw));
+        $this->resolved = self::pin($stackPath, $this->projectName, $this->source, $this->origin);
+        if (!$this->resolved) {
+            $this->source = self::SOURCE_UNRESOLVED;
+            $this->conflictReason = self::CONFLICT_PERSIST_FAILED;
+        }
+    }
+
+    private static function hasCompetingClaim(string $stackPath, string $projectName): bool
+    {
+        foreach (glob(dirname($stackPath) . '/*', GLOB_ONLYDIR) ?: [] as $sibling) {
+            if (realpath($sibling) === realpath($stackPath)) {
+                continue;
+            }
+            $pinned = self::readPinned($sibling);
+            if ($pinned !== null) {
+                if ($pinned === $projectName) {
+                    return true;
+                }
+                continue;
+            }
+            if (!is_file($sibling . '/docker-compose.yml') && !is_file($sibling . '/compose.yaml')
+                && !is_file($sibling . '/compose.yml') && !is_file($sibling . '/docker-compose.yaml')
+                && !is_file($sibling . '/indirect')) {
+                continue;
+            }
+            $raw = @file_get_contents($sibling . '/name');
+            if ($raw === false && self::hasLegacyOrigin()) {
+                $raw = @file_get_contents($sibling . '/Name');
+            }
+            $name = is_string($raw) && trim($raw) !== '' ? trim($raw) : basename($sibling);
+            if (in_array($projectName, self::candidateNames(basename($sibling), $name), true)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
      * Persist the resolved identity so it is never recomputed.
      */
-    private static function pin(string $stackPath, string $projectName): bool
+    private static function pin(string $stackPath, string $projectName, string $source, string $origin): bool
     {
         $file = rtrim($stackPath, '/') . '/' . self::METADATA_FILE;
-        return @file_put_contents($file, $projectName) !== false;
+        $previous = self::readPinned($stackPath);
+        if ($previous !== null && $previous !== $projectName) {
+            $backup = $file . '.pre-migration';
+            if (!file_exists($backup) && !self::atomicWrite($backup, (string) file_get_contents($file))) {
+                return false;
+            }
+        }
+        $state = [
+            'version' => self::MIGRATION_VERSION,
+            'projectName' => $projectName,
+            'source' => $source,
+            'origin' => $origin,
+            'legacyRevision' => $origin === 'dcflachs' ? self::LEGACY_REVISION : null,
+        ];
+        $stateFile = rtrim($stackPath, '/') . '/' . self::STATE_FILE;
+        $previousRaw = @file_get_contents($stateFile);
+        $previousState = is_string($previousRaw) ? json_decode($previousRaw, true) : null;
+        if (is_array($previousState) && ($previousState['projectName'] ?? null) === $projectName
+            && isset($previousState['composeFiles'], $previousState['composeFilesSource'])) {
+            $state['composeFiles'] = $previousState['composeFiles'];
+            $state['composeFilesSource'] = $previousState['composeFilesSource'];
+        }
+        $encoded = json_encode($state, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+        return is_string($encoded) && self::atomicWrite($stateFile, $encoded . "\n")
+            && self::atomicWrite($file, $projectName);
+    }
+
+    public function resolveLegacyComposeFiles(string $stackPath, array $discovered): array
+    {
+        if (!$this->resolved) {
+            return $discovered;
+        }
+        $lock = @fopen(rtrim($stackPath, '/') . '/project_identity.lock', 'c');
+        if ($lock === false) {
+            throw new \RuntimeException('Could not lock migrated Compose file metadata.');
+        }
+        try {
+            if (!flock($lock, LOCK_EX)) {
+                throw new \RuntimeException('Could not lock migrated Compose file metadata.');
+            }
+            $file = rtrim($stackPath, '/') . '/' . self::STATE_FILE;
+            $raw = @file_get_contents($file);
+            $state = is_string($raw) ? json_decode($raw, true) : null;
+            if (!is_array($state) || ($state['projectName'] ?? null) !== $this->projectName
+                || self::readPinned($stackPath) !== $this->projectName) {
+                throw new \RuntimeException('Project identity changed while resolving migrated Compose files.');
+            }
+            if (array_key_exists('composeFiles', $state)) {
+                return self::validateComposeFiles($state['composeFiles']);
+            }
+            $probe = self::probe();
+            if ($probe === null) {
+                throw new \RuntimeException('Docker could not be queried to verify historical Compose file order.');
+            }
+            if (($state['source'] ?? null) !== 'owner' && !self::matchesResourceDirectory($stackPath, $this->projectName)) {
+                throw new \RuntimeException('Runtime Compose directory conflicts with the imported stack.');
+            }
+            $lists = self::$projectFileLists[$this->projectName] ?? [];
+            $lists = array_values(array_unique($lists, SORT_REGULAR));
+            if (count($lists) > 1) {
+                throw new \RuntimeException('Conflicting runtime Compose file lists. Resolve historical inputs before running any action.');
+            }
+            $inputCount = max(count($discovered), count($lists[0] ?? []));
+            if ($inputCount > 1 && (($lists === [] && self::hasResources(self::countsFor($probe, $this->projectName)))
+                || (self::$missingFileEvidence[$this->projectName] ?? false))) {
+                throw new \RuntimeException('Historical Compose file order cannot be verified for this imported stack.');
+            }
+            $files = self::validateComposeFiles($lists[0] ?? $discovered);
+            $state['composeFiles'] = $files;
+            $state['composeFilesSource'] = $lists === [] ? 'archived-discovery' : 'runtime-labels';
+            $encoded = json_encode($state, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+            if (!is_string($encoded) || !self::atomicWrite($file, $encoded . "\n")) {
+                throw new \RuntimeException('Could not save migrated Compose file order.');
+            }
+            return $files;
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+    }
+
+    private static function validateComposeFiles(mixed $files): array
+    {
+        if (!is_array($files) || !array_is_list($files) || $files === []) {
+            throw new \RuntimeException('Migrated Compose file list is invalid.');
+        }
+        foreach ($files as $file) {
+            if (!is_string($file) || !str_starts_with($file, '/') || strpbrk($file, "\r\n") !== false
+                || !is_file($file) || !is_readable($file)) {
+                throw new \RuntimeException('Migrated Compose input is unavailable. Restore the original file before running any action.');
+            }
+        }
+        return $files;
+    }
+
+    public static function initializeNew(string $stackPath, string $projectName): void
+    {
+        $registry = self::lockRegistry($stackPath);
+        if ($registry === false) {
+            throw new \RuntimeException('Failed to lock project identity registry');
+        }
+        try {
+            if (!compose_manager_is_valid_project_name($projectName)
+                || self::hasCompetingClaim($stackPath, $projectName)
+                || !self::pin($stackPath, $projectName, 'new', 'plus')) {
+                throw new \RuntimeException('Failed to initialize project identity');
+            }
+        } finally {
+            fclose($registry);
+        }
+    }
+
+    private static function lockRegistry(string $stackPath)
+    {
+        $lock = @fopen(dirname(rtrim($stackPath, '/')) . '/' . self::REGISTRY_LOCK_FILE, 'c');
+        if ($lock !== false && !flock($lock, LOCK_EX)) {
+            fclose($lock);
+            return false;
+        }
+        return $lock;
+    }
+
+    private static function matchesResourceDirectory(string $stackPath, string $projectName): bool
+    {
+        $directories = self::$projectDirectories[$projectName] ?? [];
+        $expected = [rtrim($stackPath, '/')];
+        $indirect = @file_get_contents(rtrim($stackPath, '/') . '/indirect');
+        if (is_string($indirect) && trim($indirect) !== '') {
+            $target = trim($indirect);
+            $expected[] = is_file($target) ? dirname($target) : rtrim($target, '/');
+        }
+        foreach ($directories as $directory) {
+            $matches = false;
+            foreach ($expected as $candidate) {
+                if (rtrim($directory, '/') === $candidate
+                    || (realpath($directory) !== false && realpath($directory) === realpath($candidate))) {
+                    $matches = true;
+                    break;
+                }
+            }
+            if (!$matches) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private function legacyDisplayName(string $stackPath): string
+    {
+        $raw = @file_get_contents(rtrim($stackPath, '/') . '/name');
+        if ($raw === false && $this->origin === 'dcflachs') {
+            $raw = @file_get_contents(rtrim($stackPath, '/') . '/Name');
+        }
+        return is_string($raw) && trim($raw) !== '' ? trim($raw) : $this->projectFolder;
+    }
+
+    private static function atomicWrite(string $file, string $content): bool
+    {
+        $stackPath = dirname($file);
+        $temporary = @tempnam($stackPath, '.project-name-');
+        if ($temporary === false) {
+            return false;
+        }
+        try {
+            return @file_put_contents($temporary, $content) === strlen($content)
+                && @chmod($temporary, is_file($file) ? (fileperms($file) & 0777) : 0644)
+                && @rename($temporary, $file);
+        } finally {
+            if (is_file($temporary)) {
+                @unlink($temporary);
+            }
+        }
     }
 
     /**
@@ -338,7 +823,8 @@ final class ProjectIdentity
         self::$probeCache = null;
 
         $label = 'com.docker.compose.project';
-        $cmd = 'docker ps -a --filter label=' . $label . ' --format "containers {{.Labels}}" 2>/dev/null'
+        $containerFormat = 'containers {"project":{{json (.Label "com.docker.compose.project")}},"workingDir":{{json (.Label "com.docker.compose.project.working_dir")}},"configFiles":{{json (.Label "com.docker.compose.project.config_files")}}}';
+        $cmd = 'docker ps -a --filter label=' . $label . ' --format ' . escapeshellarg($containerFormat) . ' 2>/dev/null'
             . ' && docker volume ls --filter label=' . $label . ' --format "volumes {{.Labels}}" 2>/dev/null'
             . ' && docker network ls --filter label=' . $label . ' --format "networks {{.Labels}}" 2>/dev/null'
             . '; printf "__rc=%s" "$?"';
@@ -366,14 +852,33 @@ final class ProjectIdentity
         }
 
         $counts = [];
+        self::$projectDirectories = [];
+        self::$projectFileLists = [];
+        self::$missingFileEvidence = [];
         foreach (explode("\n", $output) as $line) {
             if (!preg_match('/^(containers|volumes|networks)\s+(.*)$/', trim($line), $m)) {
                 continue;
             }
-            if (!preg_match('/com\.docker\.compose\.project=([^,]+)/', $m[2], $p)) {
-                continue;
+            $details = json_decode($m[2], true);
+            if (is_array($details) && isset($details['project']) && is_string($details['project'])) {
+                $project = $details['project'];
+                if (isset($details['workingDir']) && is_string($details['workingDir']) && $details['workingDir'] !== '') {
+                    self::$projectDirectories[$project][] = $details['workingDir'];
+                }
+                if (isset($details['configFiles']) && is_string($details['configFiles']) && $details['configFiles'] !== '') {
+                    self::$projectFileLists[$project][] = explode(',', $details['configFiles']);
+                } elseif ($m[1] === 'containers') {
+                    self::$missingFileEvidence[$project] = true;
+                }
+            } else {
+                if (!preg_match('/(?:^|,)com\.docker\.compose\.project=([^,]+)/', $m[2], $projectLabel)) {
+                    continue;
+                }
+                $project = trim($projectLabel[1]);
+                if ($m[1] === 'containers') {
+                    self::$missingFileEvidence[$project] = true;
+                }
             }
-            $project = trim($p[1]);
             if ($project === '') {
                 continue;
             }

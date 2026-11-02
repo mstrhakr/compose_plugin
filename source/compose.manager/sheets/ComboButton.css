@@ -467,6 +467,44 @@
     text-decoration: none;
   }
 
+  /* ============================================
+   Project Identity Audit Launcher
+   ============================================ */
+
+  .compose-identity-audit-wrap {
+    text-align: right;
+    margin-bottom: 6px;
+  }
+
+  .compose-identity-audit-launcher {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--dynamix-tablesorter-tbody-row-alt-bg-color);
+    color: var(--link-text-color, var(--text-color));
+    text-decoration: none;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 0.9em;
+    line-height: 1.2;
+    transition: border-color 0.2s ease, color 0.2s ease, background-color 0.2s ease;
+  }
+
+  .compose-identity-audit-launcher i {
+    color: var(--brand-orange);
+  }
+
+  .compose-identity-audit-launcher:hover,
+  .compose-identity-audit-launcher:focus {
+    border-color: var(--brand-orange);
+    color: var(--brand-orange);
+    background: var(--action-hover-bg);
+    text-decoration: none;
+  }
+
   /* Column Customization Modal */
   .compose-col-modal {
     display: none;

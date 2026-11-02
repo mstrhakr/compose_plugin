@@ -96,14 +96,15 @@ foreach ($data as $path => $entry) {
         $composeFile = findComposeFile($path);
         if (!$composeFile) continue;
 
-        // Update last_run timestamp only after compose file is verified
-        $data[$path]['last_run'] = $now;
-        $dataModified = true;
-
         // Resolve project name via StackInfo if possible
         // Use projectName (sanitized lowercase) — not projectFolder or display name —
         // because docker compose requires lowercase alphanumeric project names.
-        $stackInfo = StackInfo::fromComposePath($compose_root, $path);
+        try {
+            $stackInfo = StackInfo::fromComposePath($compose_root, $path);
+        } catch (\Throwable $error) {
+            composeLogger('Deferred scheduled auto-update: ' . $error->getMessage(), ['path' => $path], 'daemon', 'warning', 'autoupdate');
+            continue;
+        }
         if ($stackInfo !== null) {
             if (!$stackInfo->hasResolvedIdentity()) {
                 composeLogger(
@@ -125,8 +126,13 @@ foreach ($data as $path => $entry) {
 
         $script = $plugin_root . "scripts/compose_autoupdate.sh";
         if ($stackInfo !== null) {
-            $args = $stackInfo->buildComposeArgs();
-            $composeFileList = $stackInfo->buildComposeFileList();
+            try {
+                $args = $stackInfo->buildComposeArgs();
+                $composeFileList = $stackInfo->buildComposeFileList();
+            } catch (\Throwable $error) {
+                composeLogger('Deferred scheduled auto-update: ' . $error->getMessage(), ['path' => $path], 'daemon', 'warning', 'autoupdate');
+                continue;
+            }
             $envFilePath = $args['envFilePath'] ?? null;
             $projectDirectory = $args['projectDirectory'];
             $credentialId = $stackInfo->getCredentialId();
@@ -156,6 +162,8 @@ foreach ($data as $path => $entry) {
 
         $cmd = $envPrefix . $shCmd . ' ' . escapeshellarg($script) . " " . escapeshellarg($projectName) . " >/dev/null 2>&1 &";
         exec($cmd);
+        $data[$path]['last_run'] = $now;
+        $dataModified = true;
     }
 }
 

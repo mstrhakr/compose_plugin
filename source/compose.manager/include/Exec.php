@@ -845,6 +845,11 @@ switch ($_POST['action']) {
         }
 
         file_put_contents($overridePath, $scriptContents);
+        // A migrated stack's historical Compose input list is otherwise
+        // frozen; without this, a newly saved override would never be
+        // passed to compose on later start/update commands.
+        $stackInfo->identity->registerComposeFile($stackInfo->path, $overridePath);
+        StackInfo::clearCache();
         echo "$overridePath saved";
         break;
     case 'clearIconCache':
@@ -1201,8 +1206,7 @@ switch ($_POST['action']) {
             break;
         }
         // Get env path
-        $envPathFile = "$compose_root/$script/envpath";
-        $envPath = is_file($envPathFile) ? trim(file_get_contents($envPathFile)) : "";
+        $envPath = $stackInfo->getConfiguredEnvPath() ?? '';
 
         // Get icon URL
         $iconUrlFile = "$compose_root/$script/icon_url";
@@ -1323,6 +1327,7 @@ switch ($_POST['action']) {
             'credentialId' => $credentialId,
             'composeFileCandidates' => $composeFileCandidates,
             'editableComposeFiles' => $stackInfo->getEditableComposeFiles(),
+            'migrationInputError' => $stackInfo->inputMigrationError,
             'labelsViewMode' => $labelsViewMode,
             'useDefaultComposeFiles' => $useDefaultComposeFiles,
             'indirectMode' => $stackInfo->indirectMode,
@@ -1583,6 +1588,16 @@ switch ($_POST['action']) {
 
         // --- All validation passed, now write everything ---
 
+        $sourceSelectionProvided = array_key_exists('externalComposePath', $_POST) || array_key_exists('externalComposeFilePath', $_POST);
+        $indirectMetadataFile = "$compose_root/$script/indirect";
+        $previousTarget = is_file($indirectMetadataFile) ? trim((string) file_get_contents($indirectMetadataFile)) : '';
+        $requestedTarget = $externalComposeFilePath !== '' ? $externalComposeFilePath : $externalComposePath;
+        $sourceSelectionChanged = $sourceSelectionProvided && $previousTarget !== $requestedTarget
+            && !Path::refersToSamePath($previousTarget, $requestedTarget);
+        $discoveryFile = "$compose_root/$script/use_default_compose_files";
+        $previousDiscovery = is_file($discoveryFile) && trim((string) file_get_contents($discoveryFile)) === 'true';
+        $discoveryChanged = array_key_exists('useDefaultComposeFiles', $_POST) && $previousDiscovery !== $useDefaultComposeFiles;
+
         // Assign or clear credentials before persisting any other settings. A
         // stale credential ID must reject the request without partial updates.
         if ($credentialIdProvided) {
@@ -1612,11 +1627,13 @@ switch ($_POST['action']) {
 
         // Set env path
         $envPathFile = "$compose_root/$script/envpath";
-        if (empty($envPath)) {
-            if (is_file($envPathFile))
+        if (array_key_exists('envPath', $_POST)) {
+            $hasLegacyEnv = is_file("$compose_root/$script/envPath") || is_file("$compose_root/$script/envToUse");
+            if ($envPath !== '' || $hasLegacyEnv) {
+                file_put_contents($envPathFile, $envPath);
+            } elseif (is_file($envPathFile)) {
                 @unlink($envPathFile);
-        } else {
-            file_put_contents($envPathFile, $envPath);
+            }
         }
 
         // Set icon URL
@@ -1699,10 +1716,10 @@ switch ($_POST['action']) {
 
         // Set compose file discovery mode
         $useDefaultComposeFilesFile = "$compose_root/$script/use_default_compose_files";
-        if ($useDefaultComposeFiles) {
-            file_put_contents($useDefaultComposeFilesFile, 'true');
-        } else {
-            if (is_file($useDefaultComposeFilesFile)) {
+        if (array_key_exists('useDefaultComposeFiles', $_POST)) {
+            if ($useDefaultComposeFiles) {
+                file_put_contents($useDefaultComposeFilesFile, 'true');
+            } elseif (is_file($useDefaultComposeFilesFile)) {
                 @unlink($useDefaultComposeFilesFile);
             }
         }
@@ -1718,8 +1735,17 @@ switch ($_POST['action']) {
             $indirectTarget = $externalComposePath;
         }
 
-        if ($isGitStack) {
-            // Left as they are (see above).
+        if ($isGitStack || !$sourceSelectionChanged) {
+            // Left as they are (see above), but an explicitly (re-)submitted
+            // source already passed the validation above, so a stale
+            // `indirect.invalid` marker must not survive just because the
+            // target text itself is unchanged (e.g. the project folder was
+            // already implicit, or the same restored external path was
+            // resubmitted). Do not otherwise treat this as a new selection:
+            // the pinned Compose file order must stay untouched.
+            if (!$isGitStack && $sourceSelectionProvided && is_file($invalidIndirectFile)) {
+                @unlink($invalidIndirectFile);
+            }
         } elseif ($indirectTarget === '') {
             // Removing indirect: move compose file back to project folder if it only exists externally
             if (is_file($indirectFile)) {
@@ -1763,6 +1789,10 @@ switch ($_POST['action']) {
             }
         }
 
+        if ($sourceSelectionChanged || $discoveryChanged) {
+            file_put_contents("$compose_root/$script/compose_input_mode", 'plus');
+        }
+        StackInfo::clearCache();
         echo json_encode(['result' => 'success', 'message' => 'Settings saved']);
         break;
     case 'saveProfiles':
@@ -2448,7 +2478,14 @@ switch ($_POST['action']) {
             break;
         }
 
-        $lockInfo = isStackLocked($script);
+        try {
+            $stackInfo = StackInfo::fromProject($compose_root, $script);
+        } catch (\Throwable $error) {
+            echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);
+            break;
+        }
+        $lockName = $stackInfo !== null ? $stackInfo->projectName : $script;
+        $lockInfo = isStackLocked($lockName, $stackInfo !== null);
         if ($lockInfo) {
             echo json_encode([
                 'result' => 'success',
@@ -2784,20 +2821,23 @@ switch ($_POST['action']) {
         break;
 
     case 'getProjectIdentities':
-        // Read-only migration preview: folder, display name, effective runtime
-        // project, live-container match, and whether owner input is required.
+        // Owner-triggered migration audit: folder, display name, effective
+        // runtime project, and whether owner input is required. Unlike normal
+        // action dispatch, this explicitly probes Docker for already-pinned
+        // identities, so an old bad pin from #183 can still be recovered.
         $identities = [];
         foreach (StackInfo::allFromRoot($compose_root, true) as $stackInfo) {
-            $identity = $stackInfo->identity->toArray();
+            $identity = $stackInfo->identity->auditAgainstRuntime();
             $identity['displayName'] = $stackInfo->getName();
             $identities[] = $identity;
         }
         echo json_encode([
             'result' => 'success',
             'identities' => $identities,
-            'blocked' => count(array_filter($identities, static fn(array $i): bool => !$i['resolved'])),
+            'blocked' => count(array_filter($identities, static fn(array $i): bool => !$i['resolved'] || !empty($i['conflictReason']))),
         ]);
         break;
+
 
     case 'setProjectIdentity':
         // Owner decision for a stack whose runtime identity could not be proven.

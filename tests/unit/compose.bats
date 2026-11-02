@@ -95,6 +95,24 @@ test_setup() {
     assert_output_contains ".env doesn't exist"
 }
 
+@test "compose.sh preserves exact migrated project identity" {
+    export -f _mock_docker_compose
+    export MOCK_DOCKER_COMPOSE_EXIT
+    export COMPOSE_LOCK_DIR="$TEST_TEMP_DIR/compose-locks"
+    mkdir -p "$COMPOSE_LOCK_DIR"
+    run bash "$COMPOSE_SCRIPT" -c stop -p legacy___stack--
+
+    assert_success
+    assert_mock_called "docker" "compose -p legacy___stack-- stop"
+}
+
+@test "compose.sh refuses invalid identity instead of silently renaming it" {
+    run bash "$COMPOSE_SCRIPT" -c stop -p "Legacy Stack"
+
+    assert_failure
+    assert_logged "Invalid resolved project name"
+}
+
 # ============================================================
 # --ignore-buildable Flag Tests
 # ============================================================

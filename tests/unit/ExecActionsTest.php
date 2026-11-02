@@ -31,6 +31,7 @@ class ExecActionsTest extends TestCase
     {
         parent::setUp();
         \StackInfo::clearCache();
+        @unlink(COMPOSE_LEGACY_ORIGIN_FILE);
         
         // Create test compose root
         $this->testComposeRoot = sys_get_temp_dir() . '/compose_exec_test_' . getmypid();
@@ -53,6 +54,7 @@ class ExecActionsTest extends TestCase
 
     protected function tearDown(): void
     {
+        @unlink(COMPOSE_LEGACY_ORIGIN_FILE);
         if (is_dir($this->testComposeRoot)) {
             $this->recursiveDelete($this->testComposeRoot);
         }
@@ -126,6 +128,134 @@ class ExecActionsTest extends TestCase
         }
         
         return $stackPath;
+    }
+
+    public function testImportedInputFailureDoesNotHideStackSettings(): void
+    {
+        file_put_contents(COMPOSE_LEGACY_ORIGIN_FILE, \ProjectIdentity::LEGACY_REVISION);
+        $path = $this->createTestStack('repairable', [
+            'docker-compose.yml' => "services: {}\n",
+            'docker-compose.override.yml' => "services: {}\n",
+            'name' => 'repairable',
+        ]);
+        \StackInfo::fromProject($this->testComposeRoot, 'repairable');
+        unlink($path . '/docker-compose.override.yml');
+        \StackInfo::clearCache();
+
+        $response = json_decode($this->executeAction('getStackSettings', ['script' => 'repairable']), true);
+
+        $this->assertSame('success', $response['result']);
+        $this->assertStringContainsString('Migrated Compose input is unavailable', $response['migrationInputError']);
+        $this->assertContains($path . '/docker-compose.yml', $response['editableComposeFiles']);
+        $this->assertFalse(\StackInfo::fromProject($this->testComposeRoot, 'repairable')->hasResolvedIdentity());
+    }
+
+    public function testLegacyEnvSelectionIsVisibleAndClearingDoesNotReactivateIt(): void
+    {
+        file_put_contents(COMPOSE_LEGACY_ORIGIN_FILE, \ProjectIdentity::LEGACY_REVISION);
+        $path = $this->createTestStack('legacy-env', [
+            'docker-compose.yml' => "services: {}\n",
+            'name' => 'legacy-env',
+            'envToUse' => '/missing/legacy.env',
+        ]);
+        $settings = json_decode($this->executeAction('getStackSettings', ['script' => 'legacy-env']), true);
+        $this->assertSame('success', $settings['result']);
+        $this->assertSame('/missing/legacy.env', $settings['envPath']);
+
+        $saved = json_decode($this->executeAction('setStackSettings', ['script' => 'legacy-env', 'envPath' => '']), true);
+
+        $this->assertSame('success', $saved['result']);
+        $this->assertFileExists($path . '/envpath');
+        $this->assertSame('', file_get_contents($path . '/envpath'));
+        $this->assertSame('/missing/legacy.env', file_get_contents($path . '/envToUse'));
+        $settings = json_decode($this->executeAction('getStackSettings', ['script' => 'legacy-env']), true);
+        $this->assertSame('', $settings['envPath']);
+        $this->assertArrayNotHasKey('envFilePath', \StackInfo::fromProject($this->testComposeRoot, 'legacy-env')->buildComposeArgs());
+    }
+
+    public function testUnrelatedSettingsPreserveCompleteMigratedInputOrder(): void
+    {
+        file_put_contents(COMPOSE_LEGACY_ORIGIN_FILE, \ProjectIdentity::LEGACY_REVISION);
+        $fixture = $this->createAllowedSymlinkedPathFixture();
+        $source = $fixture['target'];
+        $files = [$source . '/docker-compose.extra.yml', $source . '/docker-compose.yml'];
+        foreach ($files as $file) {
+            file_put_contents($file, "services: {}\n");
+        }
+        $path = $this->createTestStack('ordered', ['indirect' => $source, 'name' => 'ordered']);
+        \ProjectIdentity::setProbe(static fn(): ?array => \ProjectIdentity::parseProbeOutput('containers ' . json_encode([
+            'project' => 'ordered', 'workingDir' => $source, 'configFiles' => implode(',', $files),
+        ]) . "\n__rc=0"));
+        $this->assertSame($files, \StackInfo::fromProject($this->testComposeRoot, 'ordered')->buildComposeArgs()['filePaths']);
+
+        $saved = json_decode($this->executeAction('setStackSettings', [
+            'script' => 'ordered', 'externalComposePath' => $source, 'externalComposeFilePath' => '',
+            'iconUrl' => 'https://example.com/icon.png', 'defaultProfile' => 'worker',
+            'extraComposeFiles' => '', 'useDefaultComposeFiles' => 'false',
+        ]), true);
+
+        $this->assertSame('success', $saved['result']);
+        $this->assertFileDoesNotExist($path . '/indirect_mode');
+        $this->assertFileDoesNotExist($path . '/compose_input_mode');
+        $this->assertSame($files, \StackInfo::fromProject($this->testComposeRoot, 'ordered')->buildComposeArgs()['filePaths']);
+        $this->assertFileExists($path . '/compose.yaml');
+        $saved = json_decode($this->executeAction('setStackSettings', ['script' => 'ordered', 'iconUrl' => 'https://example.com/other.png']), true);
+        $this->assertSame('success', $saved['result']);
+        $this->assertSame($source, file_get_contents($path . '/indirect'));
+        $this->assertSame($files, \StackInfo::fromProject($this->testComposeRoot, 'ordered')->buildComposeArgs()['filePaths']);
+
+        file_put_contents($source . '/compose.added.yaml', "services: {}\n");
+        $saved = json_decode($this->executeAction('setStackSettings', ['script' => 'ordered', 'extraComposeFiles' => 'compose.added.yaml']), true);
+        $this->assertSame('success', $saved['result']);
+        $this->assertSame([...$files, $source . '/compose.added.yaml'], \StackInfo::fromProject($this->testComposeRoot, 'ordered')->buildComposeArgs()['filePaths']);
+
+        $replacement = $this->createAllowedSymlinkedPathFixture(true)['target'];
+        $saved = json_decode($this->executeAction('setStackSettings', ['script' => 'ordered', 'externalComposePath' => $replacement, 'extraComposeFiles' => '']), true);
+        $this->assertSame('success', $saved['result']);
+        $this->assertSame('plus', file_get_contents($path . '/compose_input_mode'));
+        $this->assertSame([$replacement . '/compose.yaml'], \StackInfo::fromProject($this->testComposeRoot, 'ordered')->buildComposeArgs()['filePaths']);
+        \ProjectIdentity::setProbe(static fn(): array => []);
+    }
+
+    public function testExplicitProjectFolderSelectionClearsStaleInvalidMarkerWhenTargetWasAlreadyEmpty(): void
+    {
+        $path = $this->createTestStack('invalid-folder', [
+            'indirect.invalid' => '/mnt/missing/path',
+        ]);
+
+        $saved = json_decode($this->executeAction('setStackSettings', [
+            'script' => 'invalid-folder', 'externalComposePath' => '', 'externalComposeFilePath' => '',
+        ]), true);
+
+        $this->assertSame('success', $saved['result']);
+        $this->assertFileDoesNotExist($path . '/indirect.invalid');
+    }
+
+    public function testResubmittingUnchangedExternalPathClearsStaleInvalidMarkerWithoutDiscardingFileOrder(): void
+    {
+        $fixture = $this->createAllowedSymlinkedPathFixture();
+        $source = $fixture['target'];
+        $files = [$source . '/docker-compose.yml'];
+        file_put_contents($files[0], "services: {}\n");
+        $path = $this->createTestStack('restored-source', [
+            'indirect' => $source,
+            'indirect.invalid' => $source,
+        ]);
+        \ProjectIdentity::setProbe(static fn(): ?array => \ProjectIdentity::parseProbeOutput('containers ' . json_encode([
+            'project' => 'restored-source', 'workingDir' => $source, 'configFiles' => implode(',', $files),
+        ]) . "\n__rc=0"));
+        \StackInfo::fromProject($this->testComposeRoot, 'restored-source');
+
+        $saved = json_decode($this->executeAction('setStackSettings', [
+            'script' => 'restored-source', 'externalComposePath' => $source, 'externalComposeFilePath' => '',
+        ]), true);
+
+        $this->assertSame('success', $saved['result']);
+        $this->assertFileDoesNotExist($path . '/indirect.invalid');
+        $this->assertSame($source, file_get_contents($path . '/indirect'));
+        \StackInfo::clearCache();
+        $this->assertSame($files, \StackInfo::fromProject($this->testComposeRoot, 'restored-source')->buildComposeArgs()['filePaths']);
+        \ProjectIdentity::setProbe(static fn(): array => []);
     }
 
     /**
@@ -1444,5 +1574,37 @@ class ExecActionsTest extends TestCase
         $result = json_decode($output, true);
         $this->assertEquals('success', $result['result']);
         $this->assertFalse($result['locked']);
+    }
+
+    public function testCheckStackLockUsesExactMigratedProjectIdentity(): void
+    {
+        $path = $this->createTestStack('prod-api', [
+            'name' => 'prod__api',
+            'project_name' => 'prod__api',
+            'project_identity.json' => json_encode([
+                'version' => \ProjectIdentity::MIGRATION_VERSION,
+                'projectName' => 'prod__api',
+                'source' => 'owner',
+                'origin' => 'unknown',
+            ]),
+        ]);
+        $lockDir = $this->testComposeRoot . '/locks';
+        mkdir($lockDir);
+        $GLOBALS['compose_lock_dir'] = $lockDir;
+        $lock = fopen($lockDir . '/prod__api.lock', 'c');
+        $this->assertIsResource($lock);
+        $this->assertTrue(flock($lock, LOCK_EX | LOCK_NB));
+        fwrite($lock, json_encode(['pid' => getmypid(), 'stack' => 'prod__api']));
+        fflush($lock);
+        try {
+            $result = json_decode($this->executeAction('checkStackLock', ['script' => 'prod-api']), true);
+            $this->assertSame('success', $result['result']);
+            $this->assertTrue($result['locked']);
+            $this->assertSame('prod__api', $result['info']['stack']);
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+            unset($GLOBALS['compose_lock_dir']);
+        }
     }
 }

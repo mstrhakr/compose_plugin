@@ -128,27 +128,20 @@ https://raw.githubusercontent.com/mstrhakr/compose_plugin/dev/compose.manager.pl
 
 ### Migrating from the Original Docker Compose Manager
 
-When migrating from the original Compose Manager plugin, you can simply press reinstall on Compose Manager Plus to remove the old plugin and install the new one. The plugins both have the same name internally and cannot be installed at the same time. Compose Manager Plus also uses the exact same project folder structure so it will detect all your existing stacks automatically.
+The archived dcflachs plugin and Plus share the same internal plugin name and persistent project structure; they cannot be installed together. Plus checks historical project-name rules against existing Docker containers, volumes and networks rather than renaming those resources.
 
-#### Safe migration path
-
-This is usually overkill, but better safe than sorry.
-
-- Compose down for all stacks
-- Backup project directory
-- Uninstall old plugin
-- Install new plugin
-- Start up stacks
+Back up your plugin configuration and project metadata before upgrading. Keep existing stacks running when possible: their Docker labels help identify the correct runtime project. There is no general requirement to run `compose down` before migration.
 
 #### Standard migration path
-
-The standard way in upgrade.
 
 - Go to App Tab (Community Applications/CA)
 - Search for 'Compose Manager Plus'
 - Press (re)install in Community Applications.
+- Check existing stack status before running stack actions.
 
-> NOTE: I have tested upgrading in place by clicking "reinstall" in the CA app store without stopping the stacks and have has no issues personally. The only time this could be an issue is if your project is running with a project name that is different from the sanitized version of your folder name. Thats why it is safest to stop/down all stacks before migration.
+If identity ownership is ambiguous, Plus blocks mutations and offers explicit project choices. An old incorrectly pinned identity also requires confirmation instead of silently targeting another project. Docker-offline or metadata-write failures cannot be bypassed through that chooser.
+
+See [legacy migration details and release-validation status](docs/legacy-migration.md) for preserved settings, recovery behavior and remaining validation gates.
 
 ### Return to the Original Docker Compose Manager
 

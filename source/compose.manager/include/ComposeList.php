@@ -300,6 +300,7 @@ foreach ($stackInfos as $stackInfo) {
     $identityMessageHtml = htmlspecialchars((string) $stackInfo->getIdentityBlockReason(), ENT_QUOTES, 'UTF-8');
     $identityFolderHtml = htmlspecialchars($stackInfo->identity->folderCandidate, ENT_QUOTES, 'UTF-8');
     $identityLegacyHtml = htmlspecialchars($stackInfo->identity->legacyCandidate, ENT_QUOTES, 'UTF-8');
+    $identityInfoHtml = htmlspecialchars(json_encode($stackInfo->identity->toArray()), ENT_QUOTES, 'UTF-8');
 
     // Status icon, label, color — derived from centralized getStackState()
     $status = $stackState['state'];
@@ -355,7 +356,7 @@ foreach ($stackInfos as $stackInfo) {
     $git = $stackInfo->isGitStack() ? GitStackWebActions::listSummary($stackInfo->path) : null;
 
     // Main row - Docker tab structure with expand arrow on left
-    $o .= "<tr class='compose-sortable' id='stack-row-$id' data-project='$projectHtml' data-projectname='$projectNameHtml' data-path='$pathHtml' data-isup='$isup' data-profiles='$profilesJson' data-running-profile='$runningProfilesHtml' data-default-profile='$defaultProfilesHtml' data-webui='$webuiUrlHtml' data-containers='$containerNamesAttr' data-ctids='$containerIdsAttr' data-hasbuild='$hasBuild' data-invalid-indirect='" . ($hasInvalidIndirect ? '1' : '0') . "' data-invalid-indirect-path='$invalidIndirectPathHtml' data-identity-blocked='" . ($identityBlocked ? '1' : '0') . "' data-identity-message='$identityMessageHtml' data-identity-folder='$identityFolderHtml' data-identity-legacy='$identityLegacyHtml' data-gitstack='" . ($git !== null ? '1' : '0') . "' data-gitfailed='" . ($git !== null && $git['checked'] && ($git['failedCommit'] !== null || $git['failedAutomaticCommit'] !== null) ? '1' : '0') . "'>";
+    $o .= "<tr class='compose-sortable' id='stack-row-$id' data-project='$projectHtml' data-projectname='$projectNameHtml' data-path='$pathHtml' data-isup='$isup' data-profiles='$profilesJson' data-running-profile='$runningProfilesHtml' data-default-profile='$defaultProfilesHtml' data-webui='$webuiUrlHtml' data-containers='$containerNamesAttr' data-ctids='$containerIdsAttr' data-hasbuild='$hasBuild' data-invalid-indirect='" . ($hasInvalidIndirect ? '1' : '0') . "' data-invalid-indirect-path='$invalidIndirectPathHtml' data-identity-blocked='" . ($identityBlocked ? '1' : '0') . "' data-identity-message='$identityMessageHtml' data-identity-folder='$identityFolderHtml' data-identity-legacy='$identityLegacyHtml' data-identity-info='$identityInfoHtml' data-gitstack='" . ($git !== null ? '1' : '0') . "' data-gitfailed='" . ($git !== null && $git['checked'] && ($git['failedCommit'] !== null || $git['failedAutomaticCommit'] !== null) ? '1' : '0') . "'>";
 
     // Arrow column
     $o .= "<td class='col-arrow'>";

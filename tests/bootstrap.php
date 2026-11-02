@@ -37,6 +37,7 @@ if (!is_dir($_bootConfigTemp)) {
 }
 define('COMPOSE_UPDATE_STATUS_FILE', $_bootConfigTemp . '/update-status.json');
 define('COMPOSE_STACK_ORDER_FILE',   $_bootConfigTemp . '/stack-order.json');
+define('COMPOSE_LEGACY_ORIGIN_FILE', $_bootConfigTemp . '/legacy-origin');
 define('UNRAID_UPDATE_STATUS_FILE',  sys_get_temp_dir() . '/unraid-update-status.json');
 define('PENDING_RECHECK_FILE',       $_bootConfigTemp . '/pending-recheck.json');
 define('COMPOSE_TTYD_SOCKET_DIR',    sys_get_temp_dir());
