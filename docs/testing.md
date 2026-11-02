@@ -109,6 +109,59 @@ The runtime suite also covers superseded list metadata/rows, deletion during
 progressive loading, coalesced detail refreshes, collapsed-row failures, and
 prefetch waiters invalidated by actions.
 
+### UI stabilization live-testing checkpoint
+
+Run all isolated UI stabilization regressions together:
+
+```bash
+cd tests/e2e
+./node_modules/.bin/playwright test tests/compose-update-state.spec.ts tests/compose-runtime-consistency.spec.ts tests/compose-operation-state.spec.ts --project chromium
+./node_modules/.bin/tsc --noEmit
+```
+
+Operation tests cover superseded dispatch/poll callbacks, progress reapplied to
+replacement rows, bulk cleanup without clearing newer actions, rejected Update
+All preparation, and malformed/empty/failed container responses. These tests
+control browser callbacks; they do not prove real Docker or ttyd completion.
+
+Deploy the complete branch, including its image-update backend prerequisites.
+From the repository root, the existing deployment helper builds a development
+package, runs its normal checks, and installs it on the explicitly named host:
+
+```bash
+bash deploy.sh -Dev -RemoteHost YOUR_UNRAID_HOST
+```
+
+Use a noncritical test stack and save the currently installed package/version
+for rollback. Do not use `-Quick` for a committed checkpoint: that option copies
+only tracked staged/unstaged source changes, not committed branch differences.
+After installation, hard-refresh the browser so it loads the new JavaScript.
+No live deployment is performed by the isolated test command.
+
+Check the following on the real host, recording browser console errors and
+plugin logs if any row disagrees with Docker:
+
+1. Start, stop, restart, and update a disposable stack, foreground and background.
+   Confirm final parent/detail state without a browser refresh. For foreground
+   actions, test both waiting for completion before Done and closing early.
+2. Collapse/expand details and reload the list during an operation. Progress
+   must survive row replacement, and an older response must not roll state back.
+3. Perform container start/stop/restart/pause/resume from its context menu.
+   Check parent counts, detail status, and recovery after a failed request.
+4. Recreate a container. Confirm the DOM uses its new ID and metrics follow it.
+5. Hide/show the tab and metrics columns; reconnect after a connection loss.
+   Confirm metrics resume without duplicated subscriptions or repeated restarts.
+6. Exercise Start/Stop/Update All, including a failed stack and a slow first
+   stack. A later queued stack must not be reported finished before it runs.
+   Queue-aware completion is a known outstanding merge gate, not a guarantee of
+   this checkpoint.
+7. Delete a disposable stopped stack while a list reload is pending. It must not
+   reappear from a late row response.
+
+The [runtime plan](ui-runtime-plan.md) lists the outstanding completion gates.
+Automatic detection of changes made outside the plugin remains next-beta work
+(#194); refresh explicitly when testing such changes.
+
 ### Archived Plugin Migration
 
 The ordinary identity tests use temporary stack metadata and injected Docker evidence. Event integration cases execute real scripts against a temporary runtime and fake Docker; scheduler cases verify blocked migrations remain retryable. The opt-in real-Docker matrix creates random `cm183_` projects, then removes their test containers, networks and volumes. Its bind-data case uses a disposable Docker volume's host path, not a user directory. It requires Docker Compose and access to the `alpine:3.20` image.

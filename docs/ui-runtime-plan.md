@@ -53,9 +53,9 @@ so pending row responses cannot revive the deleted stack.
 If runtime state changes while row HTML is in flight, request fresh runtime
 reconciliation after inserting that row. This is not a transactional snapshot of
 the whole page; operation ownership and preserving progress across replacement
-remain separate work.
+are handled separately from snapshot reconciliation.
 
-Use project folder identity as the stable key. Treat numeric DOM row IDs as view
+Use project folder identity as the stable key. Treat DOM row IDs as view
 identifiers, not durable cache identities. In-flight detail requests coalesce
 additional refresh requests into a follow-up fetch. Superseded responses remove
 loading placeholders by rendering current cached details or an explicit retry
@@ -77,6 +77,25 @@ each other's progress indicators.
 Audit every response shape, timeout, malformed response, disconnect, and
 completion path. On uncertain completion, preserve uncertainty and offer retry;
 do not fabricate success or restore obsolete state as authoritative.
+
+The current checkpoint assigns unique owners to main-view stack and container
+actions. Late dispatches, lock polls, and container callbacks cannot clear a
+newer owner's progress. Progressive row replacement reapplies progress without
+starting another operation. Bulk Start/Stop/Update share response cleanup;
+dispatch and Update All preparation requests have bounded timeouts and reject
+empty or invalid responses. Container failures restore controls, report the
+error, and request authoritative runtime state.
+
+This is a live-testing checkpoint, not a completed lifecycle migration:
+
+- Background bulk jobs are queued sequentially on the server. An unlocked later
+  stack does not prove its queued job has completed; lock-only completion needs
+  queue-aware evidence before merge.
+- Foreground commands start through ttyd when the terminal connects. A dispatch
+  response is not command completion. Verify the host's terminal-close refresh
+  path and add a reliable completion signal if closing the terminal leaves stale
+  rows. Do not reuse immediate unlocked polling as proof of completion.
+- Dashboard and git-deployment lifecycle alignment remains a separate audit.
 
 ## Stage 4: transport recovery and observability
 
