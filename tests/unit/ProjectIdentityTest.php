@@ -470,7 +470,7 @@ class ProjectIdentityTest extends TestCase
 
         $this->assertFalse($stack->hasResolvedIdentity());
         $this->assertStringContainsString('Historical Compose file order', $stack->getIdentityBlockReason());
-        $this->assertSame($files, $stack->getEditableComposeFiles());
+        $this->assertEqualsCanonicalizing($files, $stack->getEditableComposeFiles());
         $this->assertContains($stack, \StackInfo::allFromRoot($this->tempRoot, true));
         $this->expectException(\RuntimeException::class);
         $stack->buildComposeArgs();
@@ -588,17 +588,22 @@ class ProjectIdentityTest extends TestCase
             fclose($pipes[0]);
             $children[] = [$process, $pipes];
         }
+        $readerFiles = [];
         foreach ($children as [$process, $pipes]) {
             $output = stream_get_contents($pipes[1]);
             $error = stream_get_contents($pipes[2]);
             fclose($pipes[1]);
             fclose($pipes[2]);
             $this->assertSame(0, proc_close($process), $error);
-            $this->assertSame($files, json_decode($output, true)['composeFiles']);
+            $readerFiles[] = json_decode($output, true)['composeFiles'];
         }
         $state = json_decode(file_get_contents($path . '/' . \ProjectIdentity::STATE_FILE), true);
         $this->assertSame('legacy_stack', $state['projectName']);
-        $this->assertSame($files, $state['composeFiles']);
+        $this->assertSame('archived-discovery', $state['composeFilesSource']);
+        $this->assertEqualsCanonicalizing($files, $state['composeFiles']);
+        foreach ($readerFiles as $composeFiles) {
+            $this->assertSame($state['composeFiles'], $composeFiles);
+        }
         $this->assertSame('legacy_stack', file_get_contents($path . '/project_name'));
         $this->assertSame([], glob($path . '/.project-name-*'));
     }

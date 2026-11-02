@@ -64,6 +64,8 @@ See `tests/e2e/README.md` for details and safety guardrails.
 
 The ordinary identity tests use temporary stack metadata and injected Docker evidence. Event integration cases execute real scripts against a temporary runtime and fake Docker; scheduler cases verify blocked migrations remain retryable. The opt-in real-Docker matrix creates random `cm183_` projects, then removes their test containers, networks and volumes. Its bind-data case uses a disposable Docker volume's host path, not a user directory. It requires Docker Compose and access to the `alpine:3.20` image.
 
+Legacy directory discovery follows filesystem iteration order, not fixture creation order. Tests without runtime order evidence compare file membership; concurrent migration readers must also preserve the exact order stored in the migration receipt.
+
 Run the focused PHP and shell regressions from the repository root:
 
 ```bash
