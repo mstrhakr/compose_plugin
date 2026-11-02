@@ -723,7 +723,14 @@ function mergeStackUpdateStatus(stackInfo, prevStatus) {
 
     // Copy stack-level fields
     ['lastChecked', 'updateAvailable', 'checking', 'checked'].forEach(function(k) {
-        if (typeof prevStatus[k] !== 'undefined') stackInfo[k] = prevStatus[k];
+        if (k === 'lastChecked') {
+            if ((typeof stackInfo[k] === 'undefined' || stackInfo[k] === null)
+                && typeof prevStatus[k] !== 'undefined') {
+                stackInfo[k] = prevStatus[k];
+            }
+        } else if (typeof prevStatus[k] !== 'undefined') {
+            stackInfo[k] = prevStatus[k];
+        }
     });
 
     // Merge container-level update data
@@ -2661,7 +2668,7 @@ function checkStackUpdates(stackName) {
         if (data) {
             try {
                 var response = JSON.parse(data);
-                if (response.result === 'success') {
+                if (response.result === 'success' && Array.isArray(response.updates)) {
                     var stackInfo = createStackInfo(stackName, response.updates, {
                         projectName: response.projectName
                     });
@@ -5769,7 +5776,7 @@ function executeStopAllStacks(opts) {
 
 // Helper to merge update status into containers array
 // Uses createContainerInfo for consistent name resolution
-function mergeUpdateStatus(containers, project) {
+function mergeUpdateStatus(containers, project, onlyIfUnknown) {
     if (!containers || !stackUpdateStatus[project] || !stackUpdateStatus[project].containers) {
         return containers;
     }
@@ -5780,7 +5787,7 @@ function mergeUpdateStatus(containers, project) {
             var sameName = cInfo.name && uInfo.name && cInfo.name === uInfo.name;
             var sameService = cInfo.service && uInfo.service && cInfo.service === uInfo.service;
             if (sameName || sameService) {
-                mergeContainerUpdateStatus(container, update, true);
+                mergeContainerUpdateStatus(container, update, onlyIfUnknown !== false);
                 if ((!container.icon || !isValidIconSrc(container.icon)) && uInfo.icon) {
                     container.icon = uInfo.icon;
                 }
@@ -5931,7 +5938,7 @@ function showStackActionDialog(action, path, profile) {
             containers = Object.keys(persistentContainerCache[project]).map(function(key) {
                 return createContainerInfo(persistentContainerCache[project][key]);
             });
-            containers = mergeUpdateStatus(containers, project);
+            containers = mergeUpdateStatus(containers, project, false);
         }
         waitForStackActionDialogClose(function() {
             renderStackActionDialog(action, displayName, path, profile, containers, hasBuild, cachedContainers.length > 0);

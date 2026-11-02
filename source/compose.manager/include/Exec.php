@@ -117,7 +117,12 @@ if (!function_exists('composeCacheContainerUpdate')) {
             return;
         }
         $raw = $cache[$update->service] ?? [];
-        if ((isset($raw['image']) && $raw['image'] !== $update->image)
+        $cached = ContainerInfo::fromDockerInspect($raw);
+        if (($cached->image !== '' && (
+                ContainerInfo::normalizeImageForUpdateCheck($cached->image)
+                    !== ContainerInfo::normalizeImageForUpdateCheck($update->image)
+                || $cached->pinnedDigest !== $update->pinnedDigest
+            ))
             || (isset($raw['name']) && $raw['name'] !== $update->name)) {
             unset($raw['hasUpdate'], $raw['updateStatus'], $raw['localSha'], $raw['remoteSha']);
         }
@@ -130,6 +135,27 @@ if (!function_exists('composeCacheContainerUpdate')) {
         $container = ContainerInfo::fromDockerInspect($raw);
         $container->mergeUpdateStatus($update);
         $cache[$update->service] = $container->toArray();
+    }
+}
+
+if (!function_exists('composeResolveContainerService')) {
+    function composeResolveContainerService(array $container): string
+    {
+        $service = trim((string) ($container['Service'] ?? $container['service'] ?? ''));
+        if ($service !== '') {
+            return $service;
+        }
+
+        $labels = $container['Labels'] ?? $container['labels'] ?? '';
+        if (is_array($labels)) {
+            return trim((string) ($labels['com.docker.compose.service'] ?? ''));
+        }
+        if (is_string($labels)
+            && preg_match('/(?:^|,)\s*com\.docker\.compose\.service=([^,]+)/', $labels, $matches)) {
+            return trim($matches[1]);
+        }
+
+        return '';
     }
 }
 
@@ -2010,12 +2036,17 @@ switch ($_POST['action']) {
 
                         $status = $updateStatusData[$imageName] ?? null;
                         if (is_array($status)) {
-                            $localRaw = $inspect['Image'] ?? ($status['local'] ?? '');
+                            $localRaw = $status['local'] ?? '';
                             $remoteRaw = $status['remote'] ?? '';
                             $rawContainer['localSha'] = substr(str_replace('sha256:', '', $localRaw), 0, 8);
                             $rawContainer['remoteSha'] = substr(str_replace('sha256:', '', $remoteRaw), 0, 8);
                             if ($localRaw !== '' && $remoteRaw !== '') {
-                                $rawContainer['updateStatus'] = ($localRaw === $remoteRaw) ? 'up-to-date' : 'update-available';
+                                $statusValue = $status['status'] ?? null;
+                                $rawContainer['updateStatus'] = in_array($statusValue, ['true', true], true)
+                                    ? 'up-to-date'
+                                    : (in_array($statusValue, ['false', false], true)
+                                        ? 'update-available'
+                                        : (($localRaw === $remoteRaw) ? 'up-to-date' : 'update-available'));
                             }
                         }
                     }
@@ -2285,7 +2316,7 @@ switch ($_POST['action']) {
                 foreach ($rows as $container) {
                     $containerLower = array_change_key_case($container, CASE_LOWER);
                     $containerName = trim($containerLower['name'] ?? $containerLower['names'] ?? '');
-                    $service = trim((string) ($containerLower['service'] ?? ''));
+                    $service = composeResolveContainerService($container);
                     $image = trim($containerLower['image'] ?? '');
                     $state = strtolower(trim($containerLower['state'] ?? ''));
 

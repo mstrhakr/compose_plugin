@@ -230,9 +230,9 @@ class ComposeUpdateCheck
      * running host, then reads config.digest from that manifest. For
      * single-arch tags: reads config.digest directly from the manifest.
      *
-     * If any step fails (transport, parse, missing config.digest, etc.)
-     * falls back to the legacy Docker-Content-Digest HEAD behavior so
-     * detection can never be worse than upstream's pre-fix code.
+     * If any step fails (transport, parse, missing config.digest, etc.),
+     * return no digest. Manifest digests cannot be compared to Docker's
+     * local config digest.
      */
     private function fetchRemoteConfigDigest(string $image): ?string
     {
@@ -294,7 +294,7 @@ class ComposeUpdateCheck
         // Step 3: GET the manifest body.
         $manifest = $this->httpGetJson($manifestURL, $header, $basicUserPwd);
         if ($manifest === null) {
-            return $this->fetchDigestHead($manifestURL, $header, $basicUserPwd);
+            return null;
         }
 
         $mediaType = (string) ($manifest['mediaType'] ?? '');
@@ -306,26 +306,22 @@ class ComposeUpdateCheck
         if ($isIndex && is_array($manifest['manifests'] ?? null)) {
             $platformDigest = $this->pickPlatformManifestDigest($manifest['manifests']);
             if (!$platformDigest) {
-                return $this->fetchDigestHead($manifestURL, $header, $basicUserPwd);
+                return null;
             }
             $platformURL = sprintf('%s%s%s/manifests/%s',
                 $auth['apiUrl'], $auth['repository'], $auth['imageName'], $platformDigest
             );
             $platformManifest = $this->httpGetJson($platformURL, $header, $basicUserPwd);
             if ($platformManifest === null) {
-                return $this->fetchDigestHead($manifestURL, $header, $basicUserPwd);
+                return null;
             }
             $configDigest = (string) ($platformManifest['config']['digest'] ?? '');
-            return $configDigest !== ''
-                ? $configDigest
-                : $this->fetchDigestHead($manifestURL, $header, $basicUserPwd);
+            return $configDigest !== '' ? $configDigest : null;
         }
 
         // Single-arch manifest.
         $configDigest = (string) ($manifest['config']['digest'] ?? '');
-        return $configDigest !== ''
-            ? $configDigest
-            : $this->fetchDigestHead($manifestURL, $header, $basicUserPwd);
+        return $configDigest !== '' ? $configDigest : null;
     }
 
     private function httpGetJson(string $url, array $header, ?string $basicUserPwd): ?array
@@ -342,21 +338,6 @@ class ComposeUpdateCheck
         if ($code >= 400) return null;
         $json = json_decode((string) $body, true);
         return is_array($json) ? $json : null;
-    }
-
-    private function fetchDigestHead(string $url, array $header, ?string $basicUserPwd): ?string
-    {
-        $ch = getCurlHandle($url, 'HEAD');
-        curl_setopt($ch, CURLOPT_HTTPHEADER, $header);
-        if ($basicUserPwd !== null) {
-            curl_setopt($ch, CURLOPT_USERPWD, $basicUserPwd);
-        }
-        $reply = curl_exec($ch);
-        if (curl_errno($ch) !== 0) return null;
-        if (preg_match('@Docker-Content-Digest:\s*(.*)@i', (string) $reply, $m)) {
-            return trim($m[1]);
-        }
-        return null;
     }
 
     /**

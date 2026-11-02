@@ -29,11 +29,21 @@ test.describe('Compose update state regressions', () => {
         const changed = createStackInfo('stack', [{ name: 'app', image: 'postgres:19', updateStatus: 'unknown' }]);
         const cleared = { name: 'app', image: 'postgres:18', hasUpdate: true, updateStatus: 'update-available', localSha: 'old', remoteSha: 'new' };
         mergeContainerUpdateStatus(cleared, { image: 'postgres:18', hasUpdate: false, status: 'up-to-date' }, false);
+        const freshTimestamp = mergeStackUpdateStatus(
+          { lastChecked: 200, containers: [] },
+          { lastChecked: 100, containers: [] }
+        );
+        const fallbackTimestamp = mergeStackUpdateStatus(
+          { lastChecked: null, containers: [] },
+          { lastChecked: 100, containers: [] }
+        );
         return {
           fresh: mergeStackUpdateStatus(fresh, previous),
           unknown: mergeStackUpdateStatus(unknown, previous),
           changed: mergeStackUpdateStatus(changed, previous),
-          cleared
+          cleared,
+          freshTimestamp,
+          fallbackTimestamp
         };
       `);
       return run();
@@ -46,6 +56,8 @@ test.describe('Compose update state regressions', () => {
     expect(results.changed.hasUpdate).toBe(false);
     expect(results.changed.containers[0].localSha).toBe('');
     expect(results.cleared).toMatchObject({ hasUpdate: false, updateStatus: 'up-to-date', localSha: '', remoteSha: '' });
+    expect(results.freshTimestamp.lastChecked).toBe(200);
+    expect(results.fallbackTimestamp.lastChecked).toBe(100);
   });
 
   test('both merge paths reject stale tags without overwriting runtime or pin state', async ({ page }) => {
@@ -68,6 +80,28 @@ test.describe('Compose update state regressions', () => {
     expect(results.changed.hasUpdate).toBeUndefined();
     expect(results.replica.updateStatus).toBe('unknown');
     expect(results.fresh).toMatchObject({ state: 'running', hasUpdate: false, updateStatus: 'up-to-date', isPinned: false });
+  });
+
+  test('fresh update checks replace known status from the persistent-cache fallback', async ({ page }) => {
+    const merge = functionSource('mergeUpdateStatus', 'showComposeChangelog');
+    const result = await page.evaluate(({ factories, merge }) => {
+      return new Function(factories + `
+        var stackUpdateStatus = { stack: { containers: [{
+          name: 'app', service: 'web', image: 'repo/app:v1',
+          hasUpdate: true, updateStatus: 'update-available', localSha: 'old', remoteSha: 'new'
+        }] } };
+        ${merge}
+        const cached = {
+          name: 'app', service: 'web', image: 'repo/app:v1',
+          hasUpdate: false, updateStatus: 'up-to-date', localSha: 'current', remoteSha: 'current'
+        };
+        mergeUpdateStatus([cached], 'stack', false);
+        return cached;
+      `)();
+    }, { factories, merge });
+    expect(result).toMatchObject({
+      hasUpdate: true, updateStatus: 'update-available', localSha: 'old', remoteSha: 'new'
+    });
   });
 
   test('unknown checks are not displayed as up-to-date', async ({ page }) => {
@@ -162,32 +196,41 @@ test.describe('Compose update state regressions', () => {
 
   test('failed update-check requests replace the checking spinner with a retry link', async ({ page }) => {
     const check = functionSource('checkStackUpdates', 'isValidWebUIUrl');
-    const results = await page.evaluate((check) => {
+    const results = await page.evaluate(({ check, factories }) => {
       return ['network', 'malformed', 'server', 'empty', 'incomplete'].map((mode) => {
         let html = '';
         const messages: string[] = [];
         const cell = { html(value: string) { html = value; } };
         const row = { length: 1, find: () => cell };
         const $ = Object.assign(() => row, {
-          post(_url: string, _payload: object, callback: (data: string) => void) {
-            if (mode === 'malformed') callback('{broken');
-            if (mode === 'server') callback('{"result":"error","message":"Docker unavailable"}');
-            if (mode === 'empty') callback('');
-            if (mode === 'incomplete') callback('{"result":"success"}');
+          post(_url: string, payload: { action: string }, callback?: (data: string) => void) {
+            if (payload.action === 'checkStackUpdates') {
+              if (mode === 'malformed') callback!('{broken');
+              if (mode === 'server') callback!('{"result":"error","message":"Docker unavailable"}');
+              if (mode === 'empty') callback!('');
+              if (mode === 'incomplete') callback!('{"result":"success"}');
+            }
             return { fail(callback: (xhr: object, status: string, error: string) => void) {
-              if (mode === 'network') callback({}, 'timeout', 'request timed out');
+              if (payload.action === 'checkStackUpdates' && mode === 'network') {
+                callback({}, 'timeout', 'request timed out');
+              }
             } };
           },
         });
         const run = new Function('$', 'composeEscapeAttr', 'composeLogger', `
           var caURL = '/exec';
+          var stackUpdateStatus = {};
+          var pendingUpdateCheckStacks = [];
+          function updateStackUpdateUI() {}
+          function updateUpdateAllButton() {}
+          ${factories}
           ${check}
           checkStackUpdates('stack');
         `);
         run($, (value: string) => value, (message: string) => messages.push(message));
         return { html, messages };
       });
-    }, check);
+    }, { check, factories });
     for (const result of results) {
       expect(result.html).toContain('check failed');
       expect(result.html).toContain("checkStackUpdates('stack')");

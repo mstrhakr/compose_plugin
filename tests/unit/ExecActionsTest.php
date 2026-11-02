@@ -179,6 +179,57 @@ class ExecActionsTest extends TestCase
         $this->assertSame('', $cache['db']['localSha']);
     }
 
+    public function testUnknownUpdatePreservesNormalizedImageAliasAndInvalidatesDifferentPins(): void
+    {
+        $this->executeAction('getPersistentContainerCache');
+        $cache = ['db' => [
+            'name' => 'stack-db-1',
+            'service' => 'db',
+            'image' => 'docker.io/library/postgres:18',
+            'hasUpdate' => true,
+            'updateStatus' => 'update-available',
+            'localSha' => 'old-local',
+            'remoteSha' => 'old-remote',
+        ]];
+
+        \composeCacheContainerUpdate($cache, \ContainerInfo::fromUpdateResponse([
+            'container' => 'stack-db-1',
+            'service' => 'db',
+            'image' => 'postgres:18',
+            'status' => 'unknown',
+        ]));
+
+        $this->assertSame('update-available', $cache['db']['updateStatus']);
+        $this->assertSame('old-local', $cache['db']['localSha']);
+        $this->assertSame('old-remote', $cache['db']['remoteSha']);
+
+        $cache['db']['image'] = 'postgres:18@sha256:' . str_repeat('a', 64);
+        \composeCacheContainerUpdate($cache, \ContainerInfo::fromUpdateResponse([
+            'container' => 'stack-db-1',
+            'service' => 'db',
+            'image' => 'postgres:18@sha256:' . str_repeat('b', 64),
+            'status' => 'unknown',
+        ]));
+
+        $this->assertSame('unknown', $cache['db']['updateStatus']);
+        $this->assertSame('', $cache['db']['localSha']);
+        $this->assertSame('', $cache['db']['remoteSha']);
+    }
+
+    public function testComposeServiceCanBeResolvedFromDockerLabels(): void
+    {
+        $this->executeAction('getPersistentContainerCache');
+
+        $this->assertSame('db', \composeResolveContainerService([
+            'Names' => 'stack-db-1',
+            'Labels' => 'com.docker.compose.project=stack,com.docker.compose.service=db',
+        ]));
+        $this->assertSame('web', \composeResolveContainerService([
+            'Service' => 'web',
+            'Labels' => 'com.docker.compose.service=other',
+        ]));
+    }
+
     public function testPersistentCacheDoesNotCarryUpdateResultsBetweenReplicas(): void
     {
         $this->executeAction('getPersistentContainerCache');
