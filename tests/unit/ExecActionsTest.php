@@ -95,6 +95,7 @@ class ExecActionsTest extends TestCase
     private function executeAction(string $action, array $postData = []): string
     {
         global $compose_root, $plugin_root, $sName;
+        global $docker_label_webui, $docker_label_icon, $docker_label_shell;
         $compose_root = $this->testComposeRoot;
         $plugin_root = '/usr/local/emhttp/plugins/compose.manager';
         $sName = 'compose.manager';
@@ -128,6 +129,208 @@ class ExecActionsTest extends TestCase
         }
         
         return $stackPath;
+    }
+
+    public function testUpdateResultsReplacePersistentCacheWithoutLosingRuntimeMetadata(): void
+    {
+        $this->executeAction('getPersistentContainerCache');
+        $cache = ['db' => [
+            'name' => 'stack-db-1',
+            'service' => 'db',
+            'image' => 'postgres:18',
+            'state' => 'running',
+            'icon' => '/existing-icon.png',
+            'hasUpdate' => true,
+            'updateStatus' => 'update-available',
+            'localSha' => 'old-local',
+            'remoteSha' => 'old-remote',
+        ]];
+        \composeCacheContainerUpdate($cache, \ContainerInfo::fromUpdateResponse([
+            'container' => 'stack-db-1',
+            'service' => 'db',
+            'image' => 'postgres:18',
+            'status' => 'up-to-date',
+            'hasUpdate' => false,
+            'localSha' => 'new',
+            'remoteSha' => 'new',
+        ]));
+
+        $this->assertFalse($cache['db']['hasUpdate']);
+        $this->assertSame('new', $cache['db']['localSha']);
+        $this->assertSame('running', $cache['db']['state']);
+        $this->assertSame('/existing-icon.png', $cache['db']['icon']);
+
+        \composeCacheContainerUpdate($cache, \ContainerInfo::fromUpdateResponse([
+            'container' => 'stack-db-1',
+            'service' => 'db',
+            'image' => 'postgres:18',
+            'status' => 'unknown',
+        ]));
+        $this->assertSame('up-to-date', $cache['db']['updateStatus']);
+        $this->assertSame('new', $cache['db']['remoteSha']);
+
+        \composeCacheContainerUpdate($cache, \ContainerInfo::fromUpdateResponse([
+            'container' => 'stack-db-1',
+            'service' => 'db',
+            'image' => 'postgres:19',
+            'status' => 'unknown',
+        ]));
+        $this->assertSame('unknown', $cache['db']['updateStatus']);
+        $this->assertSame('', $cache['db']['localSha']);
+    }
+
+    public function testUnknownUpdatePreservesNormalizedImageAliasAndInvalidatesDifferentPins(): void
+    {
+        $this->executeAction('getPersistentContainerCache');
+        $cache = ['db' => [
+            'name' => 'stack-db-1',
+            'service' => 'db',
+            'image' => 'docker.io/library/postgres:18',
+            'hasUpdate' => true,
+            'updateStatus' => 'update-available',
+            'localSha' => 'old-local',
+            'remoteSha' => 'old-remote',
+        ]];
+
+        \composeCacheContainerUpdate($cache, \ContainerInfo::fromUpdateResponse([
+            'container' => 'stack-db-1',
+            'service' => 'db',
+            'image' => 'postgres:18',
+            'status' => 'unknown',
+        ]));
+
+        $this->assertSame('update-available', $cache['db']['updateStatus']);
+        $this->assertSame('old-local', $cache['db']['localSha']);
+        $this->assertSame('old-remote', $cache['db']['remoteSha']);
+
+        $cache['db']['image'] = 'postgres:18@sha256:' . str_repeat('a', 64);
+        \composeCacheContainerUpdate($cache, \ContainerInfo::fromUpdateResponse([
+            'container' => 'stack-db-1',
+            'service' => 'db',
+            'image' => 'postgres:18@sha256:' . str_repeat('b', 64),
+            'status' => 'unknown',
+        ]));
+
+        $this->assertSame('unknown', $cache['db']['updateStatus']);
+        $this->assertSame('', $cache['db']['localSha']);
+        $this->assertSame('', $cache['db']['remoteSha']);
+    }
+
+    public function testComposeServiceCanBeResolvedFromDockerLabels(): void
+    {
+        $this->executeAction('getPersistentContainerCache');
+
+        $this->assertSame('db', \composeResolveContainerService([
+            'Names' => 'stack-db-1',
+            'Labels' => 'com.docker.compose.project=stack,com.docker.compose.service=db',
+        ]));
+        $this->assertSame('web', \composeResolveContainerService([
+            'Service' => 'web',
+            'Labels' => 'com.docker.compose.service=other',
+        ]));
+    }
+
+    public function testPersistentCacheDoesNotCarryUpdateResultsBetweenReplicas(): void
+    {
+        $this->executeAction('getPersistentContainerCache');
+        $cache = ['db' => [
+            'name' => 'stack-db-1',
+            'image' => 'postgres:18',
+            'updateStatus' => 'up-to-date',
+            'remoteSha' => 'new',
+        ]];
+        \composeCacheContainerUpdate($cache, \ContainerInfo::fromUpdateResponse([
+            'container' => 'stack-db-2',
+            'service' => 'db',
+            'image' => 'postgres:18',
+            'status' => 'unknown',
+        ]));
+        $this->assertSame('unknown', $cache['db']['updateStatus']);
+        $this->assertSame('', $cache['db']['remoteSha']);
+    }
+
+    public function testClearUpdateCacheRemovesUpdateFieldsButPreservesContainerMetadata(): void
+    {
+        file_put_contents(COMPOSE_UPDATE_STATUS_FILE, '{"stack":{"hasUpdate":true}}');
+        file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, json_encode(['stack' => ['db' => [
+            'name' => 'stack-db-1',
+            'image' => 'postgres:18',
+            'icon' => '/existing-icon.png',
+            'state' => 'running',
+            'hasUpdate' => true,
+            'updateStatus' => 'update-available',
+            'localSha' => 'old',
+            'remoteSha' => 'new',
+        ]]]));
+        try {
+            $response = json_decode($this->executeAction('clearUpdateCache'), true);
+
+            $this->assertSame('success', $response['result']);
+            $this->assertFileDoesNotExist(COMPOSE_UPDATE_STATUS_FILE);
+            $cached = json_decode(file_get_contents(COMPOSE_CONTAINER_CACHE_FILE), true)['stack']['db'];
+            $this->assertSame('stack-db-1', $cached['name']);
+            $this->assertSame('running', $cached['state']);
+            $this->assertSame('/existing-icon.png', $cached['icon']);
+            foreach (['hasUpdate', 'updateStatus', 'localSha', 'remoteSha'] as $field) {
+                $this->assertArrayNotHasKey($field, $cached);
+            }
+        } finally {
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+            @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+        }
+    }
+
+    public static function cachedImageStatusCases(): array
+    {
+        return [
+            'tag prefix' => ['ghcr.io/example/app:v3.3.5', 'ghcr.io/example/app:v3', 'ghcr.io/example/app:v3.3.5', null, 'up-to-date'],
+            'official full reference' => ['docker.io/library/postgres:18', 'postgres:16', 'library/postgres:18', null, 'up-to-date'],
+            'official short reference' => ['redis:8', 'other/redis:8', 'docker.io/library/redis:8', null, 'up-to-date'],
+            'old tag only' => ['ghcr.io/example/app:v3.3.5', 'ghcr.io/example/app:v3', null, null, 'unknown'],
+            'already pulled but not recreated' => ['postgres:18', 'postgres:16', 'library/postgres:18', 'oldimage', 'update-available'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('cachedImageStatusCases')]
+    public function testContainerStatusUsesExactNormalizedImageInsteadOfOldTagPrefix(
+        string $image,
+        string $oldImage,
+        ?string $currentImage,
+        ?string $containerImageId,
+        string $expectedStatus
+    ): void
+    {
+        $this->createTestStack('status-stack');
+        $dockerDir = $this->createTempDir();
+        $docker = $dockerDir . '/docker';
+        $row = ['Name' => 'status-stack-app-1', 'Service' => 'app', 'Image' => $image, 'State' => 'running'];
+        $inspect = ['Config' => ['Image' => $row['Image']], 'State' => []];
+        if ($containerImageId !== null) {
+            $inspect['Image'] = $containerImageId;
+        }
+        file_put_contents($docker, "#!/bin/sh\ncase \"\$1\" in\n"
+            . "compose) printf '%s\\n' " . escapeshellarg(json_encode($row)) . " ;;\n"
+            . "inspect) printf '%s\\n' " . escapeshellarg(json_encode($inspect)) . " ;;\nesac\n");
+        chmod($docker, 0755);
+        $path = getenv('PATH');
+        putenv('PATH=' . $dockerDir . PATH_SEPARATOR . $path);
+        $statuses = [$oldImage => ['local' => 'old', 'remote' => 'new']];
+        if ($currentImage !== null) {
+            $statuses[$currentImage] = ['local' => 'current', 'remote' => 'current'];
+        }
+        file_put_contents(UNRAID_UPDATE_STATUS_FILE, json_encode($statuses));
+        try {
+            $response = json_decode($this->executeAction('getStackContainers', ['script' => 'status-stack']), true);
+            $this->assertSame('success', $response['result']);
+            $this->assertCount(1, $response['containers']);
+            $this->assertSame($expectedStatus === 'update-available', $response['containers'][0]['hasUpdate']);
+            $this->assertSame($expectedStatus, $response['containers'][0]['updateStatus']);
+            $this->assertSame($containerImageId ?? ($currentImage !== null ? 'current' : ''), $response['containers'][0]['localSha']);
+        } finally {
+            putenv('PATH=' . $path);
+            @unlink(UNRAID_UPDATE_STATUS_FILE);
+            @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+        }
     }
 
     public function testImportedInputFailureDoesNotHideStackSettings(): void

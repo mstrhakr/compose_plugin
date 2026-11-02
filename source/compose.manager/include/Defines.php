@@ -21,6 +21,7 @@ $compose_root = locate_compose_root($sName);
 // Each constant is guarded with defined() so the test bootstrap can pre-define them
 // to writable temp paths (CI environments lack /boot and /var/lib/docker).
 defined('COMPOSE_UPDATE_STATUS_FILE') || define('COMPOSE_UPDATE_STATUS_FILE', '/boot/config/plugins/compose.manager/update-status.json');
+defined('COMPOSE_CONTAINER_CACHE_FILE') || define('COMPOSE_CONTAINER_CACHE_FILE', '/boot/config/plugins/compose.manager/containers.cache.json');
 defined('COMPOSE_STACK_ORDER_FILE')   || define('COMPOSE_STACK_ORDER_FILE',   '/boot/config/plugins/compose.manager/stack-order.json');
 defined('UNRAID_UPDATE_STATUS_FILE')  || define('UNRAID_UPDATE_STATUS_FILE',  '/var/lib/docker/unraid-update-status.json');
 defined('PENDING_RECHECK_FILE')       || define('PENDING_RECHECK_FILE',       '/boot/config/plugins/compose.manager/pending-recheck.json');

@@ -1,6 +1,8 @@
 <?php
 
-$cacheFile = '/boot/config/plugins/compose.manager/containers.cache.json';
+require_once __DIR__ . '/Defines.php';
+
+$cacheFile = COMPOSE_CONTAINER_CACHE_FILE;
 $cache = [];
 
 if (is_file($cacheFile)) {

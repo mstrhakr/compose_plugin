@@ -73,6 +73,13 @@ class ComposeUpdateCheck
 
             $local  = $this->inspectLocalConfigDigest($image);
             $remote = $this->fetchRemoteConfigDigest($image);
+            if (!$local || !$remote) {
+                composeLogger('Image update check incomplete', [
+                    'image' => $image,
+                    'localDigestAvailable' => (bool) $local,
+                    'remoteDigestAvailable' => (bool) $remote,
+                ], 'user', 'warning', 'update-check');
+            }
             $summary = $this->summarize($local, $remote);
 
             $status[$image] = [
@@ -86,6 +93,43 @@ class ComposeUpdateCheck
 
         if ($dirty) {
             $this->saveStatus($status);
+        }
+        return $results;
+    }
+
+    /**
+     * Compare each container's actual image with its tag's remote config.
+     * A tag may already point at a newly pulled image while a container
+     * still uses the previous image.
+     *
+     * @return array<string, array{local: string, remote: string, status: string, hasUpdate: bool}>
+     */
+    public function checkContainers(array $containers): array
+    {
+        $images = [];
+        foreach ($containers as $container) {
+            $image = trim((string) ($container['Image'] ?? $container['image'] ?? ''));
+            if ($image !== '') {
+                $images[] = $image;
+            }
+        }
+        $imageResults = $this->checkMany($images);
+        $client = new DockerClient();
+        $results = [];
+        foreach ($containers as $container) {
+            $name = trim((string) ($container['Name'] ?? $container['name'] ?? $container['Names'] ?? ''));
+            $image = trim((string) ($container['Image'] ?? $container['image'] ?? ''));
+            if ($name === '' || $image === '') {
+                continue;
+            }
+            $imageResult = $imageResults[ContainerInfo::normalizeImageForUpdateCheck($image)] ?? [];
+            $inspect = $client->getDockerJSON('/containers/' . rawurlencode($name) . '/json');
+            $local = !empty($inspect['Image']) ? (string) $inspect['Image'] : null;
+            $remote = !empty($imageResult['remote']) ? (string) $imageResult['remote'] : null;
+            if ($local === null) {
+                composeLogger('Container image digest unavailable', ['container' => $name], 'user', 'warning', 'update-check');
+            }
+            $results[$name] = $this->summarize($local, $remote)['result'];
         }
         return $results;
     }
@@ -186,9 +230,9 @@ class ComposeUpdateCheck
      * running host, then reads config.digest from that manifest. For
      * single-arch tags: reads config.digest directly from the manifest.
      *
-     * If any step fails (transport, parse, missing config.digest, etc.)
-     * falls back to the legacy Docker-Content-Digest HEAD behavior so
-     * detection can never be worse than upstream's pre-fix code.
+     * If any step fails (transport, parse, missing config.digest, etc.),
+     * return no digest. Manifest digests cannot be compared to Docker's
+     * local config digest.
      */
     private function fetchRemoteConfigDigest(string $image): ?string
     {
@@ -230,6 +274,7 @@ class ComposeUpdateCheck
                 . '?service=' . urlencode($args['service'])
                 . '&scope='   . urlencode($args['scope']);
             $tokenCh = getCurlHandle($tokenUrl);
+            curl_setopt($tokenCh, CURLOPT_HEADER, false);
             if (!empty($auth['password'])) {
                 curl_setopt($tokenCh, CURLOPT_USERPWD, $auth['username'] . ':' . $auth['password']);
             }
@@ -249,7 +294,7 @@ class ComposeUpdateCheck
         // Step 3: GET the manifest body.
         $manifest = $this->httpGetJson($manifestURL, $header, $basicUserPwd);
         if ($manifest === null) {
-            return $this->fetchDigestHead($manifestURL, $header, $basicUserPwd);
+            return null;
         }
 
         $mediaType = (string) ($manifest['mediaType'] ?? '');
@@ -261,31 +306,28 @@ class ComposeUpdateCheck
         if ($isIndex && is_array($manifest['manifests'] ?? null)) {
             $platformDigest = $this->pickPlatformManifestDigest($manifest['manifests']);
             if (!$platformDigest) {
-                return $this->fetchDigestHead($manifestURL, $header, $basicUserPwd);
+                return null;
             }
             $platformURL = sprintf('%s%s%s/manifests/%s',
                 $auth['apiUrl'], $auth['repository'], $auth['imageName'], $platformDigest
             );
             $platformManifest = $this->httpGetJson($platformURL, $header, $basicUserPwd);
             if ($platformManifest === null) {
-                return $this->fetchDigestHead($manifestURL, $header, $basicUserPwd);
+                return null;
             }
             $configDigest = (string) ($platformManifest['config']['digest'] ?? '');
-            return $configDigest !== ''
-                ? $configDigest
-                : $this->fetchDigestHead($manifestURL, $header, $basicUserPwd);
+            return $configDigest !== '' ? $configDigest : null;
         }
 
         // Single-arch manifest.
         $configDigest = (string) ($manifest['config']['digest'] ?? '');
-        return $configDigest !== ''
-            ? $configDigest
-            : $this->fetchDigestHead($manifestURL, $header, $basicUserPwd);
+        return $configDigest !== '' ? $configDigest : null;
     }
 
     private function httpGetJson(string $url, array $header, ?string $basicUserPwd): ?array
     {
         $ch = getCurlHandle($url, 'GET');
+        curl_setopt($ch, CURLOPT_HEADER, false);
         curl_setopt($ch, CURLOPT_HTTPHEADER, $header);
         if ($basicUserPwd !== null) {
             curl_setopt($ch, CURLOPT_USERPWD, $basicUserPwd);
@@ -296,21 +338,6 @@ class ComposeUpdateCheck
         if ($code >= 400) return null;
         $json = json_decode((string) $body, true);
         return is_array($json) ? $json : null;
-    }
-
-    private function fetchDigestHead(string $url, array $header, ?string $basicUserPwd): ?string
-    {
-        $ch = getCurlHandle($url, 'HEAD');
-        curl_setopt($ch, CURLOPT_HTTPHEADER, $header);
-        if ($basicUserPwd !== null) {
-            curl_setopt($ch, CURLOPT_USERPWD, $basicUserPwd);
-        }
-        $reply = curl_exec($ch);
-        if (curl_errno($ch) !== 0) return null;
-        if (preg_match('@Docker-Content-Digest:\s*(.*)@i', (string) $reply, $m)) {
-            return trim($m[1]);
-        }
-        return null;
     }
 
     /**

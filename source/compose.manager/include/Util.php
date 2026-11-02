@@ -1997,18 +1997,22 @@ class ContainerInfo
      */
     public function mergeUpdateStatus(ContainerInfo $update): void
     {
-        if ($update->hasUpdate) {
-            $this->hasUpdate = true;
+        if ($update->updateStatus === '' || $update->updateStatus === 'unknown') {
+            return;
         }
-        if ($update->updateStatus !== '' && $update->updateStatus !== 'unknown') {
-            $this->updateStatus = $update->updateStatus;
+        if ($this->name !== '' && $update->name !== '' && $this->name !== $update->name) {
+            return;
         }
-        if ($update->localSha !== '') {
-            $this->localSha = $update->localSha;
+        if ($this->image !== '' && $update->image !== ''
+            && (self::normalizeImageForUpdateCheck($this->image) !== self::normalizeImageForUpdateCheck($update->image)
+                || $this->pinnedDigest !== $update->pinnedDigest)) {
+            return;
         }
-        if ($update->remoteSha !== '') {
-            $this->remoteSha = $update->remoteSha;
-        }
+
+        $this->hasUpdate = $update->hasUpdate;
+        $this->updateStatus = $update->updateStatus;
+        $this->localSha = $update->localSha;
+        $this->remoteSha = $update->remoteSha;
         if ($update->isPinned) {
             $this->isPinned = $update->isPinned;
             $this->pinnedDigest = $update->pinnedDigest;

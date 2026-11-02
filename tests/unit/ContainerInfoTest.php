@@ -231,6 +231,57 @@ class ContainerInfoTest extends TestCase
         $this->assertSame('existing-sha', $base->localSha);
     }
 
+    public function testMergeUpdateStatusClearsAnOutdatedBadgeAndDigests(): void
+    {
+        $base = \ContainerInfo::fromDockerInspect([
+            'Name' => 'test',
+            'Image' => 'postgres:18',
+            'updateStatus' => 'update-available',
+            'localSha' => 'old-local',
+            'remoteSha' => 'old-remote',
+        ]);
+        $base->mergeUpdateStatus(\ContainerInfo::fromUpdateResponse([
+            'container' => 'test',
+            'image' => 'docker.io/library/postgres:18',
+            'hasUpdate' => false,
+            'status' => 'up-to-date',
+        ]));
+
+        $this->assertFalse($base->hasUpdate);
+        $this->assertSame('up-to-date', $base->updateStatus);
+        $this->assertSame('', $base->localSha);
+        $this->assertSame('', $base->remoteSha);
+    }
+
+    public function testMergeUpdateStatusDoesNotReuseAnotherTagsResult(): void
+    {
+        $base = \ContainerInfo::fromDockerInspect(['Name' => 'test', 'Image' => 'postgres:18']);
+        $base->mergeUpdateStatus(\ContainerInfo::fromUpdateResponse([
+            'container' => 'test',
+            'image' => 'postgres:16',
+            'hasUpdate' => true,
+            'status' => 'update-available',
+            'localSha' => 'old-local',
+            'remoteSha' => 'old-remote',
+        ]));
+
+        $this->assertFalse($base->hasUpdate);
+        $this->assertSame('unknown', $base->updateStatus);
+        $this->assertSame('', $base->localSha);
+    }
+
+    public function testMergeUpdateStatusDoesNotReuseAnotherReplicasResult(): void
+    {
+        $base = \ContainerInfo::fromDockerInspect(['Name' => 'stack-web-1', 'Image' => 'nginx:latest']);
+        $base->mergeUpdateStatus(\ContainerInfo::fromUpdateResponse([
+            'container' => 'stack-web-2',
+            'image' => 'nginx:latest',
+            'status' => 'up-to-date',
+        ]));
+
+        $this->assertSame('unknown', $base->updateStatus);
+    }
+
     // ===========================================
     // toArray Tests
     // ===========================================
