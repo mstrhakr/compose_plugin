@@ -1306,14 +1306,7 @@ function applyStackSummaryFromResponse(project, response) {
     var stackId = rowId.indexOf('stack-row-') === 0 ? rowId.substring('stack-row-'.length) : '';
     if (!stackId) return;
 
-    var containers = (response.containers || []).map(createContainerInfo).filter(Boolean);
-    mergeUpdateStatus(containers, project);
-    stackContainersCache[stackId] = containers;
-    if (response.startedAt) {
-        stackStartedAtCache[stackId] = response.startedAt;
-    }
-
-    updateParentStackFromContainers(stackId, project);
+    reconcileStackRuntime(project, response, stackRuntimeGeneration[project] || 0);
 }
 
 // Load external stylesheets (non-critical styles — critical ones are inline above)
@@ -3495,6 +3488,12 @@ $(function() {
                 scheduleComposeLoadRender(false);
             });
 
+            composeDockerLoad.on('connect', function() {
+                if (isCurrentComposeDockerLoad(composeDockerLoad, newGeneration) && composeDockerLoadRunning) {
+                    ensureComposeInfoPublisherRunning();
+                }
+            });
+
             composeDockerLoad.on('error', function(code, desc) {
                 if (!isCurrentComposeDockerLoad(composeDockerLoad, newGeneration)) {
                     return;
@@ -3604,7 +3603,6 @@ $(function() {
                 if (composeShouldEnableDockerLoad()) {
                     if (!composeDockerLoadRunning) {
                         composeLogger('restarting WebSocket after hidden period (was stopped)', null, 'user', 'debug', 'dockerload');
-                        ensureComposeInfoPublisherRunning();
                         window.composeDockerLoadToggle(true);
                     } else if (hiddenDurationMs >= composeLoadHiddenStopMs) {
                         // Still marked running, but hidden long enough that the
@@ -3613,7 +3611,6 @@ $(function() {
                         // us. Force a clean reconnect rather than trusting a
                         // socket we have no way to directly introspect.
                         composeLogger('tab was hidden long enough that the WebSocket may be stale — forcing reconnect', null, 'user', 'debug', 'dockerload');
-                        ensureComposeInfoPublisherRunning();
                         window.composeDockerLoadToggle(false);
                         window.composeDockerLoadToggle(true);
                     }
@@ -3654,8 +3651,7 @@ $(function() {
                     'listReady': composeListReady,
                     'loadColumnsVisible': composeHasVisibleLoadColumns()
                 }, 'user', 'debug', 'dockerload');
-                composeDockerLoad.start();
-                composeDockerLoadRunning = true;
+                window.composeDockerLoadToggle(true);
             } else {
                 composeLogger('deferring socket start', {
                     'listReady': composeListReady,
@@ -4679,6 +4675,12 @@ function performComposeAction(opts) {
                 queuePendingComposeReloads([stackName], opts.refreshDelayMs || 0);
             }
             openBox(data, title, 800, 1200, true);
+        } else {
+            if (stackName) {
+                setStackActionInProgress(stackName, false);
+            }
+            composeLogger('Compose action returned an empty response', { stack: stackName, action: actionName }, 'user', 'error', 'stack-action');
+            swal({ title: title, text: 'The server returned an empty response. Refresh the stack to check whether the operation started.', type: 'error' });
         }
         if (typeof onComplete === 'function') {
             onComplete(parsed, data);
@@ -5112,56 +5114,49 @@ function refreshStackByProject(project) {
 // Unlike updateParentStackFromContainers() which uses stale cache, this
 // always makes an AJAX call to get current container states.
 function refreshStackRow(stackId, project) {
+    var generation = beginStackRuntimeRequest(project);
     pendingComposeRefreshCount++;
-    $.post(caURL, {
-        action: 'getStackContainers',
-        script: project
-    }, function(data) {
+    $.ajax({
+        url: caURL,
+        method: 'POST',
+        timeout: 30000,
+        data: { action: 'getStackContainers', script: project }
+    }).done(function(data) {
         if (data) {
             try {
                 composeLogger('response', {
                     project: project,
                     data: data
                 }, 'user', 'info', 'refreshStackRow');
-                var response = JSON.parse(data);
+                var response = typeof data === 'string' ? JSON.parse(data) : data;
                 if (response.result === 'success') {
-                    var containers = response.containers || [];
-                    // Normalize all containers via factory function (PascalCase→camelCase)
-                    containers = containers.map(createContainerInfo).filter(Boolean);
-                    // Merge saved update status so we don't lose checked info
-                    mergeUpdateStatus(containers, project);
-                    // Update cache with fresh data
-                    stackContainersCache[stackId] = containers;
-                    if (response.startedAt) stackStartedAtCache[stackId] = response.startedAt;
-                    // Now update the row using the fresh cache
-                    updateParentStackFromContainers(stackId, project);
-                    // If details are expanded, refresh them too
-                    // If details are expanded (by JS state or DOM visibility), refresh them
+                    var containers = reconcileStackRuntime(project, response, generation);
+                    if (!containers) return;
+                    // Refresh details only while they are still wanted.
                     var $detailsRow = $('#details-row-' + stackId);
-                    if (expandedStacks[stackId] || $detailsRow.is(':visible')) {
+                    if (stackDetailsDesiredExpanded[stackId] !== false
+                        && (expandedStacks[stackId] || $detailsRow.is(':visible'))) {
                         expandedStacks[stackId] = true; // re-sync JS state with DOM
                         renderContainerDetails(stackId, containers, project);
                         if (!$detailsRow.is(':visible')) {
                             $detailsRow.slideDown(200);
                         }
                     }
+                } else {
+                    composeLogger('Runtime refresh failed', { project: project, response: response }, 'user', 'error', 'refreshStackRow');
                 }
             } catch (e) {
                 composeLogger('parse-error', {
                     project: project,
                     err: e.toString()
                 }, 'user', 'error', 'refreshStackRow');
-                // Fallback: update from whatever cache we have
-                updateParentStackFromContainers(stackId, project);
             }
+        } else {
+            composeLogger('Empty runtime refresh response', { project: project }, 'user', 'error', 'refreshStackRow');
         }
-        pendingComposeRefreshCount = Math.max(0, pendingComposeRefreshCount - 1);
-        if (pendingComposeRefreshCount === 0) {
-            processPendingUpdateChecks();
-        }
-    }).fail(function() {
-        // On network failure, fall back to cache-based update
-        updateParentStackFromContainers(stackId, project);
+    }).fail(function(xhr, status, error) {
+        composeLogger('Runtime refresh request failed', { project: project, status: status, error: error }, 'user', 'error', 'refreshStackRow');
+    }).always(function() {
         pendingComposeRefreshCount = Math.max(0, pendingComposeRefreshCount - 1);
         if (pendingComposeRefreshCount === 0) {
             processPendingUpdateChecks();
@@ -5178,6 +5173,7 @@ function setStackActionInProgress(stackName, inProgress, text) {
     }, 'user', 'info', 'stack-action');
 
     if (inProgress) {
+        beginStackRuntimeRequest(stackName);
         composeStackActionInProgress[stackName] = true;
     } else {
         delete composeStackActionInProgress[stackName];
@@ -6297,6 +6293,35 @@ var stackDetailsLoading = {};
 var stackDetailsLoadPromises = {};
 var stackDetailsPrefetchPromises = {};
 var stackDetailsPrefetchCache = {};
+var stackRuntimeGeneration = {};
+
+function beginStackRuntimeRequest(project) {
+    stackRuntimeGeneration[project] = (stackRuntimeGeneration[project] || 0) + 1;
+    delete stackDetailsPrefetchCache[project];
+    return stackRuntimeGeneration[project];
+}
+
+function reconcileStackRuntime(project, response, generation) {
+    if (generation !== (stackRuntimeGeneration[project] || 0)) return null;
+    if (!response || response.result !== 'success' || !Array.isArray(response.containers)) {
+        composeLogger('Invalid runtime response', { project: project }, 'user', 'error', 'runtime');
+        return null;
+    }
+    var $row = $('#compose_stacks tr.compose-sortable[data-project="' + project + '"]');
+    if (!$row.length) return null;
+    var stackId = String($row.attr('id') || '').replace('stack-row-', '');
+    var containers = response.containers.map(createContainerInfo).filter(Boolean);
+    mergeUpdateStatus(containers, project);
+    stackContainersCache[stackId] = containers;
+    stackStartedAtCache[stackId] = response.startedAt || '';
+    $row.attr('data-ctids', containers.map(function(ct) { return ct.id.substring(0, 12); }).filter(Boolean).join(','));
+    var names = containers.map(function(ct) { return ct.name; }).filter(Boolean);
+    $row.attr('data-containers', JSON.stringify(names)).data('containers', names);
+    updateParentStackFromContainers(stackId, project);
+    triggerComposeListRefreshedDebounced(0);
+    return containers;
+}
+
 // Suppress immediate refresh after a render to avoid loops
 var stackDetailsJustRendered = {};
 // Track user intent during async loads so late responses do not reopen collapsed rows.
@@ -6325,20 +6350,27 @@ function prefetchStackDetailsInBackground(projects) {
                 }
 
                 active++;
+                var generation = beginStackRuntimeRequest(project);
                 stackDetailsPrefetchPromises[project] = new Promise(function(resolve) {
-                    $.post(caURL, {
-                        action: 'getStackContainers',
-                        script: project
-                    }, function(data) {
-                        var parsed = tryParseJson(data);
-                        if (parsed && parsed.result === 'success') {
+                    $.ajax({
+                        url: caURL,
+                        method: 'POST',
+                        timeout: 30000,
+                        data: { action: 'getStackContainers', script: project }
+                    }).done(function(data) {
+                        var parsed = typeof data === 'string' ? tryParseJson(data) : data;
+                        if (parsed && parsed.result === 'success' && generation === stackRuntimeGeneration[project]) {
                             stackDetailsPrefetchCache[project] = parsed;
                             // If the row already exists, bubble prefetched summary
                             // data into parent columns during initial progressive load.
                             applyStackSummaryFromResponse(project, parsed);
                         }
+                        if (!parsed || parsed.result !== 'success') {
+                            composeLogger('Runtime prefetch failed', { project: project, response: parsed }, 'user', 'warning', 'runtime');
+                        }
                         resolve();
                     }).fail(function() {
+                        composeLogger('Runtime prefetch request failed', { project: project }, 'user', 'warning', 'runtime');
                         resolve();
                     }).always(function() {
                         active--;
@@ -8852,6 +8884,7 @@ function purgeDeletedStackCaches(project, stackId) {
     }
 
     delete composeStackActionInProgress[project];
+    beginStackRuntimeRequest(project);
     delete stackDetailsPrefetchCache[project];
     delete stackDetailsPrefetchPromises[project];
     delete persistentContainerCache[project];
@@ -9040,18 +9073,17 @@ function loadStackContainerDetails(stackId, project) {
         stackDetailsDesiredExpanded[stackId] = !!expandedStacks[stackId] || $('#details-row-' + stackId).is(':visible');
     }
 
-    function renderFromResponse(response, finishLoad) {
-        if (response && response.result === 'success') {
-            var containers = response.containers || [];
-
-            // Normalize all containers via factory function (PascalCase→camelCase)
-            containers = containers.map(createContainerInfo).filter(Boolean);
-
-            // Merge update status from stackUpdateStatus if available
-            mergeUpdateStatus(containers, project);
-
-            stackContainersCache[stackId] = containers;
-            if (response.startedAt) stackStartedAtCache[stackId] = response.startedAt;
+    function renderFromResponse(response, finishLoad, generation) {
+        if (generation !== (stackRuntimeGeneration[project] || 0)) {
+            finishLoad();
+            return true;
+        }
+        if (response && response.result === 'success' && Array.isArray(response.containers)) {
+            var containers = reconcileStackRuntime(project, response, generation);
+            if (!containers) {
+                finishLoad();
+                return true;
+            }
             composeLogger('success', {
                 stackId: stackId,
                 project: project,
@@ -9108,17 +9140,15 @@ function loadStackContainerDetails(stackId, project) {
     $container.html('<div class="stack-details-loading"><i class="fa fa-spinner fa-spin"></i> Loading container details...</div>');
 
     function fetchAndRender(finishLoad) {
-        $.post(caURL, {
-            action: 'getStackContainers',
-            script: project
-        }, function(data) {
-            var parsed = tryParseJson(data);
-            if (parsed && parsed.result === 'success') {
-                // Keep prefetch cache warm with latest direct fetch too.
-                stackDetailsPrefetchCache[project] = parsed;
-            }
-
-            if (renderFromResponse(parsed, finishLoad)) {
+        var generation = beginStackRuntimeRequest(project);
+        $.ajax({
+            url: caURL,
+            method: 'POST',
+            timeout: 30000,
+            data: { action: 'getStackContainers', script: project }
+        }).done(function(data) {
+            var parsed = typeof data === 'string' ? tryParseJson(data) : data;
+            if (renderFromResponse(parsed, finishLoad, generation)) {
                 return;
             }
 
@@ -9128,6 +9158,10 @@ function loadStackContainerDetails(stackId, project) {
                 renderError('Failed to load container details', finishLoad, 'warning');
             }
         }).fail(function() {
+            if (generation !== (stackRuntimeGeneration[project] || 0)) {
+                finishLoad();
+                return;
+            }
             renderError('Failed to load container details', finishLoad, 'error');
         });
     }
@@ -9137,7 +9171,7 @@ function loadStackContainerDetails(stackId, project) {
         if (stackDetailsPrefetchCache[project]) {
             var cached = stackDetailsPrefetchCache[project];
             delete stackDetailsPrefetchCache[project];
-            if (!renderFromResponse(cached, finishLoad)) {
+            if (!renderFromResponse(cached, finishLoad, stackRuntimeGeneration[project] || 0)) {
                 fetchAndRender(finishLoad);
             }
             return;
@@ -9149,7 +9183,7 @@ function loadStackContainerDetails(stackId, project) {
                 if (stackDetailsPrefetchCache[project]) {
                     var prefetched = stackDetailsPrefetchCache[project];
                     delete stackDetailsPrefetchCache[project];
-                    if (renderFromResponse(prefetched, finishLoad)) {
+                    if (renderFromResponse(prefetched, finishLoad, stackRuntimeGeneration[project] || 0)) {
                         return;
                     }
                 }
@@ -9738,6 +9772,8 @@ function addComposeContainerContext(elementId) {
 }
 
 function containerAction(containerName, action, stackId) {
+    var actionProject = $('#stack-row-' + stackId).data('project');
+    if (actionProject) beginStackRuntimeRequest(actionProject);
     // Show spinner by replacing the status icon (play/stop) in-place
     var $iconWrap = $('[data-name="' + containerName + '"]').first();
     // The status icon lives in the sibling '.inner' span next to the '.hand' wrapper

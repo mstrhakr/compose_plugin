@@ -98,6 +98,13 @@ The scheduled auto-update runner also checks running containers against their cu
 
 The browser regressions cover known/unknown merges, image changes, incomplete-check presentation, polling retries after request/parse failures, failed action dispatch, and runtime-state ordering during row refresh.
 
+Run `tests/compose-runtime-consistency.spec.ts` alongside
+`tests/compose-update-state.spec.ts` in the same Playwright invocation to cover
+out-of-order runtime responses, invalidated detail prefetches, recreated container
+identities, empty action responses, and metrics publisher recovery. The broader
+rollout and live-host validation gates are in the
+[UI runtime consistency plan](ui-runtime-plan.md).
+
 ### Archived Plugin Migration
 
 The ordinary identity tests use temporary stack metadata and injected Docker evidence. Event integration cases execute real scripts against a temporary runtime and fake Docker; scheduler cases verify blocked migrations remain retryable. The opt-in real-Docker matrix creates random `cm183_` projects, then removes their test containers, networks and volumes. Its bind-data case uses a disposable Docker volume's host path, not a user directory. It requires Docker Compose and access to the `alpine:3.20` image.
