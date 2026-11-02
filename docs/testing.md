@@ -66,6 +66,13 @@ Known image-check results replace older results, including `hasUpdate: false` an
 
 An image without a conclusive check is shown as **unchecked**, not **up-to-date**. Incomplete checks log whether the local or remote config digest was unavailable. Each container's actual image ID is compared with the remote config digest, so pulling a tag without recreating the container cannot hide its pending update. Registry checks are batched by image reference, but replicas are compared separately. The checker compares platform-specific image config digests, so a changed multi-architecture index alone does not imply an update for this host. Digest-pinned image behavior is unchanged.
 
+Plugin-written shared-cache entries include `configDigest`, bound to the remote
+config digest value. Runtime refreshes compare the actual container image ID
+only when that value matches `remote`. Unmarked native/legacy entries retain
+their saved verdict instead of comparing manifest digests to config IDs. A native
+writer replacing `remote` invalidates the provenance marker. Run a fresh update
+check to establish config-digest provenance for older entries.
+
 Run the focused PHP regressions and isolated browser tests without a live Unraid server:
 
 ```bash

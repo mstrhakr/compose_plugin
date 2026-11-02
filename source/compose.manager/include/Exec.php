@@ -2038,15 +2038,24 @@ switch ($_POST['action']) {
                         if (is_array($status)) {
                             $localRaw = $status['local'] ?? '';
                             $remoteRaw = $status['remote'] ?? '';
+                            // Native cache entries may contain manifest digests, not config IDs.
+                            $configDigest = $status['configDigest'] ?? '';
+                            $hasConfigDigest = $configDigest !== '' && $configDigest === $remoteRaw;
+                            if ($hasConfigDigest) {
+                                $localRaw = $inspect['Image'] ?? '';
+                            }
                             $rawContainer['localSha'] = substr(str_replace('sha256:', '', $localRaw), 0, 8);
                             $rawContainer['remoteSha'] = substr(str_replace('sha256:', '', $remoteRaw), 0, 8);
                             if ($localRaw !== '' && $remoteRaw !== '') {
                                 $statusValue = $status['status'] ?? null;
-                                $rawContainer['updateStatus'] = in_array($statusValue, ['true', true], true)
-                                    ? 'up-to-date'
-                                    : (in_array($statusValue, ['false', false], true)
-                                        ? 'update-available'
-                                        : (($localRaw === $remoteRaw) ? 'up-to-date' : 'update-available'));
+                                $rawContainer['updateStatus'] = ($localRaw === $remoteRaw) ? 'up-to-date' : 'update-available';
+                                if (!$hasConfigDigest) {
+                                    if (in_array($statusValue, ['true', true], true)) {
+                                        $rawContainer['updateStatus'] = 'up-to-date';
+                                    } elseif (in_array($statusValue, ['false', false], true)) {
+                                        $rawContainer['updateStatus'] = 'update-available';
+                                    }
+                                }
                             }
                         }
                     }

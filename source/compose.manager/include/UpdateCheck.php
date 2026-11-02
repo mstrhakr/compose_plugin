@@ -86,6 +86,8 @@ class ComposeUpdateCheck
                 'local'  => (string) ($local ?? ''),
                 'remote' => (string) ($remote ?? ''),
                 'status' => $summary['statusRaw'],
+                // Bind provenance to the value: native writers may replace remote independently.
+                'configDigest' => (string) ($remote ?? ''),
             ];
             $dirty = true;
             $results[$image] = $summary['result'];

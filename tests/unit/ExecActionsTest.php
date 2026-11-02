@@ -287,7 +287,11 @@ class ExecActionsTest extends TestCase
             'official full reference' => ['docker.io/library/postgres:18', 'postgres:16', 'library/postgres:18', null, 'up-to-date'],
             'official short reference' => ['redis:8', 'other/redis:8', 'docker.io/library/redis:8', null, 'up-to-date'],
             'old tag only' => ['ghcr.io/example/app:v3.3.5', 'ghcr.io/example/app:v3', null, null, 'unknown'],
-            'already pulled but not recreated' => ['postgres:18', 'postgres:16', 'library/postgres:18', 'oldimage', 'update-available'],
+            'already pulled but not recreated' => ['postgres:18', 'postgres:16', 'library/postgres:18', 'oldimage', 'update-available', true],
+            'native manifest digest is not a config ID' => ['postgres:18', 'postgres:16', 'library/postgres:18', 'oldimage', 'up-to-date', false],
+            'native writer replaced the remote digest' => ['postgres:18', 'postgres:16', 'library/postgres:18', 'oldimage', 'up-to-date', false, 'previous-config'],
+            'config digest needs actual container ID' => ['postgres:18', 'postgres:16', 'library/postgres:18', null, 'unknown', true],
+            'recreated container matches config digest' => ['postgres:18', 'postgres:16', 'library/postgres:18', 'current', 'up-to-date', true],
         ];
     }
 
@@ -297,7 +301,9 @@ class ExecActionsTest extends TestCase
         string $oldImage,
         ?string $currentImage,
         ?string $containerImageId,
-        string $expectedStatus
+        string $expectedStatus,
+        bool $configDigest = false,
+        ?string $previousConfigDigest = null
     ): void
     {
         $this->createTestStack('status-stack');
@@ -316,7 +322,13 @@ class ExecActionsTest extends TestCase
         putenv('PATH=' . $dockerDir . PATH_SEPARATOR . $path);
         $statuses = [$oldImage => ['local' => 'old', 'remote' => 'new']];
         if ($currentImage !== null) {
-            $statuses[$currentImage] = ['local' => 'current', 'remote' => 'current'];
+            $statuses[$currentImage] = ['local' => 'current', 'remote' => 'current', 'status' => 'true'];
+            if ($configDigest) {
+                $statuses[$currentImage]['configDigest'] = 'current';
+            }
+            if ($previousConfigDigest !== null) {
+                $statuses[$currentImage]['configDigest'] = $previousConfigDigest;
+            }
         }
         file_put_contents(UNRAID_UPDATE_STATUS_FILE, json_encode($statuses));
         try {
@@ -325,7 +337,9 @@ class ExecActionsTest extends TestCase
             $this->assertCount(1, $response['containers']);
             $this->assertSame($expectedStatus === 'update-available', $response['containers'][0]['hasUpdate']);
             $this->assertSame($expectedStatus, $response['containers'][0]['updateStatus']);
-            $this->assertSame($containerImageId ?? ($currentImage !== null ? 'current' : ''), $response['containers'][0]['localSha']);
+            $usesConfig = $currentImage !== null && isset($statuses[$currentImage]['configDigest'])
+                && $statuses[$currentImage]['configDigest'] === 'current';
+            $this->assertSame($usesConfig ? ($containerImageId ?? '') : ($currentImage !== null ? 'current' : ''), $response['containers'][0]['localSha']);
         } finally {
             putenv('PATH=' . $path);
             @unlink(UNRAID_UPDATE_STATUS_FILE);
