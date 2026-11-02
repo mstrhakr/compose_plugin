@@ -73,6 +73,13 @@ class ComposeUpdateCheck
 
             $local  = $this->inspectLocalConfigDigest($image);
             $remote = $this->fetchRemoteConfigDigest($image);
+            if (!$local || !$remote) {
+                composeLogger('Image update check incomplete', [
+                    'image' => $image,
+                    'localDigestAvailable' => (bool) $local,
+                    'remoteDigestAvailable' => (bool) $remote,
+                ], 'user', 'warning', 'update-check');
+            }
             $summary = $this->summarize($local, $remote);
 
             $status[$image] = [
@@ -86,6 +93,43 @@ class ComposeUpdateCheck
 
         if ($dirty) {
             $this->saveStatus($status);
+        }
+        return $results;
+    }
+
+    /**
+     * Compare each container's actual image with its tag's remote config.
+     * A tag may already point at a newly pulled image while a container
+     * still uses the previous image.
+     *
+     * @return array<string, array{local: string, remote: string, status: string, hasUpdate: bool}>
+     */
+    public function checkContainers(array $containers): array
+    {
+        $images = [];
+        foreach ($containers as $container) {
+            $image = trim((string) ($container['Image'] ?? $container['image'] ?? ''));
+            if ($image !== '') {
+                $images[] = $image;
+            }
+        }
+        $imageResults = $this->checkMany($images);
+        $client = new DockerClient();
+        $results = [];
+        foreach ($containers as $container) {
+            $name = trim((string) ($container['Name'] ?? $container['name'] ?? $container['Names'] ?? ''));
+            $image = trim((string) ($container['Image'] ?? $container['image'] ?? ''));
+            if ($name === '' || $image === '') {
+                continue;
+            }
+            $imageResult = $imageResults[ContainerInfo::normalizeImageForUpdateCheck($image)] ?? [];
+            $inspect = $client->getDockerJSON('/containers/' . rawurlencode($name) . '/json');
+            $local = !empty($inspect['Image']) ? (string) $inspect['Image'] : null;
+            $remote = !empty($imageResult['remote']) ? (string) $imageResult['remote'] : null;
+            if ($local === null) {
+                composeLogger('Container image digest unavailable', ['container' => $name], 'user', 'warning', 'update-check');
+            }
+            $results[$name] = $this->summarize($local, $remote)['result'];
         }
         return $results;
     }
@@ -230,6 +274,7 @@ class ComposeUpdateCheck
                 . '?service=' . urlencode($args['service'])
                 . '&scope='   . urlencode($args['scope']);
             $tokenCh = getCurlHandle($tokenUrl);
+            curl_setopt($tokenCh, CURLOPT_HEADER, false);
             if (!empty($auth['password'])) {
                 curl_setopt($tokenCh, CURLOPT_USERPWD, $auth['username'] . ':' . $auth['password']);
             }
@@ -286,6 +331,7 @@ class ComposeUpdateCheck
     private function httpGetJson(string $url, array $header, ?string $basicUserPwd): ?array
     {
         $ch = getCurlHandle($url, 'GET');
+        curl_setopt($ch, CURLOPT_HEADER, false);
         curl_setopt($ch, CURLOPT_HTTPHEADER, $header);
         if ($basicUserPwd !== null) {
             curl_setopt($ch, CURLOPT_USERPWD, $basicUserPwd);

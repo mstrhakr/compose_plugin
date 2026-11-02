@@ -36,6 +36,7 @@ if (!is_dir($_bootConfigTemp)) {
     mkdir($_bootConfigTemp, 0755, true);
 }
 define('COMPOSE_UPDATE_STATUS_FILE', $_bootConfigTemp . '/update-status.json');
+define('COMPOSE_CONTAINER_CACHE_FILE', $_bootConfigTemp . '/containers.cache.json');
 define('COMPOSE_STACK_ORDER_FILE',   $_bootConfigTemp . '/stack-order.json');
 define('COMPOSE_LEGACY_ORIGIN_FILE', $_bootConfigTemp . '/legacy-origin');
 define('UNRAID_UPDATE_STATUS_FILE',  sys_get_temp_dir() . '/unraid-update-status.json');

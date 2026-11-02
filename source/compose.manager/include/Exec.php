@@ -93,7 +93,7 @@ if (!function_exists('resolveRequestedComposeFile')) {
 if (!function_exists('composeLoadPersistentContainerCache')) {
     function composeLoadPersistentContainerCache(): array
     {
-        $cacheFile = '/boot/config/plugins/compose.manager/containers.cache.json';
+        $cacheFile = COMPOSE_CONTAINER_CACHE_FILE;
         if (!is_file($cacheFile)) {
             return [];
         }
@@ -105,8 +105,31 @@ if (!function_exists('composeLoadPersistentContainerCache')) {
 if (!function_exists('composeSavePersistentContainerCache')) {
     function composeSavePersistentContainerCache(array $cache): void
     {
-        $cacheFile = '/boot/config/plugins/compose.manager/containers.cache.json';
+        $cacheFile = COMPOSE_CONTAINER_CACHE_FILE;
         file_put_contents($cacheFile, json_encode($cache, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    }
+}
+
+if (!function_exists('composeCacheContainerUpdate')) {
+    function composeCacheContainerUpdate(array &$cache, ContainerInfo $update): void
+    {
+        if ($update->service === '') {
+            return;
+        }
+        $raw = $cache[$update->service] ?? [];
+        if ((isset($raw['image']) && $raw['image'] !== $update->image)
+            || (isset($raw['name']) && $raw['name'] !== $update->name)) {
+            unset($raw['hasUpdate'], $raw['updateStatus'], $raw['localSha'], $raw['remoteSha']);
+        }
+        $raw['name'] = $update->name;
+        $raw['service'] = $update->service;
+        $raw['image'] = $update->image;
+        if ($update->icon !== '') {
+            $raw['icon'] = $update->icon;
+        }
+        $container = ContainerInfo::fromDockerInspect($raw);
+        $container->mergeUpdateStatus($update);
+        $cache[$update->service] = $container->toArray();
     }
 }
 
@@ -352,7 +375,7 @@ switch ($_POST['action']) {
         echo json_encode(['result' => 'success', 'visibility' => $normalized]);
         break;
     case 'getPersistentContainerCache':
-        $cacheFile = '/boot/config/plugins/compose.manager/containers.cache.json';
+        $cacheFile = COMPOSE_CONTAINER_CACHE_FILE;
         $cache = is_file($cacheFile) ? json_decode(file_get_contents($cacheFile), true) : [];
         echo json_encode(['result' => 'success', 'cache' => is_array($cache) ? $cache : []]);
         break;
@@ -962,6 +985,15 @@ switch ($_POST['action']) {
         if (is_file($composeUpdateStatusFile)) {
             unlink($composeUpdateStatusFile);
         }
+        $containerCache = composeLoadPersistentContainerCache();
+        foreach ($containerCache as &$cachedStack) {
+            foreach ($cachedStack as &$cachedContainer) {
+                unset($cachedContainer['hasUpdate'], $cachedContainer['updateStatus'], $cachedContainer['localSha'], $cachedContainer['remoteSha']);
+            }
+            unset($cachedContainer);
+        }
+        unset($cachedStack);
+        composeSavePersistentContainerCache($containerCache);
         // Also clear entries from Unraid's update status that were created by compose manager
         // by removing entries that don't correspond to running Docker containers
         $unraidUpdateStatusFile = UNRAID_UPDATE_STATUS_FILE;
@@ -972,13 +1004,13 @@ switch ($_POST['action']) {
             foreach ($DockerClient->getDockerContainers() as $ct) {
                 $img = $ct['Image'] ?? '';
                 if ($img) {
-                    $runningImages[DockerUtil::ensureImageTag($img)] = true;
+                    $runningImages[ContainerInfo::normalizeImageForUpdateCheck($img)] = true;
                 }
             }
             $updateStatus = DockerUtil::loadJSON($unraidUpdateStatusFile);
             $cleaned = [];
             foreach ($updateStatus as $key => $value) {
-                if (isset($runningImages[$key])) {
+                if (isset($runningImages[ContainerInfo::normalizeImageForUpdateCheck($key)])) {
                     $cleaned[$key] = $value;
                 }
             }
@@ -1837,7 +1869,10 @@ switch ($_POST['action']) {
         $updateStatusFile = UNRAID_UPDATE_STATUS_FILE;
         $updateStatusData = [];
         if (is_file($updateStatusFile)) {
-            $updateStatusData = json_decode(file_get_contents($updateStatusFile), true) ?: [];
+            $savedImageStatus = json_decode(file_get_contents($updateStatusFile), true) ?: [];
+            foreach ($savedImageStatus as $imageKey => $imageStatus) {
+                $updateStatusData[ContainerInfo::normalizeImageForUpdateCheck($imageKey)] = $imageStatus;
+            }
         }
 
         // Get stack state via centralized StackInfo method
@@ -1967,29 +2002,20 @@ switch ($_POST['action']) {
                         }
 
                         // Get update status from saved status file (read once before loop)
-                        $imageName = $rawContainer['Image'];
-                        if (strpos($imageName, ':') === false) {
-                            $imageName .= ':latest';
-                        }
-                        $imageNameShort = preg_replace('/^[^\/]+\//', '', $imageName);
+                        $imageName = ContainerInfo::normalizeImageForUpdateCheck($rawContainer['Image']);
 
                         $rawContainer['updateStatus'] = 'unknown';
                         $rawContainer['localSha'] = '';
                         $rawContainer['remoteSha'] = '';
 
-                        $checkNames = [$imageName, $imageNameShort];
-                        foreach ($updateStatusData as $key => $status) {
-                            foreach ($checkNames as $checkName) {
-                                if ($key === $checkName || strpos($key, $checkName) !== false || strpos($checkName, $key) !== false) {
-                                    $localRaw = $status['local'] ?? '';
-                                    $remoteRaw = $status['remote'] ?? '';
-                                    $rawContainer['localSha'] = substr(str_replace('sha256:', '', $localRaw), 0, 8);
-                                    $rawContainer['remoteSha'] = substr(str_replace('sha256:', '', $remoteRaw), 0, 8);
-                                    if (!empty($status['local']) && !empty($status['remote'])) {
-                                        $rawContainer['updateStatus'] = ($status['local'] === $status['remote']) ? 'up-to-date' : 'update-available';
-                                    }
-                                    break 2;
-                                }
+                        $status = $updateStatusData[$imageName] ?? null;
+                        if (is_array($status)) {
+                            $localRaw = $inspect['Image'] ?? ($status['local'] ?? '');
+                            $remoteRaw = $status['remote'] ?? '';
+                            $rawContainer['localSha'] = substr(str_replace('sha256:', '', $localRaw), 0, 8);
+                            $rawContainer['remoteSha'] = substr(str_replace('sha256:', '', $remoteRaw), 0, 8);
+                            if ($localRaw !== '' && $remoteRaw !== '') {
+                                $rawContainer['updateStatus'] = ($localRaw === $remoteRaw) ? 'up-to-date' : 'update-available';
                             }
                         }
                     }
@@ -2000,16 +2026,22 @@ switch ($_POST['action']) {
         }
 
         // --- Persistent container metadata cache ---
-        $cacheFile = '/boot/config/plugins/compose.manager/containers.cache.json';
+        $cacheFile = COMPOSE_CONTAINER_CACHE_FILE;
         $cache = is_file($cacheFile) ? json_decode(file_get_contents($cacheFile), true) : [];
         $stackKey = $stackInfo->projectFolder;
         if (!isset($cache[$stackKey])) $cache[$stackKey] = [];
-        foreach ($containers as $ct) {
+        foreach ($containers as &$ct) {
             $service = $ct['service'] ?? $ct['Name'] ?? '';
             if ($service) {
+                if ($ct['updateStatus'] === 'unknown' && isset($cache[$stackKey][$service])) {
+                    $current = ContainerInfo::fromDockerInspect($ct);
+                    $current->mergeUpdateStatus(ContainerInfo::fromDockerInspect($cache[$stackKey][$service]));
+                    $ct = $current->toArray();
+                }
                 $cache[$stackKey][$service] = $ct;
             }
         }
+        unset($ct);
         file_put_contents($cacheFile, json_encode($cache, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
         echo json_encode(['result' => 'success', 'containers' => $containers, 'stackState' => $stackState, 'projectName' => $stackInfo->projectFolder, 'startedAt' => $stackInfo->getStartedAt()]);
@@ -2117,18 +2149,8 @@ switch ($_POST['action']) {
         $stackCacheDirty = false;
 
         if ($rows) {
-            // Collect the compose-owned image set and batch-check in one call.
-            // ComposeUpdateCheck always re-inspects local and never touches
-            // status-file entries for non-compose images.
-            $imagesToCheck = [];
-            foreach ($rows as $container) {
-                $img = trim((string) ($container['Image'] ?? ''));
-                if ($img !== '') {
-                    $imagesToCheck[] = $img;
-                }
-            }
             $updater = new ComposeUpdateCheck();
-            $checkResults = $updater->checkMany($imagesToCheck);
+            $checkResults = $updater->checkContainers($rows);
 
             foreach ($rows as $container) {
                 $containerLower = array_change_key_case($container, CASE_LOWER);
@@ -2161,10 +2183,7 @@ switch ($_POST['action']) {
                         }
                     }
 
-                    // Normalize image name (strip docker.io/ prefix, @sha256: digest, add library/ for official images)
-                    $image = ContainerInfo::normalizeImageForUpdateCheck($image);
-
-                    $result = $checkResults[$image] ?? [
+                    $result = $checkResults[$containerName] ?? [
                         'local' => '', 'remote' => '', 'status' => 'unknown', 'hasUpdate' => false,
                     ];
 
@@ -2178,7 +2197,7 @@ switch ($_POST['action']) {
                         $remoteSha = substr($remoteSha, 7, 12);
                     }
 
-                    $updateResults[] = ContainerInfo::fromUpdateResponse([
+                    $update = ContainerInfo::fromUpdateResponse([
                         'container' => $containerName,
                         'service' => $service,
                         'image' => $image,
@@ -2187,7 +2206,10 @@ switch ($_POST['action']) {
                         'status' => $result['status'],
                         'localSha' => $localSha,
                         'remoteSha' => $remoteSha
-                    ])->toUpdateArray();
+                    ]);
+                    $updateResults[] = $update->toUpdateArray();
+                    composeCacheContainerUpdate($stackContainerCache, $update);
+                    $stackCacheDirty = true;
                 }
             }
 
@@ -2255,17 +2277,10 @@ switch ($_POST['action']) {
             $hasStackUpdate = false;
 
             if ($rows) {
-                // Collect images from running containers only (matches prior
-                // behavior of this handler) and batch-check via the plugin-
-                // local update checker.
-                $imagesToCheck = [];
-                foreach ($rows as $container) {
-                    $state = strtolower((string) ($container['State'] ?? ''));
-                    if ($state !== 'running') continue;
-                    $img = trim((string) ($container['Image'] ?? ''));
-                    if ($img !== '') $imagesToCheck[] = $img;
-                }
-                $checkResults = $imagesToCheck ? $updater->checkMany($imagesToCheck) : [];
+                $runningContainers = array_values(array_filter($rows, static function (array $container): bool {
+                    return strtolower((string) ($container['State'] ?? $container['state'] ?? '')) === 'running';
+                }));
+                $checkResults = $runningContainers ? $updater->checkContainers($runningContainers) : [];
 
                 foreach ($rows as $container) {
                     $containerLower = array_change_key_case($container, CASE_LOWER);
@@ -2300,9 +2315,7 @@ switch ($_POST['action']) {
                             }
                         }
 
-                        $image = ContainerInfo::normalizeImageForUpdateCheck($image);
-
-                        $result = $checkResults[$image] ?? [
+                        $result = $checkResults[$containerName] ?? [
                             'local' => '', 'remote' => '', 'status' => 'unknown', 'hasUpdate' => false,
                         ];
 
@@ -2318,7 +2331,7 @@ switch ($_POST['action']) {
 
                         if ($result['hasUpdate']) $hasStackUpdate = true;
 
-                        $stackUpdates[] = ContainerInfo::fromUpdateResponse([
+                        $update = ContainerInfo::fromUpdateResponse([
                             'container' => $containerName,
                             'service' => $service,
                             'image' => $image,
@@ -2327,7 +2340,10 @@ switch ($_POST['action']) {
                             'status' => $result['status'],
                             'localSha' => $localSha,
                             'remoteSha' => $remoteSha
-                        ])->toUpdateArray();
+                        ]);
+                        $stackUpdates[] = $update->toUpdateArray();
+                        composeCacheContainerUpdate($stackContainerCache, $update);
+                        $stackCacheDirty = true;
                     }
                 }
 
