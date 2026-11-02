@@ -36,10 +36,22 @@
 >
 
 <CHANGES>
-###2026.10.20.1619
-- Bug Fixes: avoid Docker tab panel conflicts on Unraid 7.3.2
-- [PR #172](https://github.com/mstrhakr/compose_plugin/pull/172)
-- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.10.07...v2026.10.20.1619)
+###2026.11.02.1049
+- Bug Fixes: resolve relative and trailing-slash exclusive-share symlink targets
+- Bug Fixes: add shellcheck directive for PHP variable handling in validate_project_name function
+- Bug Fixes: address Copilot review follow-ups on PR #184
+- Bug Fixes: poll migrated stack locks by exact identity
+- Bug Fixes: retain migrated input order across unrelated settings saves
+- Bug Fixes: preserve explicit clearing of legacy env selections
+- Bug Fixes: keep migrated stacks visible when inputs need repair
+- Bug Fixes: honor ownership confirmation without weakening input guards
+- Bug Fixes: serialize project ownership across stack folders
+- Bug Fixes: preserve existing Plus pins during version upgrades
+- Bug Fixes: harden legacy migration inputs and automation
+- Tests: avoid filesystem-order assumptions in migration regressions
+- Tests: isolate compose operation lock directory
+- [PR #187](https://github.com/mstrhakr/compose_plugin/pull/187)
+- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.10.27...v2026.11.02.1049)
 </CHANGES>
 
 <!-- The 'pre-install' script. -->
