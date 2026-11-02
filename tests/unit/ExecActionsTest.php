@@ -280,6 +280,39 @@ class ExecActionsTest extends TestCase
         }
     }
 
+    public function testSingleAndAllStackChecksUseAttachedRegistryCredentials(): void
+    {
+        $this->createTestStack('private-stack', ['credential_id' => 'missing-private-credential']);
+        $dockerDir = $this->createTempDir();
+        $docker = $dockerDir . '/docker';
+        $row = [
+            'Name' => 'private-app', 'Names' => 'private-app', 'Service' => 'app',
+            'Image' => 'ghcr.io/org/private:latest', 'State' => 'running',
+            'Labels' => 'com.docker.compose.project=private-stack,com.docker.compose.service=app',
+        ];
+        file_put_contents($docker, "#!/bin/sh\ncase \"\$1\" in\n"
+            . "compose|ps) printf '%s\\n' " . escapeshellarg(json_encode($row)) . " ;;\nesac\n");
+        chmod($docker, 0755);
+        $path = getenv('PATH');
+        putenv('PATH=' . $dockerDir . PATH_SEPARATOR . $path);
+        try {
+            foreach (['checkStackUpdates', 'checkAllStacksUpdates'] as $action) {
+                $GLOBALS['composeLoggerMessages'] = [];
+                $response = json_decode($this->executeAction($action, ['script' => 'private-stack']), true);
+                $this->assertSame('success', $response['result']);
+                $this->assertContains('Unable to load attached registry credential for update check', $GLOBALS['composeLoggerMessages']);
+                $updates = $action === 'checkStackUpdates' ? $response['updates'] : $response['stacks']['private-stack']['containers'];
+                $this->assertCount(1, $updates);
+                $this->assertSame('unknown', $updates[0]['updateStatus']);
+            }
+        } finally {
+            putenv('PATH=' . $path);
+            @unlink(UNRAID_UPDATE_STATUS_FILE);
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+            @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+        }
+    }
+
     public static function cachedImageStatusCases(): array
     {
         return [

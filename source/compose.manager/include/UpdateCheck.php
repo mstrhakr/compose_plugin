@@ -2,6 +2,7 @@
 
 require_once __DIR__ . '/Defines.php';
 require_once __DIR__ . '/Util.php';
+require_once __DIR__ . '/CredentialVault.php';
 require_once '/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php';
 
 /**
@@ -29,10 +30,12 @@ class ComposeUpdateCheck
 {
     /** @var string Path to the shared Unraid update-status JSON file. */
     private string $statusFile;
+    private ?string $credentialId;
 
-    public function __construct(?string $statusFile = null)
+    public function __construct(?string $statusFile = null, ?string $credentialId = null)
     {
         $this->statusFile = $statusFile ?? UNRAID_UPDATE_STATUS_FILE;
+        $this->credentialId = $credentialId;
     }
 
     /**
@@ -238,8 +241,15 @@ class ComposeUpdateCheck
      */
     private function fetchRemoteConfigDigest(string $image): ?string
     {
-        $client = new DockerClient();
-        $auth   = $client->getRegistryAuth($image);
+        try {
+            $auth = $this->resolveRegistryAuth($image);
+        } catch (RuntimeException $error) {
+            composeLogger('Unable to load attached registry credential for update check', [
+                'image' => $image,
+                'credentialId' => $this->credentialId,
+            ], 'user', 'error', 'update-check');
+            return null;
+        }
         $manifestURL = sprintf('%s%s%s/manifests/%s',
             $auth['apiUrl'], $auth['repository'], $auth['imageName'], $auth['imageTag']
         );
@@ -324,6 +334,29 @@ class ComposeUpdateCheck
         // Single-arch manifest.
         $configDigest = (string) ($manifest['config']['digest'] ?? '');
         return $configDigest !== '' ? $configDigest : null;
+    }
+
+    /** @return array<string, string> */
+    protected function resolveRegistryAuth(string $image): array
+    {
+        $auth = (new DockerClient())->getRegistryAuth($image);
+        if ($this->credentialId === null || $this->credentialId === '') {
+            return $auth;
+        }
+        return (new CredentialVault())->useCredential($this->credentialId, static function (array $credential) use ($auth): array {
+            if (in_array($credential['provider'] ?? '', ['git', 'git-ssh'], true)) {
+                throw new RuntimeException('The attached credential is not a registry login.');
+            }
+            $registry = strtolower($auth['registryName']);
+            if (in_array($registry, ['', 'docker.io', 'registry-1.docker.io', 'index.docker.io'], true)) {
+                $registry = 'https://index.docker.io/v1/';
+            }
+            if ($credential['registry'] === $registry) {
+                $auth['username'] = $credential['username'];
+                $auth['password'] = $credential['secret'];
+            }
+            return $auth;
+        });
     }
 
     private function httpGetJson(string $url, array $header, ?string $basicUserPwd): ?array

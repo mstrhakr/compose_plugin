@@ -73,6 +73,19 @@ their saved verdict instead of comparing manifest digests to config IDs. A nativ
 writer replacing `remote` invalidates the provenance marker. Run a fresh update
 check to establish config-digest provenance for older entries.
 
+Single-stack and Check All update checks use each stack's attached registry
+credential for that registry only, including Docker Hub aliases. Other
+registries retain Unraid's normal authentication. Check All keeps credentials
+scoped per stack even when stacks use different accounts at the same registry.
+Repository-only git credentials cannot be used as registry logins. Missing or
+unreadable attached credentials are logged and leave the check unknown; rejected
+registry authentication also leaves it unknown rather than up-to-date.
+
+The update-check tests exercise Basic and Bearer authentication against a local
+fixture registry with synthetic credentials, including rejected credentials,
+registry/account isolation, and both update-action entry points. No real private
+registry credentials or external registry access are required.
+
 Run the focused PHP regressions and isolated browser tests without a live Unraid server:
 
 ```bash

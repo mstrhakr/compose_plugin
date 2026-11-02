@@ -2189,7 +2189,7 @@ switch ($_POST['action']) {
         $stackCacheDirty = false;
 
         if ($rows) {
-            $updater = new ComposeUpdateCheck();
+            $updater = new ComposeUpdateCheck(null, $stackInfo->getCredentialId());
             $checkResults = $updater->checkContainers($rows);
 
             foreach ($rows as $container) {
@@ -2285,7 +2285,6 @@ switch ($_POST['action']) {
         composeLogger('Starting update check for all stacks', null, 'user', 'debug', 'update-check');
 
         $allUpdates = [];
-        $updater = new ComposeUpdateCheck();
         $persistentContainerCache = composeLoadPersistentContainerCache();
         $persistentCacheDirty = false;
         $inspectIconCache = [];
@@ -2320,6 +2319,7 @@ switch ($_POST['action']) {
                 $runningContainers = array_values(array_filter($rows, static function (array $container): bool {
                     return strtolower((string) ($container['State'] ?? $container['state'] ?? '')) === 'running';
                 }));
+                $updater = new ComposeUpdateCheck(null, $stackInfoItem->getCredentialId());
                 $checkResults = $runningContainers ? $updater->checkContainers($runningContainers) : [];
 
                 foreach ($rows as $container) {
