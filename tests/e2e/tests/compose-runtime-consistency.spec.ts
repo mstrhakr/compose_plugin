@@ -14,6 +14,172 @@ const details = fn('loadStackContainerDetails', 'renderContainerDetails')
 test.describe('Runtime reconciliation', () => {
   test.use({ storageState: { cookies: [], origins: [] } });
 
+  test('superseded list metadata and row callbacks cannot replace the latest list', async ({ page }) => {
+    const list = fn('composeLoadlist', 'initStackListUI');
+    const result = await page.evaluate(async list => {
+      return await new Function(`
+        var composeListGeneration = 0, cancelComposeListLoad = null;
+        var composeTimers = {}, requests = [], writes = [], events = [], initialized = 0, refreshed = [];
+        var window = {}, caURL = '/exec', compose_root = '/stacks';
+        var savedUpdateStatusLoaded = true, stackRuntimeGeneration = {};
+        var composeDefaultExpandQueue = Promise.resolve();
+        var element = {
+          length: 0, off() { return this; }, on() { return this; },
+          html(value) { writes.push(value); return this; },
+          before(value) { writes.push(value); return this; },
+          each() { return this; }, text() { return this; },
+          remove() { return this; }, show() { return this; },
+          find() { return this; }, data() { return undefined; }
+        };
+        var $ = selector => typeof selector === 'string' && selector.startsWith('<') ? selector : element;
+        $.ajax = options => {
+          var entry = { options };
+          requests.push(entry);
+          return {
+            done(cb) { entry.done = cb; return this; },
+            fail(cb) { entry.fail = cb; return this; },
+            always(cb) { entry.always = cb; return this; }
+          };
+        };
+        element.trigger = event => events.push(event);
+        function tryParseJson(value) { return JSON.parse(value); }
+        function composeLogger() {}
+        function showComposeSpinner() {}
+        function hideComposeSpinner() {}
+        function flushComposeListRefreshedDebounce() {}
+        function initStackListUI() { initialized++; }
+        function ensureComposeDefaultExpandSettings() {}
+        function prefetchStackDetailsInBackground() {}
+        function initializeProgressiveLoadedRows() {}
+        function processPendingUpdateCheckForStack() {}
+        function refreshStackByProject(project) { refreshed.push(project); }
+        ${list}
+        var first = composeLoadlist();
+        requests[0].done('{"result":"success","projects":["stack"]}');
+        var second = composeLoadlist();
+        var third = composeLoadlist();
+        requests[2].done('{"result":"success","projects":["obsolete-meta"]}');
+        requests[3].done('{"result":"success","projects":["stack"]}');
+        stackRuntimeGeneration.stack = 1;
+        requests[4].done('{"result":"success","html":"<tr>latest</tr>"}');
+        requests[4].always();
+        requests[1].done('{"result":"success","html":"<tr>obsolete-row</tr>"}');
+        requests[1].always();
+        requests[1].fail({}, 'timeout', 'old request failed');
+        return Promise.all([first, second, third]).then(modes => ({
+          modes, writes, initialized, events, refreshed,
+          timeouts: requests.map(request => request.options.timeout),
+          projects: requests.map(request => request.options.data.project).filter(Boolean)
+        }));
+      `)();
+    }, list);
+    expect(result.modes).toEqual(['superseded', 'superseded', 'progressive']);
+    expect(result.writes).toContain('<tr>latest</tr>');
+    expect(result.writes.join('')).not.toContain('obsolete');
+    expect(result.initialized).toBe(1);
+    expect(result.events).toEqual(['compose-list-loaded']);
+    expect(result.timeouts).toEqual([30000, 30000, 30000, 30000, 30000]);
+    expect(result.projects).toEqual(['stack', 'stack']);
+    expect(result.refreshed).toEqual(['stack']);
+  });
+
+  test('detail refreshes requested during a load are replayed and failures respect collapse intent', async ({ page }) => {
+    const result = await page.evaluate(details => new Function(`
+      var stackDetailsDesiredExpanded = { '1': true }, expandedStacks = {};
+      var stackDetailsLoading = {}, stackDetailsLoadPromises = {}, stackDetailsReloadRequested = {};
+      var stackDetailsPrefetchCache = {}, stackDetailsPrefetchPromises = {};
+      var stackRuntimeGeneration = {}, stackContainersCache = {};
+      var requests = [], slides = 0, hidden = 0, html = '', finished = 0;
+      var caURL = '/exec';
+      var element = {
+        html(value) { html = value; return this; }, is() { return false; },
+        stop() { return this; }, hide() { hidden++; return this; },
+        slideDown(ms, cb) { slides++; if (cb) cb(); return this; }
+      };
+      var $ = () => element;
+      $.ajax = () => {
+        var entry = {};
+        requests.push(entry);
+        return {
+          done(cb) { entry.done = cb; return this; },
+          fail(cb) { entry.fail = cb; return this; }
+        };
+      };
+      function beginStackRuntimeRequest(project) {
+        return stackRuntimeGeneration[project] = (stackRuntimeGeneration[project] || 0) + 1;
+      }
+      function composeLogger() {}
+      function composeEscapeHtml(value) { return value; }
+      function updateStackToggleAllButtonState() { finished++; }
+      function tryParseJson(value) { return JSON.parse(value); }
+      function renderContainerDetails() {}
+      ${details}
+      var first = loadStackContainerDetails('1', 'stack');
+      var second = loadStackContainerDetails('1', 'stack');
+      stackDetailsDesiredExpanded['1'] = false;
+      beginStackRuntimeRequest('stack');
+      requests[0].done('{"result":"success","containers":[]}');
+      requests[1].fail();
+      return Promise.all([first, second]).then(() => ({
+        requests: requests.length, slides, hidden, html, finished,
+        loading: stackDetailsLoading['1'], queued: !!stackDetailsReloadRequested['1']
+      }));
+    `)(), details);
+    expect(result.requests).toBe(2);
+    expect(result.slides).toBe(0);
+    expect(result.hidden).toBe(2);
+    expect(result.html).toContain('Failed to load container details');
+    expect(result.finished).toBe(1);
+    expect(result.loading).toBe(false);
+    expect(result.queued).toBe(false);
+  });
+
+  test('deletion invalidates an active progressive load before scheduling a fresh list', async ({ page }) => {
+    const remove = fn('removeStackFromUiByProject', 'toggleStackDetails');
+    const result = await page.evaluate(remove => new Function(`
+      var cancelled = 0, composeListGeneration = 3, scheduled = [], purged = [];
+      var cancelComposeListLoad = () => cancelled++;
+      function hideComposeSpinner() {}
+      function composeLoadlist() {}
+      function setTimeout(callback) { scheduled.push(callback === composeLoadlist); }
+      function purgeDeletedStackCaches(project) { purged.push(project); }
+      var $ = () => ({ length: 0 });
+      ${remove}
+      removeStackFromUiByProject('stack');
+      return { cancelled, generation: composeListGeneration, scheduled, purged,
+        pending: !!cancelComposeListLoad };
+    `)(), remove);
+    expect(result).toEqual({ cancelled: 1, generation: 4, scheduled: [true], purged: ['stack'], pending: false });
+  });
+
+  test('a delayed prefetch waiter cannot start a request after action invalidation', async ({ page }) => {
+    const result = await page.evaluate(details => new Function(`
+      var stackDetailsDesiredExpanded = { '1': true }, expandedStacks = {};
+      var stackDetailsLoading = {}, stackDetailsLoadPromises = {}, stackDetailsReloadRequested = {};
+      var stackDetailsPrefetchCache = {}, stackRuntimeGeneration = { stack: 1 }, stackContainersCache = {};
+      var resolvePrefetch, requests = 0, html = '', slides = 0;
+      var stackDetailsPrefetchPromises = { stack: new Promise(resolve => resolvePrefetch = resolve) };
+      var element = {
+        html(value) { html = value; return this; }, is() { return false; },
+        stop() { return this; }, hide() { return this; }, slideDown() { slides++; return this; }
+      };
+      var $ = () => element;
+      $.ajax = () => { requests++; throw new Error('Obsolete waiter issued a new request'); };
+      function composeLogger() {}
+      function updateStackToggleAllButtonState() {}
+      ${details}
+      var pending = loadStackContainerDetails('1', 'stack');
+      stackRuntimeGeneration.stack++;
+      resolvePrefetch();
+      return pending.then(() => ({ requests, html, slides, loading: stackDetailsLoading['1'] }));
+    `)(), details);
+    expect(result.requests).toBe(0);
+    expect(result.html).toContain('state changed while loading');
+    expect(result.html).not.toContain('fa-spinner');
+    expect(result.slides).toBe(1);
+    expect(result.loading).toBe(false);
+  });
+
   test('late refreshes cannot roll back state; details fetch after prefetch invalidation', async ({ page }) => {
     const result = await page.evaluate(({ runtime, refresh, details }) => {
       return new Function(`
@@ -24,7 +190,7 @@ test.describe('Runtime reconciliation', () => {
         };
         var stackContainersCache = {}, stackStartedAtCache = { '1': 'old-start' };
         var expandedStacks = {}, stackDetailsDesiredExpanded = { '1': false };
-        var stackDetailsLoading = {}, stackDetailsLoadPromises = {}, stackDetailsPrefetchPromises = {};
+        var stackDetailsLoading = {}, stackDetailsLoadPromises = {}, stackDetailsPrefetchPromises = {}, stackDetailsReloadRequested = {};
         var row = {
           length: 1, attr(key, value) { if (value !== undefined) { attributes[key] = value; return this; } return attributes[key]; },
           data() { return this; }, is() { return false; }, html() { return this; },
@@ -156,6 +322,36 @@ test.describe('Runtime reconciliation', () => {
         pending: !!stackDetailsPrefetchPromises.stack };
     `)(), { runtime, prefetch });
     expect(result).toEqual({ cached: false, paints: 0, pending: false });
+  });
+
+  test('superseding a list stops its prefetch queue and ignores its pending snapshots', async ({ page }) => {
+    const prefetch = fn('prefetchStackDetailsInBackground', 'openStackActionsMenu');
+    const result = await page.evaluate(({ runtime, prefetch }) => new Function(`
+      var stackRuntimeGeneration = {}, stackDetailsPrefetchCache = {}, stackDetailsPrefetchPromises = {};
+      var composeListGeneration = 1, caURL = '/exec', requests = [], paints = 0;
+      var $ = { ajax() {
+        var entry = {};
+        requests.push(entry);
+        return {
+          done(cb) { entry.done = cb; return this; },
+          fail() { return this; },
+          always(cb) { entry.always = cb; return this; }
+        };
+      } };
+      function tryParseJson(value) { return JSON.parse(value); }
+      function composeLogger() {}
+      function applyStackSummaryFromResponse() { paints++; }
+      ${runtime}
+      ${prefetch}
+      prefetchStackDetailsInBackground(['a', 'b', 'c', 'd', 'e'], composeListGeneration);
+      composeListGeneration++;
+      requests.forEach(request => {
+        request.done('{"result":"success","containers":[]}');
+        request.always();
+      });
+      return { requests: requests.length, cached: Object.keys(stackDetailsPrefetchCache), paints };
+    `)(), { runtime, prefetch });
+    expect(result).toEqual({ requests: 4, cached: [], paints: 0 });
   });
 
   test('empty action responses clear progress and show an explicit error', async ({ page }) => {
