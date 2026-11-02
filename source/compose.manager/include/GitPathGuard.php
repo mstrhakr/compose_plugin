@@ -341,6 +341,14 @@ final class GitPathGuard
             return $path;
         }
 
+        $target = rtrim($target, '/');
+        if (!str_starts_with($target, '/')) {
+            $target = realpath($userDir . '/' . $target);
+            if ($target === false) {
+                return $path;
+            }
+        }
+
         $pattern = '#^' . preg_quote(rtrim(COMPOSE_GIT_MNT_DIR, '/'), '#') . '/([^/]+)/' . preg_quote($share, '#') . '$#';
         if (preg_match($pattern, $target, $match) !== 1 || $match[1] === 'user' || $match[1] === 'user0') {
             return $path;

@@ -235,6 +235,22 @@ final class GitPathGuardTest extends TestCase
         $this->assertDirectoryExists($this->mnt . '/cache/media/compose.manager/git');
     }
 
+    public function testExclusiveShareWithRelativeOrTrailingSlashTargetIsAccepted(): void
+    {
+        mkdir($this->mnt . '/cache/media', 0755, true);
+        $this->setMounts(['user', 'disk1', 'cache']);
+
+        foreach (['../cache/media', '../cache/media/', $this->mnt . '/cache/media/'] as $target) {
+            @unlink($this->mnt . '/user/media');
+            symlink($target, $this->mnt . '/user/media');
+
+            GitPathGuard::assertValidClonesRoot($this->mnt . '/user/media/compose.manager/git');
+            GitPathGuard::createDirectory($this->mnt . '/user/media/compose.manager/git');
+        }
+
+        $this->assertDirectoryExists($this->mnt . '/cache/media/compose.manager/git');
+    }
+
     public function testShareThatIsAZfsDatasetIsAcceptedAndItsFoldersCreated(): void
     {
         // On a ZFS pool each share is a dataset, mounted on its own.
