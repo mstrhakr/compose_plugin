@@ -60,6 +60,24 @@ npm test
 
 See `tests/e2e/README.md` for details and safety guardrails.
 
+### Image Update State and Action Refresh
+
+Known image-check results replace older results, including `hasUpdate: false` and cleared digest fields. Unknown results can retain a previous check only for the same image reference; changing a tag must not inherit another tag's badge. Clearing the update cache removes update fields from the persistent container metadata without removing icons or runtime metadata.
+
+An image without a conclusive check is shown as **unchecked**, not **up-to-date**. Incomplete checks log whether the local or remote config digest was unavailable. Each container's actual image ID is compared with the remote config digest, so pulling a tag without recreating the container cannot hide its pending update. Registry checks are batched by image reference, but replicas are compared separately. The checker compares platform-specific image config digests, so a changed multi-architecture index alone does not imply an update for this host. Digest-pinned image behavior is unchanged.
+
+Run the focused PHP regressions and isolated browser tests without a live Unraid server:
+
+```bash
+vendor/bin/phpunit --no-coverage --no-logging tests/unit/ContainerInfoTest.php tests/unit/DockerUpdateTest.php tests/unit/UpdateCheckTest.php tests/unit/ExecActionsTest.php
+cd tests/e2e
+npx playwright test tests/compose-update-state.spec.ts --project chromium
+```
+
+The scheduled auto-update runner also checks running containers against their current image tags after pulling, including tags pulled earlier by another process. Its focused shell regressions run with `bats tests/unit/compose.bats`; stopped stacks remain stopped.
+
+The browser regressions cover known/unknown merges, image changes, incomplete-check presentation, polling retries after request/parse failures, failed action dispatch, and runtime-state ordering during row refresh.
+
 ### Archived Plugin Migration
 
 The ordinary identity tests use temporary stack metadata and injected Docker evidence. Event integration cases execute real scripts against a temporary runtime and fake Docker; scheduler cases verify blocked migrations remain retryable. The opt-in real-Docker matrix creates random `cm183_` projects, then removes their test containers, networks and volumes. Its bind-data case uses a disposable Docker volume's host path, not a user directory. It requires Docker Compose and access to the `alpine:3.20` image.
