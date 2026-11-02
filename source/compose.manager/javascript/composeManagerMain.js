@@ -867,6 +867,7 @@ function composeLoadlist() {
             try {
                 $('#compose_stacks tr.compose-sortable').each(function() {
                     var $row = $(this);
+                    if (composeStackActionInProgress[$row.data('project')]) return;
                     var stateText = $row.find('.state').text().toLowerCase();
                     var $icon = $row.find('.compose-status-icon').first();
                     if (!$icon.length) return;
@@ -920,6 +921,7 @@ function composeLoadlist() {
                 // Restore any state text preserved by setStackActionInProgress
                 $('#compose_stacks .state').each(function() {
                     var $s = $(this);
+                    if (composeStackActionInProgress[$s.closest('tr').data('project')]) return;
                     if ($s.data('orig-text')) {
                         $s.text($s.data('orig-text'));
                         $s.removeData('orig-text');
@@ -1292,6 +1294,7 @@ function initializeProgressiveLoadedRows($rowChunk) {
     // Apply cached update status immediately for new rows when available.
     $rows.each(function() {
         var project = $(this).data('project');
+        renderStackActionProgress(project);
         if (project && stackUpdateStatus[project]) {
             updateStackUpdateUI(project, stackUpdateStatus[project]);
         }
@@ -2496,18 +2499,34 @@ function executeUpdateAllStacks(stacks, background, suppressBackgroundNotificati
     // Server-side markStackForRecheck is authoritative; do NOT push into
     // pendingUpdateCheckStacks at action start (drains would fire mid-action).
     var stackNames = [];
+    var operations = {};
     stacks.forEach(function(s) {
         var stackName = s.project;
         stackNames.push(stackName);
-        setStackActionInProgress(stackName, true, composeActionStateText('update'));
+        operations[stackName] = setStackActionInProgress(stackName, true, composeActionStateText('update'));
     });
 
+    function failUpdatePreparation() {
+        stackNames.forEach(function(stackName) {
+            setStackActionInProgress(stackName, false, null, operations[stackName]);
+        });
+        composeLogger('Failed to mark stacks for update recheck', { stacks: stackNames }, 'user', 'error', 'update-all');
+        swal({ title: 'Update All Failed', text: 'Could not prepare update checks. No update was dispatched.', type: 'error' });
+    }
+
     // Mark stacks for recheck server-side (persists across page reload)
-    $.post(caURL, {
-        action: 'markStackForRecheck',
-        stacks: JSON.stringify(stackNames)
-    }, function() {
-        performComposeAction({
+    $.ajax({
+        url: caURL,
+        method: 'POST',
+        timeout: 30000,
+        data: { action: 'markStackForRecheck', stacks: JSON.stringify(stackNames) }
+    }).done(function(data) {
+        var response = typeof data === 'string' ? tryParseJson(data) : data;
+        if (!response || response.result !== 'success') {
+            failUpdatePreparation();
+            return;
+        }
+        performMultipleComposeAction(stacks, {
             actionName: 'update',
             title: 'Update All Stacks',
             requestUrl: compURL,
@@ -2517,25 +2536,9 @@ function executeUpdateAllStacks(stacks, background, suppressBackgroundNotificati
             },
             background: background,
             suppressBackgroundNotification: suppressBackgroundNotification,
-            pendingReload: false,
-            onComplete: function(parsed, data) {
-                if (parsed && parsed.background) {
-                    stacks.forEach(function(s) {
-                        pollBackgroundCompletion(s.project);
-                    });
-                } else if (data) {
-                    stackNames.forEach(function(stackName) {
-                        setStackActionInProgress(stackName, false);
-                    });
-                    queuePendingComposeReloads(stackNames);
-                } else {
-                    stackNames.forEach(function(stackName) {
-                        setStackActionInProgress(stackName, false);
-                    });
-                }
-            }
-        });
-    });
+            pendingReload: false
+        }, operations);
+    }).fail(failUpdatePreparation);
 }
 
 // Update UI for a single stack's update status
@@ -4400,7 +4403,8 @@ function queuePendingComposeReloads(stackNames, delayMs) {
 
 // Poll for background operation completion by checking if stack lock is released
 // Once lock is released, refresh the stack and clear the checking state
-function pollBackgroundCompletion(stackName, refreshDelayMs = 0) {
+function pollBackgroundCompletion(stackName, refreshDelayMs = 0, operation) {
+    operation = operation || composeStackActionInProgress[stackName];
     // Poll with adaptive frequency to handle both fast and slow operations:
     //   0–60s:   every 2s   (30 checks)
     //   60s–5m:  every 5s   (48 checks)
@@ -4416,6 +4420,7 @@ function pollBackgroundCompletion(stackName, refreshDelayMs = 0) {
     }
 
     function check() {
+        if (operation && composeStackActionInProgress[stackName] !== operation) return;
         var completed = false;
         $.ajax({
             url: caURL,
@@ -4426,14 +4431,19 @@ function pollBackgroundCompletion(stackName, refreshDelayMs = 0) {
                 script: stackName
             }
         }).done(function(response) {
+            if (operation && composeStackActionInProgress[stackName] !== operation) {
+                completed = true;
+                return;
+            }
             try {
                 var parsed = typeof response === 'string' ? tryParseJson(response) : response;
                 if (parsed && parsed.result === 'success' && parsed.locked === false) {
                     completed = true;
                     // Lock is released — clear spinner first, then fetch fresh data
                     // so refreshStackByProject always wins and overwrites the restored state
-                    setStackActionInProgress(stackName, false);
+                    setStackActionInProgress(stackName, false, null, operation);
                     setTimeout(function() {
+                        if (composeStackActionInProgress[stackName]) return;
                         refreshStackByProject(stackName);
                         // Sync from server pending file (authoritative). This
                         // populates the queue and sweeps any already-rendered rows.
@@ -4455,6 +4465,7 @@ function pollBackgroundCompletion(stackName, refreshDelayMs = 0) {
             }, 'user', 'error', 'poll');
         }).always(function() {
             if (completed) return;
+            if (operation && composeStackActionInProgress[stackName] !== operation) return;
             elapsed = (Date.now() - startedAt) / 1000;
             // Schedule next check if still within timeout (30 minutes)
             var interval = getInterval();
@@ -4464,7 +4475,7 @@ function pollBackgroundCompletion(stackName, refreshDelayMs = 0) {
                 composeLogger('Timeout after 30m', {
                     stack: stackName
                 }, 'user', 'warn', 'poll');
-                setStackActionInProgress(stackName, false);
+                setStackActionInProgress(stackName, false, null, operation);
                 refreshStackByProject(stackName);
                 swal({ title: 'Unable to confirm completion', text: 'The operation may still be running. Refresh the stack to check its status.', type: 'warning' });
             }
@@ -4657,9 +4668,7 @@ function performComposeAction(opts) {
     var actionStateText = opts.actionStateText || composeActionStateText(actionName);
     var onComplete = opts.onComplete;
 
-    if (stackName) {
-        setStackActionInProgress(stackName, true, actionStateText);
-    }
+    var operation = stackName ? setStackActionInProgress(stackName, true, actionStateText) : null;
 
     payload.background = background ? 1 : 0;
     if (Object.prototype.hasOwnProperty.call(payload, 'removeOrphans')) {
@@ -4669,11 +4678,17 @@ function performComposeAction(opts) {
         payload.followLogs = payload.followLogs ? 1 : 0;
     }
 
-    $.post(requestUrl, payload, function(data) {
-        var parsed = tryParseJson(data);
+    $.ajax({
+        url: requestUrl,
+        method: 'POST',
+        timeout: 30000,
+        data: payload
+    }).done(function(data) {
+        if (operation && composeStackActionInProgress[stackName] !== operation) return;
+        var parsed = typeof data === 'string' ? tryParseJson(data) : data;
         if (parsed && parsed.error === 'identity') {
             if (stackName) {
-                setStackActionInProgress(stackName, false);
+                setStackActionInProgress(stackName, false, null, operation);
             }
             composeHandleIdentityError(parsed);
             if (typeof onComplete === 'function') {
@@ -4682,13 +4697,13 @@ function performComposeAction(opts) {
             return;
         }
         // Any other refusal comes back as {error, message} instead of a terminal URL.
-        if (parsed && parsed.error && parsed.message) {
+        if (parsed && parsed.error) {
             if (stackName) {
-                setStackActionInProgress(stackName, false);
+                setStackActionInProgress(stackName, false, null, operation);
             }
             swal({
                 title: title,
-                text: parsed.message,
+                text: parsed.message || 'The server refused the compose action.',
                 type: 'error'
             });
             if (typeof onComplete === 'function') {
@@ -4696,34 +4711,37 @@ function performComposeAction(opts) {
             }
             return;
         }
-        if (parsed && parsed.background) {
+        if (parsed && parsed.background === true) {
             if (!suppressBackgroundNotification) {
                 notifyBackgroundStarted(title, true);
             }
             if (stackName) {
-                pollBackgroundCompletion(stackName, opts.refreshDelayMs || 0);
+                pollBackgroundCompletion(stackName, opts.refreshDelayMs || 0, operation);
             }
-        } else if (data) {
+        } else if (typeof data === 'string' && /^\/plugins\/compose\.manager\/include\/ShowTtyd\.php(?:\?|$)/.test(data.trim())) {
             if (stackName) {
-                setStackActionInProgress(stackName, false);
+                setStackActionInProgress(stackName, false, null, operation);
             }
             if (pendingReload && stackName) {
                 queuePendingComposeReloads([stackName], opts.refreshDelayMs || 0);
             }
-            openBox(data, title, 800, 1200, true);
+            openBox(data.trim(), title, 800, 1200, true);
         } else {
             if (stackName) {
-                setStackActionInProgress(stackName, false);
+                setStackActionInProgress(stackName, false, null, operation);
             }
-            composeLogger('Compose action returned an empty response', { stack: stackName, action: actionName }, 'user', 'error', 'stack-action');
-            swal({ title: title, text: 'The server returned an empty response. Refresh the stack to check whether the operation started.', type: 'error' });
+            composeLogger('Compose action returned an invalid response', { stack: stackName, action: actionName }, 'user', 'error', 'stack-action');
+            swal({ title: title, text: 'The server returned an empty or invalid response. Refresh the stack to check whether the operation started.', type: 'error' });
+            parsed = null;
+            data = null;
         }
         if (typeof onComplete === 'function') {
             onComplete(parsed, data);
         }
     }).fail(function() {
+        if (operation && composeStackActionInProgress[stackName] !== operation) return;
         if (stackName) {
-            setStackActionInProgress(stackName, false);
+            setStackActionInProgress(stackName, false, null, operation);
         }
         composeLogger('Compose action request failed', { stack: stackName, action: actionName }, 'user', 'error', 'stack-action');
         swal({ title: title, text: 'The request failed. Refresh the stack to check whether the operation started.', type: 'error' });
@@ -4731,6 +4749,31 @@ function performComposeAction(opts) {
             onComplete(null, null);
         }
     });
+}
+
+function performMultipleComposeAction(stacks, opts, operations) {
+    operations = operations || {};
+    stacks.forEach(function(stack) {
+        if (!operations[stack.project]) {
+            operations[stack.project] = setStackActionInProgress(stack.project, true, composeActionStateText(opts.actionName));
+        }
+    });
+    opts.onComplete = function(parsed, data) {
+        var refresh = [];
+        stacks.forEach(function(stack) {
+            var project = stack.project;
+            var operation = operations[project];
+            if (composeStackActionInProgress[project] !== operation) return;
+            if (parsed && parsed.background === true) {
+                pollBackgroundCompletion(project, 0, operation);
+            } else {
+                setStackActionInProgress(project, false, null, operation);
+                if (data && !(parsed && parsed.error)) refresh.push(project);
+            }
+        });
+        if (refresh.length) queuePendingComposeReloads(refresh);
+    };
+    performComposeAction(opts);
 }
 
 function confirmedComposeAction(path, opts) {
@@ -5201,7 +5244,8 @@ function refreshStackRow(stackId, project) {
 }
 
 // Toggle per-stack action-in-progress UI (replace status icon with spinner)
-function setStackActionInProgress(stackName, inProgress, text) {
+function setStackActionInProgress(stackName, inProgress, text, operation) {
+    if (!inProgress && operation && composeStackActionInProgress[stackName] !== operation) return false;
     composeLogger('setStackActionInProgress', {
         stack: stackName,
         inProgress: inProgress,
@@ -5210,11 +5254,19 @@ function setStackActionInProgress(stackName, inProgress, text) {
 
     if (inProgress) {
         beginStackRuntimeRequest(stackName);
-        composeStackActionInProgress[stackName] = true;
+        operation = { text: text || 'checking...' };
+        composeStackActionInProgress[stackName] = operation;
     } else {
         delete composeStackActionInProgress[stackName];
     }
 
+    renderStackActionProgress(stackName);
+    return operation;
+}
+
+function renderStackActionProgress(stackName) {
+    var operation = composeStackActionInProgress[stackName];
+    var inProgress = !!operation;
     var $stackRow = $('#compose_stacks tr.compose-sortable[data-project="' + stackName + '"]');
     if ($stackRow.length === 0) return;
     $stackRow.data('action-in-progress', inProgress ? true : null);
@@ -5230,12 +5282,8 @@ function setStackActionInProgress(stackName, inProgress, text) {
         }
         // Use same spinner as containers to keep UI consistent
         $icon.removeClass().addClass('fa fa-refresh fa-spin compose-status-spinner compose-status-icon');
-        $state.data('orig-text', $state.text());
-        if (text) {
-            $state.text(text);
-        } else {
-            $state.text('checking...');
-        }
+        if (!$state.data('orig-text')) $state.data('orig-text', $state.text());
+        $state.text(operation.text);
     } else {
         // Restore original icon classes if we saved them
         if ($icon.data('orig-class')) {
@@ -5634,40 +5682,19 @@ function executeStartAllStacks(opts) {
     var background = !!opts.background;
     var suppressBackgroundNotification = !!opts.suppressBackgroundNotification;
     var removeOrphans = !!opts.removeOrphans;
-    var height = 800;
-    var width = 1200;
 
     // Create a list of paths to start
     var paths = stacks.map(function(s) {
         return s.path;
     });
 
-    // Mark stacks for local reload and show per-row spinners
-    stacks.forEach(function(s) {
-        var stackName = s.project;
-        if (pendingComposeReloadStacks.indexOf(stackName) === -1) pendingComposeReloadStacks.push(stackName);
-        composeLogger('queued', {
-            stack: stackName,
-            pending: pendingComposeReloadStacks.slice()
-        }, 'user', 'info', 'startAllStacks');
-        setStackActionInProgress(stackName, true);
-    });
-
-    $.post(compURL, {
-        action: 'composeUpMultiple',
-        paths: JSON.stringify(paths),
-        background: background ? 1 : 0,
-        removeOrphans: removeOrphans ? 1 : 0
-    }, function(data) {
-        var parsed = tryParseJson(data);
-        if (parsed && parsed.background) {
-            notifyBackgroundStarted('Start All Stacks', !suppressBackgroundNotification);
-            stacks.forEach(function(s) {
-                pollBackgroundCompletion(s.project);
-            });
-        } else if (data) {
-            openBox(data, 'Start All Stacks', height, width, true);
-        }
+    performMultipleComposeAction(stacks, {
+        actionName: 'up',
+        title: 'Start All Stacks',
+        requestUrl: compURL,
+        payload: { action: 'composeUpMultiple', paths: JSON.stringify(paths), removeOrphans: removeOrphans },
+        background: background,
+        suppressBackgroundNotification: suppressBackgroundNotification
     });
 }
 
@@ -5769,40 +5796,19 @@ function executeStopAllStacks(opts) {
     var background = !!opts.background;
     var suppressBackgroundNotification = !!opts.suppressBackgroundNotification;
     var removeOrphans = !!opts.removeOrphans;
-    var height = 800;
-    var width = 1200;
 
     // Create a list of paths to stop
     var paths = stacks.map(function(s) {
         return s.path;
     });
 
-    // Mark stacks for local reload and show per-row spinners
-    stacks.forEach(function(s) {
-        var stackName = s.project;
-        if (pendingComposeReloadStacks.indexOf(stackName) === -1) pendingComposeReloadStacks.push(stackName);
-        composeLogger('queued', {
-            stack: stackName,
-            pending: pendingComposeReloadStacks.slice()
-        }, 'user', 'info', 'stopAllStacks');
-        setStackActionInProgress(stackName, true);
-    });
-
-    $.post(compURL, {
-        action: 'composeDownMultiple',
-        paths: JSON.stringify(paths),
-        background: background ? 1 : 0,
-        removeOrphans: removeOrphans ? 1 : 0
-    }, function(data) {
-        var parsed = tryParseJson(data);
-        if (parsed && parsed.background) {
-            notifyBackgroundStarted('Stop All Stacks', !suppressBackgroundNotification);
-            stacks.forEach(function(s) {
-                pollBackgroundCompletion(s.project);
-            });
-        } else if (data) {
-            openBox(data, 'Stop All Stacks', height, width, true);
-        }
+    performMultipleComposeAction(stacks, {
+        actionName: 'down',
+        title: 'Stop All Stacks',
+        requestUrl: compURL,
+        payload: { action: 'composeDownMultiple', paths: JSON.stringify(paths), removeOrphans: removeOrphans },
+        background: background,
+        suppressBackgroundNotification: suppressBackgroundNotification
     });
 }
 
@@ -8826,11 +8832,12 @@ function deleteStackByProject(project, projectName) {
         cancelButtonText: "Cancel"
     }, function(confirmed) {
         if (confirmed) {
-            setStackActionInProgress(project, true, 'Deleting stack...');
+            var operation = setStackActionInProgress(project, true, 'Deleting stack...');
             $.post(caURL, {
                 action: 'deleteStack',
                 stackName: project
             }, function(data) {
+                if (composeStackActionInProgress[project] !== operation) return;
                 try {
                     if (!data) {
                         setStackActionInProgress(project, false);
@@ -8900,6 +8907,7 @@ function deleteStackByProject(project, projectName) {
                     });
                 }
             }).fail(function() {
+                if (composeStackActionInProgress[project] !== operation) return;
                 setStackActionInProgress(project, false);
                 composeLogger('Delete request failed for project', {
                     project: project
@@ -9850,10 +9858,11 @@ function addComposeContainerContext(elementId) {
 }
 
 function containerAction(containerName, action, stackId) {
-    var actionProject = $('#stack-row-' + stackId).data('project');
-    if (actionProject) beginStackRuntimeRequest(actionProject);
-    // Show spinner by replacing the status icon (play/stop) in-place
     var $iconWrap = $('[data-name="' + containerName + '"]').first();
+    if (stackId === undefined) stackId = $iconWrap.data('stackid');
+    var actionProject = $('#stack-row-' + stackId).data('project');
+    var operation = actionProject ? setStackActionInProgress(actionProject, true, composeActionStateText(action)) : null;
+    // Show spinner by replacing the status icon (play/stop) in-place
     // The status icon lives in the sibling '.inner' span next to the '.hand' wrapper
     var $statusIcon = $iconWrap.closest('td').find('.inner i').first();
     var statusOrigClass = null;
@@ -9913,18 +9922,35 @@ function containerAction(containerName, action, stackId) {
         } catch (e) {}
     }
 
-    $.post(caURL, {
-        action: 'containerAction',
-        container: containerName,
-        containerAction: action
-    }, function(data) {
+    function failContainerAction(message) {
+        if (operation && composeStackActionInProgress[actionProject] !== operation) return;
+        if (operation) setStackActionInProgress(actionProject, false, null, operation);
+        if (statusOrigClass !== null) $statusIcon.attr('class', statusOrigClass);
+        if (stateOrigText !== null) $stateTextEl.text(stateOrigText);
+        if ($icon && $icon.length) {
+            $icon.attr('class', originalClass).css('opacity', 1);
+        }
+        $iconWrap.find('.compose-container-spinner').remove();
+        composeLogger('Container action failed', { container: containerName, action: action, message: message }, 'user', 'error', 'container-action');
+        swal({ title: 'Action Failed', text: message, type: 'error' });
+        if (actionProject) refreshStackByProject(actionProject);
+    }
+
+    $.ajax({
+        url: caURL,
+        method: 'POST',
+        timeout: 30000,
+        data: { action: 'containerAction', container: containerName, containerAction: action }
+    }).done(function(data) {
+        if (operation && composeStackActionInProgress[actionProject] !== operation) return;
         if (data) {
             try {
-                var response = JSON.parse(data);
+                var response = typeof data === 'string' ? JSON.parse(data) : data;
             } catch (e) {
+                failContainerAction('The server returned an invalid container action response.');
                 return;
             }
-            if (response.result === 'success') {
+            if (response && response.result === 'success') {
                 // Refresh the container details
                 // Also mark the parent stack for a compose-list reload so the stack-level
                 // status (play/stop icon, running count) is refreshed after the container action.
@@ -9938,18 +9964,17 @@ function containerAction(containerName, action, stackId) {
                             stack: project,
                             pending: pendingComposeReloadStacks.slice()
                         }, 'user', 'info', 'container-action');
-                        // Show per-stack spinner immediately
-                        try {
-                            setStackActionInProgress(project, true);
-                        } catch (e) {}
                     }
                 } catch (e) {}
 
                 // Refresh the container details after a short delay to let docker settle
                 setTimeout(function() {
+                    if (operation && composeStackActionInProgress[actionProject] !== operation) return;
                     var project = $('#stack-row-' + stackId).data('project');
-                    setStackActionInProgress(project, false);
-                    loadStackContainerDetails(stackId, project);
+                    if (project) {
+                        setStackActionInProgress(project, false, null, operation);
+                        refreshStackByProject(project);
+                    }
                 }, 1000);
                 // Schedule a debounced parent-row update so multiple signals collapse
                 try {
@@ -9962,63 +9987,13 @@ function containerAction(containerName, action, stackId) {
                     }, 1500);
                 }
             } else {
-                // Restore status icon or remove overlay spinner
-                if (__spinnerInserted) {
-                    // Restore status icon if we replaced it
-                    var $restStatus = $iconWrap.closest('td').find('.inner i').first();
-                    if ($restStatus.length && $restStatus.attr('data-orig-class')) {
-                        $restStatus.removeClass().addClass($restStatus.attr('data-orig-class'));
-                        $restStatus.removeAttr('data-orig-class');
-                    } else {
-                        // Fallback: restore any overlay on the image
-                        try {
-                            $icon.css('opacity', 1);
-                            $iconWrap.find('.compose-container-spinner').remove();
-                        } catch (e) {}
-                    }
-                    // Restore state text if we changed it
-                    try {
-                        var $stateEl = $iconWrap.closest('td').find('.inner .state').first();
-                        if ($stateEl.length && $stateEl.attr('data-orig-text')) {
-                            $stateEl.text($stateEl.attr('data-orig-text'));
-                            $stateEl.removeAttr('data-orig-text');
-                        }
-                    } catch (e) {}
-                }
-                swal({
-                    title: 'Action Failed',
-                    text: composeEscapeHtml(response.message) || 'Failed to ' + action + ' container',
-                    type: 'error'
-                });
+                failContainerAction((response && response.message) || 'Failed to ' + action + ' container');
             }
+        } else {
+            failContainerAction('The server returned an empty container action response.');
         }
     }).fail(function() {
-        // Restore status icon or remove overlay spinner
-        if (__spinnerInserted) {
-            var $restStatus = $iconWrap.closest('td').find('.inner i').first();
-            if ($restStatus.length && $restStatus.attr('data-orig-class')) {
-                $restStatus.removeClass().addClass($restStatus.attr('data-orig-class'));
-                $restStatus.removeAttr('data-orig-class');
-            } else {
-                try {
-                    $icon.css('opacity', 1);
-                    $iconWrap.find('.compose-container-spinner').remove();
-                } catch (e) {}
-            }
-            // Restore state text if we changed it
-            try {
-                var $stateEl = $iconWrap.closest('td').find('.inner .state').first();
-                if ($stateEl.length && $stateEl.attr('data-orig-text')) {
-                    $stateEl.text($stateEl.attr('data-orig-text'));
-                    $stateEl.removeAttr('data-orig-text');
-                }
-            } catch (e) {}
-        }
-        swal({
-            title: 'Action Failed',
-            text: 'Failed to ' + action + ' container',
-            type: 'error'
-        });
+        failContainerAction('The request failed. Refresh the stack to check whether the container action completed.');
     });
 }
 

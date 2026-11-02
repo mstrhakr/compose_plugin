@@ -363,7 +363,7 @@ test.describe('Runtime reconciliation', () => {
       function tryParseJson() { return null; }
       function composeLogger() {}
       function swal(notice) { notices.push(notice.type); }
-      var $ = { post(url, payload, callback) { callback(''); return { fail() {} }; } };
+      var $ = { ajax() { return { done(callback) { callback(''); return this; }, fail() {} }; } };
       ${action}
       performComposeAction({ stackName: 'stack', actionName: 'start' });
       return { progress, notices };
