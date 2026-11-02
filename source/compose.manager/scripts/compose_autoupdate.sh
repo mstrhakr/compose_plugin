@@ -167,9 +167,7 @@ summarize_output() {
 }
 
 # Get current image config digests by declared compose image refs.
-# This mirrors the plugin-local update-check approach: compare content-addressed
-# image config IDs (.Id), not container-bound image IDs returned by
-# `docker compose images -q`.
+# Compare content-addressed config IDs, not multi-architecture index digests.
 get_image_digests() {
   docker compose "${project_dir_args[@]}" "${compose_file_args[@]}" "${env_file_args[@]}" -p "$PROJECT_NAME" config --images 2>/dev/null | while read -r img_ref; do
     img_ref="$(trim "$img_ref")"
@@ -181,6 +179,36 @@ get_image_digests() {
 
 get_running_container_count() {
   docker compose "${project_dir_args[@]}" "${compose_file_args[@]}" "${env_file_args[@]}" -p "$PROJECT_NAME" ps -q 2>/dev/null | awk 'NF { count++ } END { print count+0 }'
+}
+
+running_containers_need_update() {
+  local container_ids container_id details container_image image_ref image_id
+  local needs_update=1
+  if ! container_ids=$(docker compose "${project_dir_args[@]}" "${compose_file_args[@]}" "${env_file_args[@]}" -p "$PROJECT_NAME" ps -q); then
+    composeLogger "Could not enumerate containers for '$PROJECT_NAME'" error autoupdate daemon
+    return 2
+  fi
+  while read -r container_id; do
+    [ -n "$container_id" ] || continue
+    if ! details=$(docker inspect --format='{{.Image}} {{.Config.Image}}' "$container_id"); then
+      composeLogger "Could not inspect container '$container_id'" error autoupdate daemon
+      return 2
+    fi
+    read -r container_image image_ref <<< "$details"
+    if [ -z "$container_image" ] || [ -z "$image_ref" ]; then
+      composeLogger "Container image metadata is incomplete for '$container_id'" error autoupdate daemon
+      return 2
+    fi
+    if ! image_id=$(docker image inspect --format='{{.Id}}' "$image_ref") || [ -z "$image_id" ]; then
+      composeLogger "Could not inspect image '$image_ref'" error autoupdate daemon
+      return 2
+    fi
+    if [ "$container_image" != "$image_id" ]; then
+      needs_update=0
+      OLD_DIGESTS="${OLD_DIGESTS}"$'\n'"${container_image}"
+    fi
+  done <<< "$container_ids"
+  return "$needs_update"
 }
 
 # Remove old image IDs that are no longer referenced by this stack.
@@ -219,8 +247,20 @@ fi
 # Get new image digests after pull
 NEW_DIGESTS=$(get_image_digests || true)
 
-# Compare digests to determine if any images were updated
+needs_update=false
 if [ "$OLD_DIGESTS" != "$NEW_DIGESTS" ]; then
+  needs_update=true
+elif running_containers_need_update; then
+  needs_update=true
+else
+  check_rc=$?
+  if [ "$check_rc" -ne 1 ]; then
+    rm -f "$OUT"
+    exit "$check_rc"
+  fi
+fi
+
+if [ "$needs_update" = true ]; then
   RUNNING_COUNT=$(get_running_container_count)
   if [ "${RUNNING_COUNT:-0}" -eq 0 ]; then
     MSG="Stack '$PROJECT_NAME' has image updates but is not running; skipping up -d."

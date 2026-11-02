@@ -262,6 +262,60 @@ test_setup() {
     assert_success
 }
 
+@test "autoupdate detects a running container left on an older already-pulled image" {
+    local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
+    # shellcheck source=/dev/null
+    source <(sed -n '/^running_containers_need_update()/,/^}/p' "$autoupdate_script")
+    project_dir_args=()
+    compose_file_args=()
+    env_file_args=()
+    PROJECT_NAME="stack"
+    OLD_DIGESTS="sha256:current"
+    docker() {
+        case "$1" in
+            compose) printf '%s\n' "container-id" ;;
+            inspect) printf '%s\n' "sha256:old postgres:18" ;;
+            image) printf '%s\n' "sha256:current" ;;
+        esac
+    }
+
+    running_containers_need_update
+    [[ "$OLD_DIGESTS" == *"sha256:old"* ]]
+}
+
+# shellcheck disable=SC2034
+@test "autoupdate skips current or stopped containers and reports inspection failures" {
+    local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
+    # shellcheck source=/dev/null
+    source <(sed -n '/^running_containers_need_update()/,/^}/p' "$autoupdate_script")
+    project_dir_args=()
+    compose_file_args=()
+    env_file_args=()
+    PROJECT_NAME="stack"
+    composeLogger() { printf '%s\n' "$1"; }
+    docker() {
+        case "$1" in
+            compose) [ "$mode" = stopped ] || printf '%s\n' "container-id" ;;
+            inspect)
+                [ "$mode" != failed ] || return 1
+                printf '%s\n' "sha256:current postgres:18"
+                ;;
+            image) printf '%s\n' "sha256:current" ;;
+        esac
+    }
+
+    mode=current
+    run running_containers_need_update
+    assert_failure 1
+    mode=stopped
+    run running_containers_need_update
+    assert_failure 1
+    mode=failed
+    run running_containers_need_update
+    assert_failure 2
+    [[ "$output" == *"Could not inspect container"* ]]
+}
+
 @test "compose_autoupdate.sh removes only superseded image IDs after successful up" {
     local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
     local old_image_id="sha256:$(printf '%064d' 1)"
