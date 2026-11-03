@@ -1,8 +1,31 @@
-# Repository validation
+# Repository guidelines
 
 Use the repository's existing validation entry point, `test.sh`, rather than
 reconstructing a narrower set of checks. See [the development guide](../docs/development.md)
 for project setup and architecture.
+
+## Maintainability and ownership
+
+- Treat maintainability as a requirement of every change, especially large
+  refactors, not a cleanup phase afterward. Prefer clear ownership and fewer
+  independent decisions over more files, classes, or layers.
+- Search for existing implementations before adding another. Shared workflows
+  should have one authoritative implementation; callers may select explicit
+  policies without duplicating the underlying sequence.
+- When extracting a service, move its responsibilities out of the old callers.
+  Do not add a facade over duplicated logic or leave competing policy owners.
+- Keep stack description/resolution, operation policy, execution, and UI
+  presentation responsibilities distinct. Enforce runtime safety under the
+  operation lock rather than trusting an earlier snapshot.
+- Prefer the simplest design that fully addresses the task. Avoid giant
+  catch-all classes, speculative frameworks, unnecessary renames, and unrelated
+  architectural cleanup.
+- Preserve intentional behavior differences and public contracts. Ask focused
+  questions before resolving ambiguous lifecycle, scope, or profile semantics;
+  do not turn a proposal into an assumed requirement.
+- Where practical, separate code movement/consolidation from behavior changes
+  in commits. Test behavior and consistency across entry points, not merely
+  that one wrapper calls another, and document where future changes belong.
 
 ## During development
 
