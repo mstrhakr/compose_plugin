@@ -47,6 +47,12 @@ Use **Check Updates** on a stack to query the registry for newer image versions.
 
 Services built locally from a `build:` section without a published `image:` are checked against the base image of their Dockerfile's final stage. An update is shown when the registry's base image no longer matches the layers the local image was built on. To apply it, enable **Build on update** for the stack; **Update Stack** then rebuilds with `docker compose build --pull` so the newer base image is used (base images that only exist locally are built from the local copy).
 
+Individual updates, bulk updates, and scheduled auto-updates all use the same update engine and honor the stack's **Build on update** setting, falling back to the global default. When refreshing base images fails, the engine logs a warning before retrying the build with local base images.
+
+Automatic updates only operate on running stacks. With **Build on update** enabled, each scheduled run performs a cached build to discover base-image or source changes; containers are recreated only when their running image IDs differ from the resulting local images. Unchanged and stopped stacks do not produce success notifications. Build failures are reported through logs and notifications without proceeding to recreation.
+
+Manual **Update Stack** also reconciles Compose configuration changes, even when image IDs are unchanged. **Force Update** additionally forces container recreation; it does not bypass the **Build on update** setting. For compatibility with local build tags, a manual update whose pull fails can retry without buildable services and rebuild them even when that setting is disabled; automatic updates do not enable this fallback.
+
 When updates are available, clicking **Update Stack** opens a confirmation dialog listing each container alongside its current and incoming image digest. Containers that are already up to date are dimmed.
 
 #### Changelogs

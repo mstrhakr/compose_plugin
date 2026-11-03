@@ -90,6 +90,16 @@ Adjust PHPStan rules or baseline as needed when adding new code.
 - Keep tests small and focused; mock external systems where possible in unit tests.
 - Update `phpunit.xml` if you add new suites or change coverage targets.
 
+### Shared update pipeline
+
+- `ComposeCommandBuilder::buildUpdateCommand()` resolves files, environment, credentials, profiles, and build policy for every image-update entry point. Individual/force and bulk UI actions call it directly; cron and Auto-update **Run Now** use `automaticUpdateInvocation()`, which calls the same builder.
+- `scripts/compose.sh update` owns credentials and the project lock, then invokes `scripts/compose_update.sh`. This is the single implementation of image pulling, optional rebuilding, running-image comparison, recreation, and post-success cleanup.
+- `scripts/compose_autoupdate.sh` is only a notification/concurrency adapter. Do not add Docker operations or another stack lock there. Its legacy positional/environment invocation is retained for compatibility; application callers pass the shared builder's arguments.
+- Automatic mode explicitly skips stopped stacks and only recreates when running images changed. Manual mode always reconciles configuration; force recreation is a separate flag. Git-source deployments remain a separate transaction because they must also manage checkout and rollback.
+- The engine reports `updated`, `unchanged`, `skipped`, or `failed` through a private outcome file used by the adapter. Stack operation results retain the existing success/failed JSON format.
+
+Regression coverage: `UpdateCommandPathsTest.php` checks the real individual/force/bulk endpoints against the canonical builder; `AutoupdateTest.php` and `AutoupdateRunnerTest.php` check both automatic launchers. `bats tests/unit/update.bats` executes the real scripts with a mocked Docker executable, including build failures, already-pulled images, stopped stacks, locking, and cleanup. Extend these shared tests when changing update behavior.
+
 ## Troubleshooting
 
 - If vendor binaries are missing, re-run `composer install`.
