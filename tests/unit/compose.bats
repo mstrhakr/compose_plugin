@@ -214,6 +214,13 @@ test_setup() {
     [[ "$output" != *'up_args+=("--build")'* ]]
 }
 
+@test "compose.sh update falls back to local base images when build --pull fails" {
+    # Bases that only exist locally can't be pulled; the update must still rebuild them.
+    run sed -n '/^  update)/,/^    ;;/ p' "$COMPOSE_SCRIPT"
+    assert_success
+    [[ "$output" == *'"${compose_base[@]}" -p "$name" build --pull'*'"${compose_base[@]}" -p "$name" build'$'\n'* ]]
+}
+
 @test "compose.sh update falls back to rebuilding when buildable images can't be pulled" {
     # Local-only images (build: + image:) fail a plain pull; retry skipping them and rebuild.
     run sed -n '/^  update)/,/^    ;;/ p' "$COMPOSE_SCRIPT"

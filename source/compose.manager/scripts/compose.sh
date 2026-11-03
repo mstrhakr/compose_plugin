@@ -469,11 +469,19 @@ case $command in
     fi
 
     # Rebuild with --pull so newer base images are used instead of the local cache.
+    # Bases that only exist locally can't be pulled; build those from the local copy as before.
     if [ "$rebuild" = true ]; then
       echo ""
       echo "Rebuilding images with latest base images..."
       "${compose_base[@]}" -p "$name" build --pull
       build_exit=$?
+      if [ $build_exit -ne 0 ]; then
+        echo ""
+        echo "Build with --pull failed; retrying with local base images..."
+        log_msg "WARNING" "Build with --pull failed for $name, retrying without --pull"
+        "${compose_base[@]}" -p "$name" build
+        build_exit=$?
+      fi
       if [ $build_exit -ne 0 ]; then
         operation_exit_code=$build_exit
         save_result "failed" $build_exit "update"
