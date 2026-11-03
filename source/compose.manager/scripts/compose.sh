@@ -12,7 +12,7 @@ LOCK_TIMEOUT=${COMPOSE_LOCK_TIMEOUT:-30}
 LOCK_DIR=${COMPOSE_LOCK_DIR:-/var/run/compose.manager}
 
 SHORT=e:,c:,f:,p:,d:,o:,g:,s:,w:
-LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:,follow-logs,wait,wait-timeout:,build,credential-id:,git-commit:,save-local-changes,automatic-deploy-from:
+LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:,follow-logs,wait,wait-timeout:,build,credential-id:,git-commit:,save-local-changes,automatic-deploy-from:,automatic-update,update-outcome-file:
 OPTS=$(getopt -a -n compose --options $SHORT --longoptions $LONG -- "$@")
 
 eval set -- "$OPTS"
@@ -37,6 +37,8 @@ docker_config_dir=""
 git_commit=""
 save_local_changes=false
 automatic_deploy_from=""
+automatic_update=false
+update_outcome_file=""
 
 
 # Logging helper — delegates to shared composeLogger, adds console echo in debug mode
@@ -221,6 +223,14 @@ do
       build_on_update=true
       shift;
       ;;
+    --automatic-update )
+      automatic_update=true
+      shift;
+      ;;
+    --update-outcome-file )
+      update_outcome_file="$2"
+      shift 2
+      ;;
     --credential-id )
       credential_id="$2"
       shift 2
@@ -299,7 +309,7 @@ esac
 # Optionally create missing `external: true` networks before starting the stack
 # (Settings > Compose > Create Missing External Networks).
 case $command in
-  up|update)
+  up)
     if plugin_setting_enabled CREATE_MISSING_EXTERNAL_NETWORKS; then
       create_missing_external_networks "${compose_base[@]}" -p "$name"
     fi
@@ -401,139 +411,10 @@ case $command in
     ;;
     
   update)
-    up_args=("-d")
-    pull_args=()
-    rebuild=false
-    if [ "$build_on_update" = true ]; then
-      # --ignore-buildable only makes sense when we rebuild those services ourselves.
-      pull_args+=("--ignore-buildable")
-      rebuild=true
-    fi
-
-    if [ "$debug" = true ]; then
-      log_msg "DEBUG" "${compose_base[*]} -p $name images -q"
-      log_msg "DEBUG" "${compose_base[*]} -p $name pull ${pull_args[*]}"
-      if [ "$rebuild" = true ]; then
-        log_msg "DEBUG" "${compose_base[*]} -p $name build --pull"
-      fi
-      log_msg "DEBUG" "${compose_base[*]} -p $name up ${up_args[*]}"
-    fi
-
-    # Capture current images for cleanup later
-    images=()
-    mapfile -t images < <("${compose_base[@]}" -p "$name" images -q 2>/dev/null)
-
-    if [ "${#images[@]}" -eq 0 ]; then
-      # Fallback: extract image names from compose files directly
-      local_files=()
-      for (( i=0; i<${#file_args[@]}; i++ )); do
-        if [ "${file_args[$i]}" = "-f" ] && [ -f "${file_args[$((i+1))]}" ]; then
-          local_files+=("${file_args[$((i+1))]}")
-        fi
-      done
-      if (( ${#local_files[@]} )); then
-        mapfile -t services < <(sed -n 's/image:\(.*\)/\1/p' "${local_files[@]}")
-        for image in "${services[@]}"; do
-          mapfile -t temp_images < <(docker images -q --no-trunc "${image}" 2>/dev/null)
-          images+=( "${temp_images[@]}" )
-        done
-      fi
-
-      images=( "${images[@]##sha256:}" )
-    fi
-    
-    # Pull latest images. Buildable services are only skipped when we rebuild them below.
-    echo "Pulling latest images..."
-    "${compose_base[@]}" -p "$name" pull "${pull_args[@]}"
-    pull_exit=$?
-
-    # Local-only images (build: + image:) can't be pulled; rebuild those from source instead.
-    if [ $pull_exit -ne 0 ] && [ "$build_on_update" != true ]; then
-      echo ""
-      echo "Pull failed; retrying without buildable services and rebuilding them from source..."
-      log_msg "WARNING" "Pull failed for $name, retrying with --ignore-buildable and --build"
-      "${compose_base[@]}" -p "$name" pull --ignore-buildable
-      pull_exit=$?
-      if [ $pull_exit -eq 0 ]; then
-        rebuild=true
-      fi
-    fi
-    
-    if [ $pull_exit -ne 0 ]; then
-      operation_exit_code=$pull_exit
-      save_result "failed" $pull_exit "update"
-      log_msg "ERROR" "Failed to pull images for $name, aborting update"
-      echo ""
-      echo "✗ Failed to pull images for $name, update aborted"
-      exit $operation_exit_code
-    fi
-
-    # Rebuild with --pull so newer base images are used instead of the local cache.
-    # Bases that only exist locally can't be pulled; build those from the local copy as before.
-    if [ "$rebuild" = true ]; then
-      echo ""
-      echo "Rebuilding images with latest base images..."
-      "${compose_base[@]}" -p "$name" build --pull
-      build_exit=$?
-      if [ $build_exit -ne 0 ]; then
-        echo ""
-        echo "Build with --pull failed; retrying with local base images..."
-        log_msg "WARNING" "Build with --pull failed for $name, retrying without --pull"
-        "${compose_base[@]}" -p "$name" build
-        build_exit=$?
-      fi
-      if [ $build_exit -ne 0 ]; then
-        operation_exit_code=$build_exit
-        save_result "failed" $build_exit "update"
-        log_msg "ERROR" "Failed to build images for $name, aborting update"
-        echo ""
-        echo "✗ Failed to build images for $name, update aborted"
-        exit $operation_exit_code
-      fi
-    fi
-    
-    # Recreate containers with new images
-    echo ""
-    echo "Recreating containers..."
-    "${compose_base[@]}" -p "$name" up "${up_args[@]}"
-    up_exit=$?
-
-    if [ $up_exit -eq 0 ]; then
-      operation_exit_code=0
-      # Clean up old images
-      mapfile -t new_images < <("${compose_base[@]}" -p "$name" images -q 2>/dev/null)
-      for target in "${new_images[@]}"; do
-        for i in "${!images[@]}"; do
-          if [[ ${images[i]} = "$target" ]]; then
-            unset 'images[i]'
-          fi
-        done
-      done
-
-      if (( ${#images[@]} )); then
-        if [ "$debug" = true ]; then
-          log_msg "DEBUG" "docker rmi ${images[*]}"
-        fi
-        echo ""
-        echo "Cleaning up old images..."
-        docker rmi "${images[@]}" 2>/dev/null || true
-      fi
-      
-      # Save stack started timestamp and running profiles after update
-      if [ -n "$stack_path" ] && [ -d "$stack_path" ]; then
-        date -Iseconds > "$stack_path/started_at"
-        persist_running_profiles
-      fi
-      save_result "success" 0 "update"
-      echo ""
-      echo "✓ Stack $name updated successfully"
-    else
-      operation_exit_code=$up_exit
-      save_result "failed" $up_exit "update"
-      log_msg "ERROR" "Failed to update stack $name (exit code: $up_exit)"
-      echo ""
-      echo "✗ Stack $name failed to update (exit code: $up_exit)"
-    fi
+    # shellcheck source=compose_update.sh
+    . "$(dirname "$0")/compose_update.sh"
+    run_stack_update
+    operation_exit_code=$?
     ;;
 
   gitdeploy)

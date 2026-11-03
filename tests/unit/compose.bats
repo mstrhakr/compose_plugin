@@ -8,6 +8,7 @@ load '../bats_setup.bash'
 
 # Path to the script we're testing
 COMPOSE_SCRIPT="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose.sh"
+UPDATE_ENGINE="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_update.sh"
 
 # ============================================================
 # Setup
@@ -200,33 +201,33 @@ test_setup() {
 
 @test "compose.sh update action pairs --ignore-buildable with the rebuild flag" {
     # --ignore-buildable is only correct when we rebuild those services ourselves.
-    run grep -F 'pull_args+=("--ignore-buildable")' "$COMPOSE_SCRIPT"
+    run grep -F 'pull_args+=(--ignore-buildable)' "$UPDATE_ENGINE"
     assert_success
 
-    run grep -F 'rebuild=true' "$COMPOSE_SCRIPT"
+    run grep -F 'rebuild=true' "$UPDATE_ENGINE"
     assert_success
 }
 
 @test "compose.sh update rebuilds with --pull so newer base images are used" {
-    run sed -n '/^  update)/,/^    ;;/ p' "$COMPOSE_SCRIPT"
+    run cat "$UPDATE_ENGINE"
     assert_success
-    [[ "$output" == *'"${compose_base[@]}" -p "$name" build --pull'* ]]
+    [[ "$output" == *'update_compose build --pull'* ]]
     [[ "$output" != *'up_args+=("--build")'* ]]
 }
 
 @test "compose.sh update falls back to local base images when build --pull fails" {
     # Bases that only exist locally can't be pulled; the update must still rebuild them.
-    run sed -n '/^  update)/,/^    ;;/ p' "$COMPOSE_SCRIPT"
+    run cat "$UPDATE_ENGINE"
     assert_success
-    [[ "$output" == *'"${compose_base[@]}" -p "$name" build --pull'*'"${compose_base[@]}" -p "$name" build'$'\n'* ]]
+    [[ "$output" == *'update_compose build --pull'*'update_compose build'$'\n'* ]]
 }
 
 @test "compose.sh update falls back to rebuilding when buildable images can't be pulled" {
     # Local-only images (build: + image:) fail a plain pull; retry skipping them and rebuild.
-    run sed -n '/^  update)/,/^    ;;/ p' "$COMPOSE_SCRIPT"
+    run cat "$UPDATE_ENGINE"
     assert_success
-    [[ "$output" == *'"${compose_base[@]}" -p "$name" pull --ignore-buildable'* ]]
-    [[ "$output" == *'if [ $pull_exit -ne 0 ] && [ "$build_on_update" != true ]; then'* ]]
+    [[ "$output" == *'update_compose pull --ignore-buildable'* ]]
+    [[ "$output" == *'[ "$automatic_update" != true ]; then'* ]]
 }
 
 @test "compose.sh mutating commands have explicit final exit propagation" {
