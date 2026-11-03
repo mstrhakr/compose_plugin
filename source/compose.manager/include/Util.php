@@ -3932,15 +3932,13 @@ class StackInfo
     }
 
     /**
-     * Resolved build sections for services that build locally.
+     * Resolved build sections for services that build locally, including
+     * services behind profiles (hasBuildConfig() only sees default ones).
      *
      * @return array<string, array{build: array<string, mixed>, image: ?string}> Keyed by service name
      */
     public function getBuildConfigs(): array
     {
-        if (!$this->hasBuildConfig()) {
-            return [];
-        }
         $args = $this->buildComposeArgs();
         $cmd = "docker compose {$args['files']} {$args['envFile']} -p " . escapeshellarg($args['projectName'])
             . " --profile '*' config --format json 2>/dev/null";

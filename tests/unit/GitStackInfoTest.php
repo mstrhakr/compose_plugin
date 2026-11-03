@@ -144,6 +144,29 @@ final class GitStackInfoTest extends TestCase
         $this->assertFalse($this->stack()->hasBuildConfig());
     }
 
+    public function testBuildConfigsIncludeServicesBehindProfiles(): void
+    {
+        exec('docker compose version 2>/dev/null', $output, $exitCode);
+        if ($exitCode !== 0) {
+            $this->markTestSkipped('docker compose is not available.');
+        }
+        mkdir($this->clone . '/whoami/app');
+        file_put_contents($this->clone . '/whoami/app/Dockerfile', "FROM alpine:3.20\n");
+        file_put_contents(
+            $this->clone . '/whoami/compose.yaml',
+            "services:\n  whoami:\n    image: traefik/whoami\n  app:\n    build: ./app\n    profiles: [dev]\n"
+        );
+        // The default-profile build check found nothing and cached that.
+        file_put_contents($this->stackDir . '/has_build', '0');
+        touch($this->stackDir . '/has_build', time() + 60);
+
+        $builds = $this->stack()->getBuildConfigs();
+
+        $this->assertSame(['app'], array_keys($builds));
+        $this->assertNull($builds['app']['image']);
+        $this->assertSame($this->clone . '/whoami/app', $builds['app']['build']['context']);
+    }
+
     public function testMissingOverridesAreLeftOut(): void
     {
         @unlink($this->stackDir . '/compose.override.yaml');
