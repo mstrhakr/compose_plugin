@@ -107,19 +107,27 @@ class ComposeUpdateCheck
      * A tag may already point at a newly pulled image while a container
      * still uses the previous image.
      *
+     * Services in $buildConfigs (from StackInfo::getBuildConfigs) are built
+     * locally. Build-only services have no registry tag, so they are checked
+     * against their Dockerfile base image instead. Services that also name an
+     * image fall back to that check when the image tag has no remote digest.
+     *
+     * @param array<string, array{build: array<string, mixed>, image: ?string}> $buildConfigs Keyed by service name
      * @return array<string, array{local: string, remote: string, status: string, hasUpdate: bool}>
      */
-    public function checkContainers(array $containers): array
+    public function checkContainers(array $containers, array $buildConfigs = []): array
     {
         $images = [];
         foreach ($containers as $container) {
             $image = trim((string) ($container['Image'] ?? $container['image'] ?? ''));
-            if ($image !== '') {
+            $build = $buildConfigs[$this->containerService($container)] ?? null;
+            if ($image !== '' && ($build === null || $build['image'] !== null)) {
                 $images[] = $image;
             }
         }
-        $imageResults = $this->checkMany($images);
+        $imageResults = $images ? $this->checkMany($images) : [];
         $client = new DockerClient();
+        $baseCache = [];
         $results = [];
         foreach ($containers as $container) {
             $name = trim((string) ($container['Name'] ?? $container['name'] ?? $container['Names'] ?? ''));
@@ -127,6 +135,7 @@ class ComposeUpdateCheck
             if ($name === '' || $image === '') {
                 continue;
             }
+            $build = $buildConfigs[$this->containerService($container)] ?? null;
             $imageResult = $imageResults[ContainerInfo::normalizeImageForUpdateCheck($image)] ?? [];
             $inspect = $client->getDockerJSON('/containers/' . rawurlencode($name) . '/json');
             $local = !empty($inspect['Image']) ? (string) $inspect['Image'] : null;
@@ -134,9 +143,100 @@ class ComposeUpdateCheck
             if ($local === null) {
                 composeLogger('Container image digest unavailable', ['container' => $name], 'user', 'warning', 'update-check');
             }
+            if ($build !== null && $remote === null && $local !== null) {
+                $results[$name] = $this->checkBuiltImage($name, $local, $build['build'], $baseCache);
+                continue;
+            }
             $results[$name] = $this->summarize($local, $remote)['result'];
         }
         return $results;
+    }
+
+    /**
+     * Resolve the external image the final build stage starts from.
+     *
+     * Follows stage aliases (FROM builder AS final) and expands ARG values
+     * declared before the first FROM, overridden by compose build args.
+     *
+     * @param array<string, mixed> $build Resolved compose build section
+     * @return string|null Image reference, "scratch", or null when it cannot be determined
+     */
+    public static function resolveDockerfileBaseImage(array $build): ?string
+    {
+        $dockerfile = self::readDockerfile($build);
+        if ($dockerfile === null) {
+            return null;
+        }
+
+        $buildArgs = [];
+        foreach ((is_array($build['args'] ?? null) ? $build['args'] : []) as $key => $value) {
+            if ($value !== null) {
+                $buildArgs[(string) $key] = (string) $value;
+            }
+        }
+
+        $globalArgs = [];
+        $stages = [];
+        foreach (self::dockerfileInstructions($dockerfile) as [$instruction, $arguments]) {
+            if ($instruction === 'ARG' && $stages === []) {
+                foreach (preg_split('/\s+/', $arguments) as $declaration) {
+                    $parts = explode('=', $declaration, 2);
+                    if ($parts[0] === '') {
+                        continue;
+                    }
+                    $default = isset($parts[1]) ? trim($parts[1], '"\'') : null;
+                    $globalArgs[$parts[0]] = $buildArgs[$parts[0]] ?? $default;
+                }
+            } elseif ($instruction === 'FROM') {
+                $tokens = array_values(array_filter(
+                    preg_split('/\s+/', $arguments),
+                    static fn(string $token): bool => $token !== '' && strpos($token, '--') !== 0
+                ));
+                if ($tokens === []) {
+                    return null;
+                }
+                $stages[] = [
+                    'from' => self::expandDockerfileArgs($tokens[0], $globalArgs),
+                    'name' => (isset($tokens[2]) && strtoupper($tokens[1]) === 'AS') ? strtolower($tokens[2]) : null,
+                ];
+            }
+        }
+        if ($stages === []) {
+            return null;
+        }
+
+        $target = strtolower(trim((string) ($build['target'] ?? '')));
+        $index = count($stages) - 1;
+        if ($target !== '') {
+            $index = null;
+            foreach ($stages as $i => $stage) {
+                if ($stage['name'] === $target) {
+                    $index = $i;
+                }
+            }
+            if ($index === null) {
+                return null;
+            }
+        }
+
+        for ($hops = 0; $hops <= count($stages); $hops++) {
+            $from = $stages[$index]['from'];
+            if ($from === null) {
+                return null;
+            }
+            $previous = null;
+            for ($i = $index - 1; $i >= 0; $i--) {
+                if ($stages[$i]['name'] === strtolower($from)) {
+                    $previous = $i;
+                    break;
+                }
+            }
+            if ($previous === null) {
+                return strtolower($from) === 'scratch' ? 'scratch' : $from;
+            }
+            $index = $previous;
+        }
+        return null;
     }
 
     /**
@@ -161,6 +261,182 @@ class ComposeUpdateCheck
     // ------------------------------------------------------------------
     // Internals
     // ------------------------------------------------------------------
+
+    private function containerService(array $container): string
+    {
+        $service = trim((string) ($container['Service'] ?? $container['service'] ?? ''));
+        if ($service === '' && is_array($container['Labels'] ?? null)) {
+            $service = trim((string) ($container['Labels']['com.docker.compose.service'] ?? ''));
+        }
+        return $service;
+    }
+
+    /**
+     * A locally built image is current when its layers still start with the
+     * remote base image's layers (rootfs.diff_ids).
+     *
+     * @param array<string, mixed> $build
+     * @param array<string, array{digest: string, diffIds: string[]}|null> $baseCache
+     * @return array{local: string, remote: string, status: string, hasUpdate: bool}
+     */
+    private function checkBuiltImage(string $container, string $imageId, array $build, array &$baseCache): array
+    {
+        $unknown = ['local' => $imageId, 'remote' => '', 'status' => 'unknown', 'hasUpdate' => false];
+        $base = self::resolveDockerfileBaseImage($build);
+        if ($base === null || $base === 'scratch') {
+            composeLogger('Build base image unavailable for update check', [
+                'container' => $container,
+                'base' => $base,
+            ], 'user', $base === null ? 'warning' : 'debug', 'update-check');
+            return $unknown;
+        }
+        if (strpos($base, '@sha256:') !== false) {
+            return ['local' => $imageId, 'remote' => $imageId, 'status' => 'up-to-date', 'hasUpdate' => false];
+        }
+
+        $baseKey = ContainerInfo::normalizeImageForUpdateCheck($base);
+        if (!array_key_exists($baseKey, $baseCache)) {
+            $baseCache[$baseKey] = $this->fetchRemoteImageConfig($baseKey);
+        }
+        $remote = $baseCache[$baseKey];
+        $inspect = (new DockerClient())->getDockerJSON('/images/' . rawurlencode($imageId) . '/json');
+        $layers = $inspect['RootFS']['Layers'] ?? null;
+        if ($remote === null || !is_array($layers) || $layers === []) {
+            composeLogger('Build base image update check incomplete', [
+                'container' => $container,
+                'base' => $baseKey,
+                'remoteConfigAvailable' => $remote !== null,
+                'localLayersAvailable' => is_array($layers) && $layers !== [],
+            ], 'user', 'warning', 'update-check');
+            return $unknown;
+        }
+
+        $current = array_slice(array_values($layers), 0, count($remote['diffIds'])) === $remote['diffIds'];
+        return [
+            'local' => $imageId,
+            'remote' => $remote['digest'],
+            'status' => $current ? 'up-to-date' : 'update-available',
+            'hasUpdate' => !$current,
+        ];
+    }
+
+    /** @param array<string, mixed> $build */
+    private static function readDockerfile(array $build): ?string
+    {
+        if (is_string($build['dockerfile_inline'] ?? null)) {
+            return $build['dockerfile_inline'];
+        }
+        $context = (string) ($build['context'] ?? '');
+        if ($context === '' || !is_dir($context)) {
+            return null;
+        }
+        $dockerfile = (string) ($build['dockerfile'] ?? '');
+        if ($dockerfile === '') {
+            $dockerfile = 'Dockerfile';
+        }
+        $path = $dockerfile[0] === '/' ? $dockerfile : rtrim($context, '/') . '/' . $dockerfile;
+        $content = is_file($path) ? @file_get_contents($path) : false;
+        return is_string($content) ? $content : null;
+    }
+
+    /**
+     * Split a Dockerfile into [INSTRUCTION, arguments] pairs, joining line
+     * continuations and skipping comments and heredoc bodies.
+     *
+     * @return array<int, array{0: string, 1: string}>
+     */
+    private static function dockerfileInstructions(string $dockerfile): array
+    {
+        $lines = preg_split('/\r?\n/', $dockerfile);
+        $escape = '\\';
+        foreach ($lines as $line) {
+            if (!preg_match('/^\s*#\s*(\w+)\s*=\s*(\S+)\s*$/', $line, $m)) {
+                break;
+            }
+            if (strtolower($m[1]) === 'escape') {
+                $escape = $m[2];
+            }
+        }
+
+        $instructions = [];
+        $pending = '';
+        $heredoc = null;
+        foreach ($lines as $line) {
+            if ($heredoc !== null) {
+                if (($heredoc['strip'] ? ltrim($line, "\t") : $line) === $heredoc['word']) {
+                    $heredoc = null;
+                }
+                continue;
+            }
+            if ($pending === '' && preg_match('/^\s*(#|$)/', $line)) {
+                continue;
+            }
+            if ($pending !== '' && preg_match('/^\s*#/', $line)) {
+                continue;
+            }
+            $trimmed = rtrim($line);
+            if ($trimmed !== '' && substr($trimmed, -strlen($escape)) === $escape) {
+                $pending .= substr($trimmed, 0, -strlen($escape)) . ' ';
+                continue;
+            }
+            $full = trim($pending . $line);
+            $pending = '';
+            if (!preg_match('/^(\w+)\s*(.*)$/s', $full, $m)) {
+                continue;
+            }
+            $instructions[] = [strtoupper($m[1]), trim($m[2])];
+            if (preg_match('/<<(-?)["\']?(\w+)["\']?/', $m[2], $h)) {
+                $heredoc = ['strip' => $h[1] === '-', 'word' => $h[2]];
+            }
+        }
+        return $instructions;
+    }
+
+    /** @param array<string, ?string> $args */
+    private static function expandDockerfileArgs(string $value, array $args): ?string
+    {
+        $expanded = preg_replace_callback(
+            '/\$(?:\{(\w+)(?:(:?[-+])([^}]*))?\}|(\w+))/',
+            static function (array $m) use ($args): string {
+                $name = (string) ($m[1] ?? $m[4]);
+                $current = $args[$name] ?? null;
+                $operator = (string) $m[2];
+                $word = (string) $m[3];
+                $isSet = $operator !== '' && $operator[0] === ':' ? ($current !== null && $current !== '') : $current !== null;
+                if (substr($operator, -1) === '-') {
+                    return $isSet ? (string) $current : $word;
+                }
+                if (substr($operator, -1) === '+') {
+                    return $isSet ? $word : '';
+                }
+                return (string) $current;
+            },
+            $value,
+            -1,
+            $count,
+            PREG_UNMATCHED_AS_NULL
+        );
+        return is_string($expanded) && $expanded !== '' && strpos($expanded, '$') === false ? $expanded : null;
+    }
+
+    /**
+     * Fetch the platform config digest and layer diff IDs for an image tag.
+     *
+     * @return array{digest: string, diffIds: string[]}|null
+     */
+    protected function fetchRemoteImageConfig(string $image): ?array
+    {
+        $manifest = $this->fetchRemoteManifest($image);
+        if ($manifest === null) {
+            return null;
+        }
+        $config = $this->httpGetJson($manifest['blobUrl'], $manifest['header'], $manifest['basicUserPwd']);
+        $diffIds = $config['rootfs']['diff_ids'] ?? null;
+        if (!is_array($diffIds) || $diffIds === []) {
+            return null;
+        }
+        return ['digest' => $manifest['configDigest'], 'diffIds' => array_values(array_map('strval', $diffIds))];
+    }
 
     private function summarize(?string $local, ?string $remote): array
     {
@@ -240,6 +516,16 @@ class ComposeUpdateCheck
      * local config digest.
      */
     private function fetchRemoteConfigDigest(string $image): ?string
+    {
+        return $this->fetchRemoteManifest($image)['configDigest'] ?? null;
+    }
+
+    /**
+     * Resolve the platform manifest for an image tag.
+     *
+     * @return array{configDigest: string, blobUrl: string, header: string[], basicUserPwd: ?string}|null
+     */
+    private function fetchRemoteManifest(string $image): ?array
     {
         try {
             $auth = $this->resolveRegistryAuth($image);
@@ -323,17 +609,22 @@ class ComposeUpdateCheck
             $platformURL = sprintf('%s%s%s/manifests/%s',
                 $auth['apiUrl'], $auth['repository'], $auth['imageName'], $platformDigest
             );
-            $platformManifest = $this->httpGetJson($platformURL, $header, $basicUserPwd);
-            if ($platformManifest === null) {
+            $manifest = $this->httpGetJson($platformURL, $header, $basicUserPwd);
+            if ($manifest === null) {
                 return null;
             }
-            $configDigest = (string) ($platformManifest['config']['digest'] ?? '');
-            return $configDigest !== '' ? $configDigest : null;
         }
 
-        // Single-arch manifest.
         $configDigest = (string) ($manifest['config']['digest'] ?? '');
-        return $configDigest !== '' ? $configDigest : null;
+        if ($configDigest === '') {
+            return null;
+        }
+        return [
+            'configDigest' => $configDigest,
+            'blobUrl' => sprintf('%s%s%s/blobs/%s', $auth['apiUrl'], $auth['repository'], $auth['imageName'], $configDigest),
+            'header' => $header,
+            'basicUserPwd' => $basicUserPwd,
+        ];
     }
 
     /** @return array<string, string> */
@@ -364,6 +655,9 @@ class ComposeUpdateCheck
         $ch = getCurlHandle($url, 'GET');
         curl_setopt($ch, CURLOPT_HEADER, false);
         curl_setopt($ch, CURLOPT_HTTPHEADER, $header);
+        // Registries redirect blob downloads to storage hosts; curl drops credentials on cross-host redirects.
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        curl_setopt($ch, CURLOPT_MAXREDIRS, 5);
         if ($basicUserPwd !== null) {
             curl_setopt($ch, CURLOPT_USERPWD, $basicUserPwd);
         }

@@ -403,15 +403,19 @@ case $command in
   update)
     up_args=("-d")
     pull_args=()
+    rebuild=false
     if [ "$build_on_update" = true ]; then
       # --ignore-buildable only makes sense when we rebuild those services ourselves.
       pull_args+=("--ignore-buildable")
-      up_args+=("--build")
+      rebuild=true
     fi
 
     if [ "$debug" = true ]; then
       log_msg "DEBUG" "${compose_base[*]} -p $name images -q"
       log_msg "DEBUG" "${compose_base[*]} -p $name pull ${pull_args[*]}"
+      if [ "$rebuild" = true ]; then
+        log_msg "DEBUG" "${compose_base[*]} -p $name build --pull"
+      fi
       log_msg "DEBUG" "${compose_base[*]} -p $name up ${up_args[*]}"
     fi
 
@@ -451,7 +455,7 @@ case $command in
       "${compose_base[@]}" -p "$name" pull --ignore-buildable
       pull_exit=$?
       if [ $pull_exit -eq 0 ]; then
-        up_args+=("--build")
+        rebuild=true
       fi
     fi
     
@@ -462,6 +466,22 @@ case $command in
       echo ""
       echo "✗ Failed to pull images for $name, update aborted"
       exit $operation_exit_code
+    fi
+
+    # Rebuild with --pull so newer base images are used instead of the local cache.
+    if [ "$rebuild" = true ]; then
+      echo ""
+      echo "Rebuilding images with latest base images..."
+      "${compose_base[@]}" -p "$name" build --pull
+      build_exit=$?
+      if [ $build_exit -ne 0 ]; then
+        operation_exit_code=$build_exit
+        save_result "failed" $build_exit "update"
+        log_msg "ERROR" "Failed to build images for $name, aborting update"
+        echo ""
+        echo "✗ Failed to build images for $name, update aborted"
+        exit $operation_exit_code
+      fi
     fi
     
     # Recreate containers with new images

@@ -45,6 +45,8 @@ Each stack supports the following actions:
 
 Use **Check Updates** on a stack to query the registry for newer image versions. Results are cached until the next manual or scheduled check (see [Update Checking settings](configuration.md#update-checking)).
 
+Services built locally from a `build:` section without a published `image:` are checked against the base image of their Dockerfile's final stage. An update is shown when the registry's base image no longer matches the layers the local image was built on. To apply it, enable **Build on update** for the stack; **Update Stack** then rebuilds with `docker compose build --pull` so the newer base image is used.
+
 When updates are available, clicking **Update Stack** opens a confirmation dialog listing each container alongside its current and incoming image digest. Containers that are already up to date are dimmed.
 
 #### Changelogs

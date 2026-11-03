@@ -2190,7 +2190,7 @@ switch ($_POST['action']) {
 
         if ($rows) {
             $updater = new ComposeUpdateCheck(null, $stackInfo->getCredentialId());
-            $checkResults = $updater->checkContainers($rows);
+            $checkResults = $updater->checkContainers($rows, $stackInfo->getBuildConfigs());
 
             foreach ($rows as $container) {
                 $containerLower = array_change_key_case($container, CASE_LOWER);
@@ -2320,7 +2320,7 @@ switch ($_POST['action']) {
                     return strtolower((string) ($container['State'] ?? $container['state'] ?? '')) === 'running';
                 }));
                 $updater = new ComposeUpdateCheck(null, $stackInfoItem->getCredentialId());
-                $checkResults = $runningContainers ? $updater->checkContainers($runningContainers) : [];
+                $checkResults = $runningContainers ? $updater->checkContainers($runningContainers, $stackInfoItem->getBuildConfigs()) : [];
 
                 foreach ($rows as $container) {
                     $containerLower = array_change_key_case($container, CASE_LOWER);

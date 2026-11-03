@@ -235,4 +235,122 @@ class UpdateCheckTest extends TestCase
             $this->assertSame('undef', $result['statusRaw']);
         }
     }
+
+    public static function dockerfileBaseCases(): array
+    {
+        return [
+            'single stage with syntax directive' => [
+                "# syntax=docker/dockerfile:1.7\nFROM lscr.io/linuxserver/code-server:latest\n\nARG TARGETARCH\nRUN echo \\\n  FROM nope\n",
+                [], 'lscr.io/linuxserver/code-server:latest',
+            ],
+            'multi-stage follows final stage alias' => [
+                "FROM golang:1.22 AS build\nRUN go build\nFROM alpine:3.20 AS base\nFROM base AS final\nCOPY --from=build /app /app\n",
+                [], 'alpine:3.20',
+            ],
+            'target selects stage' => [
+                "FROM node:20 AS dev\nFROM nginx:1.27 AS prod\n",
+                ['target' => 'dev'], 'node:20',
+            ],
+            'global arg default and compose override' => [
+                "ARG BASE=debian\nARG TAG=12\nFROM --platform=\$BUILDPLATFORM \${BASE}:\${TAG:-11}\n",
+                ['args' => ['TAG' => 'bookworm']], 'debian:bookworm',
+            ],
+            'unresolved arg is unknown' => ["FROM \${MISSING}\n", [], null],
+            'scratch' => ["FROM alpine AS a\nFROM scratch\nCOPY --from=a / /\n", [], 'scratch'],
+            'heredoc body is ignored' => ["FROM alpine:3\nRUN <<EOF\nFROM ubuntu\nEOF\n", [], 'alpine:3'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('dockerfileBaseCases')]
+    public function testDockerfileBaseImageResolution(string $dockerfile, array $build, ?string $expected): void
+    {
+        $context = $this->createTempDir();
+        file_put_contents($context . '/Dockerfile', $dockerfile);
+        $this->assertSame($expected, \ComposeUpdateCheck::resolveDockerfileBaseImage($build + ['context' => $context]));
+        $this->assertSame($expected, \ComposeUpdateCheck::resolveDockerfileBaseImage($build + ['dockerfile_inline' => $dockerfile]));
+    }
+
+    public function testCustomDockerfilePathAndMissingContext(): void
+    {
+        $context = $this->createTempDir();
+        mkdir($context . '/docker');
+        file_put_contents($context . '/docker/app.Dockerfile', "FROM redis:8\n");
+        $this->assertSame('redis:8', \ComposeUpdateCheck::resolveDockerfileBaseImage(['context' => $context, 'dockerfile' => 'docker/app.Dockerfile']));
+        $this->assertNull(\ComposeUpdateCheck::resolveDockerfileBaseImage(['context' => 'https://github.com/org/repo.git']));
+    }
+
+    public function testBuildOnlyContainersAreCheckedAgainstTheirBaseImage(): void
+    {
+        $context = $this->createTempDir();
+        file_put_contents($context . '/Dockerfile', "FROM lscr.io/linuxserver/code-server:latest\nRUN true\n");
+        $checker = new class extends \ComposeUpdateCheck {
+            public array $checkedImages = [];
+            public array $fetched = [];
+
+            public function checkMany(array $images): array
+            {
+                $this->checkedImages = $images;
+                return [];
+            }
+
+            protected function fetchRemoteImageConfig(string $image): ?array
+            {
+                $this->fetched[] = $image;
+                return ['digest' => 'sha256:base-new', 'diffIds' => ['sha256:l1', 'sha256:l2']];
+            }
+        };
+        \DockerClient::setMockResponse('/containers/current/json', ['Image' => 'sha256:built-current']);
+        \DockerClient::setMockResponse('/containers/stale/json', ['Image' => 'sha256:built-stale']);
+        \DockerClient::setMockResponse('/images/' . rawurlencode('sha256:built-current') . '/json', ['RootFS' => ['Layers' => ['sha256:l1', 'sha256:l2', 'sha256:mine']]]);
+        \DockerClient::setMockResponse('/images/' . rawurlencode('sha256:built-stale') . '/json', ['RootFS' => ['Layers' => ['sha256:l1', 'sha256:old', 'sha256:mine']]]);
+
+        $build = ['build' => ['context' => $context, 'dockerfile' => 'Dockerfile'], 'image' => null];
+        $results = $checker->checkContainers([
+            ['Name' => 'current', 'Service' => 'app', 'Image' => 'stack-app'],
+            ['Name' => 'stale', 'Service' => 'worker', 'Image' => 'stack-worker'],
+        ], ['app' => $build, 'worker' => $build]);
+
+        $this->assertSame([], $checker->checkedImages, 'Build-only images must not be looked up on a registry.');
+        $this->assertSame(['lscr.io/linuxserver/code-server:latest'], $checker->fetched);
+        $this->assertSame('up-to-date', $results['current']['status']);
+        $this->assertFalse($results['current']['hasUpdate']);
+        $this->assertSame('update-available', $results['stale']['status']);
+        $this->assertTrue($results['stale']['hasUpdate']);
+        $this->assertSame('sha256:base-new', $results['stale']['remote']);
+        $this->assertSame('sha256:built-stale', $results['stale']['local']);
+    }
+
+    public function testNamedBuildImageFallsBackToBaseOnlyWithoutARemoteDigest(): void
+    {
+        $context = $this->createTempDir();
+        file_put_contents($context . '/Dockerfile', "FROM alpine:3.20\n");
+        $checker = new class extends \ComposeUpdateCheck {
+            public function checkMany(array $images): array
+            {
+                return ['ghcr.io/org/published:latest' => ['local' => '', 'remote' => 'sha256:published', 'status' => 'up-to-date', 'hasUpdate' => false]];
+            }
+
+            protected function fetchRemoteImageConfig(string $image): ?array
+            {
+                return ['digest' => 'sha256:alpine', 'diffIds' => ['sha256:alpine-layer']];
+            }
+        };
+        \DockerClient::setMockResponse('/containers/published/json', ['Image' => 'sha256:published']);
+        \DockerClient::setMockResponse('/containers/local-only/json', ['Image' => 'sha256:local-only']);
+        \DockerClient::setMockResponse('/images/' . rawurlencode('sha256:local-only') . '/json', ['RootFS' => ['Layers' => ['sha256:other']]]);
+
+        $build = ['context' => $context];
+        $results = $checker->checkContainers([
+            ['Name' => 'published', 'Service' => 'pub', 'Image' => 'ghcr.io/org/published:latest'],
+            ['Name' => 'local-only', 'Service' => 'loc', 'Image' => 'myapp:dev'],
+        ], [
+            'pub' => ['build' => $build, 'image' => 'ghcr.io/org/published:latest'],
+            'loc' => ['build' => $build, 'image' => 'myapp:dev'],
+        ]);
+
+        $this->assertSame('up-to-date', $results['published']['status']);
+        $this->assertSame('sha256:published', $results['published']['remote']);
+        $this->assertSame('update-available', $results['local-only']['status']);
+        $this->assertSame('sha256:alpine', $results['local-only']['remote']);
+    }
 }

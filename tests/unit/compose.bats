@@ -203,8 +203,15 @@ test_setup() {
     run grep -F 'pull_args+=("--ignore-buildable")' "$COMPOSE_SCRIPT"
     assert_success
 
-    run grep -F 'up_args+=("--build")' "$COMPOSE_SCRIPT"
+    run grep -F 'rebuild=true' "$COMPOSE_SCRIPT"
     assert_success
+}
+
+@test "compose.sh update rebuilds with --pull so newer base images are used" {
+    run sed -n '/^  update)/,/^    ;;/ p' "$COMPOSE_SCRIPT"
+    assert_success
+    [[ "$output" == *'"${compose_base[@]}" -p "$name" build --pull'* ]]
+    [[ "$output" != *'up_args+=("--build")'* ]]
 }
 
 @test "compose.sh update falls back to rebuilding when buildable images can't be pulled" {
