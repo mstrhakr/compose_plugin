@@ -122,6 +122,16 @@ class ComposeUtilTest extends TestCase
         
         // Should return ttyd viewer URL for non-log actions
         $this->assertSame('/plugins/compose.manager/include/ShowTtyd.php?done=1', $output);
+
+        $_POST['trackOperation'] = '1';
+        ob_start();
+        echoComposeCommand('up');
+        $tracked = json_decode((string) ob_get_clean(), true);
+        $this->assertSame('/plugins/compose.manager/include/ShowTtyd.php?done=1', $tracked['url']);
+        $receipt = \composeUiOperationFile($stackName, $tracked['operations'][$stackName]);
+        $this->assertSame(['state' => 'queued'], json_decode((string) file_get_contents($receipt), true));
+        unlink($receipt);
+        unset($_POST['trackOperation']);
         
         // Cleanup
         unlink("$varIniDir/var.ini");
