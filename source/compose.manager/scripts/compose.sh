@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck source-path=SCRIPTDIR
 export HOME=/root
 
 # Compose Manager - Docker Compose wrapper script
