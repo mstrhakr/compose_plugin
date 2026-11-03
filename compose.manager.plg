@@ -36,14 +36,10 @@
 >
 
 <CHANGES>
-###2026.11.02.1533
-- Bug Fixes (updates): preserve config digest provenance in shared cache
-- Bug Fixes: address update cache review findings
-- Bug Fixes (ui): reconcile update badges and recover action refreshes
-- Bug Fixes (autoupdate): detect containers behind already-pulled images
-- Bug Fixes (updates): compare container images and replace stale cache results
+###2026.11.03.1021
+- Bug Fixes (updates): use stack credentials for private registry checks
 - [PR #187](https://github.com/mstrhakr/compose_plugin/pull/187)
-- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.10.27...v2026.11.02.1533)
+- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.10.27...v2026.11.03.1021)
 </CHANGES>
 
 <!-- The 'pre-install' script. -->
