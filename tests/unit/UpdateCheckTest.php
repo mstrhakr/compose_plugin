@@ -258,6 +258,13 @@ class UpdateCheckTest extends TestCase
             'unresolved arg is unknown' => ["FROM \${MISSING}\n", [], null],
             'scratch' => ["FROM alpine AS a\nFROM scratch\nCOPY --from=a / /\n", [], 'scratch'],
             'heredoc body is ignored' => ["FROM alpine:3\nRUN <<EOF\nFROM ubuntu\nEOF\n", [], 'alpine:3'],
+            'quoted dash heredoc is ignored' => ["FROM golang:1 AS b\nCOPY <<-\"END\" /x\n\tFROM ubuntu\n\tEND\nFROM alpine:3\n", [], 'alpine:3'],
+            'here-string is not a heredoc' => ["FROM golang:1 AS b\nRUN read x <<<hello\nFROM alpine:3.20\n", [], 'alpine:3.20'],
+            'shell shift is not a heredoc' => ["FROM golang:1 AS b\nRUN echo \$((1<<2))\nFROM alpine:3.20\n", [], 'alpine:3.20'],
+            'blank line inside continuation' => ["FROM alpine:3.20\nRUN echo \\\n\n    FROM ubuntu\n", [], 'alpine:3.20'],
+            'arg default uses earlier arg' => ["ARG TAG=3.20\nARG IMG=alpine:\${TAG}\nFROM \${IMG}\n", [], 'alpine:3.20'],
+            'compose arg feeds chained default' => ["ARG TAG=3.20\nARG IMG=alpine:\${TAG}\nFROM \${IMG}\n", ['args' => ['TAG' => '3.19']], 'alpine:3.19'],
+            'empty arg default' => ["ARG SUFFIX=\nFROM alpine\${SUFFIX}:3\n", [], 'alpine:3'],
         ];
     }
 

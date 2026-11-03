@@ -184,7 +184,11 @@ class ComposeUpdateCheck
                     if ($parts[0] === '') {
                         continue;
                     }
-                    $default = isset($parts[1]) ? trim($parts[1], '"\'') : null;
+                    $default = null;
+                    if (isset($parts[1])) {
+                        $literal = trim($parts[1], '"\'');
+                        $default = $literal === '' ? '' : self::expandDockerfileArgs($literal, $globalArgs);
+                    }
                     $globalArgs[$parts[0]] = $buildArgs[$parts[0]] ?? $default;
                 }
             } elseif ($instruction === 'FROM') {
@@ -371,7 +375,7 @@ class ComposeUpdateCheck
             if ($pending === '' && preg_match('/^\s*(#|$)/', $line)) {
                 continue;
             }
-            if ($pending !== '' && preg_match('/^\s*#/', $line)) {
+            if ($pending !== '' && preg_match('/^\s*(#|$)/', $line)) {
                 continue;
             }
             $trimmed = rtrim($line);
@@ -384,9 +388,17 @@ class ComposeUpdateCheck
             if (!preg_match('/^(\w+)\s*(.*)$/s', $full, $m)) {
                 continue;
             }
-            $instructions[] = [strtoupper($m[1]), trim($m[2])];
-            if (preg_match('/<<(-?)["\']?(\w+)["\']?/', $m[2], $h)) {
-                $heredoc = ['strip' => $h[1] === '-', 'word' => $h[2]];
+            $instruction = strtoupper($m[1]);
+            $instructions[] = [$instruction, trim($m[2])];
+            // Like BuildKit, only a standalone <<WORD token in RUN/COPY/ADD starts a heredoc,
+            // so here-strings (<<<) and shell arithmetic (1<<2) are not mistaken for one.
+            if (in_array($instruction, ['RUN', 'COPY', 'ADD'], true)) {
+                foreach (preg_split('/\s+/', $m[2]) as $token) {
+                    if (preg_match('/^\d*<<(-?)(["\']?)([^<"\']+)\2$/', $token, $h)) {
+                        $heredoc = ['strip' => $h[1] === '-', 'word' => $h[3]];
+                        break;
+                    }
+                }
             }
         }
         return $instructions;
