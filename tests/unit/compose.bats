@@ -247,10 +247,12 @@ test_setup() {
     [ "$count" -ge 4 ]
 }
 
-@test "compose_autoupdate.sh uses --ignore-buildable" {
+@test "compose_autoupdate.sh delegates all update execution to compose.sh" {
     local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
-    run grep -E 'pull --ignore-buildable' "$autoupdate_script"
+    run grep -F 'bash "$(dirname "$0")/compose.sh" "$@" --automatic-update' "$autoupdate_script"
     assert_success
+    run grep -E '^[[:space:]]*(timeout .* )?docker ' "$autoupdate_script"
+    assert_failure
 }
 
 @test "compose_autoupdate.sh exports a bounded pull concurrency limit" {
@@ -259,110 +261,6 @@ test_setup() {
     assert_success
 
     run grep -F 'export COMPOSE_PARALLEL_LIMIT' "$autoupdate_script"
-    assert_success
-}
-
-@test "compose_autoupdate.sh uses compose config --images for digest detection" {
-    local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
-    run grep -E 'config --images' "$autoupdate_script"
-    assert_success
-}
-
-@test "compose_autoupdate.sh checks running containers before up -d" {
-    local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
-    run grep -E 'ps -q' "$autoupdate_script"
-    assert_success
-
-    run grep -E 'not running; skipping up -d' "$autoupdate_script"
-    assert_success
-}
-
-@test "autoupdate detects a running container left on an older already-pulled image" {
-    local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
-    # shellcheck source=/dev/null
-    source <(sed -n '/^running_containers_need_update()/,/^}/p' "$autoupdate_script")
-    project_dir_args=()
-    compose_file_args=()
-    env_file_args=()
-    PROJECT_NAME="stack"
-    OLD_DIGESTS="sha256:current"
-    docker() {
-        case "$1" in
-            compose) printf '%s\n' "container-id" ;;
-            inspect) printf '%s\n' "sha256:old postgres:18" ;;
-            image) printf '%s\n' "sha256:current" ;;
-        esac
-    }
-
-    running_containers_need_update
-    [[ "$OLD_DIGESTS" == *"sha256:old"* ]]
-}
-
-# shellcheck disable=SC2034
-@test "autoupdate skips current or stopped containers and reports inspection failures" {
-    local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
-    # shellcheck source=/dev/null
-    source <(sed -n '/^running_containers_need_update()/,/^}/p' "$autoupdate_script")
-    project_dir_args=()
-    compose_file_args=()
-    env_file_args=()
-    PROJECT_NAME="stack"
-    composeLogger() { printf '%s\n' "$1"; }
-    docker() {
-        case "$1" in
-            compose) [ "$mode" = stopped ] || printf '%s\n' "container-id" ;;
-            inspect)
-                [ "$mode" != failed ] || return 1
-                printf '%s\n' "sha256:current postgres:18"
-                ;;
-            image) printf '%s\n' "sha256:current" ;;
-        esac
-    }
-
-    mode=current
-    run running_containers_need_update
-    assert_failure 1
-    mode=stopped
-    run running_containers_need_update
-    assert_failure 1
-    mode=failed
-    run running_containers_need_update
-    assert_failure 2
-    [[ "$output" == *"Could not inspect container"* ]]
-}
-
-@test "compose_autoupdate.sh removes only superseded image IDs after successful up" {
-    local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
-    local old_image_id="sha256:$(printf '%064d' 1)"
-    local current_image_id="sha256:$(printf '%064d' 2)"
-    local removed_images_file="$TEST_TEMP_DIR/removed-images"
-
-    # Isolate the cleanup helper so docker rmi can be observed without Docker.
-    source <(sed -n '/^remove_superseded_images()/,/^}/p' "$autoupdate_script")
-    docker() { printf '%s\n' "$*" >> "$removed_images_file"; }
-
-    OLD_DIGESTS="$old_image_id
-$current_image_id
-registry.example/service:latest"
-    NEW_DIGESTS="$current_image_id
-registry.example/service:latest"
-
-    run remove_superseded_images
-    assert_success
-    run cat "$removed_images_file"
-    [ "$output" = "rmi $old_image_id" ]
-
-    # Cleanup must follow the up-failure exit path and precede success reporting.
-    run awk '
-        /# Images changed - run recreate\/up/ { in_update = 1 }
-        in_update && /exit 1$/ { failure_exit = NR }
-        in_update && failure_exit && /fi$/ && !failure_end { failure_end = NR }
-        in_update && /remove_superseded_images$/ { cleanup = NR }
-        in_update && /MSG="Stack.*updated successfully/ { success = NR }
-        END {
-            exit !(failure_exit < failure_end && failure_end < cleanup && cleanup < success)
-        }
-    ' "$autoupdate_script"
     assert_success
 }
 

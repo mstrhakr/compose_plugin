@@ -1,7 +1,11 @@
 #!/bin/bash
 # Sourced by compose.sh after resolving arguments, credentials and the stack lock.
+# shellcheck disable=SC2154
 
 update_compose() {
+  if [ "$debug" = true ]; then
+    log_msg DEBUG "${compose_base[*]} -p $name $*" >&2
+  fi
   if [ "$automatic_update" = true ]; then
     timeout "${COMPOSE_COMMAND_TIMEOUT:-1800}" "${compose_base[@]}" -p "$name" "$@"
   else
@@ -12,7 +16,10 @@ update_compose() {
 update_outcome() {
   local outcome="$1"
   if [ -n "$update_outcome_file" ]; then
-    printf '%s\n' "$outcome" > "$update_outcome_file" || return 1
+    if ! printf '%s\n' "$outcome" > "$update_outcome_file"; then
+      log_msg ERROR "Could not write update outcome for $name"
+      return 1
+    fi
   fi
   log_msg INFO "Update outcome for $name: $outcome"
 }

@@ -16,7 +16,7 @@ else
         [ "${STOPPED:-false}" = true ] || echo container-id
         exit 0 ;;
       images)
-        if [ -f "$UPDATE_UP" ]; then echo "$NEW_ID"; else echo "$OLD_ID"; fi
+        if [ -f "$UPDATE_UP" ] && [ -f "$UPDATE_STATE" ]; then echo "$NEW_ID"; else echo "$OLD_ID"; fi
         exit 0 ;;
       pull)
         if [ "${PULL_EXIT:-0}" != 0 ]; then

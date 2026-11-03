@@ -12,6 +12,77 @@ require_once '/usr/local/emhttp/plugins/compose.manager/include/Util.php';
  */
 class ComposeCommandBuilder
 {
+    /** @param array<string, mixed> $cfg */
+    public static function resolveBuildOnUpdate(string $stackPath, array $cfg): bool
+    {
+        $buildFile = rtrim($stackPath, '/') . '/build_on_update';
+        if (is_file($buildFile)) {
+            $raw = trim((string) file_get_contents($buildFile));
+            if ($raw !== '') {
+                return $raw === 'true' || $raw === '1';
+            }
+        }
+        return ($cfg['BUILD_ON_UPDATE_DEFAULT'] ?? 'false') === 'true';
+    }
+
+    /**
+     * The only command construction path for individual, force, bulk and automatic updates.
+     *
+     * @param array<string, mixed> $cfg
+     * @param array{profiles?: string[], recreate?: bool, automatic?: bool} $options
+     * @return string[]
+     */
+    public static function buildUpdateCommand(StackInfo $stack, array $cfg, array $options = []): array
+    {
+        $spec = self::buildForAction($stack, 'update');
+        $command = [dirname(__DIR__) . '/scripts/compose.sh', '-cupdate', '-p' . $spec['projectName']];
+        if ($spec['useDefaultFileDiscovery']) {
+            $command[] = '-w' . $spec['projectDirectory'];
+        } else {
+            foreach ($spec['composeFiles'] as $file) {
+                $command[] = '-f' . $file;
+            }
+        }
+        if (!empty($spec['envFilePath'])) {
+            $command[] = '-e' . $spec['envFilePath'];
+        }
+        if ($spec['credentialId'] !== '') {
+            $command[] = '--credential-id';
+            $command[] = $spec['credentialId'];
+        }
+        foreach ($options['profiles'] ?? $spec['profiles'] as $profile) {
+            $command[] = '-g' . $profile;
+        }
+        $command[] = '-s' . $spec['stackPath'];
+        if (self::resolveBuildOnUpdate($stack->path, $cfg)) {
+            $command[] = '--build';
+        }
+        if (!empty($options['recreate'])) {
+            $command[] = '--recreate';
+        }
+        if (!empty($options['automatic'])) {
+            $command[] = '--automatic-update';
+        }
+        if (($cfg['DEBUG_TO_LOG'] ?? 'false') === 'true') {
+            $command[] = '--debug';
+        }
+        return $command;
+    }
+
+    /**
+     * Both cron and Run Now use the same notification adapter and update command.
+     *
+     * @param array<string, mixed> $cfg
+     */
+    public static function automaticUpdateInvocation(StackInfo $stack, array $cfg, int $parallelLimit): string
+    {
+        $command = self::buildUpdateCommand($stack, $cfg, ['automatic' => true]);
+        $command[0] = dirname(__DIR__) . '/scripts/compose_autoupdate.sh';
+        $shell = getenv('COMPOSE_MANAGER_SH') ?: 'bash';
+        return 'COMPOSE_PARALLEL_LIMIT=' . escapeshellarg((string) $parallelLimit) . ' '
+            . $shell . ' ' . implode(' ', array_map('escapeshellarg', $command));
+    }
+
     /**
      * Build resolved compose runtime arguments for a specific stack/action.
      *

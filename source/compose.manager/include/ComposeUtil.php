@@ -43,7 +43,8 @@ switch ($_POST['action']) {
         break;
     case 'composeUpPullBuild':
         echoComposeCommand('update', [
-            'background' => $background
+            'background' => $background,
+            'recreate' => ($_POST['recreate'] ?? '') === '1',
         ]);
         break;
     case 'composeGitDeploy':

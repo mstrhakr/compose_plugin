@@ -4873,6 +4873,7 @@ function ForceUpdateStackConfirmed(path, opts) {
         payload: {
             action: 'composeUpPullBuild',
             path: path,
+            recreate: '1',
             profile: opts.profile || ''
         },
         background: !!opts.background,

@@ -12,6 +12,39 @@ class ComposeCommandBuilderTest extends TestCase
 {
     private string $tempRoot;
 
+    public function testUpdateVariantsShareAllResolvedArguments(): void
+    {
+        $dir = $this->tempRoot . '/shared-update';
+        mkdir($dir);
+        file_put_contents($dir . '/compose.yaml', "services:\n  web:\n    image: nginx\n");
+        file_put_contents($dir . '/running_profiles', 'dev');
+        file_put_contents($dir . '/default_profile', 'default');
+        file_put_contents($dir . '/credential_id', 'registry-login');
+        file_put_contents($dir . '/.env', "TEST=1\n");
+        $stack = \StackInfo::fromProject($this->tempRoot, 'shared-update');
+        $cfg = ['BUILD_ON_UPDATE_DEFAULT' => 'true'];
+
+        $normal = \ComposeCommandBuilder::buildUpdateCommand($stack, $cfg);
+        $force = \ComposeCommandBuilder::buildUpdateCommand($stack, $cfg, ['recreate' => true]);
+        $automatic = \ComposeCommandBuilder::buildUpdateCommand($stack, $cfg, ['automatic' => true]);
+
+        $this->assertSame([...$normal, '--recreate'], $force);
+        $this->assertSame([...$normal, '--automatic-update'], $automatic);
+        $this->assertContains('--build', $normal);
+        $this->assertContains('-gdev', $normal);
+        $this->assertNotContains('-gdefault', $normal);
+        $this->assertContains('registry-login', $normal);
+        $this->assertContains('-e' . $dir . '/.env', $normal);
+        $this->assertContains('-s' . $dir, $normal);
+
+        file_put_contents($dir . '/build_on_update', 'false');
+        $disabled = \ComposeCommandBuilder::buildUpdateCommand($stack, $cfg, ['automatic' => true]);
+        $this->assertNotContains('--build', $disabled);
+        $chosen = \ComposeCommandBuilder::buildUpdateCommand($stack, $cfg, ['profiles' => ['chosen']]);
+        $this->assertContains('-gchosen', $chosen);
+        $this->assertNotContains('-gdev', $chosen);
+    }
+
     protected function setUp(): void
     {
         parent::setUp();

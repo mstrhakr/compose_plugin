@@ -15,7 +15,10 @@ test_setup() {
     : > "$CALLS"
     mkdir -p "$TEST_TEMP_DIR/bin" "$TEST_TEMP_DIR/stack"
     cp "$BATS_TEST_DIRNAME/../fixtures/update-docker.sh" "$TEST_TEMP_DIR/bin/docker"
-    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    cp "$BATS_TEST_DIRNAME/../fixtures/update-notify.sh" "$TEST_TEMP_DIR/bin/notify"
+    chmod +x "$TEST_TEMP_DIR/bin/docker" "$TEST_TEMP_DIR/bin/notify"
+    export COMPOSE_NOTIFY_SCRIPT="$TEST_TEMP_DIR/bin/notify" NOTIFICATIONS="$TEST_TEMP_DIR/notifications"
+    : > "$NOTIFICATIONS"
     export PATH="$TEST_TEMP_DIR/bin:$PATH"
 }
 
@@ -24,12 +27,90 @@ run_update() {
         --update-outcome-file "$TEST_TEMP_DIR/outcome" "$@"
 }
 
+run_auto_adapter() {
+    run bash "$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh" \
+        -cupdate -pstack -s "$TEST_TEMP_DIR/stack" "$@"
+}
+
+@test "automatic notification adapter delegates to the same locked update engine" {
+    export CHANGE=false BUILD_CHANGE=true
+    run_auto_adapter --build -g dev
+    assert_success
+    grep -F 'compose --profile dev -p stack build --pull' "$CALLS"
+    grep -F 'compose --profile dev -p stack up -d --pull never --no-build' "$CALLS"
+    grep -F '"result":"success"' "$TEST_TEMP_DIR/stack/last_result.json"
+    grep -F 'Stack updated: stack' "$NOTIFICATIONS"
+}
+
+@test "automatic adapter propagates build failure instead of reporting success" {
+    export BUILD_PULL_EXIT=1 BUILD_EXIT=8
+    run_auto_adapter --build
+    [ "$status" = 8 ]
+    assert_output_contains "Failed to build"
+    ! grep -E ' (up|rmi)( |$)' "$CALLS"
+    grep -F 'Auto-update failed: stack' "$NOTIFICATIONS"
+}
+
+@test "automatic adapter sends no success notification for unchanged or stopped stacks" {
+    export CHANGE=false
+    run_auto_adapter
+    assert_success
+    [ ! -s "$NOTIFICATIONS" ]
+    export STOPPED=true
+    run_auto_adapter
+    assert_success
+    [ ! -s "$NOTIFICATIONS" ]
+}
+
+@test "automatic adapter preserves the legacy file and project invocation" {
+    run bash "$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh" \
+        "$TEST_TEMP_DIR/a compose.yaml" stack
+    assert_success
+    grep -F "compose -f $TEST_TEMP_DIR/a compose.yaml -p stack pull --ignore-buildable" "$CALLS"
+}
+
+@test "unchanged images are never passed to cleanup" {
+    export CHANGE=false
+    run_update
+    assert_success
+    ! grep -F rmi "$CALLS"
+}
+
+@test "failure to enumerate containers fails before pulling" {
+    export PS_EXIT=1
+    run_update --automatic-update
+    assert_failure
+    ! grep -E ' (pull|build|up|rmi)( |$)' "$CALLS"
+}
+
+@test "relative script invocation still loads the shared engine after changing workdir" {
+    run bash "${COMPOSE_SCRIPT#"$PWD/"}" -cupdate -pstack -w"$TEST_TEMP_DIR/stack"
+    assert_success
+    grep -F 'compose -p stack up -d --pull never' "$CALLS"
+}
+
 @test "manual updates reconcile even when image IDs are unchanged" {
     export CHANGE=false
     run_update
     assert_success
     grep -F 'up -d --pull never' "$CALLS"
     [ "$(cat "$TEST_TEMP_DIR/outcome")" = updated ]
+}
+
+@test "successful manual pull does not rebuild published buildable images without opt-in" {
+    run_update
+    assert_success
+    grep -Fx 'compose -p stack pull' "$CALLS"
+    ! grep -F ' build' "$CALLS"
+}
+
+@test "cleanup never forces removal and reports images still used by other stacks" {
+    export RMI_EXIT=1
+    run_update --debug
+    assert_success
+    grep -F "rmi ${OLD_ID#sha256:}" "$CALLS"
+    ! grep -F 'rmi -f' "$CALLS"
+    assert_output_contains "Some superseded images"
 }
 
 @test "force update forwards force-recreate to the shared up command" {

@@ -5,6 +5,7 @@
  */
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Defines.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Util.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/ComposeCommandBuilder.php");
 
 $autofile = getAutoUpdateConfigFilePath();
 if (!is_file($autofile)) exit(0);
@@ -124,44 +125,18 @@ foreach ($data as $path => $entry) {
         // Log the scheduled auto-update trigger
         composeLogger("Scheduled auto-update triggered for: $projectName ($schedule)", null, 'daemon', 'info', 'autoupdate');
 
-        $script = $plugin_root . "scripts/compose_autoupdate.sh";
-        if ($stackInfo !== null) {
-            try {
-                $args = $stackInfo->buildComposeArgs();
-                $composeFileList = $stackInfo->buildComposeFileList();
-            } catch (\Throwable $error) {
-                composeLogger('Deferred scheduled auto-update: ' . $error->getMessage(), ['path' => $path], 'daemon', 'warning', 'autoupdate');
-                continue;
-            }
-            $envFilePath = $args['envFilePath'] ?? null;
-            $projectDirectory = $args['projectDirectory'];
-            $credentialId = $stackInfo->getCredentialId();
-        } else {
-            $composeFileList = findComposeFile($path);
-            $envFilePath = null;
-            $projectDirectory = $path;
-            $credentialId = null;
+        try {
+            $stackInfo ??= StackInfo::fromProject(dirname(rtrim($path, '/')), basename($path));
+            $cmd = ComposeCommandBuilder::automaticUpdateInvocation(
+                $stackInfo,
+                parse_plugin_cfg('compose.manager'),
+                $parallelLimit
+            );
+        } catch (\Throwable $error) {
+            composeLogger('Deferred scheduled auto-update: ' . $error->getMessage(), ['path' => $path], 'daemon', 'warning', 'autoupdate');
+            continue;
         }
-
-        // Allow overriding the shell command via environment for tests; default to sh
-        $shCmd = getenv('COMPOSE_MANAGER_SH') ? getenv('COMPOSE_MANAGER_SH') : 'sh';
-
-        $envPrefix = 'COMPOSE_PARALLEL_LIMIT=' . escapeshellarg((string) $parallelLimit) . ' ';
-        if ($composeFileList !== '') {
-            $envPrefix .= 'COMPOSE_FILE_LIST=' . escapeshellarg($composeFileList) . ' ';
-        }
-        if ($envFilePath !== null && $envFilePath !== '') {
-            $envPrefix .= 'COMPOSE_ENV_FILE=' . escapeshellarg($envFilePath) . ' ';
-        }
-        if ($composeFileList === '' && $projectDirectory !== '') {
-            $envPrefix .= 'COMPOSE_PROJECT_DIR=' . escapeshellarg($projectDirectory) . ' ';
-        }
-        if ($credentialId !== null && $credentialId !== '') {
-            $envPrefix .= 'COMPOSE_CREDENTIAL_ID=' . escapeshellarg($credentialId) . ' ';
-        }
-
-        $cmd = $envPrefix . $shCmd . ' ' . escapeshellarg($script) . " " . escapeshellarg($projectName) . " >/dev/null 2>&1 &";
-        exec($cmd);
+        exec($cmd . " >/dev/null 2>&1 &");
         $data[$path]['last_run'] = $now;
         $dataModified = true;
     }

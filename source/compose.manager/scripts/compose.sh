@@ -4,8 +4,9 @@ export HOME=/root
 # Compose Manager - Docker Compose wrapper script
 # Provides error handling, result tracking, and operation locking
 
+script_directory=$(cd -- "$(dirname -- "$0")" && pwd) || exit 1
 # shellcheck disable=SC1091
-. "$(dirname "$0")/common.sh"
+. "$script_directory/common.sh"
 
 # Configuration - can be overridden via environment
 LOCK_TIMEOUT=${COMPOSE_LOCK_TIMEOUT:-30}
@@ -45,7 +46,11 @@ update_outcome_file=""
 log_msg() {
     local level="$1"
     local msg="$2"
-    composeLogger "$msg" "${level,,}" compose
+    if [ "$automatic_update" = true ]; then
+        composeLogger "$msg" "${level,,}" autoupdate daemon
+    else
+        composeLogger "$msg" "${level,,}" compose
+    fi
     if [ "$debug" = true ]; then
         echo "[$level] $msg"
     fi
@@ -98,7 +103,7 @@ release_lock() {
 # Ensure lock is released and follow state is cleared on exit.
 cleanup_docker_config() {
   if [ -n "$docker_config_dir" ]; then
-    php "$(dirname "$0")/credential_config.php" --remove "$docker_config_dir" >/dev/null 2>&1 || true
+    php "$script_directory/credential_config.php" --remove "$docker_config_dir" >/dev/null 2>&1 || true
     docker_config_dir=""
   fi
 }
@@ -260,7 +265,7 @@ do
 done
 
 if [ -n "$credential_id" ]; then
-  if ! credential_output=$(php "$(dirname "$0")/credential_config.php" --credential-id "$credential_id"); then
+  if ! credential_output=$(php "$script_directory/credential_config.php" --credential-id "$credential_id"); then
     log_msg "ERROR" "Selected registry credential could not be loaded"
     exit 1
   fi
@@ -412,7 +417,7 @@ case $command in
     
   update)
     # shellcheck source=compose_update.sh
-    . "$(dirname "$0")/compose_update.sh"
+    . "$script_directory/compose_update.sh"
     run_stack_update
     operation_exit_code=$?
     ;;
@@ -421,7 +426,7 @@ case $command in
     # Deploy a git stack. Fetching, checking out, checking, pulling and
     # starting all happen under this one lock. Until "up" starts, any failure
     # leaves the containers untouched and the clone at its previous commit.
-    git_helper="$(dirname "$0")/git_stack.php"
+    git_helper="$script_directory/git_stack.php"
     # Run the git helper. PHP notices go to stderr, so stdout carries only its answer.
     git_stack() {
       php -d display_errors=stderr "$git_helper" "$@"
