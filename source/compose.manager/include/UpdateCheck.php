@@ -670,6 +670,12 @@ class ComposeUpdateCheck
         // Registries redirect blob downloads to storage hosts; curl drops credentials on cross-host redirects.
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
         curl_setopt($ch, CURLOPT_MAXREDIRS, 5);
+        // Only follow redirects to http(s), never file:// or other schemes.
+        if (defined('CURLOPT_REDIR_PROTOCOLS_STR')) {
+            curl_setopt($ch, CURLOPT_REDIR_PROTOCOLS_STR, 'http,https');
+        } else {
+            curl_setopt($ch, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+        }
         if ($basicUserPwd !== null) {
             curl_setopt($ch, CURLOPT_USERPWD, $basicUserPwd);
         }
