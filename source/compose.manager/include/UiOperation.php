@@ -26,6 +26,11 @@ function composeTrackUiCommand(array $command, string $project, array &$operatio
     if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) {
         throw new RuntimeException('Unable to create operation receipt directory.');
     }
+    if (is_link($directory)
+        || fileowner($directory) !== (function_exists('posix_geteuid') ? posix_geteuid() : 0)
+        || (fileperms($directory) & 0077) !== 0) {
+        throw new RuntimeException('Operation receipt directory is not private.');
+    }
     // Receipts are transient and may be abandoned by disconnected browsers.
     foreach (glob($directory . '/*.json') ?: [] as $oldFile) {
         if (filemtime($oldFile) < time() - 86400 && !unlink($oldFile)) {
