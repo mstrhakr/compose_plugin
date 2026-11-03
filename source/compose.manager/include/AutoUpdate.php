@@ -1,7 +1,7 @@
 <?php
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Defines.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Util.php");
-require_once("/usr/local/emhttp/plugins/compose.manager/include/ComposeCommandBuilder.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/StackUpdateService.php");
 
 $compose_root = $compose_root ?? locate_compose_root('compose.manager');
 
@@ -181,7 +181,7 @@ switch ($action) {
         $parallelLimit = compose_get_autoupdate_parallel_limit(is_array($autoUpdateConfig) ? $autoUpdateConfig : array());
         try {
             $stackInfo ??= StackInfo::fromProject(dirname(rtrim($path, '/')), basename($path));
-            $cmd = ComposeCommandBuilder::automaticUpdateInvocation(
+            $cmd = StackUpdateService::automaticUpdateInvocation(
                 $stackInfo,
                 parse_plugin_cfg('compose.manager'),
                 $parallelLimit

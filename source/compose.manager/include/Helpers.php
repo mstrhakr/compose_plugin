@@ -9,7 +9,7 @@
 
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Defines.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Util.php");
-require_once("/usr/local/emhttp/plugins/compose.manager/include/ComposeCommandBuilder.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/StackUpdateService.php");
 require_once("/usr/local/emhttp/plugins/dynamix/include/Wrappers.php");
 
 /**
@@ -219,7 +219,7 @@ function resolveStackWaitSettings(string $stackPath, array $cfg): array
  */
 function resolveStackBuildOnUpdate(string $stackPath, array $cfg): bool
 {
-    return ComposeCommandBuilder::resolveBuildOnUpdate($stackPath, $cfg);
+    return StackUpdateService::resolveBuildOnUpdate($stackPath, $cfg);
 }
 
 /**
@@ -305,7 +305,7 @@ function echoComposeCommand($action, array $options = [])
             if ($profile !== '') {
                 $updateOptions['profiles'] = array_values(array_filter(array_map('trim', explode(',', $profile))));
             }
-            $composeCommand = ComposeCommandBuilder::buildUpdateCommand($stackInfo, $cfg, $updateOptions);
+            $composeCommand = StackUpdateService::buildUpdateCommand($stackInfo, $cfg, $updateOptions);
         } else {
             $args = $stackInfo->buildComposeArgs();
 
@@ -651,7 +651,7 @@ function echoComposeCommandMultiple($action, array $options = [])
 
         $stackNames[] = $stackInfo->getName();
         if ($action === 'update') {
-            $composeCommand = ComposeCommandBuilder::buildUpdateCommand($stackInfo, $cfg, [
+            $composeCommand = StackUpdateService::buildUpdateCommand($stackInfo, $cfg, [
                 'recreate' => !empty($options['recreate']),
             ]);
         } else {

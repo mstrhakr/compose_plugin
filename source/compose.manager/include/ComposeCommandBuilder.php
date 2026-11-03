@@ -12,29 +12,15 @@ require_once '/usr/local/emhttp/plugins/compose.manager/include/Util.php';
  */
 class ComposeCommandBuilder
 {
-    /** @param array<string, mixed> $cfg */
-    public static function resolveBuildOnUpdate(string $stackPath, array $cfg): bool
-    {
-        $buildFile = rtrim($stackPath, '/') . '/build_on_update';
-        if (is_file($buildFile)) {
-            $raw = trim((string) file_get_contents($buildFile));
-            if ($raw !== '') {
-                return $raw === 'true' || $raw === '1';
-            }
-        }
-        return ($cfg['BUILD_ON_UPDATE_DEFAULT'] ?? 'false') === 'true';
-    }
-
     /**
-     * The only command construction path for individual, force, bulk and automatic updates.
+     * Encode an already resolved update operation; policy belongs to StackUpdateService.
      *
-     * @param array<string, mixed> $cfg
-     * @param array{profiles?: string[], recreate?: bool, automatic?: bool} $options
+     * @param array<string, mixed> $spec
+     * @param array{build: bool, recreate: bool, automatic: bool, debug: bool} $options
      * @return string[]
      */
-    public static function buildUpdateCommand(StackInfo $stack, array $cfg, array $options = []): array
+    public static function buildUpdateCommand(array $spec, array $options): array
     {
-        $spec = self::buildForAction($stack, 'update');
         $command = [dirname(__DIR__) . '/scripts/compose.sh', '-cupdate', '-p' . $spec['projectName']];
         if ($spec['useDefaultFileDiscovery']) {
             $command[] = '-w' . $spec['projectDirectory'];
@@ -50,11 +36,11 @@ class ComposeCommandBuilder
             $command[] = '--credential-id';
             $command[] = $spec['credentialId'];
         }
-        foreach ($options['profiles'] ?? $spec['profiles'] as $profile) {
+        foreach ($spec['profiles'] as $profile) {
             $command[] = '-g' . $profile;
         }
         $command[] = '-s' . $spec['stackPath'];
-        if (self::resolveBuildOnUpdate($stack->path, $cfg)) {
+        if ($options['build']) {
             $command[] = '--build';
         }
         if (!empty($options['recreate'])) {
@@ -63,24 +49,10 @@ class ComposeCommandBuilder
         if (!empty($options['automatic'])) {
             $command[] = '--automatic-update';
         }
-        if (($cfg['DEBUG_TO_LOG'] ?? 'false') === 'true') {
+        if ($options['debug']) {
             $command[] = '--debug';
         }
         return $command;
-    }
-
-    /**
-     * Both cron and Run Now use the same notification adapter and update command.
-     *
-     * @param array<string, mixed> $cfg
-     */
-    public static function automaticUpdateInvocation(StackInfo $stack, array $cfg, int $parallelLimit): string
-    {
-        $command = self::buildUpdateCommand($stack, $cfg, ['automatic' => true]);
-        $command[0] = dirname(__DIR__) . '/scripts/compose_autoupdate.sh';
-        $shell = getenv('COMPOSE_MANAGER_SH') ?: 'bash';
-        return 'COMPOSE_PARALLEL_LIMIT=' . escapeshellarg((string) $parallelLimit) . ' '
-            . $shell . ' ' . implode(' ', array_map('escapeshellarg', $command));
     }
 
     /**
@@ -89,9 +61,10 @@ class ComposeCommandBuilder
      * @param StackInfo $stackInfo
      * @param string $action Supported: up, down, update, pull, stop, logs
      * @param string|null $stackPath Optional explicit stack path to include in output
-        * @return array<string, mixed>
+     * @param string[]|null $profiles Profiles resolved by the operation's policy owner
+     * @return array<string, mixed>
      */
-    public static function buildForAction(StackInfo $stackInfo, string $action, ?string $stackPath = null): array
+    public static function buildForAction(StackInfo $stackInfo, string $action, ?string $stackPath = null, ?array $profiles = null): array
     {
         $action = strtolower(trim($action));
         self::assertSupportedAction($action);
@@ -109,7 +82,7 @@ class ComposeCommandBuilder
             'envFilePath' => $args['envFilePath'] ?? null,
             'projectDirectory' => $args['projectDirectory'],
             'useDefaultFileDiscovery' => $args['useDefaultFileDiscovery'],
-            'profiles' => self::resolveProfilesForAction($stackInfo, $action),
+            'profiles' => $profiles ?? self::resolveProfilesForAction($stackInfo, $action),
             'stackPath' => $stackPath ?? $stackInfo->path,
             'credentialId' => $credentialId,
         ];
@@ -138,14 +111,6 @@ class ComposeCommandBuilder
     {
         if ($action === 'down') {
             return ['*'];
-        }
-
-        if ($action === 'update') {
-            $profiles = $stackInfo->getRunningProfiles();
-            if (empty($profiles)) {
-                $profiles = $stackInfo->getDefaultProfiles();
-            }
-            return array_values($profiles);
         }
 
         return array_values($stackInfo->getDefaultProfiles());

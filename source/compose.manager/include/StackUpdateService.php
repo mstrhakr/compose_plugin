@@ -3,12 +3,67 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/UpdateCheck.php';
+require_once __DIR__ . '/ComposeCommandBuilder.php';
 
 /**
  * Shared stack-level update workflow. Registry comparisons remain in ComposeUpdateCheck.
  */
 class StackUpdateService
 {
+    /** @param array<string, mixed> $cfg */
+    public static function resolveBuildOnUpdate(string $stackPath, array $cfg): bool
+    {
+        $buildFile = rtrim($stackPath, '/') . '/build_on_update';
+        if (is_file($buildFile)) {
+            $raw = trim((string) file_get_contents($buildFile));
+            if ($raw !== '') {
+                return $raw === 'true' || $raw === '1';
+            }
+        }
+        return ($cfg['BUILD_ON_UPDATE_DEFAULT'] ?? 'false') === 'true';
+    }
+
+    /**
+     * @param string[]|null $profiles Explicit empty selection must not fall back.
+     * @return array<string, mixed>
+     */
+    public static function buildUpdateArguments(StackInfo $stack, ?string $stackPath = null, ?array $profiles = null): array
+    {
+        if ($profiles === null) {
+            $profiles = $stack->getRunningProfiles();
+            if (empty($profiles)) {
+                $profiles = $stack->getDefaultProfiles();
+            }
+        }
+        return ComposeCommandBuilder::buildForAction($stack, 'update', $stackPath, array_values($profiles));
+    }
+
+    /**
+     * @param array<string, mixed> $cfg
+     * @param array{profiles?: string[], recreate?: bool, automatic?: bool} $options
+     * @return string[]
+     */
+    public static function buildUpdateCommand(StackInfo $stack, array $cfg, array $options = []): array
+    {
+        $spec = self::buildUpdateArguments($stack, null, $options['profiles'] ?? null);
+        return ComposeCommandBuilder::buildUpdateCommand($spec, [
+            'build' => self::resolveBuildOnUpdate($stack->path, $cfg),
+            'recreate' => !empty($options['recreate']),
+            'automatic' => !empty($options['automatic']),
+            'debug' => ($cfg['DEBUG_TO_LOG'] ?? 'false') === 'true',
+        ]);
+    }
+
+    /** @param array<string, mixed> $cfg */
+    public static function automaticUpdateInvocation(StackInfo $stack, array $cfg, int $parallelLimit): string
+    {
+        $command = self::buildUpdateCommand($stack, $cfg, ['automatic' => true]);
+        $command[0] = dirname(__DIR__) . '/scripts/compose_autoupdate.sh';
+        $shell = getenv('COMPOSE_MANAGER_SH') ?: 'bash';
+        return 'COMPOSE_PARALLEL_LIMIT=' . escapeshellarg((string) $parallelLimit) . ' '
+            . $shell . ' ' . implode(' ', array_map('escapeshellarg', $command));
+    }
+
     /**
      * Inspect existing containers without changing their runtime state.
      * Presentation enrichment is supplied by the caller, not the image checker.

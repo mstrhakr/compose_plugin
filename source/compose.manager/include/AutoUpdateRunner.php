@@ -5,7 +5,7 @@
  */
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Defines.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Util.php");
-require_once("/usr/local/emhttp/plugins/compose.manager/include/ComposeCommandBuilder.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/StackUpdateService.php");
 
 $autofile = getAutoUpdateConfigFilePath();
 if (!is_file($autofile)) exit(0);
@@ -127,7 +127,7 @@ foreach ($data as $path => $entry) {
 
         try {
             $stackInfo ??= StackInfo::fromProject(dirname(rtrim($path, '/')), basename($path));
-            $cmd = ComposeCommandBuilder::automaticUpdateInvocation(
+            $cmd = StackUpdateService::automaticUpdateInvocation(
                 $stackInfo,
                 parse_plugin_cfg('compose.manager'),
                 $parallelLimit

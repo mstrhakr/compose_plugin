@@ -180,7 +180,7 @@ class AutoupdateTest extends TestCase
         $this->assertContains('run-now-credential', $payload['argv']);
         $this->assertContains('--automatic-update', $payload['argv']);
         $this->assertContains('--build', $payload['argv']);
-        $expected = \ComposeCommandBuilder::buildUpdateCommand(
+        $expected = \StackUpdateService::buildUpdateCommand(
             \StackInfo::fromProject($compose_root, basename($tmp)),
             \parse_plugin_cfg('compose.manager'),
             ['automatic' => true]

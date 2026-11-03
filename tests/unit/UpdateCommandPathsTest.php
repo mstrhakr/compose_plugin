@@ -43,7 +43,7 @@ final class UpdateCommandPathsTest extends TestCase
             ob_start();
             include '/usr/local/emhttp/plugins/compose.manager/include/ComposeUtil.php';
             ob_end_clean();
-            $expected = \ComposeCommandBuilder::buildUpdateCommand($stack, $cfg, ['recreate' => $entry === 'force']);
+            $expected = \StackUpdateService::buildUpdateCommand($stack, $cfg, ['recreate' => $entry === 'force']);
             $quoted = implode(' ', array_map('escapeshellarg', $expected));
             $logs = implode("\n", $GLOBALS['composeLoggerMessages']);
             if ($entry === 'bulk') {

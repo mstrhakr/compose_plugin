@@ -7,6 +7,7 @@ namespace ComposeManager\Tests;
 use PluginTests\TestCase;
 
 require_once '/usr/local/emhttp/plugins/compose.manager/include/ComposeCommandBuilder.php';
+require_once '/usr/local/emhttp/plugins/compose.manager/include/StackUpdateService.php';
 
 class ComposeCommandBuilderTest extends TestCase
 {
@@ -24,9 +25,9 @@ class ComposeCommandBuilderTest extends TestCase
         $stack = \StackInfo::fromProject($this->tempRoot, 'shared-update');
         $cfg = ['BUILD_ON_UPDATE_DEFAULT' => 'true'];
 
-        $normal = \ComposeCommandBuilder::buildUpdateCommand($stack, $cfg);
-        $force = \ComposeCommandBuilder::buildUpdateCommand($stack, $cfg, ['recreate' => true]);
-        $automatic = \ComposeCommandBuilder::buildUpdateCommand($stack, $cfg, ['automatic' => true]);
+        $normal = \StackUpdateService::buildUpdateCommand($stack, $cfg);
+        $force = \StackUpdateService::buildUpdateCommand($stack, $cfg, ['recreate' => true]);
+        $automatic = \StackUpdateService::buildUpdateCommand($stack, $cfg, ['automatic' => true]);
 
         $this->assertSame([...$normal, '--recreate'], $force);
         $this->assertSame([...$normal, '--automatic-update'], $automatic);
@@ -38,11 +39,36 @@ class ComposeCommandBuilderTest extends TestCase
         $this->assertContains('-s' . $dir, $normal);
 
         file_put_contents($dir . '/build_on_update', 'false');
-        $disabled = \ComposeCommandBuilder::buildUpdateCommand($stack, $cfg, ['automatic' => true]);
+        $disabled = \StackUpdateService::buildUpdateCommand($stack, $cfg, ['automatic' => true]);
         $this->assertNotContains('--build', $disabled);
-        $chosen = \ComposeCommandBuilder::buildUpdateCommand($stack, $cfg, ['profiles' => ['chosen']]);
+        $chosen = \StackUpdateService::buildUpdateCommand($stack, $cfg, ['profiles' => ['chosen']]);
         $this->assertContains('-gchosen', $chosen);
         $this->assertNotContains('-gdev', $chosen);
+        $empty = \StackUpdateService::buildUpdateCommand($stack, $cfg, ['profiles' => []]);
+        $this->assertSame([], array_values(array_filter($empty, static fn(string $arg): bool => str_starts_with($arg, '-g'))));
+    }
+
+    public function testCliUpdateArgumentsUseServiceProfilePolicy(): void
+    {
+        $dir = $this->tempRoot . '/cli-update';
+        mkdir($dir);
+        file_put_contents($dir . '/compose.yaml', "services:\n  web:\n    image: nginx\n");
+        file_put_contents($dir . '/running_profiles', 'active');
+        file_put_contents($dir . '/default_profile', 'backup');
+        $command = [
+            PHP_BINARY, '-d', 'auto_prepend_file=' . dirname(__DIR__) . '/bootstrap.php',
+            dirname(__DIR__, 2) . '/source/compose.manager/scripts/compose_args.php',
+            '--compose-root', $this->tempRoot, '--project', 'cli-update', '--action', 'UPDATE', '--format', 'json',
+        ];
+        exec(implode(' ', array_map('escapeshellarg', $command)), $output, $exit);
+        $this->assertSame(0, $exit, implode("\n", $output));
+        $response = json_decode(implode("\n", $output), true);
+        $this->assertSame('success', $response['result']);
+        $this->assertSame(['active'], $response['data']['profiles']);
+        $this->assertSame(
+            \StackUpdateService::buildUpdateArguments(\StackInfo::fromProject($this->tempRoot, 'cli-update')),
+            $response['data']
+        );
     }
 
     protected function setUp(): void
@@ -134,7 +160,7 @@ class ComposeCommandBuilderTest extends TestCase
         file_put_contents($stackDir . '/running_profiles', 'hotfix,metrics');
 
         $info = \StackInfo::fromProject($this->tempRoot, $stack);
-        $spec = \ComposeCommandBuilder::buildForAction($info, 'update');
+        $spec = \StackUpdateService::buildUpdateArguments($info);
 
         $this->assertSame(['hotfix', 'metrics'], $spec['profiles']);
     }
@@ -163,7 +189,7 @@ class ComposeCommandBuilderTest extends TestCase
         file_put_contents($stackDir . '/default_profile', 'dev,prod');
 
         $info = \StackInfo::fromProject($this->tempRoot, $stack);
-        $spec = \ComposeCommandBuilder::buildForAction($info, 'update');
+        $spec = \StackUpdateService::buildUpdateArguments($info);
 
         $this->assertSame(['dev', 'prod'], $spec['profiles']);
     }

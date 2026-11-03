@@ -139,7 +139,7 @@ PHP;
         $this->assertContains('--automatic-update', $payload['argv']);
         $this->assertContains('--build', $payload['argv']);
         $this->assertContains('-gactive', $payload['argv']);
-        $expected = \ComposeCommandBuilder::buildUpdateCommand(
+        $expected = \StackUpdateService::buildUpdateCommand(
             \StackInfo::fromProject($compose_root, $stack),
             \parse_plugin_cfg('compose.manager'),
             ['automatic' => true]
