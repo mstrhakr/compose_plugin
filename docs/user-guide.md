@@ -45,6 +45,8 @@ Each stack supports the following actions:
 
 Use **Check Updates** on a stack to query the registry for newer image versions. Results are cached until the next manual or scheduled check (see [Update Checking settings](configuration.md#update-checking)).
 
+Individual, **Check All**, and periodic browser update checks inspect all existing stack containers, including stopped and profiled containers. They do not download images, build images, or start/stop services. Services without an existing container are not included.
+
 Services built locally from a `build:` section without a published `image:` are checked against the base image of their Dockerfile's final stage. An update is shown when the registry's base image no longer matches the layers the local image was built on. To apply it, enable **Build on update** for the stack; **Update Stack** then rebuilds with `docker compose build --pull` so the newer base image is used (base images that only exist locally are built from the local copy).
 
 Individual updates, bulk updates, and scheduled auto-updates all use the same update engine and honor the stack's **Build on update** setting, falling back to the global default. When refreshing base images fails, the engine logs a warning before retrying the build with local base images.

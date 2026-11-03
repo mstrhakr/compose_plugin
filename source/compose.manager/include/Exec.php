@@ -6,6 +6,7 @@ require_once("/usr/local/emhttp/plugins/compose.manager/include/ColumnLayout.php
 require_once("/usr/local/emhttp/plugins/compose.manager/include/CredentialVault.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/GitHubDeviceAuth.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/GitStackWebActions.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/StackUpdateService.php");
 require_once("/usr/local/emhttp/plugins/dynamix/include/Wrappers.php");
 require_once('/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php');
 
@@ -141,21 +142,7 @@ if (!function_exists('composeCacheContainerUpdate')) {
 if (!function_exists('composeResolveContainerService')) {
     function composeResolveContainerService(array $container): string
     {
-        $service = trim((string) ($container['Service'] ?? $container['service'] ?? ''));
-        if ($service !== '') {
-            return $service;
-        }
-
-        $labels = $container['Labels'] ?? $container['labels'] ?? '';
-        if (is_array($labels)) {
-            return trim((string) ($labels['com.docker.compose.service'] ?? ''));
-        }
-        if (is_string($labels)
-            && preg_match('/(?:^|,)\s*com\.docker\.compose\.service=([^,]+)/', $labels, $matches)) {
-            return trim($matches[1]);
-        }
-
-        return '';
+        return StackUpdateService::resolveContainerService($container);
     }
 }
 
@@ -327,6 +314,59 @@ if (!function_exists('composeResolveContainerIcon')) {
         }
         $inspectIconCache[$containerName] = $icon;
         return $icon;
+    }
+}
+
+if (!function_exists('composeCheckStackUpdatesForUi')) {
+    /**
+     * Add UI icons and update the presentation cache around the shared check workflow.
+     *
+     * @param StackInfo[] $stacks
+     */
+    function composeCheckStackUpdatesForUi(array $stacks, bool $replaceSavedStatus = false): array
+    {
+        $cache = composeLoadPersistentContainerCache();
+        $iconByService = [];
+        $iconByName = [];
+        foreach ($stacks as $stack) {
+            $stackName = $stack->projectFolder;
+            foreach ($cache[$stackName] ?? [] as $service => $container) {
+                if (!is_array($container)) {
+                    continue;
+                }
+                $icon = trim((string) ($container['icon'] ?? ''));
+                if ($icon !== '') {
+                    $iconByService[$stackName][$service] = $icon;
+                    $name = trim((string) ($container['name'] ?? ''));
+                    if ($name !== '') {
+                        $iconByName[$stackName][$name] = $icon;
+                    }
+                }
+            }
+        }
+        $inspectIconCache = [];
+        $dirty = false;
+        $enrich = static function (string $stackName, ContainerInfo $update) use (
+            &$cache, &$inspectIconCache, &$dirty, $iconByService, $iconByName
+        ): void {
+            $update->icon = composeResolveContainerIcon(
+                $update->name, $update->service,
+                $iconByService[$stackName] ?? [], $iconByName[$stackName] ?? [], $inspectIconCache
+            );
+            if ($update->icon !== '') {
+                compose_seed_docker_manager_icon(compose_fetch_icon_to_cache($update->icon), $update->name);
+            }
+            if (!isset($cache[$stackName])) {
+                $cache[$stackName] = [];
+            }
+            composeCacheContainerUpdate($cache[$stackName], $update);
+            $dirty = true;
+        };
+        $results = (new StackUpdateService())->checkStacks($stacks, $enrich, $replaceSavedStatus);
+        if ($dirty) {
+            composeSavePersistentContainerCache($cache);
+        }
+        return $results;
     }
 }
 
@@ -2153,273 +2193,28 @@ switch ($_POST['action']) {
             break;
         }
 
-        // Plugin-local update check: compares platform-specific image config
-        // digests (Docker .Id + resolved manifest.config.digest) rather than
-        // top-level index/manifest-list digests. This eliminates false
-        // "update-available" verdicts caused by registry index-only rewrites,
-        // and is scoped strictly to the images owned by this stack.
-        require_once("/usr/local/emhttp/plugins/compose.manager/include/UpdateCheck.php");
-
-        // Resolve stack identity and compose CLI arguments via StackInfo
-        $stackInfo = StackInfo::fromProject($compose_root, $script);
-        $projectName = $stackInfo->projectFolder;
-
-        // Get containers (all states) for update checking
-        $rows = $stackInfo->getContainerList();
-
-        $updateResults = [];
-        $persistentContainerCache = composeLoadPersistentContainerCache();
-        $stackContainerCache = $persistentContainerCache[$script] ?? [];
-        $iconByService = [];
-        $iconByName = [];
-        foreach ($stackContainerCache as $cachedService => $cachedContainer) {
-            if (!is_array($cachedContainer)) {
-                continue;
-            }
-            $cachedIcon = trim((string) ($cachedContainer['icon'] ?? ''));
-            if ($cachedIcon !== '') {
-                $iconByService[(string) $cachedService] = $cachedIcon;
-            }
-            $cachedName = trim((string) ($cachedContainer['name'] ?? ''));
-            if ($cachedName !== '' && $cachedIcon !== '') {
-                $iconByName[$cachedName] = $cachedIcon;
-            }
+        try {
+            $stackInfo = StackInfo::fromProject($compose_root, $script);
+            $results = composeCheckStackUpdatesForUi([$stackInfo]);
+            $result = $results[$stackInfo->projectFolder];
+            echo json_encode(['result' => 'success', 'updates' => $result['containers'], 'projectName' => $result['projectName']]);
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Stack update check failed: ' . $e->getMessage(), null, 'user', 'error', 'update-check');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
         }
-        $inspectIconCache = [];
-        $stackCacheDirty = false;
-
-        if ($rows) {
-            $updater = new ComposeUpdateCheck(null, $stackInfo->getCredentialId());
-            $checkResults = $updater->checkContainers($rows, $stackInfo->getBuildConfigs());
-
-            foreach ($rows as $container) {
-                $containerLower = array_change_key_case($container, CASE_LOWER);
-                $containerName = trim((string) ($containerLower['name'] ?? $containerLower['names'] ?? ''));
-                $service = trim((string) ($containerLower['service'] ?? ''));
-                $image = trim((string) ($containerLower['image'] ?? ''));
-
-                if ($containerName && $image) {
-                    $icon = composeResolveContainerIcon($containerName, $service, $iconByService, $iconByName, $inspectIconCache);
-
-                    if ($icon !== '') {
-                        compose_seed_docker_manager_icon(compose_fetch_icon_to_cache($icon), $containerName);
-                    }
-
-                    if ($service !== '' && $icon !== '') {
-                        if (!isset($stackContainerCache[$service]) || !is_array($stackContainerCache[$service])) {
-                            $stackContainerCache[$service] = [];
-                        }
-                        if (($stackContainerCache[$service]['icon'] ?? '') !== $icon) {
-                            $stackContainerCache[$service]['icon'] = $icon;
-                            $stackCacheDirty = true;
-                        }
-                        if (($stackContainerCache[$service]['name'] ?? '') === '') {
-                            $stackContainerCache[$service]['name'] = $containerName;
-                            $stackCacheDirty = true;
-                        }
-                        if (($stackContainerCache[$service]['service'] ?? '') === '') {
-                            $stackContainerCache[$service]['service'] = $service;
-                            $stackCacheDirty = true;
-                        }
-                    }
-
-                    $result = $checkResults[$containerName] ?? [
-                        'local' => '', 'remote' => '', 'status' => 'unknown', 'hasUpdate' => false,
-                    ];
-
-                    // Shorten SHAs for display (first 12 chars after sha256:)
-                    $localSha  = (string) $result['local'];
-                    $remoteSha = (string) $result['remote'];
-                    if ($localSha && strpos($localSha, 'sha256:') === 0) {
-                        $localSha = substr($localSha, 7, 12);
-                    }
-                    if ($remoteSha && strpos($remoteSha, 'sha256:') === 0) {
-                        $remoteSha = substr($remoteSha, 7, 12);
-                    }
-
-                    $update = ContainerInfo::fromUpdateResponse([
-                        'container' => $containerName,
-                        'service' => $service,
-                        'image' => $image,
-                        'icon' => $icon,
-                        'hasUpdate' => $result['hasUpdate'],
-                        'status' => $result['status'],
-                        'localSha' => $localSha,
-                        'remoteSha' => $remoteSha
-                    ]);
-                    $updateResults[] = $update->toUpdateArray();
-                    composeCacheContainerUpdate($stackContainerCache, $update);
-                    $stackCacheDirty = true;
-                }
-            }
-
-            if ($stackCacheDirty) {
-                $persistentContainerCache[$script] = $stackContainerCache;
-                composeSavePersistentContainerCache($persistentContainerCache);
-            }
-        }
-
-        echo json_encode(['result' => 'success', 'updates' => $updateResults, 'projectName' => $projectName]);
-
-        // Save the update status for this stack
-        $composeUpdateStatusFile = COMPOSE_UPDATE_STATUS_FILE;
-        $savedStatus = [];
-        if (is_file($composeUpdateStatusFile)) {
-            $savedStatus = json_decode(file_get_contents($composeUpdateStatusFile), true) ?: [];
-        }
-        $savedStatus[$script] = [
-            'projectName' => $projectName,
-            'hasUpdate' => count(array_filter($updateResults, function ($r) {
-                return $r['hasUpdate'];
-            })) > 0,
-            'containers' => $updateResults,
-            'lastChecked' => time()
-        ];
-        file_put_contents($composeUpdateStatusFile, json_encode($savedStatus, JSON_PRETTY_PRINT));
         break;
     case 'checkAllStacksUpdates':
-        // Check for updates for all compose stacks. Uses the plugin-local
-        // ComposeUpdateCheck (see checkStackUpdates rationale).
-        require_once("/usr/local/emhttp/plugins/compose.manager/include/UpdateCheck.php");
-
         composeLogger('Starting update check for all stacks', null, 'user', 'debug', 'update-check');
-
-        $allUpdates = [];
-        $persistentContainerCache = composeLoadPersistentContainerCache();
-        $persistentCacheDirty = false;
-        $inspectIconCache = [];
-
-        foreach (StackInfo::allFromRoot($compose_root) as $stackInfoItem) {
-            $stackName = $stackInfoItem->projectFolder;
-            $projectName = $stackInfoItem->projectFolder;
-            $stackContainerCache = $persistentContainerCache[$stackName] ?? [];
-            $iconByService = [];
-            $iconByName = [];
-            foreach ($stackContainerCache as $cachedService => $cachedContainer) {
-                if (!is_array($cachedContainer)) {
-                    continue;
-                }
-                $cachedIcon = trim((string) ($cachedContainer['icon'] ?? ''));
-                if ($cachedIcon !== '') {
-                    $iconByService[(string) $cachedService] = $cachedIcon;
-                }
-                $cachedName = trim((string) ($cachedContainer['name'] ?? ''));
-                if ($cachedName !== '' && $cachedIcon !== '') {
-                    $iconByName[$cachedName] = $cachedIcon;
-                }
-            }
-            $stackCacheDirty = false;
-
-            $rows = $stackInfoItem->getContainerList();
-
-            $stackUpdates = [];
-            $hasStackUpdate = false;
-
-            if ($rows) {
-                $runningContainers = array_values(array_filter($rows, static function (array $container): bool {
-                    return strtolower((string) ($container['State'] ?? $container['state'] ?? '')) === 'running';
-                }));
-                $updater = new ComposeUpdateCheck(null, $stackInfoItem->getCredentialId());
-                $checkResults = $runningContainers ? $updater->checkContainers($runningContainers, $stackInfoItem->getBuildConfigs()) : [];
-
-                foreach ($rows as $container) {
-                    $containerLower = array_change_key_case($container, CASE_LOWER);
-                    $containerName = trim($containerLower['name'] ?? $containerLower['names'] ?? '');
-                    $service = composeResolveContainerService($container);
-                    $image = trim($containerLower['image'] ?? '');
-                    $state = strtolower(trim($containerLower['state'] ?? ''));
-
-                    // Only check updates for running containers
-                    if ($containerName && $image && $state === 'running') {
-                        $icon = composeResolveContainerIcon($containerName, $service, $iconByService, $iconByName, $inspectIconCache);
-
-                        if ($icon !== '') {
-                            compose_seed_docker_manager_icon(compose_fetch_icon_to_cache($icon), $containerName);
-                        }
-
-                        if ($service !== '' && $icon !== '') {
-                            if (!isset($stackContainerCache[$service]) || !is_array($stackContainerCache[$service])) {
-                                $stackContainerCache[$service] = [];
-                            }
-                            if (($stackContainerCache[$service]['icon'] ?? '') !== $icon) {
-                                $stackContainerCache[$service]['icon'] = $icon;
-                                $stackCacheDirty = true;
-                            }
-                            if (($stackContainerCache[$service]['name'] ?? '') === '') {
-                                $stackContainerCache[$service]['name'] = $containerName;
-                                $stackCacheDirty = true;
-                            }
-                            if (($stackContainerCache[$service]['service'] ?? '') === '') {
-                                $stackContainerCache[$service]['service'] = $service;
-                                $stackCacheDirty = true;
-                            }
-                        }
-
-                        $result = $checkResults[$containerName] ?? [
-                            'local' => '', 'remote' => '', 'status' => 'unknown', 'hasUpdate' => false,
-                        ];
-
-                        // Shorten SHAs for display (first 12 chars after sha256:)
-                        $localSha  = (string) $result['local'];
-                        $remoteSha = (string) $result['remote'];
-                        if ($localSha && strpos($localSha, 'sha256:') === 0) {
-                            $localSha = substr($localSha, 7, 12);
-                        }
-                        if ($remoteSha && strpos($remoteSha, 'sha256:') === 0) {
-                            $remoteSha = substr($remoteSha, 7, 12);
-                        }
-
-                        if ($result['hasUpdate']) $hasStackUpdate = true;
-
-                        $update = ContainerInfo::fromUpdateResponse([
-                            'container' => $containerName,
-                            'service' => $service,
-                            'image' => $image,
-                            'icon' => $icon,
-                            'hasUpdate' => $result['hasUpdate'],
-                            'status' => $result['status'],
-                            'localSha' => $localSha,
-                            'remoteSha' => $remoteSha
-                        ]);
-                        $stackUpdates[] = $update->toUpdateArray();
-                        composeCacheContainerUpdate($stackContainerCache, $update);
-                        $stackCacheDirty = true;
-                    }
-                }
-
-                if ($stackCacheDirty) {
-                    $persistentContainerCache[$stackName] = $stackContainerCache;
-                    $persistentCacheDirty = true;
-                }
-            }
-
-            $allUpdates[$stackName] = [
-                'projectName' => $projectName,
-                'hasUpdate' => $hasStackUpdate,
-                'containers' => $stackUpdates
-            ];
+        try {
+            $allUpdates = composeCheckStackUpdatesForUi(StackInfo::allFromRoot($compose_root), true);
+            $totalStacks = count($allUpdates);
+            $updatesFound = count(array_filter($allUpdates, static fn(array $stack): bool => $stack['hasUpdate']));
+            composeLogger("Completed: $totalStacks stacks checked, $updatesFound with updates", null, 'user', 'debug', 'update-check');
+            echo json_encode(['result' => 'success', 'stacks' => $allUpdates]);
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Stack update check failed: ' . $e->getMessage(), null, 'user', 'error', 'update-check');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
         }
-
-        if ($persistentCacheDirty) {
-            composeSavePersistentContainerCache($persistentContainerCache);
-        }
-
-        // Save the update status for all stacks
-        $savedStatus = $allUpdates;
-        foreach ($savedStatus as $stackKey => &$stackData) {
-            $stackData['lastChecked'] = time();
-        }
-        file_put_contents(COMPOSE_UPDATE_STATUS_FILE, json_encode($savedStatus, JSON_PRETTY_PRINT));
-
-        $totalStacks = count($allUpdates);
-        $updatesFound = 0;
-        foreach ($allUpdates as $sn => $si) {
-            if ($si['hasUpdate'])
-                $updatesFound++;
-        }
-        composeLogger("Completed: $totalStacks stacks checked, $updatesFound with updates", null, 'user', 'debug', 'update-check');
-
-        echo json_encode(['result' => 'success', 'stacks' => $allUpdates]);
         break;
     case 'getSavedUpdateStatus':
         // Load saved update status from file

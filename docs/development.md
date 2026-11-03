@@ -92,6 +92,7 @@ Adjust PHPStan rules or baseline as needed when adding new code.
 
 ### Shared update pipeline
 
+- `StackUpdateService::checkStacks()` owns stack check orchestration, credential/build-context selection, result normalization, and saved stack status. Individual and Check All endpoints use it for all existing containers, regardless of state. The browser's periodic check uses the same Check All endpoint. `ComposeUpdateCheck` remains the lower-level image/base-image comparison service; UI icon resolution and presentation-cache enrichment remain outside it in the endpoint adapter. Checking never pulls, builds, or changes container state.
 - `ComposeCommandBuilder::buildUpdateCommand()` resolves files, environment, credentials, profiles, and build policy for every image-update entry point. Individual/force and bulk UI actions call it directly; cron and Auto-update **Run Now** use `automaticUpdateInvocation()`, which calls the same builder.
 - `scripts/compose.sh update` owns credentials and the project lock, then invokes `scripts/compose_update.sh`. This is the single implementation of image pulling, optional rebuilding, running-image comparison, recreation, and post-success cleanup.
 - `scripts/compose_autoupdate.sh` is only a notification/concurrency adapter. Do not add Docker operations or another stack lock there. Its legacy positional/environment invocation is retained for compatibility; application callers pass the shared builder's arguments.
