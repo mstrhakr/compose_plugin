@@ -189,8 +189,8 @@ test.describe('Compose update state regressions', () => {
     expect(result.progress).toEqual([false]);
     expect(result.refreshed).toEqual(['stack']);
     expect(result.rechecks).toBe(1);
-    expect(result.errors).toContain('Lock check request failed');
-    expect(result.errors).toContain('Lock check failed');
+    expect(result.errors).toContain('Completion check request failed');
+    expect(result.errors).toContain('Completion check failed');
     expect(result.pendingTimers).toBe(0);
   });
 

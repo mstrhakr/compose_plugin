@@ -4401,8 +4401,7 @@ function queuePendingComposeReloads(stackNames, delayMs) {
     schedulePendingComposeReloads(delayMs || 500);
 }
 
-// Poll for background operation completion by checking if stack lock is released
-// Once lock is released, refresh the stack and clear the checking state
+// Tracked dispatches use receipts; older action paths retain lock polling.
 function pollBackgroundCompletion(stackName, refreshDelayMs = 0, operation) {
     operation = operation || composeStackActionInProgress[stackName];
     // Poll with adaptive frequency to handle both fast and slow operations:
@@ -4427,8 +4426,9 @@ function pollBackgroundCompletion(stackName, refreshDelayMs = 0, operation) {
             method: 'POST',
             timeout: 30000,
             data: {
-                action: 'checkStackLock',
-                script: stackName
+                action: operation && operation.receipt ? 'getUiOperation' : 'checkStackLock',
+                script: stackName,
+                operationId: operation && operation.receipt
             }
         }).done(function(response) {
             if (operation && composeStackActionInProgress[stackName] !== operation) {
@@ -4437,11 +4437,17 @@ function pollBackgroundCompletion(stackName, refreshDelayMs = 0, operation) {
             }
             try {
                 var parsed = typeof response === 'string' ? tryParseJson(response) : response;
-                if (parsed && parsed.result === 'success' && parsed.locked === false) {
+                var receipt = operation && operation.receipt && parsed && parsed.operation;
+                var receiptComplete = receipt && receipt.state === 'completed' && Number.isInteger(receipt.exitCode);
+                var lockComplete = !(operation && operation.receipt) && parsed && parsed.locked === false;
+                if (parsed && parsed.result === 'success' && (receiptComplete || lockComplete)) {
                     completed = true;
-                    // Lock is released — clear spinner first, then fetch fresh data
-                    // so refreshStackByProject always wins and overwrites the restored state
+                    // Clear progress before reconciling authoritative runtime state.
                     setStackActionInProgress(stackName, false, null, operation);
+                    if (receiptComplete && receipt.exitCode !== 0) {
+                        composeLogger('Compose operation failed', { stack: stackName, exitCode: receipt.exitCode }, 'user', 'error', 'stack-action');
+                        swal({ title: 'Compose Action Failed', text: 'The operation for ' + stackName + ' exited with code ' + receipt.exitCode + '. Check its command log for details.', type: 'error' });
+                    }
                     setTimeout(function() {
                         if (composeStackActionInProgress[stackName]) return;
                         refreshStackByProject(stackName);
@@ -4451,14 +4457,15 @@ function pollBackgroundCompletion(stackName, refreshDelayMs = 0, operation) {
                     }, refreshDelayMs);
                     return; // stop scheduling
                 }
-                if (!parsed || parsed.result !== 'success' || typeof parsed.locked !== 'boolean') {
-                    composeLogger('Lock check failed', parsed, 'user', 'error', 'poll');
+                var validReceipt = receipt && (receipt.state === 'queued' || receipt.state === 'running');
+                if (!parsed || parsed.result !== 'success' || (operation && operation.receipt ? !validReceipt : typeof parsed.locked !== 'boolean')) {
+                    composeLogger('Completion check failed', parsed, 'user', 'error', 'poll');
                 }
             } catch (e) {
                 composeLogger('Parse error', e, 'user', 'error', 'poll');
             }
         }).fail(function(xhr, status, error) {
-            composeLogger('Lock check request failed', {
+            composeLogger('Completion check request failed', {
                 stack: stackName,
                 status: status,
                 error: error
@@ -4671,6 +4678,8 @@ function performComposeAction(opts) {
     var operation = stackName ? setStackActionInProgress(stackName, true, actionStateText) : null;
 
     payload.background = background ? 1 : 0;
+    // Attached "up" follows logs indefinitely; preserve its existing close/detach path.
+    payload.trackOperation = payload.followLogs ? '0' : '1';
     if (Object.prototype.hasOwnProperty.call(payload, 'removeOrphans')) {
         payload.removeOrphans = payload.removeOrphans ? 1 : 0;
     }
@@ -4716,8 +4725,23 @@ function performComposeAction(opts) {
                 notifyBackgroundStarted(title, true);
             }
             if (stackName) {
+                if (parsed.operations && parsed.operations[stackName]) operation.receipt = parsed.operations[stackName];
                 pollBackgroundCompletion(stackName, opts.refreshDelayMs || 0, operation);
             }
+        } else if (parsed && typeof parsed.url === 'string'
+            && /^\/plugins\/compose\.manager\/include\/ShowTtyd\.php(?:\?|$)/.test(parsed.url)
+            && parsed.operations && typeof parsed.operations === 'object') {
+            if (stackName) {
+                if (parsed.operations[stackName]) {
+                    operation.receipt = parsed.operations[stackName];
+                    pollBackgroundCompletion(stackName, opts.refreshDelayMs || 0, operation);
+                } else {
+                    setStackActionInProgress(stackName, false, null, operation);
+                    composeLogger('Missing operation receipt', { stack: stackName }, 'user', 'error', 'stack-action');
+                    swal({ title: title, text: 'The server did not confirm operation tracking. Refresh the stack to check its status.', type: 'warning' });
+                }
+            }
+            openBox(parsed.url, title, 800, 1200, true);
         } else if (typeof data === 'string' && /^\/plugins\/compose\.manager\/include\/ShowTtyd\.php(?:\?|$)/.test(data.trim())) {
             if (stackName) {
                 setStackActionInProgress(stackName, false, null, operation);
@@ -4764,7 +4788,10 @@ function performMultipleComposeAction(stacks, opts, operations) {
             var project = stack.project;
             var operation = operations[project];
             if (composeStackActionInProgress[project] !== operation) return;
-            if (parsed && parsed.background === true) {
+            if (parsed && parsed.operations && parsed.operations[project]) {
+                operation.receipt = parsed.operations[project];
+                pollBackgroundCompletion(project, 0, operation);
+            } else if (parsed && parsed.background === true && !parsed.operations) {
                 pollBackgroundCompletion(project, 0, operation);
             } else {
                 setStackActionInProgress(project, false, null, operation);
@@ -4847,18 +4874,12 @@ function ComposeUpConfirmed(path, opts) {
 
 // Recreate containers without pulling (for label changes)
 function ComposeRecreateConfirmed(path, profile = "") {
-    var height = 800;
-    var width = 1200;
-
-    $.post(compURL, {
-        action: 'composeUpRecreate',
-        path: path,
-        profile: profile
-    }, function(data) {
-        if (data) {
-            openBox(data, "Compose Recreate: " + basename(path), height, width, true);
-        }
-    })
+    confirmedComposeAction(path, {
+        actionName: 'recreate',
+        titlePrefix: 'Compose Recreate',
+        payload: { action: 'composeUpRecreate', path: path, profile: profile },
+        pendingReload: true
+    });
 }
 
 function ComposeUp(path, profile = "") {
