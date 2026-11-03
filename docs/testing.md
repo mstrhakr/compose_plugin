@@ -121,8 +121,20 @@ cd tests/e2e
 
 Operation tests cover superseded dispatch/poll callbacks, progress reapplied to
 replacement rows, bulk cleanup without clearing newer actions, rejected Update
-All preparation, and malformed/empty/failed container responses. These tests
-control browser callbacks; they do not prove real Docker or ttyd completion.
+All preparation, and malformed/empty/failed container responses. They also cover
+queued/running/completed receipts, malformed or missing completion evidence,
+foreground single/bulk dispatches, explicit nonzero exits, and completion updating
+both parent state and expanded container details from the same fresh snapshot.
+These tests control browser callbacks; they do not prove real Docker or ttyd
+completion.
+
+The backend receipt regressions execute the actual shell wrapper with synthetic
+commands, verify per-dispatch/per-stack isolation and exit status, test the receipt
+endpoint, and verify opt-in foreground dispatch preserves legacy URL responses:
+
+```bash
+vendor/bin/phpunit --no-coverage --no-logging tests/unit/UiOperationTest.php tests/unit/ComposeUtilTest.php tests/unit/ExecActionsTest.php
+```
 
 Deploy the complete branch, including its image-update backend prerequisites.
 From the repository root, the existing deployment helper builds a development
@@ -144,6 +156,9 @@ plugin logs if any row disagrees with Docker:
 1. Start, stop, restart, and update a disposable stack, foreground and background.
    Confirm final parent/detail state without a browser refresh. For foreground
    actions, test both waiting for completion before Done and closing early.
+   Progress should end when the finite command actually exits, not when the
+   terminal URL arrives or the modal closes. A failed/interrupted command should
+   report failure and reconcile whatever Docker state actually exists.
 2. Collapse/expand details and reload the list during an operation. Progress
    must survive row replacement, and an older response must not roll state back.
 3. Perform container start/stop/restart/pause/resume from its context menu.
@@ -153,10 +168,16 @@ plugin logs if any row disagrees with Docker:
    Confirm metrics resume without duplicated subscriptions or repeated restarts.
 6. Exercise Start/Stop/Update All, including a failed stack and a slow first
    stack. A later queued stack must not be reported finished before it runs.
-   Queue-aware completion is a known outstanding merge gate, not a guarantee of
-   this checkpoint.
+   Confirm every accepted stack completes independently and an older completion
+   cannot clear a newer action's progress.
 7. Delete a disposable stopped stack while a list reload is pending. It must not
    reappear from a late row response.
+8. Recreate containers and deploy a disposable git stack from the main view.
+   Check updated parent state, expanded details, and failure notifications.
+9. Exercise **Follow stack logs** separately. Its existing attached-up/Done/detach
+   path is intentionally unchanged and excluded from finite-command receipt
+   tracking. Record startup/Done state mismatches for the remaining lifecycle
+   follow-up rather than treating this mode as covered by finite-command tests.
 
 The [runtime plan](ui-runtime-plan.md) lists the outstanding completion gates.
 Automatic detection of changes made outside the plugin remains next-beta work

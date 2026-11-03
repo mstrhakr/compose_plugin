@@ -86,16 +86,38 @@ dispatch and Update All preparation requests have bounded timeouts and reject
 empty or invalid responses. Container failures restore controls, report the
 error, and request authoritative runtime state.
 
+### Dispatch completion receipts
+
+The main view requests tracking for finite stack actions, bulk actions, recreate,
+and git deployments. The server creates a separate receipt for each accepted
+stack/dispatch before launching the command. A shell wrapper records `running`
+when that command actually starts and `completed` with its exit code when it
+exits. Later bulk stacks remain `queued` until their turn; an unlocked stack is
+never completion evidence for a tracked dispatch.
+
+Foreground responses include the terminal URL and receipt identifiers. Opening
+the terminal does not clear progress: the same completion poll runs independently
+of the modal. After success or failure it clears only its own progress and requests
+fresh runtime state for the parent and any currently expanded container details.
+Nonzero exits are reported explicitly. Missing, malformed, or unavailable receipts
+remain uncertain, retry within the existing 30-minute bound, and then produce a
+warning rather than claiming success. Superseded polls cannot finish newer actions.
+
+Tracking is opt-in (`trackOperation=1`). Existing dashboard/terminal clients keep
+their response contract and are not silently migrated. Receipts are private
+transient files, scoped to project folder and random dispatch ID, and expired
+after a day during subsequent dispatches. They contain no credentials.
+
 This is a live-testing checkpoint, not a completed lifecycle migration:
 
-- Background bulk jobs are queued sequentially on the server. An unlocked later
-  stack does not prove its queued job has completed; lock-only completion needs
-  queue-aware evidence before merge.
-- Foreground commands start through ttyd when the terminal connects. A dispatch
-  response is not command completion. Verify the host's terminal-close refresh
-  path and add a reliable completion signal if closing the terminal leaves stale
-  rows. Do not reuse immediate unlocked polling as proof of completion.
-- Dashboard and git-deployment lifecycle alignment remains a separate audit.
+- Test real ttyd completion and early modal closure on Unraid; isolated tests
+  validate command receipts and browser reconciliation, not host signal delivery.
+- **Follow stack logs** deliberately retains its existing attached-up/Done/detach
+  behavior. It is not a finite command, so this slice does not keep a completion
+  spinner waiting for the log stream to end or change how Compose attaches.
+  Its lifecycle remains an explicit follow-up before declaring all modes aligned.
+- Dashboard lifecycle alignment remains a separate audit. Main-view git deploys
+  opt into the same receipts; scheduled/CLI deployments keep existing behavior.
 
 ## Stage 4: transport recovery and observability
 
@@ -132,5 +154,5 @@ Automatic external-change detection, event-burst coalescing, and lifecycle
 subscription recovery are additional release gates for the next beta (#194),
 not the current stabilization beta.
 
-Ship stages as reviewable slices. Retain the issue185 fixes as a separate PR;
-this follow-up branch is based on that branch until it merges into `dev`.
+Ship stages as reviewable slices. The issue185 and private-registry fixes are
+already on `dev`; the combined UI branch is rebased onto those fixes.
