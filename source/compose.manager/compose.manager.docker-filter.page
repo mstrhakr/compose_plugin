@@ -1,0 +1,12 @@
+Menu="Docker:3"
+Cond="$var['fsState'] == 'Started' && exec('/etc/rc.d/rc.docker status | grep -v \"not\"')"
+---
+<?php
+$composeFilterConfig = parse_plugin_cfg('compose.manager');
+if (($composeFilterConfig['HIDE_COMPOSE_FROM_DOCKER'] ?? 'false') === 'true'):
+?>
+<style>
+#docker_list tr.compose-manager-hidden { display: none !important; }
+</style>
+<script src="<?php autov('/plugins/compose.manager/javascript/composeDockerFilter.js'); ?>"></script>
+<?php endif; ?>

@@ -185,6 +185,34 @@ merge preview against `fix/ui-runtime-consistency` conflicted in
 not a guarantee about future tips. Resolve deliberately, preserving both freshness
 guards and completion receipts. A clean textual merge is not a behavior test.
 
+### Navigation and Docker Visibility
+
+`bats tests/unit/navigation.bats` runs production JavaScript functions with
+deterministic transport/DOM adapters. Coverage includes single, Recreate, bulk
+start/stop/update and Dashboard action terminals; plain and JSON-string terminal
+URLs; explicit close callbacks; and a still-locked operation completing after
+early close. Close must refresh without clearing busy state or cancelling polls.
+Dashboard coverage also exercises its direct Shadowbox fallback and globally
+accessible callback.
+
+Docker visibility tests run without any inline Compose table. They cover delayed
+Docker table insertion, row replacement, removed stacks, case-sensitive names,
+other plugins' visibility classes, coalesced requests, and explicit error reporting.
+PHP tests render the filter bootstrap for all eight header/page-hide/dashboard-hide
+combinations and exercise the real names endpoint with saved project identities,
+running/stopped/job containers, unrelated projects, empty runtime, and failures.
+
+Live-host gates (not replaced by these adapter tests):
+
+- [ ] On the actual Unraid modal, close a running single/bulk operation early;
+  no page navigation occurs and completion still refreshes affected rows.
+- [ ] Verify Dashboard close and Recreate, including failed operations.
+- [ ] Save both header-menu and Docker-hide settings, reopen settings, then visit
+  Docker and Compose. Only managed containers disappear from Docker; Compose
+  stacks remain visible. Check both tabbed and tabless Docker layouts.
+- [ ] Reload the Docker table after creating/removing a container and verify
+  filtering remains correct. Confirm Dashboard hiding remains independent.
+
 ### Archived Plugin Migration
 
 The ordinary identity tests use temporary stack metadata and injected Docker evidence. Event integration cases execute real scripts against a temporary runtime and fake Docker; scheduler cases verify blocked migrations remain retryable. The opt-in real-Docker matrix creates random `cm183_` projects, then removes their test containers, networks and volumes. Its bind-data case uses a disposable Docker volume's host path, not a user directory. It requires Docker Compose and access to the `alpine:3.20` image.

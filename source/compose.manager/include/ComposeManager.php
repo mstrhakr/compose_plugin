@@ -33,7 +33,6 @@ foreach ($stackHiddenColumns as $hiddenCol) {
 $autoCheckUpdates = ($cfg['AUTO_CHECK_UPDATES'] ?? 'false') === 'true';
 $autoCheckDays = floatval($cfg['AUTO_CHECK_UPDATES_DAYS'] ?? '1');
 $showComposeOnTop = ($cfg['SHOW_COMPOSE_ON_TOP'] ?? 'false') === 'true';
-$hideComposeFromDocker = ($cfg['HIDE_COMPOSE_FROM_DOCKER'] ?? 'false') === 'true';
 
 // Get Docker Compose CLI version
 $composeVersion = trim(shell_exec('docker compose version --short 2>/dev/null') ?? '');
@@ -579,7 +578,6 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         autoCheckUpdates: <?php echo json_encode($autoCheckUpdates); ?>,
         autoCheckDays: <?php echo json_encode($autoCheckDays); ?>,
         showComposeOnTop: <?php echo json_encode($showComposeOnTop); ?>,
-        hideComposeFromDocker: <?php echo json_encode($hideComposeFromDocker); ?>,
         composeCliVersion: <?php echo json_encode($composeVersion); ?>,
         composeSystemMemBytes: <?php echo json_encode($composeSystemMemBytes); ?>,
         composeCpuCount: <?php echo json_encode($cpuCount); ?>,
@@ -611,7 +609,6 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
     var autoCheckUpdates = !!composeBootstrap.autoCheckUpdates;
     var autoCheckDays = Number(composeBootstrap.autoCheckDays || 1);
     var showComposeOnTop = !!composeBootstrap.showComposeOnTop;
-    var hideComposeFromDocker = !!composeBootstrap.hideComposeFromDocker;
     var composeCliVersion = composeBootstrap.composeCliVersion || '';
     var composeSystemMemBytes = Number(composeBootstrap.composeSystemMemBytes || 0);
     var composeCpuCount = Number(composeBootstrap.composeCpuCount || 1);

@@ -380,6 +380,57 @@ class ExecActionsTest extends TestCase
         }
     }
 
+    public function testDockerFilterNamesUseRuntimeProjectIdentityAndIncludeAllStates(): void
+    {
+        $this->createTestStack('renamed-folder', ['project_name' => 'saved-project']);
+        $directory = $this->createTempDir();
+        $rows = [];
+        foreach ([
+            ['running-app', 'saved-project', 'running'],
+            ['/stopped-app', 'saved-project', 'exited'],
+            ['one-off-job', 'saved-project', 'exited'],
+            ['unmanaged-app', 'another-project', 'running'],
+        ] as [$name, $project, $state]) {
+            $rows[] = json_encode([
+                'Names' => $name, 'Image' => 'app:latest', 'State' => $state,
+                'Labels' => 'com.docker.compose.project=' . $project,
+            ]);
+        }
+        file_put_contents($directory . '/docker', "#!/bin/sh\nif [ \"\$1\" = ps ]; then\ncat <<'ROWS'\n"
+            . implode("\n", $rows) . "\nROWS\nelse\nexit 9\nfi\n");
+        chmod($directory . '/docker', 0755);
+        $path = getenv('PATH');
+        putenv('PATH=' . $directory . PATH_SEPARATOR . $path);
+        try {
+            $response = json_decode($this->executeAction('getComposeContainerNames'), true);
+            $this->assertSame('success', $response['result']);
+            $this->assertSame(['running-app', 'stopped-app', 'one-off-job'], $response['names']);
+            file_put_contents($directory . '/docker', "#!/bin/sh\nexit 0\n");
+            $response = json_decode($this->executeAction('getComposeContainerNames'), true);
+            $this->assertSame(['result' => 'success', 'names' => []], $response);
+        } finally {
+            putenv('PATH=' . $path);
+        }
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('invalidUpdateSnapshots')]
+    public function testDockerFilterEnumerationReportsFailures(string $command, string $message): void
+    {
+        $directory = $this->createTempDir();
+        file_put_contents($directory . '/docker', "#!/bin/sh\n$command\n");
+        chmod($directory . '/docker', 0755);
+        $path = getenv('PATH');
+        putenv('PATH=' . $directory . PATH_SEPARATOR . $path);
+        try {
+            $response = json_decode($this->executeAction('getComposeContainerNames'), true);
+            $this->assertSame('error', $response['result']);
+            $this->assertStringContainsString($message, $response['message']);
+            $this->assertArrayNotHasKey('names', $response);
+        } finally {
+            putenv('PATH=' . $path);
+        }
+    }
+
     public function testEmptyStackChecksKeepTheirPublicResponseShape(): void
     {
         $this->createTestStack('empty-stack');

@@ -1907,6 +1907,21 @@ switch ($_POST['action']) {
         file_put_contents("$fileName", $scriptContents);
         echo json_encode(['result' => 'success', 'message' => "$fileName saved"]);
         break;
+    case 'getComposeContainerNames':
+        try {
+            $runtime = StackInfo::containersByProject(null, true);
+            $names = [];
+            foreach (StackInfo::allFromRoot($compose_root, true) as $stack) {
+                foreach ($runtime[$stack->projectName] ?? [] as $container) {
+                    $names[] = ltrim($container['Names'], '/');
+                }
+            }
+            echo json_encode(['result' => 'success', 'names' => array_values(array_unique($names))]);
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Unable to enumerate Compose containers for Docker filtering: ' . $e->getMessage(), null, 'user', 'error', 'docker-filter');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
+        }
+        break;
     case 'getStackContainers':
         $script = getPostScript();
         composeLogger('getStackContainers start', [
