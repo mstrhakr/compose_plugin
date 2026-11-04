@@ -176,6 +176,33 @@ final class GitStackInfoTest extends TestCase
         $this->assertSame([$this->clone . '/whoami/compose.yaml'], $paths);
     }
 
+    public function testBuildConfigFailuresAreNotAnEmptyBuildMap(): void
+    {
+        $bin = $this->createTempDir();
+        $path = getenv('PATH');
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        try {
+            foreach ([
+                ['echo invalid-compose >&2; exit 7', 'Unable to resolve build configuration'],
+                ['echo not-json', 'Invalid Compose configuration'],
+                ['echo "{}"', 'Missing Compose services configuration'],
+            ] as [$command, $message]) {
+                file_put_contents($bin . '/docker', "#!/bin/sh\n$command\n");
+                chmod($bin . '/docker', 0755);
+                try {
+                    $this->stack()->getBuildConfigs();
+                    $this->fail('Invalid Compose output must fail explicitly.');
+                } catch (\RuntimeException $e) {
+                    $this->assertStringContainsString($message, $e->getMessage());
+                }
+            }
+            file_put_contents($bin . '/docker', "#!/bin/sh\necho warning >&2\necho '{\"services\":{}}'\n");
+            $this->assertSame([], $this->stack()->getBuildConfigs(), 'Successful config warnings must not corrupt JSON.');
+        } finally {
+            putenv('PATH=' . $path);
+        }
+    }
+
     public function testOverrideEditsGoToTheStackFolder(): void
     {
         file_put_contents($this->clone . '/whoami/compose.override.yaml', "services: {}\n");

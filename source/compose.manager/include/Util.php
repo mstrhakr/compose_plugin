@@ -3987,11 +3987,29 @@ class StackInfo
     public function getBuildConfigs(): array
     {
         $args = $this->buildComposeArgs();
-        $cmd = "docker compose {$args['files']} {$args['envFile']} -p " . escapeshellarg($args['projectName'])
-            . " --profile '*' config --format json 2>/dev/null";
-        $config = json_decode((string) shell_exec($cmd), true);
+        require_once __DIR__ . '/ProcessRunner.php';
+        $command = ['docker', 'compose'];
+        foreach ($args['filePaths'] as $file) {
+            array_push($command, '-f', $file);
+        }
+        if (isset($args['envFilePath'])) {
+            array_push($command, '--env-file', $args['envFilePath']);
+        }
+        array_push($command, '-p', $args['projectName'], '--profile', '*', 'config', '--format', 'json');
+        $result = ProcessRunner::run($command, $args['projectDirectory'], getenv(), 60);
+        if (!$result->succeeded()) {
+            throw new RuntimeException("Unable to resolve build configuration for {$this->projectFolder}: " . $result->errorSummary());
+        }
+        try {
+            $config = json_decode($result->stdout, true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException $e) {
+            throw new RuntimeException("Invalid Compose configuration for {$this->projectFolder}.", 0, $e);
+        }
+        if (!is_array($config) || !is_array($config['services'] ?? null)) {
+            throw new RuntimeException("Missing Compose services configuration for {$this->projectFolder}.");
+        }
         $builds = [];
-        foreach ((is_array($config) ? $config['services'] ?? [] : []) as $service => $definition) {
+        foreach ($config['services'] as $service => $definition) {
             if (!is_array($definition) || !is_array($definition['build'] ?? null)) {
                 continue;
             }

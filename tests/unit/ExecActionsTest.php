@@ -310,7 +310,8 @@ class ExecActionsTest extends TestCase
             'Names' => 'private-job', 'Image' => 'ghcr.io/org/private:latest', 'State' => 'exited',
             'Labels' => 'com.docker.compose.project=private-stack,com.docker.compose.service=app,com.docker.compose.oneoff=True',
         ];
-        file_put_contents($docker, "#!/bin/sh\ncase \"\$1\" in\n"
+        file_put_contents($docker, "#!/bin/sh\ncase \"\$*\" in\n"
+            . "*'config --format json'*) printf '%s\\n' '{\"services\":{}}'; exit 0 ;;\nesac\ncase \"\$1\" in\n"
             . "compose|ps) printf '%s\\n' " . escapeshellarg(json_encode($row))
             . ' ' . escapeshellarg(json_encode($stopped)) . ' ' . escapeshellarg(json_encode($job)) . " ;;\nesac\n"
             . "printf '%s\\n' \"\$*\" >> " . escapeshellarg($commands) . "\n");
