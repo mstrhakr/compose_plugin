@@ -111,7 +111,7 @@ run_stack_update() {
   while IFS='|' read -r id service state oneoff current_image; do
     [ -n "$id" ] || continue
     case "${oneoff,,}" in true) continue ;; esac
-    if [[ ! "$service" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || [ -z "$state" ] || [ -z "$current_image" ]; then
+    if [[ ! "$service" =~ ^[a-zA-Z0-9_.-]+$ ]] || [ -z "$state" ] || [ -z "$current_image" ]; then
       update_failed 1 "read container service metadata for"
       return 1
     fi
@@ -172,12 +172,12 @@ run_stack_update() {
     pull_args+=(--ignore-buildable)
   fi
   echo "Pulling latest images..."
-  update_compose pull "${pull_args[@]}" "${services[@]}"
+  update_compose pull "${pull_args[@]}" -- "${services[@]}"
   rc=$?
   # Preserve manual Update's local-tag compatibility without enabling unattended builds.
   if [ "$rc" -ne 0 ] && [ "$build_on_update" != true ] && [ "$automatic_update" != true ]; then
     log_msg WARNING "Pull failed for $name; retrying without buildable services and rebuilding"
-    update_compose pull --ignore-buildable "${services[@]}"
+    update_compose pull --ignore-buildable -- "${services[@]}"
     rc=$?
     if [ "$rc" -eq 0 ]; then
       rebuild=true
@@ -190,12 +190,12 @@ run_stack_update() {
 
   if [ "$rebuild" = true ]; then
     echo "Rebuilding images with latest base images..."
-    update_compose build --pull "${services[@]}"
+    update_compose build --pull -- "${services[@]}"
     rc=$?
     if [ "$rc" -ne 0 ]; then
       log_msg WARNING "Build with --pull failed for $name; retrying with local base images"
       echo "Build with --pull failed; retrying with local base images..."
-      update_compose build "${services[@]}"
+      update_compose build -- "${services[@]}"
       rc=$?
     fi
     if [ "$rc" -ne 0 ]; then
@@ -206,7 +206,7 @@ run_stack_update() {
 
   if [ "$automatic_update" = true ]; then
     # Config service selection includes dependencies; read a keyed map, not an image list.
-    if ! config_json=$(update_compose config --format json "${services[@]}") ||
+    if ! config_json=$(update_compose config --format json -- "${services[@]}") ||
        ! targets=$(update_target_images <<< "$config_json"); then
       update_failed 1 "resolve target images for"
       return 1
@@ -258,14 +258,14 @@ run_stack_update() {
     up_args+=(--no-build)
   fi
   echo "Recreating containers..."
-  update_compose up "${up_args[@]}" "${services[@]}"
+  update_compose up "${up_args[@]}" -- "${services[@]}"
   rc=$?
   if [ "$rc" -ne 0 ]; then
     update_failed "$rc" recreate
     return "$rc"
   fi
 
-  if ! new_images=$(update_compose images -q "${services[@]}"); then
+  if ! new_images=$(update_compose images -q -- "${services[@]}"); then
     update_failed 1 "enumerate updated images for"
     return 1
   fi

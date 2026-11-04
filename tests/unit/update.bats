@@ -37,8 +37,8 @@ run_auto_adapter() {
     export CHANGE=false BUILD_CHANGE=true
     run_auto_adapter --build -g dev
     assert_success
-    grep -F 'compose --profile dev -p stack build --pull app' "$CALLS"
-    grep -F 'up -d --scale app=1 --pull never --no-deps --no-build app' "$CALLS"
+    grep -F 'compose --profile dev -p stack build --pull -- app' "$CALLS"
+    grep -F 'up -d --scale app=1 --pull never --no-deps --no-build -- app' "$CALLS"
     grep -F '"result":"success"' "$TEST_TEMP_DIR/stack/last_result.json"
     grep -F 'Stack updated: stack' "$NOTIFICATIONS"
 }
@@ -67,7 +67,7 @@ run_auto_adapter() {
     run bash "$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh" \
         "$TEST_TEMP_DIR/a compose.yaml" stack
     assert_success
-    grep -F "compose -f $TEST_TEMP_DIR/a compose.yaml -p stack pull --ignore-buildable app" "$CALLS"
+    grep -F "compose -f $TEST_TEMP_DIR/a compose.yaml -p stack pull --ignore-buildable -- app" "$CALLS"
 }
 
 @test "unchanged images are never passed to cleanup" {
@@ -82,7 +82,7 @@ run_auto_adapter() {
     run bash "$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh" \
         "$TEST_TEMP_DIR/a compose.yaml" stack
     assert_success
-    grep -F "compose -f $TEST_TEMP_DIR/a compose.yaml --project-directory $COMPOSE_PROJECT_DIR -p stack pull --ignore-buildable app" "$CALLS"
+    grep -F "compose -f $TEST_TEMP_DIR/a compose.yaml --project-directory $COMPOSE_PROJECT_DIR -p stack pull --ignore-buildable -- app" "$CALLS"
 }
 
 @test "legacy automatic file lists retain an explicit Compose project directory" {
@@ -90,7 +90,7 @@ run_auto_adapter() {
     export COMPOSE_FILE_LIST="$TEST_TEMP_DIR/first.yaml:$TEST_TEMP_DIR/second.yaml"
     run bash "$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh" stack
     assert_success
-    grep -F "compose -f $TEST_TEMP_DIR/first.yaml -f $TEST_TEMP_DIR/second.yaml --project-directory $COMPOSE_PROJECT_DIR -p stack pull --ignore-buildable app" "$CALLS"
+    grep -F "compose -f $TEST_TEMP_DIR/first.yaml -f $TEST_TEMP_DIR/second.yaml --project-directory $COMPOSE_PROJECT_DIR -p stack pull --ignore-buildable -- app" "$CALLS"
 }
 
 @test "failure to enumerate containers fails before pulling" {
@@ -103,14 +103,14 @@ run_auto_adapter() {
 @test "relative script invocation still loads the shared engine after changing workdir" {
     run bash "${COMPOSE_SCRIPT#"$PWD/"}" -cupdate -pstack -w"$TEST_TEMP_DIR/stack"
     assert_success
-    grep -F 'up -d --scale app=1 --pull never --no-deps app' "$CALLS"
+    grep -F 'up -d --scale app=1 --pull never --no-deps -- app' "$CALLS"
 }
 
 @test "relative workdir is forwarded as the absolute Compose project directory" {
     run bash -c 'cd "$1" && bash "$2" -cupdate -pstack -wstack' \
         _ "$TEST_TEMP_DIR" "$COMPOSE_SCRIPT"
     assert_success
-    grep -F "compose --project-directory $TEST_TEMP_DIR/stack -p stack pull app" "$CALLS"
+    grep -F "compose --project-directory $TEST_TEMP_DIR/stack -p stack pull -- app" "$CALLS"
     ! grep -F 'project-directory stack ' "$CALLS"
 }
 
@@ -119,14 +119,14 @@ run_auto_adapter() {
     run bash -c 'cd "$1" && bash "$2" "$1/input.yaml" stack' \
         _ "$TEST_TEMP_DIR" "$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
     assert_success
-    grep -F "compose -f $TEST_TEMP_DIR/input.yaml --project-directory $TEST_TEMP_DIR/stack -p stack pull --ignore-buildable app" "$CALLS"
+    grep -F "compose -f $TEST_TEMP_DIR/input.yaml --project-directory $TEST_TEMP_DIR/stack -p stack pull --ignore-buildable -- app" "$CALLS"
 }
 
 @test "manual updates reconcile even when image IDs are unchanged" {
     export CHANGE=false
     run_update
     assert_success
-    grep -F 'up -d --scale app=1 --pull never --no-deps app' "$CALLS"
+    grep -F 'up -d --scale app=1 --pull never --no-deps -- app' "$CALLS"
     [ "$(cat "$TEST_TEMP_DIR/outcome")" = updated ]
 }
 
@@ -188,7 +188,7 @@ run_auto_adapter() {
 @test "successful manual pull does not rebuild published buildable images without opt-in" {
     run_update
     assert_success
-    grep -Fx 'compose -p stack pull app' "$CALLS"
+    grep -Fx 'compose -p stack pull -- app' "$CALLS"
     ! grep -F ' build' "$CALLS"
 }
 
@@ -204,7 +204,7 @@ run_auto_adapter() {
 @test "force update forwards force-recreate to the shared up command" {
     run_update --recreate
     assert_success
-    grep -F 'up -d --force-recreate --scale app=1 --pull never --no-deps app' "$CALLS"
+    grep -F 'up -d --force-recreate --scale app=1 --pull never --no-deps -- app' "$CALLS"
 }
 
 @test "automatic update skips unchanged images without recreation" {
@@ -220,7 +220,7 @@ run_auto_adapter() {
     touch "$UPDATE_STATE"
     run_update --automatic-update
     assert_success
-    grep -F 'up -d --scale app=1 --pull never --no-deps --no-build app' "$CALLS"
+    grep -F 'up -d --scale app=1 --pull never --no-deps --no-build -- app' "$CALLS"
     grep -F "rmi ${OLD_ID#sha256:}" "$CALLS"
 }
 
@@ -236,9 +236,9 @@ run_auto_adapter() {
     export CHANGE=false BUILD_CHANGE=true
     run_update --automatic-update --build -g dev
     assert_success
-    grep -F 'compose --profile dev -p stack pull --ignore-buildable app' "$CALLS"
-    grep -F 'compose --profile dev -p stack build --pull app' "$CALLS"
-    grep -F 'up -d --scale app=1 --pull never --no-deps --no-build app' "$CALLS"
+    grep -F 'compose --profile dev -p stack pull --ignore-buildable -- app' "$CALLS"
+    grep -F 'compose --profile dev -p stack build --pull -- app' "$CALLS"
+    grep -F 'up -d --scale app=1 --pull never --no-deps --no-build -- app' "$CALLS"
     [ ! -f "$TEST_TEMP_DIR/stack/running_profiles" ]
     [ "$(cat "$TEST_TEMP_DIR/outcome")" = updated ]
 }
@@ -259,7 +259,7 @@ run_auto_adapter() {
         [ "$mode" != automatic ] || args+=(--automatic-update)
         run_update "${args[@]}"
         assert_success
-        grep -Fx 'compose -p stack build app' "$CALLS"
+        grep -Fx 'compose -p stack build -- app' "$CALLS"
     done
 }
 
@@ -320,9 +320,9 @@ run_auto_adapter() {
     export CONFIG_PROFILES=deployed
     run_update --automatic-update --build -g wrong-default
     assert_success
-    grep -Fx 'compose --profile wrong-default --profile deployed -p stack pull --ignore-buildable web' "$CALLS"
-    grep -F 'build --pull web' "$CALLS"
-    grep -F 'up -d --scale web=1 --pull never --no-deps --no-build web' "$CALLS"
+    grep -Fx 'compose --profile wrong-default --profile deployed -p stack pull --ignore-buildable -- web' "$CALLS"
+    grep -F 'build --pull -- web' "$CALLS"
+    grep -F 'up -d --scale web=1 --pull never --no-deps --no-build -- web' "$CALLS"
     ! grep -E ' (pull|build|up).* (backup|undeployed)( |$)' "$CALLS"
 }
 
@@ -331,7 +331,7 @@ run_auto_adapter() {
     export CONFIG_SERVICES=$'web\nbackup'
     run_update --recreate
     assert_success
-    grep -F 'up -d --force-recreate --scale web=1 --pull never --no-deps web' "$CALLS"
+    grep -F 'up -d --force-recreate --scale web=1 --pull never --no-deps -- web' "$CALLS"
     ! grep -E ' (pull|build|up).* backup( |$)' "$CALLS"
 }
 
@@ -340,8 +340,8 @@ run_auto_adapter() {
     export CONFIG_SERVICES=$'web\nbackup\nundeployed'
     run_update --include-stopped
     assert_success
-    grep -F 'pull web backup' "$CALLS"
-    grep -F 'up -d --scale web=1 --scale backup=1 --pull never --no-deps web backup' "$CALLS"
+    grep -F 'pull -- web backup' "$CALLS"
+    grep -F 'up -d --scale web=1 --scale backup=1 --pull never --no-deps -- web backup' "$CALLS"
     ! grep -E ' (pull|build|up).* undeployed( |$)' "$CALLS"
 }
 
@@ -361,7 +361,7 @@ run_auto_adapter() {
     ! grep -E ' (pull|build|up)( |$)' "$CALLS"
     run_update --include-stopped
     assert_success
-    grep -F 'up -d --scale app=1 --pull never --no-deps app' "$CALLS"
+    grep -F 'up -d --scale app=1 --pull never --no-deps -- app' "$CALLS"
 }
 
 @test "mixed replicas are skipped and reported while other services update" {
@@ -371,7 +371,7 @@ run_auto_adapter() {
     assert_success
     assert_output_contains "Leaving service 'web' unchanged"
     [ "$(cat "$TEST_TEMP_DIR/outcome")" = partial ]
-    grep -F 'up -d --scale app=1 --pull never --no-deps --no-build app' "$CALLS"
+    grep -F 'up -d --scale app=1 --pull never --no-deps --no-build -- app' "$CALLS"
     ! grep -E ' (pull|build|up).* web( |$)' "$CALLS"
 }
 
@@ -380,7 +380,7 @@ run_auto_adapter() {
     export CONFIG_SERVICES=web
     run_update --include-stopped
     assert_success
-    grep -F 'up -d --scale web=2 --pull never --no-deps web' "$CALLS"
+    grep -F 'up -d --scale web=2 --pull never --no-deps -- web' "$CALLS"
 }
 
 @test "running replicas retain their deployed count instead of configured scale" {
@@ -388,7 +388,7 @@ run_auto_adapter() {
     export CONFIG_SERVICES=web
     run_update --automatic-update
     assert_success
-    grep -F 'up -d --scale web=2 --pull never --no-deps --no-build web' "$CALLS"
+    grep -F 'up -d --scale web=2 --pull never --no-deps --no-build -- web' "$CALLS"
 }
 
 @test "paused restarting and dead services are skipped even with inclusion enabled" {
@@ -423,6 +423,30 @@ run_auto_adapter() {
     ! grep -E ' (pull|build|up)( |$)' "$CALLS"
 }
 
+@test "valid punctuation prefixed services remain explicit targets in both update modes" {
+    export RUNTIME_ROWS=$'a|_worker|running|False\nb|.worker|running|False\nc|-worker|running|False\nd|app|running|False'
+    export CONFIG_SERVICES=$'_worker\n.worker\n-worker\napp'
+    for mode in manual automatic; do
+        : > "$CALLS"
+        rm -f "$UPDATE_STATE" "$UPDATE_UP"
+        if [ "$mode" = automatic ]; then
+            run_update --automatic-update --build
+        else
+            export PULL_EXIT=1 FALLBACK_PULL=true
+            run_update
+            export PULL_EXIT=0
+        fi
+        assert_success
+        grep -F 'pull --ignore-buildable -- _worker .worker -worker app' "$CALLS"
+        grep -F 'build --pull -- _worker .worker -worker app' "$CALLS"
+        grep -F 'up -d --scale _worker=1 --scale .worker=1 --scale -worker=1 --scale app=1 --pull never --no-deps --no-build -- _worker .worker -worker app' "$CALLS"
+        grep -F 'images -q -- _worker .worker -worker app' "$CALLS"
+        if [ "$mode" = automatic ]; then
+            grep -F 'config --format json -- _worker .worker -worker app' "$CALLS"
+        fi
+    done
+}
+
 @test "partial automatic update produces an incomplete notification not success" {
     export RUNTIME_ROWS=$'app|app|running|False\nweb|web|paused|False'
     export CONFIG_SERVICES=$'app\nweb'
@@ -452,7 +476,7 @@ run_auto_adapter() {
     export CONFIG_PROFILES=$'production\nmaintenance'
     run_update
     assert_success
-    grep -Fx 'compose --profile production --profile maintenance -p stack pull app' "$CALLS"
+    grep -Fx 'compose --profile production --profile maintenance -p stack pull -- app' "$CALLS"
     ! grep -E 'compose .*--profile \*.* (pull|build|up)( |$)' "$CALLS"
 }
 
@@ -493,6 +517,6 @@ run_auto_adapter() {
     run bash "$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_background.sh" \
         -cupdate -pstack -s "$TEST_TEMP_DIR/stack" --include-stopped
     assert_success
-    grep -F 'up -d --scale app=1 --pull never --no-deps app' "$CALLS"
+    grep -F 'up -d --scale app=1 --pull never --no-deps -- app' "$CALLS"
     grep -F 'Stack update complete: stack' "$NOTIFICATIONS"
 }

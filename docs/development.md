@@ -189,6 +189,9 @@ Legacy automatic invocations retain `COMPOSE_PROJECT_DIR` alongside explicit
 files as an actual Compose `--project-directory` argument.
 The wrapper canonicalizes that directory after changing into it, so relative
 workdirs are not resolved a second time by Compose.
+Scoped update service validation follows Compose's `[a-zA-Z0-9_.-]+` names,
+including punctuation prefixes. Every command receiving positional services
+uses `--` so a leading hyphen cannot be interpreted as a CLI option.
 Dockerfile scanning consumes all heredoc bodies before interpreting subsequent
 instructions. Image-backed named build contexts are resolved to their image
 reference; service/directory contexts remain unknown. A digest-pinned base is
