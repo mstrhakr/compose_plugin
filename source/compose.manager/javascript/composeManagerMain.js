@@ -2516,9 +2516,6 @@ function executeUpdateAllStacks(stacks, background, suppressBackgroundNotificati
         });
         return;
     }
-    var height = 800;
-    var width = 1200;
-
     // Create a list of paths to update
     var paths = stacks.map(function(s) {
         return s.path;
@@ -2540,6 +2537,7 @@ function executeUpdateAllStacks(stacks, background, suppressBackgroundNotificati
         stacks: JSON.stringify(stackNames)
     }, function() {
         performComposeAction({
+            stackNames: stackNames,
             actionName: 'update',
             title: 'Update All Stacks',
             requestUrl: compURL,
@@ -2552,15 +2550,10 @@ function executeUpdateAllStacks(stacks, background, suppressBackgroundNotificati
             suppressBackgroundNotification: suppressBackgroundNotification,
             pendingReload: false,
             onComplete: function(parsed, data) {
-                if (parsed && parsed.background) {
+                if ((parsed && parsed.background) || (data && !(parsed && parsed.error))) {
                     stacks.forEach(function(s) {
                         pollBackgroundCompletion(s.project);
                     });
-                } else if (data) {
-                    stackNames.forEach(function(stackName) {
-                        setStackActionInProgress(stackName, false);
-                    });
-                    queuePendingComposeReloads(stackNames);
                 } else {
                     stackNames.forEach(function(stackName) {
                         setStackActionInProgress(stackName, false);
@@ -4567,6 +4560,20 @@ function composeIdentityBlocked(path) {
     return true;
 }
 
+function composeActionBoxClosed(projects) {
+    (projects || '').split(',').filter(Boolean).forEach(function(project) {
+        refreshStackByProject(decodeURIComponent(project));
+    });
+    checkPendingRechecks();
+}
+
+function openComposeActionBox(url, title, stackNames) {
+    var projects = (stackNames || []).map(function(project) {
+        return encodeURIComponent(project);
+    }).join(',');
+    openBox(url, title, 800, 1200, true, 'composeActionBoxClosed', projects);
+}
+
 function performComposeAction(opts) {
     opts = opts || {};
     var stackName = opts.stackName;
@@ -4576,7 +4583,6 @@ function performComposeAction(opts) {
     var payload = opts.payload || {};
     var background = opts.background || false;
     var suppressBackgroundNotification = opts.suppressBackgroundNotification || false;
-    var pendingReload = opts.pendingReload || false;
     var actionStateText = opts.actionStateText || composeActionStateText(actionName);
     var onComplete = opts.onComplete;
 
@@ -4628,12 +4634,9 @@ function performComposeAction(opts) {
             }
         } else if (data) {
             if (stackName) {
-                setStackActionInProgress(stackName, false);
+                pollBackgroundCompletion(stackName, opts.refreshDelayMs || 0);
             }
-            if (pendingReload && stackName) {
-                queuePendingComposeReloads([stackName], opts.refreshDelayMs || 0);
-            }
-            openBox(data, title, 800, 1200, true);
+            openComposeActionBox(typeof parsed === 'string' ? parsed : data, title, opts.stackNames || (stackName ? [stackName] : []));
         }
         if (typeof onComplete === 'function') {
             onComplete(parsed, data);
@@ -4721,18 +4724,11 @@ function ComposeUpConfirmed(path, opts) {
 
 // Recreate containers without pulling (for label changes)
 function ComposeRecreateConfirmed(path, profile = "") {
-    var height = 800;
-    var width = 1200;
-
-    $.post(compURL, {
-        action: 'composeUpRecreate',
-        path: path,
-        profile: profile
-    }, function(data) {
-        if (data) {
-            openBox(data, "Compose Recreate: " + basename(path), height, width, true);
-        }
-    })
+    confirmedComposeAction(path, {
+        actionName: 'recreate',
+        titlePrefix: 'Compose Recreate',
+        payload: { action: 'composeUpRecreate', path: path, profile: profile }
+    });
 }
 
 function ComposeUp(path, profile = "") {
@@ -5557,8 +5553,6 @@ function executeStartAllStacks(opts) {
     var background = !!opts.background;
     var suppressBackgroundNotification = !!opts.suppressBackgroundNotification;
     var removeOrphans = !!opts.removeOrphans;
-    var height = 800;
-    var width = 1200;
 
     // Create a list of paths to start
     var paths = stacks.map(function(s) {
@@ -5589,7 +5583,10 @@ function executeStartAllStacks(opts) {
                 pollBackgroundCompletion(s.project);
             });
         } else if (data) {
-            openBox(data, 'Start All Stacks', height, width, true);
+            stacks.forEach(function(s) {
+                pollBackgroundCompletion(s.project);
+            });
+            openComposeActionBox(data, 'Start All Stacks', stacks.map(function(s) { return s.project; }));
         }
     });
 }
@@ -5692,8 +5689,6 @@ function executeStopAllStacks(opts) {
     var background = !!opts.background;
     var suppressBackgroundNotification = !!opts.suppressBackgroundNotification;
     var removeOrphans = !!opts.removeOrphans;
-    var height = 800;
-    var width = 1200;
 
     // Create a list of paths to stop
     var paths = stacks.map(function(s) {
@@ -5724,7 +5719,10 @@ function executeStopAllStacks(opts) {
                 pollBackgroundCompletion(s.project);
             });
         } else if (data) {
-            openBox(data, 'Stop All Stacks', height, width, true);
+            stacks.forEach(function(s) {
+                pollBackgroundCompletion(s.project);
+            });
+            openComposeActionBox(data, 'Stop All Stacks', stacks.map(function(s) { return s.project; }));
         }
     });
 }

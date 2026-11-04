@@ -124,6 +124,13 @@
         debugLog('Context menu attached to #' + elementId);
     }
 
+    function composeDashboardActionBoxClosed() {
+        stackContainerCache = {};
+        loadComposeStacks();
+    }
+
+    window.composeDashboardActionBoxClosed = composeDashboardActionBoxClosed;
+
     function stackAction(stackName, action) {
         var actionMap = {
             'start': 'composeUp',
@@ -141,9 +148,16 @@
         }, function(data) {
             if (data) {
                 if (typeof openBox === 'function') {
-                    openBox(data, actionTitle + ' Stack ' + stackName, 800, 1200, true);
+                    openBox(data, actionTitle + ' Stack ' + stackName, 800, 1200, true,
+                        'composeDashboardActionBoxClosed', encodeURIComponent(stackName));
                 } else {
-                    Shadowbox.open({content: data, player: 'iframe', title: actionTitle + ' Stack ' + stackName, height: 800, width: 1200});
+                    Shadowbox.open({
+                        content: data, player: 'iframe', title: actionTitle + ' Stack ' + stackName,
+                        height: 800, width: 1200,
+                        options: { onClose: function() {
+                            composeDashboardActionBoxClosed(encodeURIComponent(stackName));
+                        } }
+                    });
                 }
             }
             setTimeout(function() { stackContainerCache = {}; loadComposeStacks(); }, 3000);

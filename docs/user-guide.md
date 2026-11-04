@@ -84,6 +84,11 @@ For long local builds, select **Run in background** so execution is independent
 of the live terminal connection. Manual updates have no engine command timeout;
 automatic updates apply a 30-minute timeout per Compose command by default.
 A terminal reconnect message alone does not establish that a build timed out.
+
+Closing an action terminal refreshes the affected stack rows without reloading
+the page. Closing is not completion: operation tracking continues independently,
+and refreshes the stack again when its operation lock is released. Dashboard
+action terminals refresh the Compose tile when closed.
 Check the stack's last command log and operation result before retrying.
 
 #### Changelogs
