@@ -99,7 +99,7 @@ class ComposeUpdateCheck
      * Services in $buildConfigs (from StackInfo::getBuildConfigs) are built
      * locally. Build-only services have no registry tag, so they are checked
      * against their Dockerfile base image instead. Services that also name an
-     * image fall back to that check when the image tag has no remote digest.
+     * image retain unknown application evidence when registry checks fail.
      *
      * @param array<string, array{build: array<string, mixed>, image: ?string}> $buildConfigs Keyed by service name
      * @return array<string, array{local: string, remote: string, status: string, hasUpdate: bool, localImage: string, updateKind: string, updateReadiness: string, image?: string}>
@@ -107,7 +107,19 @@ class ComposeUpdateCheck
     public function checkContainers(array $containers, array $buildConfigs = []): array
     {
         $images = [];
-        foreach ($containers as $container) {
+        $client = new DockerClient();
+        $inspections = [];
+        foreach ($containers as &$container) {
+            $name = trim((string) ($container['Name'] ?? $container['name'] ?? $container['Names'] ?? ''));
+            if ($name === '') {
+                continue;
+            }
+            $inspect = $client->getDockerJSON('/containers/' . rawurlencode($name) . '/json');
+            $inspections[$name] = $inspect;
+            $reference = trim((string) ($inspect['Config']['Image'] ?? ''));
+            if ($reference !== '') {
+                $container['Image'] = $reference;
+            }
             $image = trim((string) ($container['Image'] ?? $container['image'] ?? ''));
             $build = $buildConfigs[ContainerInfo::resolveService($container)] ?? null;
             if ($image !== '' && strpos($image, '@sha256:') === false
@@ -115,8 +127,8 @@ class ComposeUpdateCheck
                 $images[] = $image;
             }
         }
+        unset($container);
         $imageResults = $images ? $this->checkMany($images) : [];
-        $client = new DockerClient();
         $results = [];
         foreach ($containers as $container) {
             $name = trim((string) ($container['Name'] ?? $container['name'] ?? $container['Names'] ?? ''));
@@ -126,7 +138,7 @@ class ComposeUpdateCheck
             }
             $build = $buildConfigs[ContainerInfo::resolveService($container)] ?? null;
             $imageResult = $imageResults[ContainerInfo::normalizeImageForUpdateCheck($image)] ?? [];
-            $inspect = $client->getDockerJSON('/containers/' . rawurlencode($name) . '/json');
+            $inspect = $inspections[$name] ?? [];
             $local = !empty($inspect['Image']) ? (string) $inspect['Image'] : null;
             $remote = !empty($imageResult['remote']) ? (string) $imageResult['remote'] : null;
             if ($local === null) {
@@ -136,11 +148,11 @@ class ComposeUpdateCheck
                 $results[$name] = $this->summarize($local, $local)['result'] + [
                     'localImage' => (string) ($local ?? ''), 'updateKind' => 'image',
                     'updateReadiness' => $local === null ? 'unknown' : 'current',
+                    'image' => $image,
                 ];
                 continue;
             }
-            if ($build !== null && $remote === null && $local !== null) {
-                // Docker ps can show an image ID after its original tag moves.
+            if ($build !== null && $build['image'] === null && $local !== null) {
                 $reference = (string) ($inspect['Config']['Image'] ?? $image);
                 $results[$name] = $this->checkBuiltImage($name, $local, $reference, $build['build'])
                     + ['image' => $reference];
@@ -151,6 +163,7 @@ class ComposeUpdateCheck
             $results[$name]['localImage'] = $tagImage;
             $results[$name]['updateKind'] = 'image';
             $results[$name]['updateReadiness'] = self::imageReadiness($local, $tagImage, $remote);
+            $results[$name]['image'] = $image;
         }
         return $results;
     }

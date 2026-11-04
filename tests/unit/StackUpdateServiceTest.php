@@ -10,6 +10,48 @@ require_once '/usr/local/emhttp/plugins/compose.manager/include/StackUpdateServi
 
 class StackUpdateServiceTest extends TestCase
 {
+    public function testNamedBuildRegistryFailurePreservesPendingApplicationEvidence(): void
+    {
+        $checker = new class extends \ComposeUpdateCheck {
+            public function checkMany(array $images): array
+            {
+                return [];
+            }
+
+            protected function fetchRemoteImageConfig(string $image): ?array
+            {
+                throw new \LogicException('Application registry failure must not fall back to a public base.');
+            }
+        };
+        \DockerClient::setMockResponse('/containers/app/json', [
+            'Image' => 'sha256:old', 'Config' => ['Image' => 'registry.example/app:latest'],
+        ]);
+        $checked = $checker->checkContainers([['Name' => 'app', 'Service' => 'app', 'Image' => 'old']], [
+            'app' => ['build' => ['dockerfile_inline' => 'FROM alpine:3.20'], 'image' => 'registry.example/app:latest'],
+        ])['app'];
+        $save = new \ReflectionMethod(\StackUpdateService::class, 'saveResults');
+        $previous = \ContainerInfo::fromUpdateResponse([
+            'name' => 'app', 'image' => $checked['image'], 'localSha' => $checked['local'],
+            'remoteSha' => 'sha256:new', 'hasUpdate' => true, 'updateStatus' => 'update-available',
+        ])->toUpdateArray();
+        $fresh = \ContainerInfo::fromUpdateResponse([
+            'name' => 'app', 'image' => $checked['image'], 'localSha' => $checked['local'],
+            'remoteSha' => $checked['remote'], 'hasUpdate' => $checked['hasUpdate'],
+            'updateStatus' => $checked['status'],
+        ])->toUpdateArray();
+        try {
+            foreach ([false, true] as $replace) {
+                file_put_contents(COMPOSE_UPDATE_STATUS_FILE, json_encode(['stack' => ['containers' => [$previous]]]));
+                $result = $save->invoke(new \StackUpdateService(), ['stack' => ['containers' => [$fresh]]], $replace);
+                $this->assertTrue($result['stack']['hasUpdate']);
+                $this->assertSame('sha256:new', $result['stack']['containers'][0]['remoteSha']);
+                $this->assertSame('unknown', $result['stack']['containers'][0]['updateReadiness']);
+            }
+        } finally {
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+        }
+    }
+
     public function testLegacyPinnedResultsDoNotEnableUpdateActionsBeforeTheNextCheck(): void
     {
         file_put_contents(COMPOSE_UPDATE_STATUS_FILE, json_encode(['stack' => [

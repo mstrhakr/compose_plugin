@@ -407,7 +407,7 @@ class UpdateCheckTest extends TestCase
         $this->assertSame(['lscr.io/linuxserver/code-server:latest'], $checker->fetched, 'Base lookups are shared across stacks.');
     }
 
-    public function testNamedBuildImageFallsBackToBaseOnlyWithoutARemoteDigest(): void
+    public function testNamedBuildImageRegistryFailureNeverFallsBackToBase(): void
     {
         $context = $this->createTempDir();
         file_put_contents($context . '/Dockerfile', "FROM alpine:3.20\n");
@@ -419,7 +419,7 @@ class UpdateCheckTest extends TestCase
 
             protected function fetchRemoteImageConfig(string $image): ?array
             {
-                return ['digest' => 'sha256:alpine', 'diffIds' => ['sha256:alpine-layer']];
+                throw new \LogicException('A failed application lookup must not check its base.');
             }
         };
         \DockerClient::setMockResponse('/containers/published/json', ['Image' => 'sha256:published']);
@@ -437,7 +437,28 @@ class UpdateCheckTest extends TestCase
 
         $this->assertSame('up-to-date', $results['published']['status']);
         $this->assertSame('sha256:published', $results['published']['remote']);
-        $this->assertSame('update-available', $results['local-only']['status']);
-        $this->assertSame('sha256:alpine', $results['local-only']['remote']);
+        $this->assertSame('unknown', $results['local-only']['status']);
+        $this->assertSame('', $results['local-only']['remote']);
+    }
+
+    public function testPublishedContainerUsesInspectedReferenceWhenPsShowsAnImageId(): void
+    {
+        $checker = new class extends \ComposeUpdateCheck {
+            public function checkMany(array $images): array
+            {
+                \PHPUnit\Framework\Assert::assertSame(['registry.example/app:latest'], $images);
+                return ['registry.example/app:latest' => [
+                    'local' => 'sha256:new', 'remote' => 'sha256:new',
+                    'status' => 'up-to-date', 'hasUpdate' => false,
+                ]];
+            }
+        };
+        \DockerClient::setMockResponse('/containers/app/json', [
+            'Image' => 'sha256:old', 'Config' => ['Image' => 'registry.example/app:latest'],
+        ]);
+        $result = $checker->checkContainers([['Name' => 'app', 'Image' => 'abc123']])['app'];
+        $this->assertSame('registry.example/app:latest', $result['image']);
+        $this->assertSame('update-available', $result['status']);
+        $this->assertSame('ready-to-apply', $result['updateReadiness']);
     }
 }

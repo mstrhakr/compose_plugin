@@ -180,6 +180,14 @@ warning and explicit confirmation. Narrow screens allow horizontal table scrolli
 
 ## Troubleshooting
 
+Update checks resolve application references from container inspection before
+registry batching, because Docker's container list may show an image ID after a
+tag moves. Only services without `image:` use Dockerfile-base checks. A failed
+registry lookup for an explicitly named application image remains unknown,
+preserving matching pending evidence rather than replacing it with base evidence.
+Legacy automatic invocations retain `COMPOSE_PROJECT_DIR` alongside explicit
+files as an actual Compose `--project-directory` argument.
+
 For local deployment after validating the current code, use
 `bash deploy.sh -Dev -RemoteHost <host> --skip-tests` to build and deploy without
 repeating the pre-build test suite. `-SkipTests` and `--SkipTests` are aliases.
