@@ -2181,7 +2181,7 @@ function loadSavedUpdateStatus() {
                 var response = JSON.parse(data);
                 if (response.result === 'success' && response.stacks) {
                     Object.keys(response.stacks).forEach(function(project) {
-                        mergeStackUpdateStatus(response.stacks[project], stackUpdateStatus[project]);
+                        mergeStackUpdateStatus(response.stacks[project], stackUpdateStatus[project], true);
                     });
                     stackUpdateStatus = response.stacks;
                     if (response.dockerVersionsInstalled) dockerVersionsInstalled = true;
@@ -2207,6 +2207,9 @@ function loadSavedUpdateStatus() {
                         }
                     });
                 } else {
+                    composeLogger('Unable to load saved update status', {
+                        message: response.message || 'The server did not return saved update results.'
+                    }, 'user', 'error', 'loadSavedUpdateStatus');
                     // No saved status, check for pending rechecks or run auto-check
                     checkPendingRechecks(function(hadPendingRechecks) {
                         if (!hadPendingRechecks && autoCheckUpdates) {

@@ -209,20 +209,6 @@ function resolveStackWaitSettings(string $stackPath, array $cfg): array
 }
 
 /**
- * Resolve whether `update` should rebuild buildable services for a stack.
- *
- * Compose only builds automatically when an image is missing, so forcing
- * `--build` breaks stacks that publish an image alongside an unbuildable
- * `build:` section (see issue #149). Opt-in per stack, global default otherwise.
- *
- * @param array<string, mixed> $cfg
- */
-function resolveStackBuildOnUpdate(string $stackPath, array $cfg): bool
-{
-    return StackUpdateService::resolveBuildOnUpdate($stackPath, $cfg);
-}
-
-/**
  * Build and echo a compose command for a single stack.
  *
  * @param string $action The compose action (up, down, update, pull, stop, logs)

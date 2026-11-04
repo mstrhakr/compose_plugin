@@ -119,6 +119,11 @@ Main-table and dashboard stack summaries use the same presentation helper.
 Fresh unknown check results may retain pending-update history but invalidate
 local readiness evidence; cached display enrichment must not restore it.
 Bulk failures include structured server errors, empty replies, and invalid JSON.
+`StackUpdateService` also owns saved-status reads, merges, removals and clears.
+Readers take a shared lock; writers take an exclusive lock on the same file.
+Clear writes an empty result without unlinking the lock's inode. Invalid saved
+JSON is reported explicitly; a full replacement check or cache clear can recover
+it. Endpoint and dashboard adapters must not read or rewrite this file directly.
 
 ## Troubleshooting
 

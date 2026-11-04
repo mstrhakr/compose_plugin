@@ -189,13 +189,12 @@ if (!function_exists('composePurgeDeletedStackCaches')) {
             }
         }
 
-        if (defined('COMPOSE_UPDATE_STATUS_FILE') && is_file(COMPOSE_UPDATE_STATUS_FILE)) {
-            $savedStatus = json_decode((string)file_get_contents(COMPOSE_UPDATE_STATUS_FILE), true);
-            if (is_array($savedStatus) && isset($savedStatus[$stackName])) {
-                unset($savedStatus[$stackName]);
-                file_put_contents(COMPOSE_UPDATE_STATUS_FILE, json_encode($savedStatus, JSON_PRETTY_PRINT));
-                $purged['savedUpdateStatus'] = true;
-            }
+        try {
+            $purged['savedUpdateStatus'] = StackUpdateService::removeSavedResult($stackName);
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Unable to purge saved stack update status: ' . $e->getMessage(), [
+                'stack' => $stackName,
+            ], 'user', 'error', 'update-check');
         }
 
         if (defined('PENDING_RECHECK_FILE') && is_file(PENDING_RECHECK_FILE)) {
@@ -1041,9 +1040,12 @@ switch ($_POST['action']) {
 
     case 'clearUpdateCache':
         // Clear the compose manager update status cache
-        $composeUpdateStatusFile = COMPOSE_UPDATE_STATUS_FILE;
-        if (is_file($composeUpdateStatusFile)) {
-            unlink($composeUpdateStatusFile);
+        try {
+            StackUpdateService::clearSavedResults();
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Unable to clear saved stack update status: ' . $e->getMessage(), null, 'user', 'error', 'update-check');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
+            break;
         }
         $containerCache = composeLoadPersistentContainerCache();
         foreach ($containerCache as &$cachedStack) {
@@ -2216,19 +2218,13 @@ switch ($_POST['action']) {
         }
         break;
     case 'getSavedUpdateStatus':
-        // Load saved update status from file
-        $composeUpdateStatusFile = COMPOSE_UPDATE_STATUS_FILE;
         // Check if docker.versions plugin directory exists (where changelog assets are expected)
         $dockerVersionsInstalled = is_dir('/usr/local/emhttp/plugins/docker.versions');
-        if (is_file($composeUpdateStatusFile)) {
-            $savedStatus = json_decode(file_get_contents($composeUpdateStatusFile), true);
-            if ($savedStatus) {
-                echo json_encode(['result' => 'success', 'stacks' => $savedStatus, 'dockerVersionsInstalled' => $dockerVersionsInstalled]);
-            } else {
-                echo json_encode(['result' => 'success', 'stacks' => [], 'dockerVersionsInstalled' => $dockerVersionsInstalled]);
-            }
-        } else {
-            echo json_encode(['result' => 'success', 'stacks' => [], 'dockerVersionsInstalled' => $dockerVersionsInstalled]);
+        try {
+            echo json_encode(['result' => 'success', 'stacks' => StackUpdateService::readSavedResults(), 'dockerVersionsInstalled' => $dockerVersionsInstalled]);
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Unable to read saved stack update status: ' . $e->getMessage(), null, 'user', 'error', 'update-check');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
         }
         break;
     case 'getLogs':

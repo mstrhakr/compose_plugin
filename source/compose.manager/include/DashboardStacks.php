@@ -9,6 +9,7 @@ $plugin_root = "/usr/local/emhttp/plugins/compose.manager";
 
 require_once("$plugin_root/include/Defines.php");
 require_once("$plugin_root/include/Util.php");
+require_once("$plugin_root/include/StackUpdateService.php");
 
 $summary = [
     'total' => 0,
@@ -26,10 +27,14 @@ if (!is_dir($compose_root)) {
 }
 
 // Load saved update status from central JSON file
-$composeUpdateStatusFile = COMPOSE_UPDATE_STATUS_FILE;
-$savedUpdateStatus = [];
-if (is_file($composeUpdateStatusFile)) {
-    $savedUpdateStatus = json_decode(file_get_contents($composeUpdateStatusFile), true) ?: [];
+try {
+    $savedUpdateStatus = StackUpdateService::readSavedResults();
+} catch (RuntimeException | JsonException $e) {
+    composeLogger('Unable to read dashboard update status: ' . $e->getMessage(), null, 'user', 'error', 'update-check');
+    http_response_code(500);
+    header('Content-Type: application/json');
+    echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
+    return;
 }
 
 foreach (StackInfo::allFromRoot($compose_root) as $stackInfo) {

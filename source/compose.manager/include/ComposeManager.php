@@ -843,7 +843,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                             <label for="settings-build-on-update">Rebuild Images on Update</label>
                             <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
                                 <input type="checkbox" id="settings-build-on-update">
-                                <span>Add <code>--build</code> to <code>docker compose up</code> when updating</span>
+                                <span>Build application images with the latest base images before recreating eligible services</span>
                             </label>
                             <div class="settings-field-help">Enable only for stacks whose images are built locally. Leave unchecked for stacks that publish an image alongside a <code>build:</code> section &mdash; those are pulled instead, matching plain <code>docker compose up</code>.</div>
                         </div>

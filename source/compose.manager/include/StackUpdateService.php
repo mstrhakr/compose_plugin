@@ -135,31 +135,69 @@ class StackUpdateService
 
     private function saveResults(array $results, bool $replaceSavedStatus): void
     {
-        $handle = fopen(COMPOSE_UPDATE_STATUS_FILE, 'c+');
+        self::accessSavedResults(static function (array $saved) use ($results): array {
+            $now = time();
+            foreach ($results as $name => $result) {
+                $saved[$name] = $result + ['lastChecked' => $now];
+            }
+            return $saved;
+        }, $replaceSavedStatus);
+    }
+
+    public static function readSavedResults(): array
+    {
+        return self::accessSavedResults();
+    }
+
+    public static function clearSavedResults(): void
+    {
+        self::accessSavedResults(static fn(array $saved): array => [], true);
+    }
+
+    public static function removeSavedResult(string $stackName): bool
+    {
+        $removed = false;
+        self::accessSavedResults(static function (array $saved) use ($stackName, &$removed): array {
+            $removed = array_key_exists($stackName, $saved);
+            unset($saved[$stackName]);
+            return $saved;
+        });
+        return $removed;
+    }
+
+    /** @param callable(array): array|null $change */
+    private static function accessSavedResults(?callable $change = null, bool $replace = false): array
+    {
+        if ($change === null && !is_file(COMPOSE_UPDATE_STATUS_FILE)) {
+            return [];
+        }
+        // Never unlink this file: every reader and writer must lock the same inode.
+        $handle = fopen(COMPOSE_UPDATE_STATUS_FILE, $change === null ? 'r' : 'c+');
         if ($handle === false) {
             throw new RuntimeException('Unable to open stack update status file.');
         }
         try {
-            if (!flock($handle, LOCK_EX)) {
+            if (!flock($handle, $change === null ? LOCK_SH : LOCK_EX)) {
                 throw new RuntimeException('Unable to lock stack update status file.');
             }
             $raw = stream_get_contents($handle);
             if ($raw === false) {
                 throw new RuntimeException('Unable to read stack update status.');
             }
-            $saved = !$replaceSavedStatus && $raw !== '' ? json_decode($raw, true, 512, JSON_THROW_ON_ERROR) : [];
+            $saved = !$replace && $raw !== '' ? json_decode($raw, true, 512, JSON_THROW_ON_ERROR) : [];
             if (!is_array($saved)) {
                 throw new RuntimeException('Invalid saved stack update status.');
             }
-            $now = time();
-            foreach ($results as $name => $result) {
-                $saved[$name] = $result + ['lastChecked' => $now];
+            if ($change === null) {
+                return $saved;
             }
+            $saved = $change($saved);
             $json = json_encode($saved, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR);
             if (!ftruncate($handle, 0) || !rewind($handle)
                 || fwrite($handle, $json) !== strlen($json) || !fflush($handle)) {
                 throw new RuntimeException('Unable to save stack update status.');
             }
+            return $saved;
         } finally {
             flock($handle, LOCK_UN);
             fclose($handle);

@@ -269,7 +269,7 @@ class ExecActionsTest extends TestCase
             $response = json_decode($this->executeAction('clearUpdateCache'), true);
 
             $this->assertSame('success', $response['result']);
-            $this->assertFileDoesNotExist(COMPOSE_UPDATE_STATUS_FILE);
+            $this->assertSame([], \StackUpdateService::readSavedResults());
             $cached = json_decode(file_get_contents(COMPOSE_CONTAINER_CACHE_FILE), true)['stack']['db'];
             $this->assertSame('stack-db-1', $cached['name']);
             $this->assertSame('running', $cached['state']);
@@ -1874,7 +1874,7 @@ class ExecActionsTest extends TestCase
 
 
     /**
-     * Falls back to empty stacks when the status file contains invalid JSON.
+     * Corruption is an explicit error, not a successful empty check.
      */
     public function testGetSavedUpdateStatusHandlesInvalidStatusFile(): void
     {
@@ -1884,10 +1884,75 @@ class ExecActionsTest extends TestCase
         $result = json_decode($output, true);
 
         $this->assertIsArray($result);
-        $this->assertEquals('success', $result['result']);
-        $this->assertSame([], $result['stacks']);
+        $this->assertEquals('error', $result['result']);
+        $this->assertNotEmpty($result['message']);
+        $this->assertSame('not-valid-json', file_get_contents(COMPOSE_UPDATE_STATUS_FILE));
 
         @unlink(COMPOSE_UPDATE_STATUS_FILE);
+    }
+
+    public function testSavedStatusReadersRemovalsAndClearsWaitForTheWriterLock(): void
+    {
+        require_once '/usr/local/emhttp/plugins/compose.manager/include/StackUpdateService.php';
+        foreach (['readSavedResults()', 'removeSavedResult("remove")', 'clearSavedResults()'] as $operation) {
+            file_put_contents(COMPOSE_UPDATE_STATUS_FILE, '{"old":[]}');
+            $handle = fopen(COMPOSE_UPDATE_STATUS_FILE, 'c+');
+            $this->assertNotFalse($handle);
+            $this->assertTrue(flock($handle, LOCK_EX));
+            $inode = fstat($handle)['ino'];
+            $code = 'require ' . var_export(dirname(__DIR__) . '/bootstrap.php', true) . ';'
+                . 'require "/usr/local/emhttp/plugins/compose.manager/include/StackUpdateService.php";'
+                . 'echo "waiting\n"; flush();'
+                . '$result = StackUpdateService::' . $operation . ';'
+                . 'echo json_encode($result);';
+            $process = proc_open([PHP_BINARY, '-r', $code], [
+                0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w'],
+            ], $pipes);
+            $this->assertIsResource($process);
+            fclose($pipes[0]);
+            try {
+                stream_set_timeout($pipes[1], 5);
+                $this->assertSame("waiting\n", fgets($pipes[1]));
+                stream_set_blocking($pipes[1], false);
+                usleep(100000);
+                $this->assertSame('', stream_get_contents($pipes[1]), $operation . ' bypassed the lock');
+                $new = ['keep' => ['hasUpdate' => true], 'remove' => []];
+                ftruncate($handle, 0);
+                rewind($handle);
+                fwrite($handle, json_encode($new));
+                fflush($handle);
+                flock($handle, LOCK_UN);
+                stream_set_blocking($pipes[1], true);
+                $output = stream_get_contents($pipes[1]);
+                $errors = stream_get_contents($pipes[2]);
+                fclose($pipes[1]);
+                fclose($pipes[2]);
+                $this->assertSame(0, proc_close($process), $errors);
+                $process = null;
+                $this->assertSame($inode, fileinode(COMPOSE_UPDATE_STATUS_FILE));
+                $saved = \StackUpdateService::readSavedResults();
+                if ($operation === 'readSavedResults()') {
+                    $this->assertSame($new, json_decode($output, true));
+                    $this->assertSame($new, $saved);
+                } elseif ($operation === 'removeSavedResult("remove")') {
+                    $this->assertSame('true', $output);
+                    $this->assertSame(['keep' => ['hasUpdate' => true]], $saved);
+                } else {
+                    $this->assertSame([], $saved);
+                }
+            } finally {
+                flock($handle, LOCK_UN);
+                fclose($handle);
+                if (is_resource($process)) {
+                    proc_terminate($process);
+                    foreach ($pipes as $pipe) {
+                        if (is_resource($pipe)) fclose($pipe);
+                    }
+                    proc_close($process);
+                }
+                @unlink(COMPOSE_UPDATE_STATUS_FILE);
+            }
+        }
     }
 
     // ===========================================
