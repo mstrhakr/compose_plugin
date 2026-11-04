@@ -7022,6 +7022,9 @@ function saveGitAutoDeploy(autoDeploy) {
         script: project,
         autoDeploy: autoDeploy
     }).then(function(data) {
+        if (editorModal.currentProject !== project) {
+            return;
+        }
         var response = tryParseJson(data);
         if (!response || response.result !== 'success') {
             $saved.hide();
@@ -7035,6 +7038,9 @@ function saveGitAutoDeploy(autoDeploy) {
         }
         $saved.text('Saved').show();
     }).fail(function() {
+        if (editorModal.currentProject !== project) {
+            return;
+        }
         $saved.hide();
         swal({ title: 'Automatic deploys not changed', text: 'Request failed.', type: 'error' });
         showGitSourceForStack(project, true);
@@ -7051,6 +7057,9 @@ function saveGitRecreateOnFolderChange(recreateOnFolderChange) {
         script: project,
         recreateOnFolderChange: recreateOnFolderChange ? 'true' : 'false'
     }).then(function(data) {
+        if (editorModal.currentProject !== project) {
+            return;
+        }
         var response = tryParseJson(data);
         if (!response || response.result !== 'success') {
             $saved.hide();
@@ -7065,6 +7074,9 @@ function saveGitRecreateOnFolderChange(recreateOnFolderChange) {
         }
         $saved.text('Saved').show();
     }).fail(function() {
+        if (editorModal.currentProject !== project) {
+            return;
+        }
         $saved.hide();
         swal({ title: 'Recreate setting not changed', text: 'Request failed.', type: 'error' });
         showGitSourceForStack(project, true);
