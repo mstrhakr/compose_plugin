@@ -98,9 +98,9 @@ class ComposeProjectDirectoryArgsTest extends TestCase
 
     public function testBuildOnUpdateDefaultsToGlobalSetting(): void
     {
-        $this->assertFalse(\resolveStackBuildOnUpdate($this->stackRoot, []));
-        $this->assertFalse(\resolveStackBuildOnUpdate($this->stackRoot, ['BUILD_ON_UPDATE_DEFAULT' => 'false']));
-        $this->assertTrue(\resolveStackBuildOnUpdate($this->stackRoot, ['BUILD_ON_UPDATE_DEFAULT' => 'true']));
+        $this->assertFalse(\StackUpdateService::resolveBuildOnUpdate($this->stackRoot, []));
+        $this->assertFalse(\StackUpdateService::resolveBuildOnUpdate($this->stackRoot, ['BUILD_ON_UPDATE_DEFAULT' => 'false']));
+        $this->assertTrue(\StackUpdateService::resolveBuildOnUpdate($this->stackRoot, ['BUILD_ON_UPDATE_DEFAULT' => 'true']));
     }
 
     public function testBuildOnUpdateStackOverrideWinsOverGlobal(): void
@@ -108,13 +108,13 @@ class ComposeProjectDirectoryArgsTest extends TestCase
         $overrideFile = $this->stackRoot . '/build_on_update';
 
         file_put_contents($overrideFile, "true\n");
-        $this->assertTrue(\resolveStackBuildOnUpdate($this->stackRoot, ['BUILD_ON_UPDATE_DEFAULT' => 'false']));
+        $this->assertTrue(\StackUpdateService::resolveBuildOnUpdate($this->stackRoot, ['BUILD_ON_UPDATE_DEFAULT' => 'false']));
 
         file_put_contents($overrideFile, "false\n");
-        $this->assertFalse(\resolveStackBuildOnUpdate($this->stackRoot, ['BUILD_ON_UPDATE_DEFAULT' => 'true']));
+        $this->assertFalse(\StackUpdateService::resolveBuildOnUpdate($this->stackRoot, ['BUILD_ON_UPDATE_DEFAULT' => 'true']));
 
         file_put_contents($overrideFile, "");
-        $this->assertTrue(\resolveStackBuildOnUpdate($this->stackRoot, ['BUILD_ON_UPDATE_DEFAULT' => 'true']));
+        $this->assertTrue(\StackUpdateService::resolveBuildOnUpdate($this->stackRoot, ['BUILD_ON_UPDATE_DEFAULT' => 'true']));
 
         @unlink($overrideFile);
     }

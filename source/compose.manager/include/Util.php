@@ -1871,6 +1871,8 @@ class ContainerInfo
     public string $state = '';
     /** @var bool Whether the container is currently running */
     public bool $isRunning = false;
+    /** @var bool Whether this container is a Compose run job, not an update target */
+    public bool $oneOff = false;
     /** @var bool Whether an image update is available */
     public bool $hasUpdate = false;
     /** @var string Update status text (unknown/up-to-date/update-available) */
@@ -1879,6 +1881,10 @@ class ContainerInfo
     public string $localSha = '';
     /** @var string Remote image SHA (truncated) */
     public string $remoteSha = '';
+    public string $localImageSha = '';
+    /** @var string image or build-base; base digests are not application digests */
+    public string $updateKind = 'image';
+    public string $updateReadiness = 'unknown';
     /** @var bool Whether the image is pinned to a specific digest */
     public bool $isPinned = false;
     /** @var string|null Pinned digest if isPinned is true */
@@ -1903,6 +1909,32 @@ class ContainerInfo
     public string $health = '';
 
     private function __construct() {}
+
+    public static function resolveService(array $raw): string
+    {
+        $service = trim((string) ($raw['Service'] ?? $raw['service'] ?? ''));
+        return $service !== '' ? $service : self::composeLabel($raw, 'service');
+    }
+
+    public static function isOneOff(array $raw): bool
+    {
+        return filter_var($raw['oneOff'] ?? false, FILTER_VALIDATE_BOOLEAN)
+            || strtolower(self::composeLabel($raw, 'oneoff')) === 'true';
+    }
+
+    private static function composeLabel(array $raw, string $key): string
+    {
+        $key = 'com.docker.compose.' . $key;
+        $labels = $raw['Labels'] ?? $raw['labels'] ?? [];
+        if (is_array($labels)) {
+            return trim((string) ($labels[$key] ?? ''));
+        }
+        if (is_string($labels)
+            && preg_match('/(?:^|,)\s*' . preg_quote($key, '/') . '=([^,]+)/', $labels, $matches)) {
+            return trim($matches[1]);
+        }
+        return '';
+    }
 
     /**
      * Normalize Docker image name for update checking.
@@ -1933,9 +1965,10 @@ class ContainerInfo
     public static function fromDockerInspect(array $raw): self
     {
         $info = new self();
+        $info->oneOff = self::isOneOff($raw);
         $info->name = $raw['Name'] ?? $raw['name'] ?? '';
         $info->id = $raw['ID'] ?? $raw['Id'] ?? $raw['id'] ?? '';
-        $info->service = $raw['Service'] ?? $raw['service'] ?? '';
+        $info->service = self::resolveService($raw);
         $info->image = $raw['Image'] ?? $raw['image'] ?? '';
         $info->state = strtolower($raw['State'] ?? $raw['state'] ?? '');
         $info->isRunning = ($info->state === 'running');
@@ -1953,11 +1986,15 @@ class ContainerInfo
         $info->updateStatus = $raw['updateStatus'] ?? $raw['UpdateStatus'] ?? $raw['status'] ?? 'unknown';
         $info->localSha = $raw['localSha'] ?? $raw['LocalSha'] ?? '';
         $info->remoteSha = $raw['remoteSha'] ?? $raw['RemoteSha'] ?? '';
+        $info->localImageSha = $raw['localImageSha'] ?? '';
+        $info->updateKind = $raw['updateKind'] ?? 'image';
+        $info->updateReadiness = $raw['updateReadiness'] ?? 'unknown';
         $info->hasUpdate = $raw['hasUpdate']
             ?? ($info->updateStatus === 'update-available');
 
         // Derive pinned status from @sha256: in image reference
         $info->derivePinned();
+        $info->excludeOneOffUpdate();
 
         return $info;
     }
@@ -1974,6 +2011,7 @@ class ContainerInfo
     public static function fromUpdateResponse(array $raw): self
     {
         $info = new self();
+        $info->oneOff = self::isOneOff($raw);
         $info->name = $raw['container'] ?? $raw['name'] ?? $raw['Name'] ?? '';
         $info->id = $raw['ID'] ?? $raw['Id'] ?? $raw['id'] ?? '';
         $info->service = $raw['service'] ?? $raw['Service'] ?? '';
@@ -1983,8 +2021,12 @@ class ContainerInfo
         $info->updateStatus = $raw['status'] ?? $raw['updateStatus'] ?? 'unknown';
         $info->localSha = $raw['localSha'] ?? '';
         $info->remoteSha = $raw['remoteSha'] ?? '';
+        $info->localImageSha = $raw['localImageSha'] ?? '';
+        $info->updateKind = $raw['updateKind'] ?? 'image';
+        $info->updateReadiness = $raw['updateReadiness'] ?? 'unknown';
 
         $info->derivePinned();
+        $info->excludeOneOffUpdate();
 
         return $info;
     }
@@ -1997,7 +2039,8 @@ class ContainerInfo
      */
     public function mergeUpdateStatus(ContainerInfo $update): void
     {
-        if ($update->updateStatus === '' || $update->updateStatus === 'unknown') {
+        if ($this->oneOff || $update->oneOff) {
+            $this->excludeOneOffUpdate();
             return;
         }
         if ($this->name !== '' && $update->name !== '' && $this->name !== $update->name) {
@@ -2008,11 +2051,19 @@ class ContainerInfo
                 || $this->pinnedDigest !== $update->pinnedDigest)) {
             return;
         }
+        if ($update->updateStatus === '' || $update->updateStatus === 'unknown') {
+            $this->updateReadiness = 'unknown';
+            $this->localImageSha = '';
+            return;
+        }
 
         $this->hasUpdate = $update->hasUpdate;
         $this->updateStatus = $update->updateStatus;
         $this->localSha = $update->localSha;
         $this->remoteSha = $update->remoteSha;
+        $this->localImageSha = $update->localImageSha;
+        $this->updateKind = $update->updateKind;
+        $this->updateReadiness = $update->updateReadiness;
         if ($update->isPinned) {
             $this->isPinned = $update->isPinned;
             $this->pinnedDigest = $update->pinnedDigest;
@@ -2033,10 +2084,14 @@ class ContainerInfo
             'image' => $this->image,
             'state' => $this->state,
             'isRunning' => $this->isRunning,
+            'oneOff' => $this->oneOff,
             'hasUpdate' => $this->hasUpdate,
             'updateStatus' => $this->updateStatus,
             'localSha' => $this->localSha,
             'remoteSha' => $this->remoteSha,
+            'localImageSha' => $this->localImageSha,
+            'updateKind' => $this->updateKind,
+            'updateReadiness' => $this->updateReadiness,
             'isPinned' => $this->isPinned,
             'pinnedDigest' => $this->pinnedDigest,
             'icon' => $this->icon,
@@ -2060,6 +2115,7 @@ class ContainerInfo
     {
         return [
             'name' => $this->name,
+            'oneOff' => $this->oneOff,
             'service' => $this->service,
             'image' => $this->image,
             'icon' => $this->icon,
@@ -2067,9 +2123,20 @@ class ContainerInfo
             'updateStatus' => $this->updateStatus,
             'localSha' => $this->localSha,
             'remoteSha' => $this->remoteSha,
+            'localImageSha' => $this->localImageSha,
+            'updateKind' => $this->updateKind,
+            'updateReadiness' => $this->updateReadiness,
             'isPinned' => $this->isPinned,
             'pinnedDigest' => $this->pinnedDigest,
         ];
+    }
+
+    public function toMetadataArray(): array
+    {
+        return array_diff_key($this->toArray(), array_flip([
+            'hasUpdate', 'updateStatus', 'localSha', 'remoteSha',
+            'localImageSha', 'updateKind', 'updateReadiness',
+        ]));
     }
 
     /**
@@ -2084,13 +2151,28 @@ class ContainerInfo
     public static function fromDockerPs(array $raw): self
     {
         $info = new self();
+        $info->oneOff = self::isOneOff($raw);
         $info->name = ltrim(trim($raw['Names'] ?? $raw['Name'] ?? $raw['name'] ?? ''), '/');
+        $info->service = self::resolveService($raw);
         $info->id = $raw['ID'] ?? $raw['Id'] ?? $raw['id'] ?? '';
         $info->image = $raw['Image'] ?? $raw['image'] ?? '';
         $info->state = strtolower($raw['State'] ?? $raw['state'] ?? '');
         $info->isRunning = ($info->state === 'running');
         $info->derivePinned();
         return $info;
+    }
+
+    private function excludeOneOffUpdate(): void
+    {
+        if (!$this->oneOff) {
+            return;
+        }
+        $this->hasUpdate = false;
+        $this->updateStatus = 'unknown';
+        $this->updateReadiness = 'unknown';
+        $this->localSha = '';
+        $this->remoteSha = '';
+        $this->localImageSha = '';
     }
 
     /**
@@ -3383,10 +3465,10 @@ class StackInfo
     }
 
     /**
-     * Get the profiles that were active when the stack was last started/updated.
+     * Get the profiles selected by the last start or Git deployment.
      *
      * Reads the `running_profiles` metadata file written by compose.sh on
-     * successful `up` or `update` operations.
+     * successful `up` or Git deployment operations. Scoped updates leave it unchanged.
      *
      * @return string[]
      */
@@ -3932,6 +4014,50 @@ class StackInfo
     }
 
     /**
+     * Resolved build sections for services that build locally, including
+     * services behind profiles (hasBuildConfig() only sees default ones).
+     *
+     * @return array<string, array{build: array<string, mixed>, image: ?string, platform?: string}> Keyed by service name
+     */
+    public function getBuildConfigs(): array
+    {
+        $args = $this->buildComposeArgs();
+        require_once __DIR__ . '/ProcessRunner.php';
+        $command = ['docker', 'compose'];
+        foreach ($args['filePaths'] as $file) {
+            array_push($command, '-f', $file);
+        }
+        if (isset($args['envFilePath'])) {
+            array_push($command, '--env-file', $args['envFilePath']);
+        }
+        array_push($command, '-p', $args['projectName'], '--profile', '*', 'config', '--format', 'json');
+        $result = ProcessRunner::run($command, $args['projectDirectory'], getenv(), 60);
+        if (!$result->succeeded()) {
+            throw new RuntimeException("Unable to resolve build configuration for {$this->projectFolder}: " . $result->errorSummary());
+        }
+        try {
+            $config = json_decode($result->stdout, true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException $e) {
+            throw new RuntimeException("Invalid Compose configuration for {$this->projectFolder}.", 0, $e);
+        }
+        if (!is_array($config) || !is_array($config['services'] ?? null)) {
+            throw new RuntimeException("Missing Compose services configuration for {$this->projectFolder}.");
+        }
+        $builds = [];
+        foreach ($config['services'] as $service => $definition) {
+            if (!is_array($definition) || !is_array($definition['build'] ?? null)) {
+                continue;
+            }
+            $image = trim((string) ($definition['image'] ?? ''));
+            $builds[(string) $service] = ['build' => $definition['build'], 'image' => $image !== '' ? $image : null];
+            if (is_string($definition['platform'] ?? null) && $definition['platform'] !== '') {
+                $builds[(string) $service]['platform'] = $definition['platform'];
+            }
+        }
+        return $builds;
+    }
+
+    /**
      * Check whether the cached `has_build` metadata file is stale.
      *
      * Compares filemtime of the cache file against the compose file (and
@@ -4329,26 +4455,46 @@ class StackInfo
      * containers.
      *
      * @param string|null $projectName One project, or null for every compose project
+     * @param bool $strict Fail rather than report an empty snapshot on command/parse errors
      * @return array<string, array[]> Rows by project name
      */
-    public static function containersByProject(?string $projectName = null): array
+    public static function containersByProject(?string $projectName = null, bool $strict = false): array
     {
         $filter = 'label=com.docker.compose.project' . ($projectName === null ? '' : '=' . $projectName);
         $containersByProject = [];
-        $psOutput = shell_exec('docker ps -a --filter ' . escapeshellarg($filter) . ' --format json 2>/dev/null');
+        if ($strict) {
+            require_once __DIR__ . '/ProcessRunner.php';
+            $result = ProcessRunner::run(
+                ['docker', 'ps', '-a', '--filter', $filter, '--format', 'json'],
+                __DIR__, getenv(), 60
+            );
+            if (!$result->succeeded()) {
+                throw new RuntimeException('Unable to enumerate Compose containers: ' . $result->errorSummary());
+            }
+            $psOutput = $result->stdout;
+        } else {
+            $psOutput = shell_exec('docker ps -a --filter ' . escapeshellarg($filter) . ' --format json 2>/dev/null');
+        }
         if ($psOutput) {
             foreach (explode("\n", trim($psOutput)) as $line) {
                 if ($line === '') {
                     continue;
                 }
-                $ct = @json_decode($line, true);
-                if (!$ct) {
+                $ct = $strict ? json_decode($line, true, 512, JSON_THROW_ON_ERROR) : @json_decode($line, true);
+                if ($strict && (!is_array($ct) || !is_string($ct['Labels'] ?? null)
+                    || !is_string($ct['Names'] ?? null) || trim($ct['Names']) === ''
+                    || !is_string($ct['Image'] ?? null) || trim($ct['Image']) === '')) {
+                    throw new RuntimeException('Invalid Docker container row in update snapshot.');
+                }
+                if (!is_array($ct) || !$ct) {
                     continue;
                 }
                 // Extract project name from Labels string
                 $labels = $ct['Labels'] ?? '';
                 if (preg_match('/com\.docker\.compose\.project=([^,]+)/', $labels, $m)) {
                     $containersByProject[$m[1]][] = $ct;
+                } elseif ($strict) {
+                    throw new RuntimeException('Missing Compose project label in update snapshot.');
                 }
             }
         }

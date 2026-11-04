@@ -47,9 +47,6 @@ if ($marker) {
     file_put_contents($marker, json_encode([
         'argv' => $argv,
         'parallelLimit' => getenv('COMPOSE_PARALLEL_LIMIT'),
-        'credentialId' => getenv('COMPOSE_CREDENTIAL_ID'),
-        'composeFiles' => getenv('COMPOSE_FILE_LIST'),
-        'envFile' => getenv('COMPOSE_ENV_FILE'),
     ]));
 }
 exit(0);
@@ -110,6 +107,8 @@ PHP;
         mkdir($path, 0755, true);
         file_put_contents($path . '/docker-compose.yml', "services:\n web:\n  image: busybox\n");
         file_put_contents($path . '/credential_id', 'scheduled-credential');
+        file_put_contents($path . '/build_on_update', 'true');
+        file_put_contents($path . '/running_profiles', 'active');
 
         // Create autoupdate.json with entry scheduled for now
         // Use a deterministic due time to avoid timezone mismatches in runner logic.
@@ -134,8 +133,18 @@ PHP;
         $payload = json_decode((string) file_get_contents((string) $this->markerPath), true);
         $this->assertIsArray($payload);
         $this->assertSame('2', $payload['parallelLimit']);
-        $this->assertSame('scheduled-credential', $payload['credentialId']);
-        $this->assertSame(\StackInfo::sanitizeProjectString($stack), $payload['argv'][2] ?? null);
+        $this->assertContains('--credential-id', $payload['argv']);
+        $this->assertContains('scheduled-credential', $payload['argv']);
+        $this->assertContains('-p' . \StackInfo::sanitizeProjectString($stack), $payload['argv']);
+        $this->assertContains('--automatic-update', $payload['argv']);
+        $this->assertContains('--build', $payload['argv']);
+        $this->assertNotContains('-gactive', $payload['argv']);
+        $expected = \StackUpdateService::buildUpdateCommand(
+            \StackInfo::fromProject($compose_root, $stack),
+            \parse_plugin_cfg('compose.manager'),
+            ['automatic' => true]
+        );
+        $this->assertSame(array_slice($expected, 1), array_slice($payload['argv'], 2));
 
         // Verify runner considered this stack due and recorded last_run.
         $updated = json_decode((string) file_get_contents((string) $this->autoUpdateConfigFile), true);
@@ -199,9 +208,11 @@ PHP;
         }
         $this->assertFileExists($this->markerPath);
         $payload = json_decode(file_get_contents((string) $this->markerPath), true);
-        $this->assertSame($runtime, $payload['argv'][2]);
-        $this->assertSame(implode(PATH_SEPARATOR, $files), $payload['composeFiles']);
-        $this->assertSame($env, $payload['envFile']);
+        $this->assertContains('-p' . $runtime, $payload['argv']);
+        foreach ($files as $file) {
+            $this->assertContains('-f' . $file, $payload['argv']);
+        }
+        $this->assertContains('-e' . $env, $payload['argv']);
         $this->assertArrayHasKey('last_run', $updated[$path]);
     }
 }

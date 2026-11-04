@@ -9,6 +9,7 @@
 
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Defines.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Util.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/StackUpdateService.php");
 require_once("/usr/local/emhttp/plugins/dynamix/include/Wrappers.php");
 
 /**
@@ -208,29 +209,6 @@ function resolveStackWaitSettings(string $stackPath, array $cfg): array
 }
 
 /**
- * Resolve whether `update` should rebuild buildable services for a stack.
- *
- * Compose only builds automatically when an image is missing, so forcing
- * `--build` breaks stacks that publish an image alongside an unbuildable
- * `build:` section (see issue #149). Opt-in per stack, global default otherwise.
- *
- * @param array<string, mixed> $cfg
- */
-function resolveStackBuildOnUpdate(string $stackPath, array $cfg): bool
-{
-    $buildFile = rtrim($stackPath, '/') . '/build_on_update';
-
-    if (is_file($buildFile)) {
-        $raw = trim((string) file_get_contents($buildFile));
-        if ($raw !== '') {
-            return ($raw === 'true' || $raw === '1');
-        }
-    }
-
-    return (($cfg['BUILD_ON_UPDATE_DEFAULT'] ?? 'false') === 'true');
-}
-
-/**
  * Build and echo a compose command for a single stack.
  *
  * @param string $action The compose action (up, down, update, pull, stop, logs)
@@ -261,7 +239,6 @@ function echoComposeCommand($action, array $options = [])
     $followLogs = !empty($options['followLogs']);
     $waitForHealthy = false;
     $waitTimeout = (string) ($cfg['WAIT_FOR_HEALTHY_TIMEOUT_DEFAULT'] ?? '300');
-    $buildOnUpdate = ($action === 'update') && resolveStackBuildOnUpdate($path, $cfg);
     if ($action === 'up') {
         $resolvedWait = resolveStackWaitSettings($path, $cfg);
         $waitForHealthy = !empty($resolvedWait['enabled']);
@@ -309,59 +286,62 @@ function echoComposeCommand($action, array $options = [])
             return;
         }
 
-        $args = $stackInfo->buildComposeArgs();
-
-        $composeCommand[] = "-c" . $action;
-        $composeCommand[] = "-p" . $args['projectName'];
-        appendComposeFileArgs($composeCommand, $args);
-
-        // Prune orphaned services from override before compose up
-        if ($action === 'up') {
-            $stackInfo->pruneOrphanOverrideServices();
-        }
-
-        if ($removeOrphans && ($action === 'up' || $action === 'down')) {
-            $composeCommand[] = '--remove-orphans';
-        }
-
-        appendComposeEnvFileArg($composeCommand, $args);
-
-        if (in_array($action, ['up', 'update', 'pull'], true)) {
-            $credentialId = trim((string) ($stackInfo->getCredentialId() ?? ''));
-            if ($credentialId !== '') {
-                $composeCommand[] = '--credential-id';
-                $composeCommand[] = $credentialId;
+        if ($action === 'update') {
+            $updateOptions = ['recreate' => $recreate];
+            if (isset($_POST['includeStopped'])) {
+                $updateOptions['includeStopped'] = (string) $_POST['includeStopped'] === '1';
             }
-        }
+            $composeCommand = StackUpdateService::buildUpdateCommand($stackInfo, $cfg, $updateOptions);
+        } else {
+            $args = $stackInfo->buildComposeArgs();
 
-        // Support multiple profiles (comma-separated)
-        if ($profile) {
-            $profileList = array_map('trim', explode(',', $profile));
-            foreach ($profileList as $p) {
-                if ($p) {
-                    $composeCommand[] = "-g" . $p;
+            $composeCommand[] = "-c" . $action;
+            $composeCommand[] = "-p" . $args['projectName'];
+            appendComposeFileArgs($composeCommand, $args);
+
+            // Prune orphaned services from override before compose up
+            if ($action === 'up') {
+                $stackInfo->pruneOrphanOverrideServices();
+            }
+
+            if ($removeOrphans && ($action === 'up' || $action === 'down')) {
+                $composeCommand[] = '--remove-orphans';
+            }
+
+            appendComposeEnvFileArg($composeCommand, $args);
+
+            if (in_array($action, ['up', 'pull'], true)) {
+                $credentialId = trim((string) ($stackInfo->getCredentialId() ?? ''));
+                if ($credentialId !== '') {
+                    $composeCommand[] = '--credential-id';
+                    $composeCommand[] = $credentialId;
                 }
             }
-        }
 
-        // Pass stack path for timestamp saving
-        $composeCommand[] = "-s$path";
+            // Support multiple profiles (comma-separated)
+            if ($profile) {
+                $profileList = array_map('trim', explode(',', $profile));
+                foreach ($profileList as $p) {
+                    if ($p) {
+                        $composeCommand[] = "-g" . $p;
+                    }
+                }
+            }
 
-        // Add recreate flag if requested
-        if ($recreate) {
-            $composeCommand[] = "--recreate";
-        }
+            // Pass stack path for timestamp saving
+            $composeCommand[] = "-s$path";
 
-        if ($debug) {
-            $composeCommand[] = "--debug";
-        }
+            if ($recreate) {
+                $composeCommand[] = "--recreate";
+            }
 
-        if ($action === 'up' && $followLogs) {
-            $composeCommand[] = "--follow-logs";
-        }
+            if ($debug) {
+                $composeCommand[] = "--debug";
+            }
 
-        if ($buildOnUpdate) {
-            $composeCommand[] = "--build";
+            if ($action === 'up' && $followLogs) {
+                $composeCommand[] = "--follow-logs";
+            }
         }
 
         if ($action === 'up' && $waitForHealthy) {
@@ -656,60 +636,50 @@ function echoComposeCommandMultiple($action, array $options = [])
         }
 
         $stackNames[] = $stackInfo->getName();
-        $args = $stackInfo->buildComposeArgs();
-
-        $composeCommand[] = "-c" . $action;
-        $composeCommand[] = "-p" . $args['projectName'];
-        appendComposeFileArgs($composeCommand, $args);
-
-        // Prune orphaned services from override before compose up
-        if ($action === 'up') {
-            $stackInfo->pruneOrphanOverrideServices();
-        }
-
-        if ($removeOrphans && ($action === 'up' || $action === 'down')) {
-            $composeCommand[] = '--remove-orphans';
-        }
-
-        appendComposeEnvFileArg($composeCommand, $args);
-
-        if (in_array($action, ['up', 'update', 'pull'], true)) {
-            $credentialId = trim((string) ($stackInfo->getCredentialId() ?? ''));
-            if ($credentialId !== '') {
-                $composeCommand[] = '--credential-id';
-                $composeCommand[] = $credentialId;
+        if ($action === 'update') {
+            $updateOptions = [
+                'recreate' => !empty($options['recreate']),
+            ];
+            if (isset($_POST['includeStopped'])) {
+                $updateOptions['includeStopped'] = (string) $_POST['includeStopped'] === '1';
             }
-        }
+            $composeCommand = StackUpdateService::buildUpdateCommand($stackInfo, $cfg, $updateOptions);
+        } else {
+            $args = $stackInfo->buildComposeArgs();
 
-        // Profile selection per action:
-        //  - up:     use user-configured default profiles (running_profiles
-        //            is stale/absent when the stack isn't running).
-        //  - update: preserve the currently active profile set so the same
-        //            services are recreated; fall back to defaults on first run.
-        //  - down:   wildcard * ensures every profiled service is torn down,
-        //            regardless of what was recorded or configured.
-        if ($action === 'down') {
-            $composeCommand[] = "-g*";
-        } elseif ($action === 'update') {
-            $profiles = $stackInfo->getRunningProfiles();
-            if (empty($profiles)) {
-                $profiles = $stackInfo->getDefaultProfiles();
+            $composeCommand[] = "-c" . $action;
+            $composeCommand[] = "-p" . $args['projectName'];
+            appendComposeFileArgs($composeCommand, $args);
+
+            if ($action === 'up') {
+                $stackInfo->pruneOrphanOverrideServices();
             }
+
+            if ($removeOrphans && ($action === 'up' || $action === 'down')) {
+                $composeCommand[] = '--remove-orphans';
+            }
+
+            appendComposeEnvFileArg($composeCommand, $args);
+
+            if (in_array($action, ['up', 'pull'], true)) {
+                $credentialId = trim((string) ($stackInfo->getCredentialId() ?? ''));
+                if ($credentialId !== '') {
+                    $composeCommand[] = '--credential-id';
+                    $composeCommand[] = $credentialId;
+                }
+            }
+
+            // Down includes all profiles; starting uses the configured defaults.
+            $profiles = $action === 'down' ? ['*'] : $stackInfo->getDefaultProfiles();
             foreach ($profiles as $p) {
                 $composeCommand[] = "-g" . $p;
             }
-        } else {
-            // 'up' and any future actions
-            foreach ($stackInfo->getDefaultProfiles() as $p) {
-                $composeCommand[] = "-g" . $p;
+
+            $composeCommand[] = "-s" . $path;
+
+            if ($debug) {
+                $composeCommand[] = "--debug";
             }
-        }
-
-        // Pass stack path for timestamp saving
-        $composeCommand[] = "-s" . $path;
-
-        if ($debug) {
-            $composeCommand[] = "--debug";
         }
 
         $commands[] = $composeCommand;

@@ -11,7 +11,7 @@
 . "$(dirname "$0")/common.sh"
 
 COMPOSE_SH="$(dirname "$0")/compose.sh"
-NOTIFY="/usr/local/emhttp/webGui/scripts/notify"
+NOTIFY="${COMPOSE_NOTIFY_SCRIPT:-/usr/local/emhttp/webGui/scripts/notify}"
 
 # Parse stack path (-s) from the argument list so we know where to write the log
 STACK_PATH=""
@@ -67,8 +67,28 @@ fi
 
 # Run compose.sh, capturing all output (stdout + stderr) and appending to the log
 composeLogger "Background $OPERATION starting for $PROJECT_NAME" info compose daemon
-sh "$COMPOSE_SH" "$@" >> "$LOG_FILE" 2>&1
+OUTCOME_FILE=""
+OUTCOME=""
+if [ "$OPERATION" = update ]; then
+  if ! OUTCOME_FILE=$(mktemp); then
+    composeLogger "Could not create background update outcome file" error compose daemon
+    exit 1
+  fi
+  trap 'rm -f "$OUTCOME_FILE"' EXIT
+  set -- "$@" --update-outcome-file "$OUTCOME_FILE"
+fi
+bash "$COMPOSE_SH" "$@" >> "$LOG_FILE" 2>&1
 RC=$?
+if [ "$RC" -eq 0 ] && [ "$OPERATION" = update ]; then
+  OUTCOME=$(cat "$OUTCOME_FILE")
+  case "$OUTCOME" in
+    updated|unchanged|skipped|partial) ;;
+    *)
+      echo "Update returned an invalid outcome: $OUTCOME" >> "$LOG_FILE"
+      RC=1
+      ;;
+  esac
+fi
 
 {
   echo ""
@@ -81,7 +101,19 @@ RC=$?
 # Lock is released automatically when fd 9 closes (script exits)
 
 # Send Unraid notification
-if [ $RC -eq 0 ]; then
+if [ "$RC" -eq 0 ] && [ "$OUTCOME" = partial ]; then
+  MSG="Some services in '$PROJECT_NAME' were skipped for safety. Review the update log."
+  composeLogger "$MSG" warning compose daemon
+  if [ -x "$NOTIFY" ]; then
+    "$NOTIFY" -e 'Compose Manager' -s "Stack update incomplete: $PROJECT_NAME" -d "$MSG" -i warning
+  fi
+elif [ "$RC" -eq 0 ] && [ "$OUTCOME" = skipped ]; then
+  MSG="No eligible services in '$PROJECT_NAME'; no images or containers changed."
+  composeLogger "$MSG" info compose daemon
+  if [ -x "$NOTIFY" ]; then
+    "$NOTIFY" -e 'Compose Manager' -s "Stack update skipped: $PROJECT_NAME" -d "$MSG"
+  fi
+elif [ $RC -eq 0 ]; then
   MSG="Stack '$PROJECT_NAME' ($OPERATION) completed successfully."
   composeLogger "$MSG" info compose daemon
   if [ -x "$NOTIFY" ]; then

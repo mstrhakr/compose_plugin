@@ -329,6 +329,221 @@ if ($cpuCount <= 0) {
         position: relative;
         z-index: 1;
     }
+    .sweet-alert.compose-update-dialog {
+        box-sizing: border-box;
+        width: min(1040px, calc(100vw - 32px)) !important;
+        max-width: calc(100vw - 32px) !important;
+        margin-left: 0 !important;
+        margin-top: 0 !important;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%) !important;
+        max-height: calc(100vh - 32px);
+        overflow-y: auto;
+        padding: 20px 24px;
+        text-align: left;
+    }
+
+    .sweet-alert.compose-update-dialog.showSweetAlert {
+        display: flex !important;
+        flex-direction: column;
+    }
+
+    .sweet-alert.compose-update-dialog h2 {
+        flex-shrink: 0;
+        margin: 0 0 16px;
+        font-size: 24px;
+        line-height: 1.3;
+        overflow-wrap: anywhere;
+    }
+
+    .sweet-alert.compose-update-dialog > p {
+        /* SweetAlert sets display:block inline when it opens HTML content. */
+        display: flex !important;
+        flex-direction: column;
+        min-height: 0;
+        overflow-y: auto;
+        width: auto;
+        margin: 0;
+        padding: 0;
+        text-align: left;
+        line-height: 1.5;
+        white-space: normal;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-content {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-content > :not(.compose-update-table-wrap) {
+        flex-shrink: 0;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-table-wrap {
+        flex: 0 1 auto;
+        min-height: 80px;
+        margin: 16px 0;
+        padding: 0;
+        overflow: auto;
+        border: 1px solid var(--dynamix-box-inner-div-border-color, #666);
+        border-radius: 6px;
+        scrollbar-gutter: stable;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-table {
+        width: 100%;
+        margin: 0;
+        table-layout: fixed;
+        border-collapse: separate;
+        border-spacing: 0;
+        font-size: 13px;
+        text-align: left;
+        line-height: 1.5;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-table th,
+    .sweet-alert.compose-update-dialog .compose-update-table td {
+        box-sizing: border-box;
+        padding: 12px;
+        vertical-align: top;
+        border-bottom: 1px solid var(--dynamix-box-inner-div-border-color, #666);
+        white-space: normal !important;
+        overflow-wrap: anywhere;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-table thead {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        background-color: var(--dynamix-tablesorter-thead-th-bg-color);
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-table th {
+        background-color: var(--dynamix-tablesorter-thead-th-bg-color);
+        color: var(--dynamix-tablesorter-thead-th-text-color);
+        font-size: 12px;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-table tbody tr,
+    .sweet-alert.compose-update-dialog .compose-update-table tbody td {
+        background-color: var(--dynamix-tablesorter-tbody-row-bg-color);
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-table tbody tr:nth-child(even),
+    .sweet-alert.compose-update-dialog .compose-update-table tbody tr:nth-child(even) td {
+        background-color: var(--dynamix-tablesorter-tbody-row-alt-bg-color);
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-table th:nth-child(1) { width: 38%; }
+    .sweet-alert.compose-update-dialog .compose-update-table th:nth-child(2) { width: 27%; }
+    .sweet-alert.compose-update-dialog .compose-update-table th:nth-child(3) { width: 35%; }
+    .sweet-alert.compose-update-dialog .compose-update-table tr:last-child td { border-bottom: 0; }
+
+    .sweet-alert.compose-update-dialog .compose-update-service {
+        display: flex;
+        gap: 10px;
+        align-items: flex-start;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-service > div {
+        min-width: 0;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-service img {
+        width: 28px;
+        height: 28px;
+        flex: 0 0 28px;
+        object-fit: contain;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-reference,
+    .sweet-alert.compose-update-dialog .compose-update-explanation {
+        margin: 4px 0;
+        font-size: 12px;
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-digests {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 100px);
+        gap: 6px 12px;
+        margin: 0;
+        font-size: 12px;
+        line-height: 1.5;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-digests dt,
+    .sweet-alert.compose-update-dialog .compose-update-digests dd {
+        float: none;
+        position: static;
+        width: auto;
+        min-width: 0;
+        margin: 0;
+        padding: 0;
+        text-align: left;
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-digests dt {
+        font-weight: normal;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-digests code {
+        padding: 0;
+        font-size: 11px;
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-options {
+        padding-top: 12px;
+        border-top: 1px solid var(--dynamix-box-inner-div-border-color, #666);
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-background {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-options label {
+        cursor: pointer;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-options input {
+        flex-shrink: 0;
+        margin: 0;
+    }
+
+    .sweet-alert.compose-update-dialog .sa-button-container {
+        position: static;
+        flex-shrink: 0;
+        padding-top: 12px;
+        border-top: 1px solid var(--dynamix-box-inner-div-border-color, #666);
+        text-align: right;
+    }
+
+    @media (max-width: 640px) {
+        .sweet-alert.compose-update-dialog { padding: 14px; }
+        .sweet-alert.compose-update-dialog .compose-update-table thead { display: none; }
+        .sweet-alert.compose-update-dialog .compose-update-table,
+        .sweet-alert.compose-update-dialog .compose-update-table tbody,
+        .sweet-alert.compose-update-dialog .compose-update-table tr,
+        .sweet-alert.compose-update-dialog .compose-update-table td {
+            display: block;
+            width: 100%;
+        }
+        .sweet-alert.compose-update-dialog .compose-update-table td { border: 0; padding: 8px 12px; }
+        .sweet-alert.compose-update-dialog .compose-update-table tr + tr {
+            border-top: 1px solid var(--dynamix-box-inner-div-border-color, #666);
+        }
+        .sweet-alert.compose-update-dialog .compose-update-table td + td { padding-top: 0; }
+        .sweet-alert.compose-update-dialog .compose-update-digests { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    }
 </style>
 
 <?php
@@ -342,6 +557,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 <script src="<?php autov('/plugins/compose.manager/javascript/js-yaml/js-yaml.min.js'); ?>" type="text/javascript"></script>
 <script src="<?php autov('/plugins/compose.manager/javascript/common.js'); ?>" type="text/javascript"></script>
 <script src="<?php autov('/plugins/compose.manager/javascript/composeIcons.js'); ?>" type="text/javascript"></script>
+<script src="<?php autov('/plugins/compose.manager/javascript/composeUpdateStatus.js'); ?>" type="text/javascript"></script>
 <script src="<?php autov('/plugins/compose.manager/javascript/composeSortable.js'); ?>" type="text/javascript"></script>
 <script src="<?php autov('/plugins/compose.manager/javascript/composeStackUtils.js'); ?>" type="text/javascript"></script>
 <?php if (file_exists('/usr/local/emhttp/plugins/docker.versions/styles/styles.css')): ?>
@@ -842,7 +1058,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                             <label for="settings-build-on-update">Rebuild Images on Update</label>
                             <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
                                 <input type="checkbox" id="settings-build-on-update">
-                                <span>Add <code>--build</code> to <code>docker compose up</code> when updating</span>
+                                <span>Build application images with the latest base images before recreating eligible services</span>
                             </label>
                             <div class="settings-field-help">Enable only for stacks whose images are built locally. Leave unchecked for stacks that publish an image alongside a <code>build:</code> section &mdash; those are pulled instead, matching plain <code>docker compose up</code>.</div>
                         </div>

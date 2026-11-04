@@ -144,6 +144,30 @@ final class GitStackInfoTest extends TestCase
         $this->assertFalse($this->stack()->hasBuildConfig());
     }
 
+    public function testBuildConfigsIncludeServicesBehindProfiles(): void
+    {
+        exec('docker compose version 2>/dev/null', $output, $exitCode);
+        if ($exitCode !== 0) {
+            $this->markTestSkipped('docker compose is not available.');
+        }
+        mkdir($this->clone . '/whoami/app');
+        file_put_contents($this->clone . '/whoami/app/Dockerfile', "FROM alpine:3.20\n");
+        file_put_contents(
+            $this->clone . '/whoami/compose.yaml',
+            "services:\n  whoami:\n    image: traefik/whoami\n  app:\n    build: ./app\n    platform: linux/arm64\n    profiles: [dev]\n"
+        );
+        // The default-profile build check found nothing and cached that.
+        file_put_contents($this->stackDir . '/has_build', '0');
+        touch($this->stackDir . '/has_build', time() + 60);
+
+        $builds = $this->stack()->getBuildConfigs();
+
+        $this->assertSame(['app'], array_keys($builds));
+        $this->assertNull($builds['app']['image']);
+        $this->assertSame($this->clone . '/whoami/app', $builds['app']['build']['context']);
+        $this->assertSame('linux/arm64', $builds['app']['platform']);
+    }
+
     public function testMissingOverridesAreLeftOut(): void
     {
         @unlink($this->stackDir . '/compose.override.yaml');
@@ -151,6 +175,33 @@ final class GitStackInfoTest extends TestCase
         $paths = $this->stack()->buildComposeArgs()['filePaths'];
 
         $this->assertSame([$this->clone . '/whoami/compose.yaml'], $paths);
+    }
+
+    public function testBuildConfigFailuresAreNotAnEmptyBuildMap(): void
+    {
+        $bin = $this->createTempDir();
+        $path = getenv('PATH');
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        try {
+            foreach ([
+                ['echo invalid-compose >&2; exit 7', 'Unable to resolve build configuration'],
+                ['echo not-json', 'Invalid Compose configuration'],
+                ['echo "{}"', 'Missing Compose services configuration'],
+            ] as [$command, $message]) {
+                file_put_contents($bin . '/docker', "#!/bin/sh\n$command\n");
+                chmod($bin . '/docker', 0755);
+                try {
+                    $this->stack()->getBuildConfigs();
+                    $this->fail('Invalid Compose output must fail explicitly.');
+                } catch (\RuntimeException $e) {
+                    $this->assertStringContainsString($message, $e->getMessage());
+                }
+            }
+            file_put_contents($bin . '/docker', "#!/bin/sh\necho warning >&2\necho '{\"services\":{}}'\n");
+            $this->assertSame([], $this->stack()->getBuildConfigs(), 'Successful config warnings must not corrupt JSON.');
+        } finally {
+            putenv('PATH=' . $path);
+        }
     }
 
     public function testOverrideEditsGoToTheStackFolder(): void

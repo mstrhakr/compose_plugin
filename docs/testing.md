@@ -66,6 +66,26 @@ Known image-check results replace older results, including `hasUpdate: false` an
 
 An image without a conclusive check is shown as **unchecked**, not **up-to-date**. Incomplete checks log whether the local or remote config digest was unavailable. Each container's actual image ID is compared with the remote config digest, so pulling a tag without recreating the container cannot hide its pending update. Registry checks are batched by image reference, but replicas are compared separately. The checker compares platform-specific image config digests, so a changed multi-architecture index alone does not imply an update for this host. Digest-pinned image behavior is unchanged.
 
+Review regressions cover explicit automatic project directories with single files
+and file lists; inspected references when Docker lists short image IDs; application
+registry failure preserving pending evidence; pinned bases without fabricated
+remote IDs; multiple heredocs; and image-backed versus unsupported named contexts.
+Platform tests exercise real local manifest/config files for amd64 and arm64,
+FROM/Compose/ARG platform selection, stage aliases, both platform-keyed caches,
+missing architectures and ARM variants, single-architecture mismatches, and
+isolation from Unraid's host-only shared cache. These are deterministic fixture
+checks, not a live cross-architecture Docker build.
+
+Second-review regressions cover relative workdirs in direct and legacy automatic
+invocations; punctuation-prefixed service names with positional option delimiters
+in manual/automatic pull, build, config, up, and cleanup paths; strict enumeration
+errors preserving the saved file byte-for-byte; and successful empty snapshots
+clearing removed-container evidence. Individual and bulk checks use the same
+Docker rows even when an older Compose fixture omits labels. One-off jobs remain
+visible through repeated expansion, but cannot regain pending status from shared
+or saved evidence, overwrite service metadata, or contribute to browser update
+totals. Regular services retain their normal update behavior.
+
 Plugin-written shared-cache entries include `configDigest`, bound to the remote
 config digest value. Runtime refreshes compare the actual container image ID
 only when that value matches `remote`. Unmarked native/legacy entries retain
@@ -97,6 +117,73 @@ npx playwright test tests/compose-update-state.spec.ts --project chromium
 The scheduled auto-update runner also checks running containers against their current image tags after pulling, including tags pulled earlier by another process. Its focused shell regressions run with `bats tests/unit/compose.bats`; stopped stacks remain stopped.
 
 The browser regressions cover known/unknown merges, image changes, incomplete-check presentation, polling retries after request/parse failures, failed action dispatch, and runtime-state ordering during row refresh.
+
+### Update UI Pre-PR and Integration Gates
+
+Run the update browser suites together, without a live host or saved credentials:
+
+```bash
+cd tests/e2e
+npm test -- tests/compose-update-state.spec.ts tests/compose-update-evidence-flow.spec.ts tests/compose-update-layout.spec.ts
+```
+
+These execute production frontend functions using isolated DOM/transport adapters:
+
+- The Node fixture (`node tests/fixtures/update-ui.cjs`, also run by update Bats)
+  deterministically completes details/check responses in both orders for published
+  and build-base images. Fresh unknown results must win over older browser history.
+- Browser evidence flows check readiness through check, expand, collapse, re-expand,
+  and a real browser reload using mocked server-owned evidence. Recreating the
+  application image during an in-flight check must not attach old-image evidence
+  to the replacement, even when its service/name/tag are unchanged.
+- PHP endpoint regressions cover Docker ps returning a short application image ID
+  while inspection returns its original tag. The exact pending-base case runs the
+  real layer comparison with a fixture remote base, persists the Rebuild result,
+  then repeatedly reads saved status and expanded containers. Both must retain
+  pending state, build-base kind, readiness and image evidence without rechecking.
+- Layout tests cover light/dark theme rules, long image references, 1/2/18-service
+  stacks, desktop/phone viewports, and a reduced 854x480 viewport approximating the
+  available CSS space at 150% desktop zoom. This is not a native browser-zoom test.
+  The fixture reproduces SweetAlert's inline `display:block` content style.
+  Service scrolling must not move the footer or make the dialog itself scroll.
+  At constrained heights the content body may also scroll to expose options;
+  that scroll must likewise leave the footer fixed outside the content.
+
+The adapters do **not** substitute for running the complete page and the actual
+Unraid SweetAlert library together. Retain the following live-host gates:
+
+- [ ] Confirm checkbox defaults and confirmation payload, Cancel/Escape without
+  dispatch, keyboard focus/Tab behavior, and reopening details after Changelog.
+- [ ] Verify actual light/dark themes and native browser zoom, including footer
+  visibility and keyboard access through long service lists.
+- [ ] Check normal-image and build-only stacks, a stopped sibling, mixed replicas,
+  and a long background build. Checks must remain read-only; updates must mutate
+  only eligible existing services. A terminal reconnect alone is not proof of a
+  command timeout: inspect the last command log and operation result on failure.
+
+After rebasing `fix/ui-runtime-consistency` onto the merged update branch, add
+combined-code tests rather than copying the other branch's runtime owner here:
+
+- [ ] Cross runtime-request generations with update-check revisions in both
+  response orders. Stale runtime data must not replace newer runtime state, stale
+  evidence must not replace newer checks, and neither guard may discard valid
+  independent changes owned by the other.
+- [ ] Queued/running dispatch receipts must not imply completion. Completed
+  actions must reconcile affected stacks and invalidate obsolete evidence even
+  after terminal close/reconnect; failed completion must never imply success.
+- [ ] Update stack A while checking stack B. Preserve B's progress, evidence,
+  and expanded/collapsed state.
+- [ ] Failed dispatch, runtime refresh, and update checks must release busy
+  controls, retain truthful status, and permit retry.
+- [ ] Run both branches' update-state, runtime-consistency, and operation-state
+  suites together, followed by canonical `bash test.sh`.
+
+PR handoff: describe the update-evidence/runtime-reconciliation ownership boundary,
+the above deferred gates, and actual test scope in the PR body. The last checked
+merge preview against `fix/ui-runtime-consistency` conflicted in
+`composeManagerMain.js`, `Helpers.php`, and `ExecActionsTest.php`; this is a snapshot,
+not a guarantee about future tips. Resolve deliberately, preserving both freshness
+guards and completion receipts. A clean textual merge is not a behavior test.
 
 ### Archived Plugin Migration
 

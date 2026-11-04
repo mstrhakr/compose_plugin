@@ -431,11 +431,7 @@ foreach ($stackInfos as $stackInfo) {
 
     // Update column (like Docker tab) - default to "not checked" until update check runs
     $updateCell = "<td class='col-update compose-updatecolumn'>";
-    if ($isrunning) {
-        $updateCell .= "<span class='grey-text' style='white-space:nowrap;cursor:default;' title='Click Check for Updates to check'><i class='fa fa-question-circle fa-fw'></i> not checked</span>";
-    } else {
-        $updateCell .= "<span class='grey-text' style='white-space:nowrap;'><i class='fa fa-stop fa-fw'></i> stopped</span>";
-    }
+    $updateCell .= "<span class='grey-text' style='white-space:nowrap;cursor:default;' title='Click Check for Updates to check'><i class='fa fa-question-circle fa-fw'></i> unchecked</span>";
     $updateCell .= "</td>";
     $stackCells['update'] = $updateCell;
 
