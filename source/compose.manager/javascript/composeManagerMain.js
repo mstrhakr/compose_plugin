@@ -726,7 +726,7 @@ function createStackInfo(project, containers, opts) {
  * @param {Object} prevStatus - Previously saved stack update status
  * @returns {Object} The mutated stackInfo
  */
-function mergeStackUpdateStatus(stackInfo, prevStatus) {
+function mergeStackUpdateStatus(stackInfo, prevStatus, freshCheck) {
     if (!prevStatus) return stackInfo;
 
     // Copy stack-level fields
@@ -743,14 +743,19 @@ function mergeStackUpdateStatus(stackInfo, prevStatus) {
 
     // Merge container-level update data
     if (prevStatus.containers && stackInfo.containers) {
+        var previousByName = {};
+        prevStatus.containers.forEach(function(pc) {
+            var prev = createContainerInfo(pc);
+            previousByName[prev.name] = prev;
+        });
         stackInfo.containers.forEach(function(c) {
             var cName = c.name;
-            prevStatus.containers.forEach(function(pc) {
-                var prev = (typeof pc.name === 'string') ? pc : createContainerInfo(pc);
-                if (cName === prev.name) {
-                    mergeContainerUpdateStatus(c, prev, true);
-                }
-            });
+            var unknownCheck = freshCheck && c.updateStatus !== 'up-to-date' && c.updateStatus !== 'update-available';
+            if (previousByName[cName]) mergeContainerUpdateStatus(c, previousByName[cName], true);
+            if (unknownCheck) {
+                c.updateReadiness = 'unknown';
+                c.localImageSha = '';
+            }
         });
         // Recompute stack-level hasUpdate from merged containers
         stackInfo.hasUpdate = stackInfo.containers.some(function(c) {
@@ -2317,6 +2322,14 @@ function checkAllUpdates() {
         $updateCell.html('<span class="compose-status-info" style="white-space:nowrap;"><i class="fa fa-refresh fa-spin"></i> checking...</span>');
     });
 
+    function showFailure(message) {
+        composeLogger('Update check failed', { message: message }, 'user', 'error', 'checkAllUpdates');
+        $('#updateAllBtn').prop('disabled', true);
+        $('#compose_stacks .compose-updatecolumn').each(function() {
+            $(this).html('<span class="grey-text" style="white-space:nowrap;"><i class="fa fa-exclamation-circle fa-fw"></i> check failed</span>');
+        });
+    }
+
     $.post(caURL, {
         action: 'checkAllStacksUpdates'
     }, function(data) {
@@ -2325,7 +2338,7 @@ function checkAllUpdates() {
                 var response = JSON.parse(data);
                 if (response.result === 'success' && response.stacks) {
                     Object.keys(response.stacks).forEach(function(project) {
-                        mergeStackUpdateStatus(response.stacks[project], stackUpdateStatus[project]);
+                        mergeStackUpdateStatus(response.stacks[project], stackUpdateStatus[project], true);
                     });
                     stackUpdateStatus = response.stacks;
 
@@ -2337,22 +2350,19 @@ function checkAllUpdates() {
 
                     // Enable/disable Update All button based on available updates
                     updateUpdateAllButton();
+                } else {
+                    showFailure(response.message || 'The server did not return update results.');
                 }
             } catch (e) {
-                composeLogger('Failed to parse update check response', {
-                    error: e && e.toString()
-                }, 'user', 'error', 'checkAllUpdates');
+                showFailure(e && e.toString());
             }
+        } else {
+            showFailure('The server returned an empty response.');
         }
         $('#checkUpdatesBtn').prop('disabled', false).val('Check for Updates');
     }).fail(function() {
         $('#checkUpdatesBtn').prop('disabled', false).val('Check for Updates');
-        $('#updateAllBtn').prop('disabled', true);
-        // Reset update columns to not checked state - scope to compose_stacks
-        $('#compose_stacks .compose-updatecolumn').each(function() {
-            var $cell = $(this);
-            $cell.html('<span class="grey-text" style="white-space:nowrap;cursor:default;"><i class="fa fa-exclamation-circle fa-fw"></i> check failed</span>');
-        });
+        showFailure('The update check request failed.');
     });
 }
 
@@ -2536,55 +2546,16 @@ function updateStackUpdateUI(stackName, stackInfo) {
     var stackId = $stackRow.attr('id').replace('stack-row-', '');
     var $updateCell = $stackRow.find('.compose-updatecolumn');
 
-    // Count updates and pinned containers
-    var updateCount = 0;
-    var pinnedCount = 0;
-    var unknownCount = 0;
-    var totalContainers = stackInfo.containers ? stackInfo.containers.length : 0;
-
-    if (stackInfo.containers) {
-        stackInfo.containers.forEach(function(ct) {
-            if (ct.hasUpdate) updateCount++;
-            if (ct.isPinned) pinnedCount++;
-            if (composeUpdatePresentation(ct).label === 'Unchecked') unknownCount++;
-        });
+    var presentation = composeStackUpdatePresentation(stackInfo.containers);
+    var html = composeUpdatePresentationBadge(presentation);
+    if (presentation.hasUpdate) {
+        html = '<a href="#" class="exec" aria-label="Open update details" onclick="showUpdateWarning(\'' +
+            composeEscapeAttr(stackName) + '\', \'' + composeEscapeAttr(stackId) + '\', \'update\');return false;">' + html + '</a>';
+    } else if (presentation.needsCheck) {
+        html = '<a href="#" class="exec" aria-label="Check for updates" onclick="checkStackUpdates(\'' +
+            composeEscapeAttr(stackName) + '\');return false;">' + html + '</a>';
     }
-
-    // Update the stack row's update column (match Docker tab style)
-    if (updateCount > 0) {
-        var counts = {};
-        stackInfo.containers.forEach(function(container) {
-            var label = composeUpdatePresentation(container).label;
-            counts[label] = (counts[label] || 0) + 1;
-        });
-        var details = Object.keys(counts).map(function(label) { return counts[label] + ' ' + label.toLowerCase(); }).join('; ');
-        var summary = updateCount + ' update' + (updateCount > 1 ? 's' : '');
-        var pending = stackInfo.containers.filter(function(container) { return container.hasUpdate; });
-        if (updateCount === 1) summary = composeUpdatePresentation(pending[0]).label;
-        var updateHtml = '<a href="#" class="exec orange-text" style="cursor:pointer;white-space:nowrap;" title="' + composeEscapeAttr(details) + '" aria-label="' + composeEscapeAttr(summary + '. ' + details + '. Open update details.') + '" onclick="showUpdateWarning(\'' + composeEscapeAttr(stackName) + '\', \'' + composeEscapeAttr(stackId) + '\', \'update\');return false;">';
-        updateHtml += '<i class="fa fa-flash fa-fw" aria-hidden="true"></i> ' + composeEscapeHtml(summary) + '</a>';
-        $updateCell.html(updateHtml);
-    } else if (unknownCount > 0) {
-        $updateCell.html('<a class="exec orange-text" style="cursor:pointer;white-space:nowrap;" onclick="checkStackUpdates(\'' + composeEscapeAttr(stackName) + '\');"><i class="fa fa-question-circle fa-fw"></i> ' + unknownCount + ' unchecked</a>');
-    } else if (totalContainers > 0) {
-        // No updates - check if all are pinned or up-to-date
-        if (pinnedCount > 0 && pinnedCount === totalContainers) {
-            // All containers are pinned
-            var html = '<span class="cyan-text" style="white-space:nowrap;"><i class="fa fa-thumb-tack fa-fw"></i> all pinned</span>';
-            $updateCell.html(html);
-        } else if (pinnedCount > 0) {
-            // Some containers pinned, rest up-to-date
-            var html = '<span class="green-text" style="white-space:nowrap;" title="' + pinnedCount + ' pinned; remaining containers current"><i class="fa fa-check fa-fw"></i> current</span>';
-            $updateCell.html(html);
-        } else {
-            // No updates, no pinned - green "up-to-date" style (like Docker tab)
-            var html = '<span class="green-text" style="white-space:nowrap;"><i class="fa fa-check fa-fw"></i> current</span>';
-            $updateCell.html(html);
-        }
-    } else {
-        // Empty check results must not imply that a stack is current.
-        $updateCell.html('<a class="exec" style="cursor:pointer;white-space:nowrap;" onclick="checkStackUpdates(\'' + composeEscapeAttr(stackName) + '\');"><i class="fa fa-question-circle fa-fw"></i> check</a>');
-    }
+    $updateCell.html(html);
 
     // Rebuild context menus to reflect update status (only target icon spans with data-stackid, not the row)
     $('[id^="stack-"][data-stackid][data-project="' + stackName + '"]').each(function() {
@@ -2648,7 +2619,7 @@ function checkStackUpdates(stackName) {
                     var stackInfo = createStackInfo(stackName, response.updates, {
                         projectName: response.projectName
                     });
-                    mergeStackUpdateStatus(stackInfo, stackUpdateStatus[stackName]);
+                    mergeStackUpdateStatus(stackInfo, stackUpdateStatus[stackName], true);
                     stackUpdateStatus[stackName] = stackInfo;
                     updateStackUpdateUI(stackName, stackInfo);
                     // Update the Update All button state

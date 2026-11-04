@@ -22,8 +22,41 @@ function composeUpdatePresentation(container) {
 }
 
 function composeUpdateBadge(container) {
-    var presentation = composeUpdatePresentation(container);
+    return composeUpdatePresentationBadge(composeUpdatePresentation(container));
+}
+
+function composeUpdatePresentationBadge(presentation) {
     return '<span class="' + presentation.color + '" style="white-space:nowrap;" title="' +
         presentation.detail + '" aria-label="' + presentation.label + ': ' + presentation.detail +
         '"><i class="fa fa-' + presentation.icon + ' fa-fw" aria-hidden="true"></i> ' + presentation.label + '</span>';
+}
+
+function composeStackUpdatePresentation(containers) {
+    containers = containers || [];
+    var counts = {};
+    var pending = [];
+    containers.forEach(function(container) {
+        var presentation = composeUpdatePresentation(container);
+        counts[presentation.label] = (counts[presentation.label] || 0) + 1;
+        if (container.hasUpdate && !container.isPinned) pending.push(presentation);
+    });
+    var detail = Object.keys(counts).map(function(label) {
+        return counts[label] + ' ' + label.toLowerCase();
+    }).join('; ');
+    var result;
+    if (pending.length === 1) {
+        result = Object.assign({}, pending[0]);
+    } else if (pending.length > 1) {
+        result = { label: pending.length + ' updates', icon: 'flash', color: 'orange-text' };
+    } else if (counts.Unchecked || containers.length === 0) {
+        result = { label: counts.Unchecked ? counts.Unchecked + ' unchecked' : 'Unchecked', icon: 'question-circle', color: 'grey-text' };
+    } else if (counts.Pinned === containers.length) {
+        result = { label: 'All pinned', icon: 'thumb-tack', color: 'cyan-text' };
+    } else {
+        result = { label: 'Current', icon: 'check', color: 'green-text' };
+    }
+    result.detail = detail || 'No checked containers.';
+    result.hasUpdate = pending.length > 0;
+    result.needsCheck = !!counts.Unchecked || containers.length === 0;
+    return result;
 }

@@ -375,14 +375,7 @@
                     var imgSrc = composeIconSrc(stack.icon);
                     var isRunning = state === 'started' || state === 'partial';
 
-                    var updateIcon, updateText, updateColor;
-                    if (stack.update === 'up-to-date') {
-                        updateIcon = 'fa-check'; updateText = 'current'; updateColor = 'green-text';
-                    } else if (stack.update === 'update-available') {
-                        updateIcon = 'fa-arrow-up'; updateText = 'update'; updateColor = 'orange-text';
-                    } else {
-                        updateIcon = 'fa-question-circle'; updateText = ''; updateColor = 'grey-text';
-                    }
+                    var updatePresentation = composeStackUpdatePresentation(stack.updateContainers);
 
                     var containerText = stack.running + '/' + stack.total;
                     var uptimeText = formatUptime(stack.startedAt, isRunning);
@@ -396,7 +389,7 @@
                     html += '<div class="compose-dash-state ' + stateColor + '"><i class="fa ' + stateIcon + '"></i> ' + stateText + '</div>';
                     html += '</span>';
                     html += '<span class="compose-dash-cols">';
-                    html += '<span class="compose-dash-col update ' + updateColor + '" title="Update status"><i class="fa ' + updateIcon + '"></i> ' + updateText + '</span>';
+                    html += '<span class="compose-dash-col update">' + composeUpdatePresentationBadge(updatePresentation) + '</span>';
                     html += '<span class="compose-dash-col containers" title="Running/Total containers">' + containerText + '</span>';
                     html += '<span class="compose-dash-col runtime" title="Uptime">' + uptimeText + '</span>';
                     html += '</span>';

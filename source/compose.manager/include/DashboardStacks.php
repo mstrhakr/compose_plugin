@@ -64,13 +64,13 @@ foreach (StackInfo::allFromRoot($compose_root) as $stackInfo) {
     $icon = $stackInfo->getIconUrl();
     $webui = $stackInfo->getWebUIUrl();
 
-    // Check update status from central update-status.json file (set by "Check for Updates" button)
+    $updateContainers = $savedUpdateStatus[$stackInfo->projectFolder]['containers'] ?? [];
     $updateStatus = 'unknown';
-    if (isset($savedUpdateStatus[$stackInfo->projectFolder])) {
-        $stackUpdateInfo = $savedUpdateStatus[$stackInfo->projectFolder];
-        if (isset($stackUpdateInfo['hasUpdate'])) {
-            $updateStatus = $stackUpdateInfo['hasUpdate'] ? 'update-available' : 'up-to-date';
-        }
+    if (array_filter($updateContainers, static fn(array $ct): bool => !empty($ct['hasUpdate']))) {
+        $updateStatus = 'update-available';
+    } elseif ($updateContainers && !array_filter($updateContainers, static fn(array $ct): bool =>
+        empty($ct['isPinned']) && ($ct['updateReadiness'] ?? 'unknown') !== 'current')) {
+        $updateStatus = 'up-to-date';
     }
 
     $summary['stacks'][] = [
@@ -82,7 +82,8 @@ foreach (StackInfo::allFromRoot($compose_root) as $stackInfo) {
         'icon' => $icon,
         'webui' => $webui,
         'startedAt' => $startedAt,
-        'update' => $updateStatus
+        'update' => $updateStatus,
+        'updateContainers' => $updateContainers,
     ];
 }
 

@@ -115,6 +115,10 @@ the main table, expanded containers, dialogs, and dashboard. Both page entry
 points load it before their renderer. Stack summaries show a single pending
 state or a total with a tooltip breakdown; dialogs label application and base
 digests separately rather than comparing unlike image IDs with an arrow.
+Main-table and dashboard stack summaries use the same presentation helper.
+Fresh unknown check results may retain pending-update history but invalidate
+local readiness evidence; cached display enrichment must not restore it.
+Bulk failures include structured server errors, empty replies, and invalid JSON.
 
 ## Troubleshooting
 

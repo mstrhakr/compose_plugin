@@ -42,7 +42,8 @@ function harness(config = {}) {
     vm.runInContext(fs.readFileSync(`${__dirname}/../../source/compose.manager/javascript/composeUpdateStatus.js`, 'utf8'), context);
     for (const name of ['composeUpdateScopeOptionHtml', 'ForceUpdateStackConfirmed', 'UpdateStackConfirmed',
         'renderStackActionDialog', 'composeUpdateDigestDetails', 'executeUpdateAllStacks', 'updateAllStacks', 'showProfileSelector',
-        'updateStackUpdateUI', 'showUpdateWarning', 'createContainerInfo', 'composeImageUpdateKey', 'mergeContainerUpdateStatus']) {
+        'updateStackUpdateUI', 'showUpdateWarning', 'createContainerInfo', 'composeImageUpdateKey', 'mergeContainerUpdateStatus',
+        'mergeStackUpdateStatus', 'checkAllUpdates']) {
         const match = source.match(new RegExp(`^function ${name}\\([^]*?\\n\\}`, 'm'));
         assert.ok(match, `Missing function ${name}`);
         vm.runInContext(match[0], context);
@@ -208,6 +209,40 @@ console.log('Update modal defaults, overrides, warning bypass, runtime details, 
     assert.match(markup, /1 unchecked/);
 }
 console.log('Compact readiness badges, mixed summaries, stopped-stack visibility, and digest labels passed.');
+
+{
+    const { context } = harness();
+    const prior = { containers: [{
+        name: 'app', image: 'app:latest', hasUpdate: true, updateStatus: 'update-available',
+        updateReadiness: 'ready-to-apply', localImageSha: 'old-evidence'
+    }] };
+    const fresh = { containers: [{ name: 'app', image: 'app:latest', updateStatus: 'unknown', updateReadiness: 'unknown' }] };
+    context.mergeStackUpdateStatus(fresh, prior, true);
+    assert.equal(fresh.hasUpdate, true, 'An unknown check retains pending history');
+    assert.equal(fresh.containers[0].updateReadiness, 'unknown');
+    assert.equal(fresh.containers[0].localImageSha, '');
+    assert.equal(context.composeStackUpdatePresentation(fresh.containers).label, 'Pending');
+    assert.equal(context.composeStackUpdatePresentation([]).label, 'Unchecked');
+    assert.equal(context.composeStackUpdatePresentation([{ isPinned: true }]).label, 'All pinned');
+    assert.equal(context.composeStackUpdatePresentation([{ updateReadiness: 'current' }, { updateReadiness: 'unknown' }]).label, '1 unchecked');
+    assert.equal(context.composeStackUpdatePresentation([{ updateReadiness: 'current' }]).label, 'Current');
+}
+for (const response of ['', 'not json', JSON.stringify({ result: 'error', message: 'Cannot save results' })]) {
+    const { context } = harness();
+    let markup = '';
+    let disabled;
+    const row = { find: () => ({ html: value => { markup = value; } }) };
+    context.composeLogger = () => {};
+    context.$ = selector => typeof selector === 'object' ? selector : ({
+        prop: (key, value) => { if (selector === '#checkUpdatesBtn') disabled = value; return context.$(selector); },
+        val: () => context.$(selector),
+        each: fn => { fn.call(selector.includes('tr.compose-sortable') ? row : { html: value => { markup = value; } }); }
+    });
+    context.$.post = (url, payload, callback) => { callback(response); return { fail: () => {} }; };
+    context.checkAllUpdates();
+    assert.match(markup, /check failed/);
+    assert.equal(disabled, false);
+}
 
 for (const action of ['update', 'forceUpdate']) {
     const h = harness();
