@@ -14,7 +14,7 @@ LOCK_TIMEOUT=${COMPOSE_LOCK_TIMEOUT:-30}
 LOCK_DIR=${COMPOSE_LOCK_DIR:-/var/run/compose.manager}
 
 SHORT=e:,c:,f:,p:,d:,o:,g:,s:,w:
-LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:,follow-logs,wait,wait-timeout:,build,credential-id:,git-commit:,save-local-changes,automatic-deploy-from:,automatic-update,update-outcome-file:
+LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:,follow-logs,wait,wait-timeout:,build,credential-id:,git-commit:,save-local-changes,automatic-deploy-from:,automatic-update,update-outcome-file:,include-stopped
 OPTS=$(getopt -a -n compose --options $SHORT --longoptions $LONG -- "$@")
 
 eval set -- "$OPTS"
@@ -40,6 +40,7 @@ git_commit=""
 save_local_changes=false
 automatic_deploy_from=""
 automatic_update=false
+include_stopped=false
 update_outcome_file=""
 
 
@@ -231,6 +232,10 @@ do
       ;;
     --automatic-update )
       automatic_update=true
+      shift;
+      ;;
+    --include-stopped )
+      include_stopped=true
       shift;
       ;;
     --update-outcome-file )

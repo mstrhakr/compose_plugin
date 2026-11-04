@@ -12,6 +12,7 @@ test_setup() {
     export COMPOSE_MANAGER_CFG_FILE="$TEST_TEMP_DIR/settings"
     export CHANGE=true BUILD_CHANGE=false STOPPED=false
     export PS_EXIT=0 INSPECT_EXIT=0 IMAGE_INSPECT_EXIT=0 PULL_EXIT=0 BUILD_PULL_EXIT=0 BUILD_EXIT=0 UP_EXIT=0
+    unset RUNTIME_ROWS CONFIG_SERVICES CONFIG_EXIT CONFIG_PROFILES
     : > "$CALLS"
     mkdir -p "$TEST_TEMP_DIR/bin" "$TEST_TEMP_DIR/stack"
     cp "$BATS_TEST_DIRNAME/../fixtures/update-docker.sh" "$TEST_TEMP_DIR/bin/docker"
@@ -36,8 +37,8 @@ run_auto_adapter() {
     export CHANGE=false BUILD_CHANGE=true
     run_auto_adapter --build -g dev
     assert_success
-    grep -F 'compose --profile dev -p stack build --pull' "$CALLS"
-    grep -F 'compose --profile dev -p stack up -d --pull never --no-build' "$CALLS"
+    grep -F 'compose --profile dev -p stack build --pull app' "$CALLS"
+    grep -F 'up -d --scale app=1 --pull never --no-deps --no-build app' "$CALLS"
     grep -F '"result":"success"' "$TEST_TEMP_DIR/stack/last_result.json"
     grep -F 'Stack updated: stack' "$NOTIFICATIONS"
 }
@@ -66,7 +67,7 @@ run_auto_adapter() {
     run bash "$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh" \
         "$TEST_TEMP_DIR/a compose.yaml" stack
     assert_success
-    grep -F "compose -f $TEST_TEMP_DIR/a compose.yaml -p stack pull --ignore-buildable" "$CALLS"
+    grep -F "compose -f $TEST_TEMP_DIR/a compose.yaml -p stack pull --ignore-buildable app" "$CALLS"
 }
 
 @test "unchanged images are never passed to cleanup" {
@@ -86,21 +87,21 @@ run_auto_adapter() {
 @test "relative script invocation still loads the shared engine after changing workdir" {
     run bash "${COMPOSE_SCRIPT#"$PWD/"}" -cupdate -pstack -w"$TEST_TEMP_DIR/stack"
     assert_success
-    grep -F 'compose -p stack up -d --pull never' "$CALLS"
+    grep -F 'up -d --scale app=1 --pull never --no-deps app' "$CALLS"
 }
 
 @test "manual updates reconcile even when image IDs are unchanged" {
     export CHANGE=false
     run_update
     assert_success
-    grep -F 'up -d --pull never' "$CALLS"
+    grep -F 'up -d --scale app=1 --pull never --no-deps app' "$CALLS"
     [ "$(cat "$TEST_TEMP_DIR/outcome")" = updated ]
 }
 
 @test "successful manual pull does not rebuild published buildable images without opt-in" {
     run_update
     assert_success
-    grep -Fx 'compose -p stack pull' "$CALLS"
+    grep -Fx 'compose -p stack pull app' "$CALLS"
     ! grep -F ' build' "$CALLS"
 }
 
@@ -116,7 +117,7 @@ run_auto_adapter() {
 @test "force update forwards force-recreate to the shared up command" {
     run_update --recreate
     assert_success
-    grep -F 'up -d --force-recreate --pull never' "$CALLS"
+    grep -F 'up -d --force-recreate --scale app=1 --pull never --no-deps app' "$CALLS"
 }
 
 @test "automatic update skips unchanged images without recreation" {
@@ -132,7 +133,7 @@ run_auto_adapter() {
     touch "$UPDATE_STATE"
     run_update --automatic-update
     assert_success
-    grep -F 'up -d --pull never --no-build' "$CALLS"
+    grep -F 'up -d --scale app=1 --pull never --no-deps --no-build app' "$CALLS"
     grep -F "rmi ${OLD_ID#sha256:}" "$CALLS"
 }
 
@@ -148,10 +149,10 @@ run_auto_adapter() {
     export CHANGE=false BUILD_CHANGE=true
     run_update --automatic-update --build -g dev
     assert_success
-    grep -F 'compose --profile dev -p stack pull --ignore-buildable' "$CALLS"
-    grep -F 'compose --profile dev -p stack build --pull' "$CALLS"
-    grep -F 'compose --profile dev -p stack up -d --pull never --no-build' "$CALLS"
-    [ "$(cat "$TEST_TEMP_DIR/stack/running_profiles")" = dev ]
+    grep -F 'compose --profile dev -p stack pull --ignore-buildable app' "$CALLS"
+    grep -F 'compose --profile dev -p stack build --pull app' "$CALLS"
+    grep -F 'up -d --scale app=1 --pull never --no-deps --no-build app' "$CALLS"
+    [ ! -f "$TEST_TEMP_DIR/stack/running_profiles" ]
     [ "$(cat "$TEST_TEMP_DIR/outcome")" = updated ]
 }
 
@@ -171,7 +172,7 @@ run_auto_adapter() {
         [ "$mode" != automatic ] || args+=(--automatic-update)
         run_update "${args[@]}"
         assert_success
-        grep -Fx 'compose -p stack build' "$CALLS"
+        grep -Fx 'compose -p stack build app' "$CALLS"
     done
 }
 
@@ -224,4 +225,153 @@ run_auto_adapter() {
     [ ! -s "$CALLS" ]
     flock -u 8
     exec 8>&-
+}
+
+@test "automatic updates target deployed profiled services without starting stopped siblings" {
+    export RUNTIME_ROWS=$'web-id|web|running|False\nbackup-id|backup|exited|False'
+    export CONFIG_SERVICES=$'web\nbackup\nundeployed'
+    export CONFIG_PROFILES=deployed
+    run_update --automatic-update --build -g wrong-default
+    assert_success
+    grep -Fx 'compose --profile wrong-default --profile deployed -p stack pull --ignore-buildable web' "$CALLS"
+    grep -F 'build --pull web' "$CALLS"
+    grep -F 'up -d --scale web=1 --pull never --no-deps --no-build web' "$CALLS"
+    ! grep -E ' (pull|build|up).* (backup|undeployed)( |$)' "$CALLS"
+}
+
+@test "manual updates leave stopped services alone by default including force mode" {
+    export RUNTIME_ROWS=$'web-id|web|running|False\nbackup-id|backup|exited|False'
+    export CONFIG_SERVICES=$'web\nbackup'
+    run_update --recreate
+    assert_success
+    grep -F 'up -d --force-recreate --scale web=1 --pull never --no-deps web' "$CALLS"
+    ! grep -E ' (pull|build|up).* backup( |$)' "$CALLS"
+}
+
+@test "manual include stopped explicitly redeploys existing stopped services only" {
+    export RUNTIME_ROWS=$'web-id|web|running|False\nbackup-id|backup|exited|False'
+    export CONFIG_SERVICES=$'web\nbackup\nundeployed'
+    run_update --include-stopped
+    assert_success
+    grep -F 'pull web backup' "$CALLS"
+    grep -F 'up -d --scale web=1 --scale backup=1 --pull never --no-deps web backup' "$CALLS"
+    ! grep -E ' (pull|build|up).* undeployed( |$)' "$CALLS"
+}
+
+@test "automatic updates ignore manual include stopped option" {
+    export STOPPED=true
+    run_update --automatic-update --include-stopped
+    assert_success
+    [ "$(cat "$TEST_TEMP_DIR/outcome")" = skipped ]
+    ! grep -E ' (pull|build|up)( |$)' "$CALLS"
+}
+
+@test "fully stopped manual stack requires explicit inclusion" {
+    export STOPPED=true
+    run_update
+    assert_success
+    [ "$(cat "$TEST_TEMP_DIR/outcome")" = skipped ]
+    ! grep -E ' (pull|build|up)( |$)' "$CALLS"
+    run_update --include-stopped
+    assert_success
+    grep -F 'up -d --scale app=1 --pull never --no-deps app' "$CALLS"
+}
+
+@test "mixed replicas are skipped and reported while other services update" {
+    export RUNTIME_ROWS=$'web-1|web|running|False\nweb-2|web|exited|False\napp-1|app|running|False'
+    export CONFIG_SERVICES=$'web\napp'
+    run_update --automatic-update
+    assert_success
+    assert_output_contains "Leaving service 'web' unchanged"
+    [ "$(cat "$TEST_TEMP_DIR/outcome")" = partial ]
+    grep -F 'up -d --scale app=1 --pull never --no-deps --no-build app' "$CALLS"
+    ! grep -E ' (pull|build|up).* web( |$)' "$CALLS"
+}
+
+@test "explicit inclusion permits mixed stopped replicas and preserves replica count" {
+    export RUNTIME_ROWS=$'web-1|web|running|False\nweb-2|web|exited|False'
+    export CONFIG_SERVICES=web
+    run_update --include-stopped
+    assert_success
+    grep -F 'up -d --scale web=2 --pull never --no-deps web' "$CALLS"
+}
+
+@test "running replicas retain their deployed count instead of configured scale" {
+    export RUNTIME_ROWS=$'web-1|web|running|False\nweb-2|web|running|False\njob|web|running|True'
+    export CONFIG_SERVICES=web
+    run_update --automatic-update
+    assert_success
+    grep -F 'up -d --scale web=2 --pull never --no-deps --no-build web' "$CALLS"
+}
+
+@test "paused restarting and dead services are skipped even with inclusion enabled" {
+    for state in paused restarting dead removing; do
+        export RUNTIME_ROWS="web-1|web|$state|False"
+        export CONFIG_SERVICES=web
+        run_update --include-stopped --recreate
+        assert_success
+        assert_output_contains "container state $state requires attention"
+        [ "$(cat "$TEST_TEMP_DIR/outcome")" = partial ]
+        ! grep -E ' (pull|build|up)( |$)' "$CALLS"
+    done
+}
+
+@test "one off containers and removed services never become update targets" {
+    export RUNTIME_ROWS=$'job|backup|running|True\nold|removed|running|False'
+    export CONFIG_SERVICES=backup
+    run_update --include-stopped
+    assert_success
+    [ "$(cat "$TEST_TEMP_DIR/outcome")" = partial ]
+    ! grep -E ' (pull|build|up)( |$)' "$CALLS"
+}
+
+@test "service resolution or metadata failures prevent mutations" {
+    export CONFIG_EXIT=1
+    run_update
+    assert_failure
+    ! grep -E ' (pull|build|up)( |$)' "$CALLS"
+    export CONFIG_EXIT=0 RUNTIME_ROWS='bad|<no value>|running|False'
+    run_update
+    assert_failure
+    ! grep -E ' (pull|build|up)( |$)' "$CALLS"
+}
+
+@test "partial automatic update produces an incomplete notification not success" {
+    export RUNTIME_ROWS=$'app|app|running|False\nweb|web|paused|False'
+    export CONFIG_SERVICES=$'app\nweb'
+    run_auto_adapter
+    assert_success
+    grep -F 'Stack update incomplete: stack' "$NOTIFICATIONS"
+    ! grep -F 'Stack updated: stack' "$NOTIFICATIONS"
+}
+
+@test "update targeting does not overwrite deployment profile history" {
+    printf '%s\n' deployed-profile > "$TEST_TEMP_DIR/stack/running_profiles"
+    run_update -g different-profile
+    assert_success
+    [ "$(cat "$TEST_TEMP_DIR/stack/running_profiles")" = deployed-profile ]
+}
+
+@test "automatic unchanged eligible services still report exceptional skips" {
+    export CHANGE=false RUNTIME_ROWS=$'app|app|running|False\nweb|web|restarting|False'
+    export CONFIG_SERVICES=$'app\nweb'
+    run_update --automatic-update
+    assert_success
+    [ "$(cat "$TEST_TEMP_DIR/outcome")" = partial ]
+    ! grep -F ' up ' "$CALLS"
+}
+
+@test "configured profiles are resolved explicitly without wildcard mutation commands" {
+    export CONFIG_PROFILES=$'production\nmaintenance'
+    run_update
+    assert_success
+    grep -Fx 'compose --profile production --profile maintenance -p stack pull app' "$CALLS"
+    ! grep -E 'compose .*--profile \*.* (pull|build|up)( |$)' "$CALLS"
+}
+
+@test "scoped updates reject orphan removal instead of deleting excluded containers" {
+    run_update --remove-orphans
+    assert_failure
+    assert_output_contains "Scoped updates cannot remove unrelated orphan containers"
+    ! grep -E ' (pull|build|up)( |$)' "$CALLS"
 }

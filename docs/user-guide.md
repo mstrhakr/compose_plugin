@@ -51,9 +51,11 @@ Services built locally from a `build:` section without a published `image:` are 
 
 Individual updates, bulk updates, and scheduled auto-updates all use the same update engine and honor the stack's **Build on update** setting, falling back to the global default. When refreshing base images fails, the engine logs a warning before retrying the build with local base images.
 
-Automatic updates only operate on running stacks. With **Build on update** enabled, each scheduled run performs a cached build to discover base-image or source changes; containers are recreated only when their running image IDs differ from the resulting local images. Unchanged and stopped stacks do not produce success notifications. Build failures are reported through logs and notifications without proceeding to recreation.
+Automatic updates only operate on eligible running services, not stopped siblings or undeployed profile services. With **Build on update** enabled, each scheduled run performs a cached build of those services to discover base-image or source changes; containers are recreated only when their running image IDs differ from the resulting local images. Unchanged and stopped stacks do not produce success notifications. Build failures are reported through logs and notifications without proceeding to recreation.
 
 Manual **Update Stack** also reconciles Compose configuration changes, even when image IDs are unchanged. **Force Update** additionally forces container recreation; it does not bypass the **Build on update** setting. For compatibility with local build tags, a manual update whose pull fails can retry without buildable services and rebuild them even when that setting is disabled; automatic updates do not enable this fallback.
+
+Updates preserve deployed replica counts and do not start stopped dependencies or one-off jobs. Paused/restarting services and services with a mixture of running and stopped replicas are skipped with an explanation rather than changing their state unexpectedly; other eligible services can still update. Automatic updates report these cases as incomplete updates. Manual updates leave stopped services unchanged by default, including fully stopped stacks.
 
 When updates are available, clicking **Update Stack** opens a confirmation dialog listing each container alongside its current and incoming image digest. Containers that are already up to date are dimmed.
 

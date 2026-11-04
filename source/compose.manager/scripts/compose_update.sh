@@ -4,12 +4,12 @@
 
 update_compose() {
   if [ "$debug" = true ]; then
-    log_msg DEBUG "${compose_base[*]} -p $name $*" >&2
+    log_msg DEBUG "${compose_base[*]} ${update_profile_args[*]} -p $name $*" >&2
   fi
   if [ "$automatic_update" = true ]; then
-    timeout "${COMPOSE_COMMAND_TIMEOUT:-1800}" "${compose_base[@]}" -p "$name" "$@"
+    timeout "${COMPOSE_COMMAND_TIMEOUT:-1800}" "${compose_base[@]}" "${update_profile_args[@]}" -p "$name" "$@"
   else
-    "${compose_base[@]}" -p "$name" "$@"
+    "${compose_base[@]}" "${update_profile_args[@]}" -p "$name" "$@"
   fi
 }
 
@@ -35,21 +35,100 @@ update_failed() {
 
 run_stack_update() {
   local ids id details current_image image_ref image_id rc rebuild=false needs_update=false
-  local old_images="" new_images="" configured_images=""
-  local -a pull_args=() up_args=(-d "${cmd_args[@]}") stale_images=()
+  local service state oneoff configured_services profiles profile arg selected_ids="" had_skips=false
+  local old_images="" new_images=""
+  local -a pull_args=() up_args=(-d "${cmd_args[@]}") stale_images=() services=() candidates=()
+  local -a update_profile_args=(--profile '*')
+  local -A counts=() running=() stopped=() unsafe=() container_services=()
 
-  if ! ids=$(update_compose ps -q); then
+  for arg in "${cmd_args[@]}"; do
+    if [ "$arg" = --remove-orphans ]; then
+      echo "Scoped updates cannot remove unrelated orphan containers; use a separate lifecycle action."
+      update_failed 1 "apply remove-orphans during"
+      return 1
+    fi
+  done
+
+  # Enumerate the runtime project, not the saved/default profile selection.
+  if ! ids=$(docker ps -aq --filter "label=com.docker.compose.project=$name"); then
     update_failed 1 "enumerate containers for"
     return 1
   fi
-  if [ "$automatic_update" = true ] && [ -z "$ids" ]; then
-    echo "Stack '$name' is not running; skipping update."
+  # Older Compose accepts wildcard config but not every wildcard up/dependency path.
+  if ! profiles=$(update_compose config --profiles); then
+    update_failed 1 "resolve profiles for"
+    return 1
+  fi
+  update_profile_args=()
+  while IFS= read -r profile; do
+    [ -n "$profile" ] || continue
+    if [[ ! "$profile" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+      update_failed 1 "read profile metadata for"
+      return 1
+    fi
+    update_profile_args+=(--profile "$profile")
+  done <<< "$profiles"
+  if ! configured_services=$(update_compose config --services); then
+    update_failed 1 "resolve services for"
+    return 1
+  fi
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    if ! details=$(docker inspect --format='{{ index .Config.Labels "com.docker.compose.service" }}|{{.State.Status}}|{{ index .Config.Labels "com.docker.compose.oneoff" }}' "$id"); then
+      update_failed 1 "inspect container for"
+      return 1
+    fi
+    IFS='|' read -r service state oneoff <<< "$details"
+    case "${oneoff,,}" in true) continue ;; esac
+    if [[ ! "$service" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || [ -z "$state" ]; then
+      update_failed 1 "read container service metadata for"
+      return 1
+    fi
+    if [ -z "${counts[$service]:-}" ]; then
+      candidates+=("$service")
+    fi
+    counts[$service]=$(( ${counts[$service]:-0} + 1 ))
+    container_services[$id]="$service"
+    case "$state" in
+      running) running[$service]=true ;;
+      exited|created) stopped[$service]=true ;;
+      *) unsafe[$service]="$state" ;;
+    esac
+  done <<< "$ids"
+
+  for service in "${candidates[@]}"; do
+    if ! grep -Fxq -- "$service" <<< "$configured_services"; then
+      echo "Skipping service '$service': no longer defined in Compose."
+      log_msg WARNING "Skipping update of $name/$service: service no longer defined"
+      had_skips=true
+    elif [ -n "${unsafe[$service]:-}" ]; then
+      echo "Skipping service '$service': container state ${unsafe[$service]} requires attention."
+      log_msg WARNING "Skipping update of $name/$service: container state ${unsafe[$service]}"
+      had_skips=true
+    elif [ -n "${stopped[$service]:-}" ] && { [ "$include_stopped" != true ] || [ "$automatic_update" = true ]; }; then
+      echo "Leaving service '$service' unchanged: stopped containers are not included."
+      if [ -n "${running[$service]:-}" ]; then
+        log_msg WARNING "Skipping update of $name/$service: mixed running and stopped replicas"
+        had_skips=true
+      fi
+    else
+      services+=("$service")
+      up_args+=(--scale "$service=${counts[$service]}")
+      for id in $ids; do
+        if [ "${container_services[$id]:-}" = "$service" ]; then
+          selected_ids+="$id"$'\n'
+        fi
+      done
+    fi
+  done
+  if (( ${#services[@]} == 0 )); then
+    echo "No eligible services for stack '$name'; no images or containers changed."
     save_result success 0 update
-    update_outcome skipped
+    if [ "$had_skips" = true ]; then update_outcome partial; else update_outcome skipped; fi
     return $?
   fi
 
-  # Capture running image IDs even when their tags were already moved by an earlier pull.
+  # Capture only selected containers, including tags moved by an earlier pull.
   while IFS= read -r id; do
     [ -n "$id" ] || continue
     if ! details=$(docker inspect --format='{{.Image}} {{.Config.Image}}' "$id"); then
@@ -62,14 +141,7 @@ run_stack_update() {
       return 1
     fi
     old_images+="$current_image"$'\n'
-  done <<< "$ids"
-
-  # Include stopped containers in post-success cleanup without starting them here.
-  if ! configured_images=$(update_compose images -q); then
-    update_failed 1 "enumerate images for"
-    return 1
-  fi
-  old_images+="$configured_images"
+  done <<< "$selected_ids"
 
   if [ "$build_on_update" = true ]; then
     rebuild=true
@@ -78,12 +150,12 @@ run_stack_update() {
     pull_args+=(--ignore-buildable)
   fi
   echo "Pulling latest images..."
-  update_compose pull "${pull_args[@]}"
+  update_compose pull "${pull_args[@]}" "${services[@]}"
   rc=$?
   # Preserve manual Update's local-tag compatibility without enabling unattended builds.
   if [ "$rc" -ne 0 ] && [ "$build_on_update" != true ] && [ "$automatic_update" != true ]; then
     log_msg WARNING "Pull failed for $name; retrying without buildable services and rebuilding"
-    update_compose pull --ignore-buildable
+    update_compose pull --ignore-buildable "${services[@]}"
     rc=$?
     if [ "$rc" -eq 0 ]; then
       rebuild=true
@@ -96,12 +168,12 @@ run_stack_update() {
 
   if [ "$rebuild" = true ]; then
     echo "Rebuilding images with latest base images..."
-    update_compose build --pull
+    update_compose build --pull "${services[@]}"
     rc=$?
     if [ "$rc" -ne 0 ]; then
       log_msg WARNING "Build with --pull failed for $name; retrying with local base images"
       echo "Build with --pull failed; retrying with local base images..."
-      update_compose build
+      update_compose build "${services[@]}"
       rc=$?
     fi
     if [ "$rc" -ne 0 ]; then
@@ -126,35 +198,35 @@ run_stack_update() {
     if [ "$current_image" != "$image_id" ]; then
       needs_update=true
     fi
-  done <<< "$ids"
+  done <<< "$selected_ids"
   if [ "$automatic_update" = true ] && [ "$needs_update" != true ]; then
     echo "No updates for stack '$name'."
     save_result success 0 update
-    update_outcome unchanged
+    if [ "$had_skips" = true ]; then update_outcome partial; else update_outcome unchanged; fi
     return $?
   fi
 
   if plugin_setting_enabled CREATE_MISSING_EXTERNAL_NETWORKS; then
-    if ! create_missing_external_networks "${compose_base[@]}" -p "$name"; then
+    if ! create_missing_external_networks "${compose_base[@]}" "${update_profile_args[@]}" -p "$name"; then
       update_failed 1 "create networks for"
       return 1
     fi
   fi
   # A completed build must not be repeated by a service's pull_policy.
   # Manual updates still allow Compose to build a missing local image when not opted in.
-  up_args+=(--pull never)
+  up_args+=(--pull never --no-deps)
   if [ "$rebuild" = true ] || [ "$automatic_update" = true ]; then
     up_args+=(--no-build)
   fi
   echo "Recreating containers..."
-  update_compose up "${up_args[@]}"
+  update_compose up "${up_args[@]}" "${services[@]}"
   rc=$?
   if [ "$rc" -ne 0 ]; then
     update_failed "$rc" recreate
     return "$rc"
   fi
 
-  if ! new_images=$(update_compose images -q); then
+  if ! new_images=$(update_compose images -q "${services[@]}"); then
     update_failed 1 "enumerate updated images for"
     return 1
   fi
@@ -171,9 +243,13 @@ run_stack_update() {
   fi
   if [ -n "$stack_path" ] && [ -d "$stack_path" ]; then
     date -Iseconds > "$stack_path/started_at"
-    persist_running_profiles
   fi
   save_result success 0 update
-  update_outcome updated || return 1
-  echo "Stack $name updated successfully"
+  if [ "$had_skips" = true ]; then
+    update_outcome partial || return 1
+    echo "Eligible services updated; some services in stack '$name' were skipped."
+  else
+    update_outcome updated || return 1
+    echo "Selected services in stack '$name' updated successfully."
+  fi
 }

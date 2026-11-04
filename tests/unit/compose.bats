@@ -219,7 +219,7 @@ test_setup() {
     # Bases that only exist locally can't be pulled; the update must still rebuild them.
     run cat "$UPDATE_ENGINE"
     assert_success
-    [[ "$output" == *'update_compose build --pull'*'update_compose build'$'\n'* ]]
+    [[ "$output" == *'update_compose build --pull "${services[@]}"'*'update_compose build "${services[@]}"'$'\n'* ]]
 }
 
 @test "compose.sh update falls back to rebuilding when buildable images can't be pulled" {

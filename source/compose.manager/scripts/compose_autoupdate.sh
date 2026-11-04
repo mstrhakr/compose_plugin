@@ -55,7 +55,7 @@ if [ "$rc" -eq 0 ]; then
     outcome=$(cat "$output_dir/outcome")
   fi
   case "$outcome" in
-    updated|unchanged|skipped) ;;
+    updated|unchanged|skipped|partial) ;;
     *)
       echo "Auto-update returned an invalid outcome: $outcome" >> "$output_dir/output"
       rc=1
@@ -74,6 +74,11 @@ if [ "$rc" -ne 0 ]; then
 fi
 
 case "$outcome" in
+  partial)
+    if [ -x "$notify" ]; then
+      "$notify" -e 'Compose Manager' -s "Stack update incomplete: $project_name" -d "Some services in '$project_name' were skipped for safety. Review the update log." -i warning
+    fi
+    ;;
   updated)
     if [ -x "$notify" ]; then
       "$notify" -e 'Compose Manager' -s "Stack updated: $project_name" -d "Stack '$project_name' was updated successfully."
