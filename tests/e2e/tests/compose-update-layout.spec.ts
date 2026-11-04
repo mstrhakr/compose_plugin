@@ -25,12 +25,19 @@ for (const viewport of [
       await page.setViewportSize(viewport);
       // Reproduce host-theme rules that previously squeezed the modal and overlapped its columns.
       await page.setContent(`<style>
-        :root { --alt-background-color: ${theme === 'light' ? '#eee' : '#262626'}; }
+        :root {
+          --alt-background-color: transparent;
+          --dynamix-tablesorter-thead-th-bg-color: ${theme === 'light' ? '#ddd' : '#333'};
+          --dynamix-tablesorter-thead-th-text-color: ${theme === 'light' ? '#111' : '#fff'};
+          --dynamix-tablesorter-tbody-row-bg-color: ${theme === 'light' ? '#fff' : '#222'};
+          --dynamix-tablesorter-tbody-row-alt-bg-color: ${theme === 'light' ? '#eee' : '#292929'};
+        }
         body { font: 14px Arial; background: ${theme === 'light' ? '#fff' : '#111'}; color: ${theme === 'light' ? '#222' : '#eee'}; }
         .sweet-alert { position: fixed; width: 600px !important; padding: 20px;
           margin-left: -300px; margin-top: -200px; background: ${theme === 'light' ? '#fafafa' : '#222'}; border: 1px solid #888; }
         .sweet-alert p { text-align: center; }
         table td, table th { white-space: nowrap; }
+        table { margin: 8px 0; border-spacing: 2px; }
         dt { float: left; width: 160px; font-weight: bold; }
         dd { margin-left: 160px; }
         .sweet-alert button { margin: 16px 5px 0; padding: 8px 16px; }
@@ -126,6 +133,27 @@ for (const viewport of [
       expect(layout.buttonsVisible).toBe(true);
       expect(layout.overflows).toEqual([]);
       expect(layout.overlappingIds).toBe(false);
+      const colors = await modal.evaluate(element => {
+        const theme = getComputedStyle(document.documentElement);
+        return Array.from(element.querySelectorAll('tbody tr')).map((row, index) => {
+          const expected = theme.getPropertyValue(index % 2 === 0
+            ? '--dynamix-tablesorter-tbody-row-bg-color'
+            : '--dynamix-tablesorter-tbody-row-alt-bg-color').trim();
+          const probe = document.createElement('span');
+          probe.style.backgroundColor = expected;
+          document.body.append(probe);
+          const normalized = getComputedStyle(probe).backgroundColor;
+          probe.remove();
+          return {
+            expected: normalized, row: getComputedStyle(row).backgroundColor,
+            cells: Array.from(row.querySelectorAll('td')).map(cell => getComputedStyle(cell).backgroundColor),
+          };
+        });
+      });
+      for (const color of colors) {
+        expect(color.row).toBe(color.expected);
+        expect(color.cells.every(value => value === color.expected)).toBe(true);
+      }
       if (count === 18) expect(layout.listScroll).toBeGreaterThan(0);
       if (count <= 2 && viewport.width >= 1280) expect(layout.listScroll).toBeLessThanOrEqual(1);
       await page.screenshot({ path: test.info().outputPath('update-dialog.png') });
@@ -143,9 +171,15 @@ for (const viewport of [
         await modal.locator('.confirm').click({ trial: true });
         if (viewport.width > 640) {
           const headerPinned = await modal.evaluate(element => {
-            const list = element.querySelector('.compose-update-table-wrap')!.getBoundingClientRect();
-            const header = element.querySelector('th')!.getBoundingClientRect();
-            return Math.abs(header.top - list.top) <= 2;
+            const listElement = element.querySelector('.compose-update-table-wrap')!;
+            const list = listElement.getBoundingClientRect();
+            const headerElement = element.querySelector('thead')!;
+            const header = headerElement.getBoundingClientRect();
+            const top = list.top + listElement.clientTop;
+            return Math.abs(header.top - top) < 0.5
+              && [0.25, 1, 3].every(offset => headerElement.contains(
+                document.elementFromPoint(list.left + 20, top + offset)))
+              && getComputedStyle(headerElement).backgroundColor !== 'rgba(0, 0, 0, 0)';
           });
           expect(headerPinned).toBe(true);
         }

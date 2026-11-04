@@ -134,6 +134,10 @@ dialog dismissal for small/large stacks on desktop and phone viewports. The host
 library's inline content display must not disable the flex body: only the service
 list may scroll, not the action footer. Screenshots
 are saved in the ignored E2E test results directory for visual inspection.
+The details table reuses the main view's `--dynamix-tablesorter-thead-th-*`
+and `--dynamix-tablesorter-tbody-row[-alt]-bg-color` theme variables for opaque
+headers and alternating rows. Keep table spacing reset and the entire header
+group sticky so scrolling rows cannot peek through above individual header cells.
 See [update UI integration gates](testing.md#update-ui-pre-pr-and-integration-gates)
 for the response-order/recreation regressions and deferred combined-branch tests.
 

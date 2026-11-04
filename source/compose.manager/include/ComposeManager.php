@@ -385,6 +385,7 @@ if ($cpuCount <= 0) {
         flex: 0 1 auto;
         min-height: 80px;
         margin: 16px 0;
+        padding: 0;
         overflow: auto;
         border: 1px solid var(--dynamix-box-inner-div-border-color, #666);
         border-radius: 6px;
@@ -393,8 +394,10 @@ if ($cpuCount <= 0) {
 
     .sweet-alert.compose-update-dialog .compose-update-table {
         width: 100%;
+        margin: 0;
         table-layout: fixed;
-        border-collapse: collapse;
+        border-collapse: separate;
+        border-spacing: 0;
         font-size: 13px;
         text-align: left;
         line-height: 1.5;
@@ -410,12 +413,27 @@ if ($cpuCount <= 0) {
         overflow-wrap: anywhere;
     }
 
-    .sweet-alert.compose-update-dialog .compose-update-table th {
+    .sweet-alert.compose-update-dialog .compose-update-table thead {
         position: sticky;
         top: 0;
-        z-index: 1;
-        background: var(--alt-background-color, #262626);
+        z-index: 2;
+        background-color: var(--dynamix-tablesorter-thead-th-bg-color);
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-table th {
+        background-color: var(--dynamix-tablesorter-thead-th-bg-color);
+        color: var(--dynamix-tablesorter-thead-th-text-color);
         font-size: 12px;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-table tbody tr,
+    .sweet-alert.compose-update-dialog .compose-update-table tbody td {
+        background-color: var(--dynamix-tablesorter-tbody-row-bg-color);
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-table tbody tr:nth-child(even),
+    .sweet-alert.compose-update-dialog .compose-update-table tbody tr:nth-child(even) td {
+        background-color: var(--dynamix-tablesorter-tbody-row-alt-bg-color);
     }
 
     .sweet-alert.compose-update-dialog .compose-update-table th:nth-child(1) { width: 38%; }
