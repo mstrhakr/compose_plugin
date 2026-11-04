@@ -5743,6 +5743,7 @@ function mergeUpdateStatus(containers, project, onlyIfUnknown) {
         var info = createContainerInfo(container);
         var update = updatesByName.get(info.name) || updatesByService.get(info.service);
         if (!update) return;
+        if (info.localSha && update.localSha && info.localSha !== update.localSha) return;
         mergeContainerUpdateStatus(container, update, onlyIfUnknown !== false);
         if ((!container.icon || !isValidIconSrc(container.icon)) && update.icon) {
             container.icon = update.icon;

@@ -6,6 +6,13 @@ const source = readFileSync(
   resolve(__dirname, '../../../source/compose.manager/javascript/composeManagerMain.js'), 'utf8'
 );
 const factories = source.slice(source.indexOf('function createContainerInfo('), source.indexOf('// Timers for async operations'));
+const statusSource = readFileSync(
+  resolve(__dirname, '../../../source/compose.manager/javascript/composeUpdateStatus.js'), 'utf8'
+);
+
+function exactFunction(name: string): string {
+  return source.match(new RegExp(`^function ${name}\\([^]*?\\n\\}`, 'm'))![0];
+}
 
 function functionSource(name: string, next: string): string {
   return source.slice(source.indexOf(`function ${name}(`), source.indexOf(`function ${next}(`));
@@ -93,7 +100,7 @@ test.describe('Compose update state regressions', () => {
         ${merge}
         const cached = {
           name: 'app', service: 'web', image: 'repo/app:v1',
-          hasUpdate: false, updateStatus: 'up-to-date', localSha: 'current', remoteSha: 'current'
+          hasUpdate: false, updateStatus: 'up-to-date', localSha: 'old', remoteSha: 'old'
         };
         mergeUpdateStatus([cached], 'stack', false);
         return cached;
@@ -106,7 +113,7 @@ test.describe('Compose update state regressions', () => {
 
   test('unknown checks are not displayed as up-to-date', async ({ page }) => {
     const updateUi = functionSource('updateStackUpdateUI', 'checkStackUpdates');
-    const results = await page.evaluate((updateUi) => {
+    const results = await page.evaluate(({ updateUi, statusSource }) => {
       let html = '';
       const cell = { html(value: string) { html = value; } };
       const row = {
@@ -117,6 +124,8 @@ test.describe('Compose update state regressions', () => {
       const $ = (selector: string) => selector.startsWith('#compose_stacks') ? row : { each() {} };
       const run = new Function('$', 'composeEscapeAttr', `
         var stackContainersCache = {}, expandedStacks = {};
+        function composeUpdateCheckBadge() { return ''; }
+        ${statusSource}
         ${updateUi}
         updateStackUpdateUI('stack', { containers: [{ hasUpdate: false, updateStatus: 'unknown' }] });
       `);
@@ -124,18 +133,20 @@ test.describe('Compose update state regressions', () => {
       const unknown = html;
       const mixed = new Function('$', 'composeEscapeAttr', `
         var stackContainersCache = {}, expandedStacks = {};
+        function composeUpdateCheckBadge() { return ''; }
+        ${statusSource}
         ${updateUi}
         updateStackUpdateUI('stack', { containers: [
           { hasUpdate: false, updateStatus: 'unknown' },
-          { hasUpdate: true, updateStatus: 'update-available' }
+          { hasUpdate: true, updateStatus: 'update-available', updateReadiness: 'download-required' }
         ] });
       `);
       mixed($, (value: string) => value);
       return { unknown, mixed: html };
-    }, updateUi);
+    }, { updateUi, statusSource });
     expect(results.unknown).toContain('1 unchecked');
     expect(results.unknown).not.toContain('up-to-date');
-    expect(results.mixed).toContain('1 update');
+    expect(results.mixed).toContain('Available');
     expect(results.mixed).toContain('1 unchecked');
   });
 
@@ -196,12 +207,13 @@ test.describe('Compose update state regressions', () => {
 
   test('failed update-check requests replace the checking spinner with a retry link', async ({ page }) => {
     const check = functionSource('checkStackUpdates', 'isValidWebUIUrl');
-    const results = await page.evaluate(({ check, factories }) => {
+    const checkState = exactFunction('setComposeUpdateCheckState') + exactFunction('composeUpdateCheckBadge');
+    const results = await page.evaluate(({ check, factories, checkState }) => {
       return ['network', 'malformed', 'server', 'empty', 'incomplete'].map((mode) => {
         let html = '';
         const messages: string[] = [];
         const cell = { html(value: string) { html = value; } };
-        const row = { length: 1, find: () => cell };
+        const row = { length: 1, attr: () => 'stack-row-1', find: () => cell, html: cell.html };
         const $ = Object.assign(() => row, {
           post(_url: string, payload: { action: string }, callback?: (data: string) => void) {
             if (payload.action === 'checkStackUpdates') {
@@ -221,16 +233,18 @@ test.describe('Compose update state regressions', () => {
           var caURL = '/exec';
           var stackUpdateStatus = {};
           var pendingUpdateCheckStacks = [];
+          var composeUpdateCheckState = {};
           function updateStackUpdateUI() {}
           function updateUpdateAllButton() {}
           ${factories}
+          ${checkState}
           ${check}
           checkStackUpdates('stack');
         `);
         run($, (value: string) => value, (message: string) => messages.push(message));
         return { html, messages };
       });
-    }, { check, factories });
+    }, { check, factories, checkState });
     for (const result of results) {
       expect(result.html).toContain('check failed');
       expect(result.html).toContain("checkStackUpdates('stack')");

@@ -55,6 +55,48 @@ function harness(config = {}) {
     return { context, checked, events };
 }
 
+for (const kind of ['image', 'build-base']) {
+    for (const order of ['details-first', 'check-first']) {
+        const { context } = harness();
+        const pending = {
+            name: 'app', service: 'web', image: 'app:latest', state: 'running',
+            localSha: 'original-image', remoteSha: 'target-image', hasUpdate: true,
+            updateStatus: 'update-available', updateKind: kind,
+            updateReadiness: kind === 'image' ? 'download-required' : 'rebuild-required',
+        };
+        const unknown = {
+            ...pending, hasUpdate: false, updateStatus: 'unknown',
+            updateReadiness: 'unknown', remoteSha: '',
+        };
+        context.stackUpdateStatus = {};
+        const revisionAtRequest = context.composeUpdateCheckRevision.test || 0;
+        const completeDetails = () => context.composeCheckedContainers({ containers: [{ ...unknown }] }, 'test', revisionAtRequest);
+        const completeCheck = () => {
+            context.stackUpdateStatus.test = { containers: [{ ...pending }] };
+            context.composeUpdateCheckRevision.test = 1;
+        };
+        if (order === 'details-first') {
+            const details = completeDetails();
+            assert.equal(details[0].updateReadiness, 'unknown');
+            completeCheck();
+            context.mergeUpdateStatus(details, 'test', false);
+            assert.equal(details[0].updateReadiness, pending.updateReadiness);
+        } else {
+            completeCheck();
+            assert.equal(completeDetails()[0].updateReadiness, pending.updateReadiness);
+        }
+        const replacement = context.composeCheckedContainers({
+            containers: [{ ...unknown, localSha: 'replacement-image' }],
+        }, 'test', revisionAtRequest)[0];
+        assert.equal(replacement.hasUpdate, false, 'An in-flight check for the old image must not attach to its replacement');
+        assert.equal(replacement.localSha, 'replacement-image');
+        assert.equal(replacement.remoteSha, '');
+        assert.equal(replacement.updateReadiness, 'unknown');
+        assert.equal(context.composeCheckedContainers({ containers: [{ ...unknown }] }, 'test', 1)[0].hasUpdate,
+            false, 'A response requested after the check owns authoritative invalidation');
+    }
+}
+
 for (const action of ['update', 'forceUpdate']) {
     for (const initial of [false, true]) {
         const config = { UPDATE_INCLUDE_STOPPED_DEFAULT: initial ? 'true' : 'false' };
