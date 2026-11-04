@@ -2310,15 +2310,11 @@ function checkAllUpdates() {
     $('#checkUpdatesBtn').prop('disabled', true).val('Checking...');
     $('#updateAllBtn').prop('disabled', true);
 
-    // Show checking indicator only on running stack update columns (not stopped ones)
+    // Checks include existing containers in every runtime state.
     $('#compose_stacks tr.compose-sortable').each(function() {
         var $row = $(this);
-        var isRunning = $row.find('.state').text().indexOf('started') !== -1 ||
-            $row.find('.state').text().indexOf('partial') !== -1;
-        if (isRunning) {
-            var $updateCell = $row.find('.compose-updatecolumn');
-            $updateCell.html('<span class="compose-status-info"><i class="fa fa-refresh fa-spin"></i> checking...</span>');
-        }
+        var $updateCell = $row.find('.compose-updatecolumn');
+        $updateCell.html('<span class="compose-status-info" style="white-space:nowrap;"><i class="fa fa-refresh fa-spin"></i> checking...</span>');
     });
 
     $.post(caURL, {
@@ -2355,10 +2351,7 @@ function checkAllUpdates() {
         // Reset update columns to not checked state - scope to compose_stacks
         $('#compose_stacks .compose-updatecolumn').each(function() {
             var $cell = $(this);
-            if (!$cell.find('.grey-text').length || $cell.find('.fa-docker').length === 0) {
-                // Only reset running stacks (not the "stopped" ones)
-                $cell.html('<span class="grey-text" style="white-space:nowrap;cursor:default;"><i class="fa fa-exclamation-circle fa-fw"></i> check failed</span>');
-            }
+            $cell.html('<span class="grey-text" style="white-space:nowrap;cursor:default;"><i class="fa fa-exclamation-circle fa-fw"></i> check failed</span>');
         });
     });
 }
@@ -2543,19 +2536,6 @@ function updateStackUpdateUI(stackName, stackInfo) {
     var stackId = $stackRow.attr('id').replace('stack-row-', '');
     var $updateCell = $stackRow.find('.compose-updatecolumn');
 
-    // Always derive running state from the current DOM rather than the
-    // stackInfo payload.  The saved update-status file may contain a stale
-    // isRunning value from when the check originally ran (e.g. the stack
-    // was stopped then but has since been started).
-    var stateText = $stackRow.find('.state').text();
-    var isRunning = stateText.indexOf('started') !== -1 || stateText.indexOf('partial') !== -1;
-
-    if (!isRunning) {
-        // Stack is not running - show stopped
-        $updateCell.html('<span class="grey-text" style="white-space:nowrap;"><i class="fa fa-stop fa-fw"></i> stopped</span>');
-        return;
-    }
-
     // Count updates and pinned containers
     var updateCount = 0;
     var pinnedCount = 0;
@@ -2566,46 +2546,26 @@ function updateStackUpdateUI(stackName, stackInfo) {
         stackInfo.containers.forEach(function(ct) {
             if (ct.hasUpdate) updateCount++;
             if (ct.isPinned) pinnedCount++;
-            if (!ct.isPinned && ct.updateStatus !== 'up-to-date' && ct.updateStatus !== 'update-available') unknownCount++;
+            if (composeUpdatePresentation(ct).label === 'Unchecked') unknownCount++;
         });
     }
 
     // Update the stack row's update column (match Docker tab style)
     if (updateCount > 0) {
-        // Updates available - orange "update ready" style with clickable link and SHA info
-        var updateHtml = '<a class="exec" style="cursor:pointer;" onclick="showUpdateWarning(\'' + composeEscapeAttr(stackName) + '\', \'' + composeEscapeAttr(stackId) + '\', \'update\');">';
-        updateHtml += '<span class="orange-text" style="white-space:nowrap;"><i class="fa fa-flash fa-fw"></i> ' + updateCount + ' update' + (updateCount > 1 ? 's' : '') + '</span>';
-        updateHtml += '</a>';
-
-        // Show first container's SHA diff if only one update, or indicate multiple
-        if (stackInfo.containers) {
-            var updatesWithSha = stackInfo.containers.filter(function(ct) {
-                return ct.hasUpdate && ct.localSha && ct.remoteSha;
-            });
-            if (updatesWithSha.length === 1) {
-                // Single update - show the SHA diff inline
-                var ct = updatesWithSha[0];
-                updateHtml += '<div style="font-family:var(--font-bitstream);font-size:0.8em;margin-top:2px;">';
-                updateHtml += '<span class="compose-status-warning" title="' + composeEscapeAttr(ct.localSha) + '">' + composeEscapeHtml(ct.localSha.substring(0, 8)) + '</span>';
-                updateHtml += ' <i class="fa fa-arrow-right compose-status-success" style="margin:0 2px;font-size:0.9em;"></i> ';
-                updateHtml += '<span class="compose-status-success" title="' + composeEscapeAttr(ct.remoteSha) + '">' + composeEscapeHtml(ct.remoteSha.substring(0, 8)) + '</span>';
-                updateHtml += '</div>';
-            } else if (updatesWithSha.length > 1) {
-                // Multiple updates - show expand hint
-                updateHtml += '<div class="compose-text-muted" style="font-size:0.8em;margin-top:2px;">Expand for details</div>';
-            }
-        }
-
-        // Also show pinned count if any containers are pinned
-        if (pinnedCount > 0) {
-            updateHtml += '<div class="compose-status-info" style="font-size:0.8em;margin-top:2px;"><i class="fa fa-thumb-tack fa-fw"></i> ' + pinnedCount + ' pinned</div>';
-        }
-        if (unknownCount > 0) {
-            updateHtml += '<div class="compose-status-warning" style="font-size:0.8em;margin-top:2px;">' + unknownCount + ' unchecked</div>';
-        }
+        var counts = {};
+        stackInfo.containers.forEach(function(container) {
+            var label = composeUpdatePresentation(container).label;
+            counts[label] = (counts[label] || 0) + 1;
+        });
+        var details = Object.keys(counts).map(function(label) { return counts[label] + ' ' + label.toLowerCase(); }).join('; ');
+        var summary = updateCount + ' update' + (updateCount > 1 ? 's' : '');
+        var pending = stackInfo.containers.filter(function(container) { return container.hasUpdate; });
+        if (updateCount === 1) summary = composeUpdatePresentation(pending[0]).label;
+        var updateHtml = '<a href="#" class="exec orange-text" style="cursor:pointer;white-space:nowrap;" title="' + composeEscapeAttr(details) + '" aria-label="' + composeEscapeAttr(summary + '. ' + details + '. Open update details.') + '" onclick="showUpdateWarning(\'' + composeEscapeAttr(stackName) + '\', \'' + composeEscapeAttr(stackId) + '\', \'update\');return false;">';
+        updateHtml += '<i class="fa fa-flash fa-fw" aria-hidden="true"></i> ' + composeEscapeHtml(summary) + '</a>';
         $updateCell.html(updateHtml);
     } else if (unknownCount > 0) {
-        $updateCell.html('<a class="exec orange-text" style="cursor:pointer;" onclick="checkStackUpdates(\'' + composeEscapeAttr(stackName) + '\');"><i class="fa fa-question-circle fa-fw"></i> ' + unknownCount + ' unchecked</a>');
+        $updateCell.html('<a class="exec orange-text" style="cursor:pointer;white-space:nowrap;" onclick="checkStackUpdates(\'' + composeEscapeAttr(stackName) + '\');"><i class="fa fa-question-circle fa-fw"></i> ' + unknownCount + ' unchecked</a>');
     } else if (totalContainers > 0) {
         // No updates - check if all are pinned or up-to-date
         if (pinnedCount > 0 && pinnedCount === totalContainers) {
@@ -2614,26 +2574,17 @@ function updateStackUpdateUI(stackName, stackInfo) {
             $updateCell.html(html);
         } else if (pinnedCount > 0) {
             // Some containers pinned, rest up-to-date
-            var html = '<span class="green-text" style="white-space:nowrap;"><i class="fa fa-check fa-fw"></i> up-to-date</span>';
-            html += '<div class="compose-status-info" style="font-size:0.8em;margin-top:2px;"><i class="fa fa-thumb-tack fa-fw"></i> ' + pinnedCount + ' pinned</div>';
-            html += '<div><a class="exec" style="cursor:pointer;" onclick="showUpdateWarning(\'' + composeEscapeAttr(stackName) + '\', \'' + composeEscapeAttr(stackId) + '\', \'forceUpdate\');"><span style="white-space:nowrap;"><i class="fa fa-cloud-download fa-fw"></i> force update</span></a></div>';
+            var html = '<span class="green-text" style="white-space:nowrap;" title="' + pinnedCount + ' pinned; remaining containers current"><i class="fa fa-check fa-fw"></i> current</span>';
             $updateCell.html(html);
         } else {
             // No updates, no pinned - green "up-to-date" style (like Docker tab)
-            // Additional row details are conditionally shown by column layout CSS.
-            var html = '<span class="green-text" style="white-space:nowrap;"><i class="fa fa-check fa-fw"></i> up-to-date</span>';
-            html += '<div><a class="exec" style="cursor:pointer;" onclick="showUpdateWarning(\'' + composeEscapeAttr(stackName) + '\', \'' + composeEscapeAttr(stackId) + '\', \'forceUpdate\');"><span style="white-space:nowrap;"><i class="fa fa-cloud-download fa-fw"></i> force update</span></a></div>';
+            var html = '<span class="green-text" style="white-space:nowrap;"><i class="fa fa-check fa-fw"></i> current</span>';
             $updateCell.html(html);
         }
     } else {
-        // No containers found in update data — stack is running but
-        // hasn't been checked yet.  Prompt a check rather than an
-        // update so the SHA metadata gets populated first.
-        $updateCell.html('<a class="exec" style="cursor:pointer;" onclick="checkStackUpdates(\'' + composeEscapeAttr(stackName) + '\');"><i class="fa fa-cloud-download fa-fw"></i> check for updates</a>');
+        // Empty check results must not imply that a stack is current.
+        $updateCell.html('<a class="exec" style="cursor:pointer;white-space:nowrap;" onclick="checkStackUpdates(\'' + composeEscapeAttr(stackName) + '\');"><i class="fa fa-question-circle fa-fw"></i> check</a>');
     }
-
-    // Extra detail elements are controlled by table column visibility classes.
-    // No per-cell show/hide work is needed here.
 
     // Rebuild context menus to reflect update status (only target icon spans with data-stackid, not the row)
     $('[id^="stack-"][data-stackid][data-project="' + stackName + '"]').each(function() {
@@ -2679,11 +2630,11 @@ function checkStackUpdates(stackName) {
     }
 
     var $updateCell = $stackRow.find('.compose-updatecolumn');
-    $updateCell.html('<span class="compose-status-info"><i class="fa fa-refresh fa-spin"></i> checking...</span>');
+    $updateCell.html('<span class="compose-status-info" style="white-space:nowrap;"><i class="fa fa-refresh fa-spin"></i> checking...</span>');
 
     function showFailure(message) {
         composeLogger('Update check failed', { stackName: stackName, message: message }, 'user', 'error', 'checkStackUpdates');
-        $updateCell.html('<a class="exec orange-text" style="cursor:pointer;" onclick="checkStackUpdates(\'' + composeEscapeAttr(stackName) + '\');"><i class="fa fa-exclamation-circle fa-fw"></i> check failed</a>');
+        $updateCell.html('<a class="exec orange-text" style="cursor:pointer;white-space:nowrap;" onclick="checkStackUpdates(\'' + composeEscapeAttr(stackName) + '\');"><i class="fa fa-exclamation-circle fa-fw"></i> check failed</a>');
     }
 
     $.post(caURL, {
@@ -4341,7 +4292,7 @@ function editStackSettings(myID) {
 // Unified update warning dialog - called from stack row and container table
 function showUpdateWarning(project, stackId, updateAction) {
     var path = compose_root + '/' + project;
-    showStackActionDialog(updateAction || 'update', path, '');
+    showStackActionDialog(updateAction || 'update', path, '', true);
 }
 
 // Show a brief swal when a background command is dispatched
@@ -5831,19 +5782,13 @@ function showComposeChangelog(containerName, path, profile) {
         if (!appeared) { if (open) appeared = true; return; }
         if (!open) {
             clearInterval(poll);
-            // Skip reopening when DISABLE_ACTION_WARNINGS is true: renderStackActionDialog
-            // has a fast-path that calls UpdateStackConfirmed directly in that mode,
-            // so reopening would trigger an immediate update rather than a dialog.
-            getConfig().then(function(cfg) {
-                if (cfg && cfg.DISABLE_ACTION_WARNINGS === 'true') return;
-                showStackActionDialog('update', path, profile || '');
-            });
+            showStackActionDialog('update', path, profile || '', true);
         }
     }, 100);
 }
 
 // Unified stack action dialog - handles up, down, and update actions
-function showStackActionDialog(action, path, profile) {
+function showStackActionDialog(action, path, profile, showDetails) {
     var stackName = basename(path);
     var project = stackName;
 
@@ -5868,7 +5813,7 @@ function showStackActionDialog(action, path, profile) {
             }
             var containers = mergeUpdateStatus(response.containers, project);
             waitForStackActionDialogClose(function() {
-                renderStackActionDialog(action, displayName, path, '', containers, hasBuild, false);
+                renderStackActionDialog(action, displayName, path, '', containers, hasBuild, false, showDetails);
             });
         }).fail(function() {
             swal({ title: 'Update details unavailable', text: 'Could not load existing stack containers. Refresh and try again.', type: 'error' });
@@ -5982,7 +5927,20 @@ function waitForStackActionDialogClose(callback) {
     }, 20);
 }
 
-function renderStackActionDialog(action, displayName, path, profile, containers, hasBuild, showRemoveOrphans) {
+function composeUpdateDigestDetails(container) {
+    var fields = [
+        ['Container image', container.localSha],
+        ['Local application image', container.localImageSha],
+        [container.updateKind === 'build-base' ? 'Remote base image' : 'Remote application image', container.remoteSha]
+    ];
+    var html = '<div class="compose-text-muted" style="font-size:0.85em;margin-top:4px;">';
+    fields.forEach(function(field) {
+        if (field[1]) html += '<div>' + field[0] + ': <code>' + composeEscapeHtml(field[1]) + '</code></div>';
+    });
+    return html + '</div>';
+}
+
+function renderStackActionDialog(action, displayName, path, profile, containers, hasBuild, showRemoveOrphans, showDetails) {
     hasBuild = hasBuild || false;
     // Action-specific configuration
     var pullLabel = hasBuild ? 'Build' : 'Pull';
@@ -5995,7 +5953,7 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             warningIcon: 'info-circle',
             warningColor: window.getComputedStyle(document.documentElement).getPropertyValue('--dynamix-ui-dropdownchecklist-color'),
             confirmText: 'Compose Up',
-            showVersionArrow: false,
+            showUpdateReadiness: false,
             showRemoveOrphans: true,
             confirmedFn: ComposeUpConfirmed
         },
@@ -6007,7 +5965,7 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             warningIcon: 'exclamation-triangle',
             warningColor: window.getComputedStyle(document.documentElement).getPropertyValue('--dynamix-sb-message-link-color'),
             confirmText: 'Compose Down',
-            showVersionArrow: false,
+            showUpdateReadiness: false,
             showRemoveOrphans: true,
             confirmedFn: ComposeDownConfirmed
         },
@@ -6019,7 +5977,7 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             warningIcon: 'info-circle',
             warningColor: window.getComputedStyle(document.documentElement).getPropertyValue('--dynamix-ui-dropdownchecklist-color'),
             confirmText: 'Compose Stop',
-            showVersionArrow: false,
+            showUpdateReadiness: false,
             confirmedFn: ComposeStopConfirmed
         },
         'restart': {
@@ -6030,7 +5988,7 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             warningIcon: 'info-circle',
             warningColor: window.getComputedStyle(document.documentElement).getPropertyValue('--dynamix-ui-dropdownchecklist-color'),
             confirmText: 'Compose Restart',
-            showVersionArrow: false,
+            showUpdateReadiness: false,
             confirmedFn: ComposeRestartConfirmed
         },
         'pull': {
@@ -6041,7 +5999,7 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             warningIcon: 'info-circle',
             warningColor: window.getComputedStyle(document.documentElement).getPropertyValue('--dynamix-ui-dropdownchecklist-color'),
             confirmText: pullLabel,
-            showVersionArrow: false,
+            showUpdateReadiness: false,
             confirmedFn: ComposePullConfirmed
         },
         'update': {
@@ -6052,7 +6010,7 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             warningIcon: 'exclamation-triangle',
             warningColor: window.getComputedStyle(document.documentElement).getPropertyValue('--brand-orange') || window.getComputedStyle(document.documentElement).getPropertyValue('--dynamix-sb-message-link-color'),
             confirmText: 'Update',
-            showVersionArrow: true,
+            showUpdateReadiness: true,
             confirmedFn: UpdateStackConfirmed
         },
         'forceUpdate': {
@@ -6063,7 +6021,7 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             warningIcon: 'exclamation-triangle',
             warningColor: window.getComputedStyle(document.documentElement).getPropertyValue('--brand-orange') || window.getComputedStyle(document.documentElement).getPropertyValue('--dynamix-sb-message-link-color'),
             confirmText: 'Force Update',
-            showVersionArrow: false,
+            showUpdateReadiness: true,
             confirmedFn: ForceUpdateStackConfirmed
         }
     };
@@ -6073,6 +6031,9 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
     // Build HTML content for the dialog
     var html = '<div style="text-align:left;max-width:450px;margin:0 auto;color:var(--text-color, var(--dynamix-sb-body-text-color));">';
     html += '<div style="margin-bottom:18px;">' + cfg.description + '</div>';
+    if (cfg.showUpdateReadiness) {
+        html += '<div class="compose-text-muted">Readiness reflects the last check, not a live guarantee. Build on update still controls rebuilding.</div>';
+    }
 
     // Container list with icons
     if (containers && containers.length > 0) {
@@ -6092,7 +6053,7 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
 
             // Check if this container has an update available
             var hasUpdate = container.hasUpdate || false;
-            var updateStatus = container.updateStatus || 'unknown';
+            var presentation = composeUpdatePresentation(container);
             var localSha = container.localSha || '';
             var remoteSha = container.remoteSha || '';
 
@@ -6100,7 +6061,7 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             iconSrc = composeEscapeAttr(iconSrc);
 
             // Grey out containers without updates when showing update dialog
-            var rowOpacity = (cfg.showVersionArrow && !hasUpdate && updateStatus === 'up-to-date') ? '0.5' : '1';
+            var rowOpacity = (cfg.showUpdateReadiness && presentation.label === 'Current') ? '0.5' : '1';
             var isLast = (index === containers.length - 1);
             var borderStyle = isLast ? '' : 'border-bottom:1px solid var(--dynamix-box-inner-div-border-color);';
 
@@ -6109,31 +6070,25 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             html += '<div style="flex:1;">';
             html += '<div style="font-weight:bold;">' + composeEscapeHtml(shortName);
             // Show update badge if update is available (for update action)
-            if (cfg.showVersionArrow && hasUpdate) {
+            if (cfg.showUpdateReadiness && hasUpdate) {
                 html += ' <span class="compose-status-warning" style="font-size:0.7em;padding:2px 6px;border-radius:3px;margin-left:6px;">UPDATE</span>';
-            } else if (cfg.showVersionArrow && updateStatus === 'up-to-date') {
+            } else if (cfg.showUpdateReadiness && presentation.label === 'Current') {
                 html += ' <span class="compose-status-success" style="font-size:0.8em;margin-left:6px;"><i class="fa fa-check"></i></span>';
             }
             html += '</div>';
             html += '<div class="compose-text-muted" style="font-size:0.85em;margin-top:2px;">';
             html += '<i class="fa fa-' + stateIcon + ' ' + stateClass + '" style="margin-right:4px;"></i>';
             html += composeEscapeHtml(imageName) + ' : <span class="compose-status-info">' + composeEscapeHtml(imageTag) + '</span>';
+            html += ' <span class="' + stateClass + '">(state: ' + composeEscapeHtml(state) + ')</span>';
 
-            // Show SHA info for update action
-            if (cfg.showVersionArrow) {
+            if (cfg.showUpdateReadiness) {
+                html += '<div style="margin-top:4px;">' + composeUpdateBadge(container) + '</div>';
+                html += '<div class="compose-text-muted" style="margin-top:4px;">' + composeEscapeHtml(presentation.detail) + '</div>';
+                html += composeUpdateDigestDetails(container);
                 if (hasUpdate && localSha && remoteSha) {
-                    // Has update - show current SHA → new SHA
-                    html += '<div style="font-family:var(--font-bitstream);font-size:0.9em;margin-top:2px;">';
-                    html += '<span class="compose-status-warning" title="' + composeEscapeAttr(localSha) + '">' + composeEscapeHtml(localSha.substring(0, 8)) + '</span>';
-                    html += ' <i class="fa fa-arrow-right compose-status-success" style="margin:0 4px;"></i> ';
-                    html += '<span class="compose-status-success" title="' + composeEscapeAttr(remoteSha) + '">' + composeEscapeHtml(remoteSha.substring(0, 8)) + '</span>';
-                    html += '</div>';
-                    if (dockerVersionsInstalled) {
+                    if (dockerVersionsInstalled && container.updateKind !== 'build-base') {
                         html += '<div style="margin-top:4px;"><a href="#" data-changelog-container="' + composeEscapeAttr(containerName) + '" data-changelog-path="' + composeEscapeAttr(path) + '" data-changelog-profile="' + composeEscapeAttr(profile || '') + '" onclick="showComposeChangelog(this.dataset.changelogContainer,this.dataset.changelogPath,this.dataset.changelogProfile);return false;" style="font-size:0.85em;"><i class="fa fa-list" style="margin-right:3px;"></i>Changelog</a></div>';
                     }
-                } else if (localSha) {
-                    // No update - just show current SHA (greyed)
-                    html += '<div style="font-family:var(--font-bitstream);font-size:0.9em;margin-top:2px;" title="' + composeEscapeAttr(localSha) + '"><span class="compose-text-muted">' + composeEscapeHtml(localSha.substring(0, 8)) + '</span></div>';
                 }
             }
             html += '</div></div></div>';
@@ -6178,7 +6133,7 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
         var isUpdate = action === 'update' || action === 'forceUpdate';
         var includeStoppedDefault = pluginCfg && pluginCfg.UPDATE_INCLUDE_STOPPED_DEFAULT === 'true';
 
-        if (disableWarnings) {
+        if (disableWarnings && !showDetails) {
             // In default background mode (warnings disabled and background enabled), don't show toast if background is used
             cfg.confirmedFn(path, {
                 profile: profile,
@@ -9324,41 +9279,11 @@ function renderContainerDetails(stackId, containers, project) {
         // Update column - shows update status for this container (like Docker tab)
         html += '<td class="ct-updatecolumn">';
         var ctHasUpdate = container.hasUpdate || false;
-        var ctUpdateStatus = container.updateStatus || '';
-        var ctLocalSha = container.localSha || '';
-        var ctRemoteSha = container.remoteSha || '';
-        var ctIsPinned = container.isPinned || false;
-        var ctPinnedDigest = container.pinnedDigest || '';
-
-        if (ctIsPinned) {
-            // Image is pinned with SHA256 digest - show pinned status
-            html += '<span class="cyan-text" style="white-space:nowrap;"><i class="fa fa-thumb-tack fa-fw"></i> pinned</span>';
-            if (ctPinnedDigest) {
-                html += '<div style="font-family:var(--font-bitstream);font-size:0.85em;margin-top:2px;"><span class="compose-status-info">' + composeEscapeHtml(ctPinnedDigest.substring(0, 12)) + '</span></div>';
-            }
-        } else if (ctHasUpdate) {
-            // Update available - orange "update ready" style with SHA diff
-            html += '<a class="exec" style="cursor:pointer;" onclick="showUpdateWarning(\'' + composeEscapeAttr(project) + '\', \'' + composeEscapeAttr(stackId) + '\', \'update\');">';
-            html += '<span class="orange-text" style="white-space:nowrap;"><i class="fa fa-flash fa-fw"></i> update ready</span>';
-            html += '</a>';
-            if (ctLocalSha && ctRemoteSha) {
-                // Always show SHA diff when available.
-                html += '<div style="font-family:var(--font-bitstream);font-size:0.85em;margin-top:2px;">';
-                html += '<span class="compose-status-warning" title="' + composeEscapeAttr(ctLocalSha) + '">' + composeEscapeHtml(ctLocalSha.substring(0, 8)) + '</span>';
-                html += ' <i class="fa fa-arrow-right compose-status-success" style="margin:0 4px;"></i> ';
-                html += '<span class="compose-status-success" title="' + composeEscapeAttr(ctRemoteSha) + '">' + composeEscapeHtml(ctRemoteSha.substring(0, 8)) + '</span>';
-                html += '</div>';
-            }
-        } else if (ctUpdateStatus === 'up-to-date') {
-            // No update - green "up-to-date" style
-            html += '<span class="green-text" style="white-space:nowrap;"><i class="fa fa-check fa-fw"></i> up-to-date</span>';
-            if (ctLocalSha) {
-                // Show SHA snippet in toggleable detail area for up-to-date containers (15 chars).
-                html += '<div style="font-family:var(--font-bitstream);font-size:0.85em;" title="' + composeEscapeAttr(ctLocalSha) + '"><span class="compose-text-muted">' + composeEscapeHtml(ctLocalSha.substring(0, 15)) + '</span></div>';
-            }
+        if (ctHasUpdate) {
+        html += '<a href="#" class="exec" style="cursor:pointer;white-space:nowrap;" aria-label="Open update details" onclick="showUpdateWarning(\'' + composeEscapeAttr(project) + '\', \'' + composeEscapeAttr(stackId) + '\', \'update\');return false;">';
+        html += composeUpdateBadge(container) + '</a>';
         } else {
-            // Unknown/not checked
-            html += '<span class="compose-text-muted" style="white-space:nowrap;"><i class="fa fa-question-circle fa-fw"></i> not checked</span>';
+        html += composeUpdateBadge(container);
         }
         html += '</td>';
 

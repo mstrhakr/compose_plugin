@@ -299,8 +299,6 @@
                         var ctWebUI = ct.WebUI || ct.webUI || ct.webui || '';
                         var ctImage = ct.Image || ct.image || '';
                         var ctUpdateStatus = ct.UpdateStatus || ct.updateStatus || 'unknown';
-                        var ctLocalSha = ct.LocalSha || ct.localSha || '';
-                        var ctRemoteSha = ct.RemoteSha || ct.remoteSha || '';
                         var ctStartedAt = ct.StartedAt || ct.startedAt || '';
 
                         var isRunning = ctState === 'running';
@@ -315,17 +313,10 @@
                         var image = ctImage;
                         var imageDisplay = image.replace(/^.*\//, '');
 
-                        var updateStatus = ctUpdateStatus;
-                        var localSha = ctLocalSha;
-                        var remoteSha = ctRemoteSha;
-                        var updateHtml = '';
-                        if (updateStatus === 'up-to-date') {
-                            updateHtml = '<span class="green-text"><i class="fa fa-check"></i> current</span>';
-                        } else if (updateStatus === 'update-available' && localSha && remoteSha) {
-                            updateHtml = '<span class="orange-text"><span class="sha">' + localSha + '</span> <i class="fa fa-arrow-right"></i> <span class="sha">' + remoteSha + '</span></span>';
-                        } else {
-                            updateHtml = '<span class="grey-text">--</span>';
-                        }
+                        var updateHtml = composeUpdateBadge(Object.assign({}, ct, {
+                            updateStatus: ctUpdateStatus,
+                            hasUpdate: ct.hasUpdate || ctUpdateStatus === 'update-available'
+                        }));
 
                         var ctUptime = formatUptime(ctStartedAt, isRunning);
 

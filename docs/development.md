@@ -106,6 +106,12 @@ Regression coverage: `UpdateCommandPathsTest.php` checks the real individual/for
 
 The update-details dialog lists existing runtime containers rather than hypothetical services from a selected/default profile. Update actions bypass the profile selector because deployed runtime scope is authoritative. Both individual/force and bulk dialogs seed the include-stopped checkbox from the plugin setting; changing it does not save configuration. With action warnings disabled, the saved default is used directly. Bulk update can include fully stopped stacks when explicitly enabled. `tests/fixtures/update-ui.cjs` exercises the real frontend functions with lightweight UI/transport stubs, invoked by the Bats suite when Node.js is available.
 
+`javascript/composeUpdateStatus.js` owns readiness labels and compact badges for
+the main table, expanded containers, dialogs, and dashboard. Both page entry
+points load it before their renderer. Stack summaries show a single pending
+state or a total with a tooltip breakdown; dialogs label application and base
+digests separately rather than comparing unlike image IDs with an arrow.
+
 ## Troubleshooting
 
 - If vendor binaries are missing, re-run `composer install`.

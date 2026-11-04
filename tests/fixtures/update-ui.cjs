@@ -39,8 +39,10 @@ function harness(config = {}) {
         context[name] = () => {};
     }
     vm.createContext(context);
+    vm.runInContext(fs.readFileSync(`${__dirname}/../../source/compose.manager/javascript/composeUpdateStatus.js`, 'utf8'), context);
     for (const name of ['composeUpdateScopeOptionHtml', 'ForceUpdateStackConfirmed', 'UpdateStackConfirmed',
-        'renderStackActionDialog', 'executeUpdateAllStacks', 'updateAllStacks', 'showProfileSelector']) {
+        'renderStackActionDialog', 'composeUpdateDigestDetails', 'executeUpdateAllStacks', 'updateAllStacks', 'showProfileSelector',
+        'updateStackUpdateUI', 'showUpdateWarning', 'createContainerInfo', 'composeImageUpdateKey', 'mergeContainerUpdateStatus']) {
         const match = source.match(new RegExp(`^function ${name}\\([^]*?\\n\\}`, 'm'));
         assert.ok(match, `Missing function ${name}`);
         vm.runInContext(match[0], context);
@@ -150,3 +152,105 @@ for (const initial of [false, true]) {
     assert.equal(events.filter(event => event.rendered).length, 1);
 }
 console.log('Update modal defaults, overrides, warning bypass, runtime details, and bulk scope tests passed.');
+
+{
+    const { context } = harness();
+    for (const [state, label] of Object.entries({
+        'current': 'Current', 'download-required': 'Available', 'ready-to-apply': 'Downloaded',
+        'rebuild-required': 'Rebuild', 'unknown': 'Unchecked'
+    })) {
+        const container = { updateReadiness: state };
+        assert.equal(context.composeUpdatePresentation(container).label, label);
+        const badge = context.composeUpdateBadge(container);
+        assert.match(badge, /white-space:nowrap/);
+        assert.match(badge, /aria-label=/);
+        assert.doesNotMatch(badge, /<div|<br|arrow-right/);
+    }
+    assert.equal(context.composeUpdatePresentation({ hasUpdate: true }).label, 'Pending');
+    assert.equal(context.composeUpdatePresentation({ updateStatus: 'up-to-date', updateReadiness: 'unknown' }).label, 'Unchecked');
+    assert.equal(context.composeUpdatePresentation({ updateStatus: 'up-to-date' }).label, 'Current');
+    assert.equal(context.composeUpdatePresentation({ hasUpdate: true, updateReadiness: 'unknown' }).label, 'Pending');
+    assert.equal(context.composeUpdatePresentation({ isPinned: true }).label, 'Pinned');
+    assert.match(context.composeUpdateDigestDetails({ updateKind: 'build-base', remoteSha: 'base' }), /Remote base image/);
+    assert.doesNotMatch(context.composeUpdateDigestDetails({ updateKind: 'build-base', remoteSha: 'base' }), /Remote application image/);
+}
+{
+    const { context } = harness();
+    let markup = '';
+    context.stackContainersCache = {};
+    context.expandedStacks = {};
+    context.composeEscapeAttr = text => String(text).replace(/"/g, '&quot;');
+    context.$ = selector => ({
+        length: 1, attr: () => 'stack-row-test', each: () => {},
+        find: () => ({ html: value => { markup = value; }, text: () => 'stopped' }),
+    });
+    for (const containers of [
+        [{ hasUpdate: true, updateReadiness: 'download-required' }],
+        [{ hasUpdate: true, updateReadiness: 'ready-to-apply' }, { hasUpdate: true, updateReadiness: 'rebuild-required' }],
+        [{ updateStatus: 'up-to-date' }, { isPinned: true }],
+        [{ updateStatus: 'unknown' }],
+        [],
+    ]) {
+        context.updateStackUpdateUI('test', { containers });
+        assert.match(markup, /white-space:nowrap/);
+        assert.doesNotMatch(markup, /<div|<br|arrow-right|force update|> stopped</);
+    }
+    context.updateStackUpdateUI('test', { containers: [
+        { hasUpdate: true, updateReadiness: 'ready-to-apply' },
+        { hasUpdate: true, updateReadiness: 'rebuild-required' },
+        { updateStatus: 'unknown' },
+    ] });
+    assert.match(markup, /2 updates/);
+    assert.match(markup, /1 downloaded/);
+    assert.match(markup, /1 rebuild/);
+    assert.match(markup, /1 unchecked/);
+    context.updateStackUpdateUI('test', { containers: [{ updateStatus: 'up-to-date', updateReadiness: 'unknown' }] });
+    assert.match(markup, /1 unchecked/);
+}
+console.log('Compact readiness badges, mixed summaries, stopped-stack visibility, and digest labels passed.');
+
+for (const action of ['update', 'forceUpdate']) {
+    const h = harness();
+    h.context.composeIconSrc = () => 'icon.png';
+    h.context.composeEscapeAttr = text => String(text).replace(/"/g, '&quot;');
+    h.context.dockerVersionsInstalled = true;
+    h.context.renderStackActionDialog(action, 'Test', 'test', '', [{
+        name: 'test-app-1', image: 'test-app', state: 'exited', hasUpdate: true, updateKind: 'build-base',
+        updateReadiness: 'rebuild-required', localSha: 'app-old', localImageSha: 'app-local', remoteSha: 'base-new',
+    }], true, false);
+    const dialog = h.events[0].dialog.text;
+    assert.match(dialog, /Rebuild/);
+    assert.match(dialog, /Remote base image/);
+    assert.match(dialog, /Local application image/);
+    assert.match(dialog, /last check/);
+    assert.match(dialog, /state: exited/);
+    assert.doesNotMatch(dialog, /arrow-right|data-changelog-container/);
+}
+{
+    const { context, events } = harness({ DISABLE_ACTION_WARNINGS: 'true' });
+    context.renderStackActionDialog('update', 'Test', 'test', '', [], false, false, true);
+    assert.ok(events[0].dialog, 'Viewing details must still open a dialog when action warnings are disabled');
+    assert.equal(events.some(event => event.payload), false);
+    events[0].callback(false);
+    assert.equal(events.some(event => event.payload), false, 'Closing details must not update');
+    context.compose_root = '/stacks';
+    context.showStackActionDialog = (...args) => events.push(args);
+    context.showUpdateWarning('test', 'test', 'update');
+    assert.equal(events.at(-1)[3], true, 'Status links must request details explicitly');
+}
+{
+    const { context, events } = harness({ DISABLE_ACTION_WARNINGS: 'true' });
+    vm.runInContext(source.match(/^function showComposeChangelog\([^]*?\n\}/m)[0], context);
+    let tick;
+    let open = true;
+    context.showChangeLog = () => {};
+    context.$ = () => ({ hide: () => {}, hasClass: () => open });
+    context.setInterval = fn => { tick = fn; return 1; };
+    context.clearInterval = () => {};
+    context.showStackActionDialog = (...args) => events.push(args);
+    context.showComposeChangelog('test-app', '/stacks/test', '');
+    tick();
+    open = false;
+    tick();
+    assert.equal(events[0][3], true, 'Changelog close must reopen details, not start an update');
+}

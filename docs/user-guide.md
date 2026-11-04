@@ -63,7 +63,30 @@ When updates are available, clicking **Update Stack** opens a confirmation dialo
 
 #### Changelogs
 
-If the [docker.versions](https://github.com/phyzical/docker.versions) Unraid plugin is installed, a **Changelog** link appears below the digest for each container with a pending update. Clicking it opens the release notes for that image in a modal. No configuration is required — Compose Manager detects docker.versions automatically.
+The Update column stays on one line. A single pending update shows its readiness;
+multiple pending updates show a total, with the breakdown in the tooltip. Expand
+the stack for per-container statuses, or open its update dialog for explanations
+and image digests. Stopped containers retain update information; runtime state
+is shown separately.
+
+- **Available**: a newer image is online and still needs downloading.
+- **Downloaded**: the checked replacement application image is local, but the
+  container has not been recreated with it.
+- **Rebuild**: a build-only application needs rebuilding against a newer base.
+  Downloading the base image alone does not make the application ready.
+- **Pending**: an update is known, but download/build readiness is unverified.
+- **Current**, **Pinned**, and **Unchecked** remain distinct.
+
+These are last-check results, not live guarantees. For build-only images,
+Current refers to the checked base layers, not local source changes.
+**Build on update** still controls rebuilding; readiness does not override it.
+**Force Update** remains available in the stack's action menu rather than taking
+another line in the Update column.
+Clicking a pending status always opens details without updating, even when
+action warnings are disabled; applying the update still requires confirmation
+there. The explicit Update action continues to respect the warning setting.
+
+If the [docker.versions](https://github.com/phyzical/docker.versions) Unraid plugin is installed, a **Changelog** link appears in the update dialog for published application images with a pending update. Clicking it opens the release notes for that image in a modal. Build-base changes do not link application changelogs as if they described the base. No configuration is required — Compose Manager detects docker.versions automatically.
 
 ## Autostart
 
