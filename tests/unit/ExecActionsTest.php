@@ -334,7 +334,10 @@ class ExecActionsTest extends TestCase
         ];
         file_put_contents($docker, "#!/bin/sh\ncase \"\$*\" in\n"
             . "*'config --format json'*) printf '%s\\n' '{\"services\":{}}'; exit 0 ;;\nesac\ncase \"\$1\" in\n"
-            . "compose|ps) printf '%s\\n' " . escapeshellarg(json_encode($row))
+            . "compose) printf '%s\\n' " . escapeshellarg(json_encode(array_diff_key($row, ['Labels' => true])))
+            . ' ' . escapeshellarg(json_encode(array_diff_key($stopped, ['Labels' => true])))
+            . ' ' . escapeshellarg(json_encode(array_diff_key($job, ['Labels' => true]))) . " ;;\n"
+            . "ps) printf '%s\\n' " . escapeshellarg(json_encode($row))
             . ' ' . escapeshellarg(json_encode($stopped)) . ' ' . escapeshellarg(json_encode($job)) . " ;;\nesac\n"
             . "printf '%s\\n' \"\$*\" >> " . escapeshellarg($commands) . "\n");
         chmod($docker, 0755);
@@ -368,6 +371,7 @@ class ExecActionsTest extends TestCase
                 '/\b(pull|build|up|start|stop|restart|create|run|rm)\b/',
                 file_get_contents($commands)
             );
+            $this->assertStringNotContainsString('ps --all', file_get_contents($commands));
         } finally {
             putenv('PATH=' . $path);
             @unlink(UNRAID_UPDATE_STATUS_FILE);
@@ -387,6 +391,12 @@ class ExecActionsTest extends TestCase
         try {
             foreach (['checkStackUpdates', 'checkAllStacksUpdates'] as $action) {
                 \StackInfo::clearCache();
+                file_put_contents(COMPOSE_UPDATE_STATUS_FILE, json_encode(['empty-stack' => [
+                    'hasUpdate' => true, 'containers' => [[
+                        'name' => 'removed', 'image' => 'app:latest',
+                        'hasUpdate' => true, 'updateStatus' => 'update-available',
+                    ]],
+                ]]));
                 $response = json_decode($this->executeAction($action, ['script' => 'empty-stack']), true);
                 $this->assertSame('success', $response['result']);
                 $updates = $action === 'checkStackUpdates'
@@ -397,6 +407,53 @@ class ExecActionsTest extends TestCase
                 $this->assertSame('empty-stack', $saved['empty-stack']['projectName']);
             }
 
+        } finally {
+            putenv('PATH=' . $path);
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+        }
+    }
+
+    public static function invalidUpdateSnapshots(): array
+    {
+        return [
+            'command failure' => ["echo 'fixture daemon unavailable' >&2; exit 7", 'Unable to enumerate Compose containers'],
+            'truncated JSON' => ["printf '%s\\n' '{\"Names\":'", 'Syntax error'],
+            'invalid row' => ["echo '[]'", 'Invalid Docker container row'],
+            'partial valid then malformed' => [
+                "echo '{\"Names\":\"app\",\"Image\":\"app:latest\",\"Labels\":\"com.docker.compose.project=failed-stack\"}'; echo '{'",
+                'Syntax error',
+            ],
+            'missing project label' => [
+                "echo '{\"Names\":\"app\",\"Image\":\"app:latest\",\"Labels\":\"com.docker.compose.service=app\"}'",
+                'Missing Compose project label',
+            ],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('invalidUpdateSnapshots')]
+    public function testFailedUpdateEnumerationPreservesSavedEvidence(string $command, string $message): void
+    {
+        $this->createTestStack('failed-stack');
+        $directory = $this->createTempDir();
+        file_put_contents($directory . '/docker', "#!/bin/sh\ncase \"\$1\" in\nps) $command ;;\n*) exit 0 ;;\nesac\n");
+        chmod($directory . '/docker', 0755);
+        $path = getenv('PATH');
+        putenv('PATH=' . $directory . PATH_SEPARATOR . $path);
+        $saved = json_encode([
+            'failed-stack' => ['hasUpdate' => true, 'lastChecked' => 123, 'containers' => [[
+                'name' => 'app', 'image' => 'app:latest', 'hasUpdate' => true, 'updateStatus' => 'update-available',
+            ]]],
+            'other-stack' => ['hasUpdate' => true, 'containers' => []],
+        ]);
+        try {
+            foreach (['checkStackUpdates', 'checkAllStacksUpdates'] as $action) {
+                \StackInfo::clearCache();
+                file_put_contents(COMPOSE_UPDATE_STATUS_FILE, $saved);
+                $response = json_decode($this->executeAction($action, ['script' => 'failed-stack']), true);
+                $this->assertSame('error', $response['result']);
+                $this->assertStringContainsString($message, $response['message']);
+                $this->assertSame($saved, file_get_contents(COMPOSE_UPDATE_STATUS_FILE));
+            }
         } finally {
             putenv('PATH=' . $path);
             @unlink(COMPOSE_UPDATE_STATUS_FILE);

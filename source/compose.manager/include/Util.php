@@ -4428,26 +4428,46 @@ class StackInfo
      * containers.
      *
      * @param string|null $projectName One project, or null for every compose project
+     * @param bool $strict Fail rather than report an empty snapshot on command/parse errors
      * @return array<string, array[]> Rows by project name
      */
-    public static function containersByProject(?string $projectName = null): array
+    public static function containersByProject(?string $projectName = null, bool $strict = false): array
     {
         $filter = 'label=com.docker.compose.project' . ($projectName === null ? '' : '=' . $projectName);
         $containersByProject = [];
-        $psOutput = shell_exec('docker ps -a --filter ' . escapeshellarg($filter) . ' --format json 2>/dev/null');
+        if ($strict) {
+            require_once __DIR__ . '/ProcessRunner.php';
+            $result = ProcessRunner::run(
+                ['docker', 'ps', '-a', '--filter', $filter, '--format', 'json'],
+                __DIR__, getenv(), 60
+            );
+            if (!$result->succeeded()) {
+                throw new RuntimeException('Unable to enumerate Compose containers: ' . $result->errorSummary());
+            }
+            $psOutput = $result->stdout;
+        } else {
+            $psOutput = shell_exec('docker ps -a --filter ' . escapeshellarg($filter) . ' --format json 2>/dev/null');
+        }
         if ($psOutput) {
             foreach (explode("\n", trim($psOutput)) as $line) {
                 if ($line === '') {
                     continue;
                 }
-                $ct = @json_decode($line, true);
-                if (!$ct) {
+                $ct = $strict ? json_decode($line, true, 512, JSON_THROW_ON_ERROR) : @json_decode($line, true);
+                if ($strict && (!is_array($ct) || !is_string($ct['Labels'] ?? null)
+                    || !is_string($ct['Names'] ?? null) || trim($ct['Names']) === ''
+                    || !is_string($ct['Image'] ?? null) || trim($ct['Image']) === '')) {
+                    throw new RuntimeException('Invalid Docker container row in update snapshot.');
+                }
+                if (!is_array($ct) || !$ct) {
                     continue;
                 }
                 // Extract project name from Labels string
                 $labels = $ct['Labels'] ?? '';
                 if (preg_match('/com\.docker\.compose\.project=([^,]+)/', $labels, $m)) {
                     $containersByProject[$m[1]][] = $ct;
+                } elseif ($strict) {
+                    throw new RuntimeException('Missing Compose project label in update snapshot.');
                 }
             }
         }

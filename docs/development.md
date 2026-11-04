@@ -192,6 +192,10 @@ workdirs are not resolved a second time by Compose.
 Scoped update service validation follows Compose's `[a-zA-Z0-9_.-]+` names,
 including punctuation prefixes. Every command receiving positional services
 uses `--` so a leading hyphen cannot be interpreted as a CLI option.
+Individual and bulk update checks use one strict, label-bearing `docker ps`
+snapshot, independent of Compose's version-specific `ps` response. Enumeration
+failures, malformed rows, and incomplete JSON abort the check before saving;
+only a successful empty snapshot can clear evidence for removed containers.
 Dockerfile scanning consumes all heredoc bodies before interpreting subsequent
 instructions. Image-backed named build contexts are resolved to their image
 reference; service/directory contexts remain unknown. A digest-pinned base is

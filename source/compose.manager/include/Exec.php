@@ -2218,7 +2218,7 @@ switch ($_POST['action']) {
     case 'checkAllStacksUpdates':
         composeLogger('Starting update check for all stacks', null, 'user', 'debug', 'update-check');
         try {
-            $allUpdates = composeCheckStackUpdatesForUi(StackInfo::allFromRoot($compose_root), true);
+            $allUpdates = composeCheckStackUpdatesForUi(StackInfo::allFromRoot($compose_root, true), true);
             $totalStacks = count($allUpdates);
             $updatesFound = count(array_filter($allUpdates, static fn(array $stack): bool => $stack['hasUpdate']));
             composeLogger("Completed: $totalStacks stacks checked, $updatesFound with updates", null, 'user', 'debug', 'update-check');

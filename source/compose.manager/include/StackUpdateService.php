@@ -69,9 +69,12 @@ class StackUpdateService
     {
         $results = [];
         $checkers = [];
+        $runtime = $stacks ? StackInfo::containersByProject(
+            count($stacks) === 1 ? $stacks[0]->projectName : null, true
+        ) : [];
         foreach ($stacks as $stack) {
             $rows = array_values(array_filter(
-                $stack->getContainerList(),
+                $runtime[$stack->projectName] ?? [],
                 static fn(array $row): bool => !ContainerInfo::isOneOff($row)
             ));
             $checks = [];
