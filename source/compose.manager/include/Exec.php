@@ -125,7 +125,8 @@ if (!function_exists('composeCacheContainerUpdate')) {
                 || $cached->pinnedDigest !== $update->pinnedDigest
             ))
             || (isset($raw['name']) && $raw['name'] !== $update->name)) {
-            unset($raw['hasUpdate'], $raw['updateStatus'], $raw['localSha'], $raw['remoteSha']);
+            unset($raw['hasUpdate'], $raw['updateStatus'], $raw['localSha'], $raw['remoteSha'],
+                $raw['localImageSha'], $raw['updateKind'], $raw['updateReadiness']);
         }
         $raw['name'] = $update->name;
         $raw['service'] = $update->service;
@@ -1054,7 +1055,8 @@ switch ($_POST['action']) {
         $containerCache = composeLoadPersistentContainerCache();
         foreach ($containerCache as &$cachedStack) {
             foreach ($cachedStack as &$cachedContainer) {
-                unset($cachedContainer['hasUpdate'], $cachedContainer['updateStatus'], $cachedContainer['localSha'], $cachedContainer['remoteSha']);
+                unset($cachedContainer['hasUpdate'], $cachedContainer['updateStatus'], $cachedContainer['localSha'], $cachedContainer['remoteSha'],
+                    $cachedContainer['localImageSha'], $cachedContainer['updateKind'], $cachedContainer['updateReadiness']);
             }
             unset($cachedContainer);
         }
@@ -2083,6 +2085,10 @@ switch ($_POST['action']) {
                             $hasConfigDigest = $configDigest !== '' && $configDigest === $remoteRaw;
                             if ($hasConfigDigest) {
                                 $localRaw = $inspect['Image'] ?? '';
+                                $rawContainer['updateReadiness'] = ComposeUpdateCheck::imageReadiness(
+                                    $localRaw, $status['local'] ?? '', $remoteRaw
+                                );
+                                $rawContainer['localImageSha'] = substr(str_replace('sha256:', '', $status['local'] ?? ''), 0, 12);
                             }
                             $rawContainer['localSha'] = substr(str_replace('sha256:', '', $localRaw), 0, 8);
                             $rawContainer['remoteSha'] = substr(str_replace('sha256:', '', $remoteRaw), 0, 8);

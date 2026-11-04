@@ -1879,6 +1879,10 @@ class ContainerInfo
     public string $localSha = '';
     /** @var string Remote image SHA (truncated) */
     public string $remoteSha = '';
+    public string $localImageSha = '';
+    /** @var string image or build-base; base digests are not application digests */
+    public string $updateKind = 'image';
+    public string $updateReadiness = 'unknown';
     /** @var bool Whether the image is pinned to a specific digest */
     public bool $isPinned = false;
     /** @var string|null Pinned digest if isPinned is true */
@@ -1953,6 +1957,9 @@ class ContainerInfo
         $info->updateStatus = $raw['updateStatus'] ?? $raw['UpdateStatus'] ?? $raw['status'] ?? 'unknown';
         $info->localSha = $raw['localSha'] ?? $raw['LocalSha'] ?? '';
         $info->remoteSha = $raw['remoteSha'] ?? $raw['RemoteSha'] ?? '';
+        $info->localImageSha = $raw['localImageSha'] ?? '';
+        $info->updateKind = $raw['updateKind'] ?? 'image';
+        $info->updateReadiness = $raw['updateReadiness'] ?? 'unknown';
         $info->hasUpdate = $raw['hasUpdate']
             ?? ($info->updateStatus === 'update-available');
 
@@ -1983,6 +1990,9 @@ class ContainerInfo
         $info->updateStatus = $raw['status'] ?? $raw['updateStatus'] ?? 'unknown';
         $info->localSha = $raw['localSha'] ?? '';
         $info->remoteSha = $raw['remoteSha'] ?? '';
+        $info->localImageSha = $raw['localImageSha'] ?? '';
+        $info->updateKind = $raw['updateKind'] ?? 'image';
+        $info->updateReadiness = $raw['updateReadiness'] ?? 'unknown';
 
         $info->derivePinned();
 
@@ -1997,9 +2007,6 @@ class ContainerInfo
      */
     public function mergeUpdateStatus(ContainerInfo $update): void
     {
-        if ($update->updateStatus === '' || $update->updateStatus === 'unknown') {
-            return;
-        }
         if ($this->name !== '' && $update->name !== '' && $this->name !== $update->name) {
             return;
         }
@@ -2008,11 +2015,19 @@ class ContainerInfo
                 || $this->pinnedDigest !== $update->pinnedDigest)) {
             return;
         }
+        if ($update->updateStatus === '' || $update->updateStatus === 'unknown') {
+            $this->updateReadiness = 'unknown';
+            $this->localImageSha = '';
+            return;
+        }
 
         $this->hasUpdate = $update->hasUpdate;
         $this->updateStatus = $update->updateStatus;
         $this->localSha = $update->localSha;
         $this->remoteSha = $update->remoteSha;
+        $this->localImageSha = $update->localImageSha;
+        $this->updateKind = $update->updateKind;
+        $this->updateReadiness = $update->updateReadiness;
         if ($update->isPinned) {
             $this->isPinned = $update->isPinned;
             $this->pinnedDigest = $update->pinnedDigest;
@@ -2037,6 +2052,9 @@ class ContainerInfo
             'updateStatus' => $this->updateStatus,
             'localSha' => $this->localSha,
             'remoteSha' => $this->remoteSha,
+            'localImageSha' => $this->localImageSha,
+            'updateKind' => $this->updateKind,
+            'updateReadiness' => $this->updateReadiness,
             'isPinned' => $this->isPinned,
             'pinnedDigest' => $this->pinnedDigest,
             'icon' => $this->icon,
@@ -2067,6 +2085,9 @@ class ContainerInfo
             'updateStatus' => $this->updateStatus,
             'localSha' => $this->localSha,
             'remoteSha' => $this->remoteSha,
+            'localImageSha' => $this->localImageSha,
+            'updateKind' => $this->updateKind,
+            'updateReadiness' => $this->updateReadiness,
             'isPinned' => $this->isPinned,
             'pinnedDigest' => $this->pinnedDigest,
         ];

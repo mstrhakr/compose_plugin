@@ -362,7 +362,8 @@ class ContainerInfoTest extends TestCase
 
         $arr = $info->toUpdateArray();
 
-        $expected = ['name', 'service', 'image', 'icon', 'hasUpdate', 'updateStatus', 'localSha', 'remoteSha', 'isPinned', 'pinnedDigest'];
+        $expected = ['name', 'service', 'image', 'icon', 'hasUpdate', 'updateStatus', 'localSha', 'remoteSha',
+            'localImageSha', 'updateKind', 'updateReadiness', 'isPinned', 'pinnedDigest'];
         $this->assertSame($expected, array_keys($arr));
         $this->assertSame('abcdef1234567890abcdef1234567890', $arr['pinnedDigest']);
         $this->assertSame('icon.png', $arr['icon']);
@@ -370,6 +371,33 @@ class ContainerInfoTest extends TestCase
         // Should NOT contain non-update fields
         $this->assertArrayNotHasKey('state', $arr);
         $this->assertArrayNotHasKey('ports', $arr);
+    }
+
+    public function testReadinessSurvivesFactoriesSerializationAndStatusMerging(): void
+    {
+        $raw = [
+            'name' => 'app', 'service' => 'app', 'image' => 'app:latest',
+            'status' => 'update-available', 'hasUpdate' => true,
+            'localSha' => 'old', 'remoteSha' => 'base', 'localImageSha' => 'built',
+            'updateKind' => 'build-base', 'updateReadiness' => 'ready-to-apply',
+        ];
+        $update = \ContainerInfo::fromUpdateResponse($raw);
+        $roundtrip = \ContainerInfo::fromDockerInspect($update->toArray());
+        $this->assertSame($update->toUpdateArray(), $roundtrip->toUpdateArray());
+        $container = \ContainerInfo::fromDockerInspect(['name' => 'app', 'image' => 'app:latest']);
+        $container->mergeUpdateStatus($update);
+        $this->assertSame('ready-to-apply', $container->updateReadiness);
+        $this->assertSame('build-base', $container->updateKind);
+        $this->assertSame('built', $container->localImageSha);
+        $other = \ContainerInfo::fromDockerInspect(['name' => 'other', 'image' => 'app:latest']);
+        $other->mergeUpdateStatus($update);
+        $this->assertSame('unknown', $other->updateReadiness);
+        $container->mergeUpdateStatus(\ContainerInfo::fromUpdateResponse([
+            'name' => 'app', 'image' => 'app:latest', 'status' => 'unknown',
+        ]));
+        $this->assertSame('unknown', $container->updateReadiness);
+        $this->assertSame('', $container->localImageSha);
+        $this->assertSame('update-available', $container->updateStatus, 'Legacy pending-update history remains preserved.');
     }
 
     // ===========================================

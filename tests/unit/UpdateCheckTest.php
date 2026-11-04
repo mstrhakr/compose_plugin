@@ -188,10 +188,34 @@ class UpdateCheckTest extends TestCase
         $this->assertTrue($results['old-db']['hasUpdate']);
         $this->assertSame('sha256:old', $results['old-db']['local']);
         $this->assertSame('update-available', $results['old-db']['status']);
+        $this->assertSame('ready-to-apply', $results['old-db']['updateReadiness']);
+        $this->assertSame('current', $results['current-db']['updateReadiness']);
+        $this->assertSame('unknown', $results['missing-db']['updateReadiness']);
         $this->assertFalse($results['current-db']['hasUpdate']);
         $this->assertSame('up-to-date', $results['current-db']['status']);
         $this->assertSame('unknown', $results['missing-db']['status']);
         $this->assertContains('Container image digest unavailable', $GLOBALS['composeLoggerMessages']);
+    }
+
+    public static function readinessCases(): array
+    {
+        return [
+            'current' => ['a', 'a', 'a', 'current'],
+            'current despite moved local tag' => ['a', 'b', 'a', 'current'],
+            'downloaded' => ['a', 'b', 'b', 'ready-to-apply'],
+            'remote newer' => ['a', 'a', 'b', 'download-required'],
+            'local intermediate' => ['a', 'b', 'c', 'download-required'],
+            'local missing' => ['a', null, 'b', 'download-required'],
+            'remote unavailable' => ['a', 'b', null, 'unknown'],
+            'container unavailable' => [null, 'b', 'b', 'unknown'],
+            'full digest comparison' => ['sha256:123456789012a', 'sha256:123456789012b', 'sha256:123456789012c', 'download-required'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('readinessCases')]
+    public function testImageReadinessUsesThreeIndependentImageIds(?string $container, ?string $local, ?string $remote, string $expected): void
+    {
+        $this->assertSame($expected, \ComposeUpdateCheck::imageReadiness($container, $local, $remote));
     }
 
     public function testManifestJsonDoesNotIncludeHttpHeaders(): void
@@ -312,6 +336,8 @@ class UpdateCheckTest extends TestCase
         \DockerClient::setMockResponse('/images/' . rawurlencode('sha256:built-stale') . '/json', ['RootFS' => ['Layers' => ['sha256:l1', 'sha256:old', 'sha256:mine']]]);
 
         $build = ['build' => ['context' => $context, 'dockerfile' => 'Dockerfile'], 'image' => null];
+        \DockerClient::setMockResponse('/images/' . rawurlencode('stack-worker') . '/json', ['Id' => 'sha256:built-stale']);
+        \DockerClient::setMockResponse('/images/' . rawurlencode('lscr.io/linuxserver/code-server:latest') . '/json', ['Id' => 'sha256:base-new']);
         $results = $checker->checkContainers([
             ['Name' => 'current', 'Service' => 'app', 'Image' => 'stack-app'],
             ['Name' => 'stale', 'Service' => 'worker', 'Image' => 'stack-worker'],
@@ -325,6 +351,21 @@ class UpdateCheckTest extends TestCase
         $this->assertTrue($results['stale']['hasUpdate']);
         $this->assertSame('sha256:base-new', $results['stale']['remote']);
         $this->assertSame('sha256:built-stale', $results['stale']['local']);
+        $this->assertSame('rebuild-required', $results['stale']['updateReadiness']);
+        $this->assertSame('build-base', $results['stale']['updateKind']);
+        $this->assertSame('current', $results['current']['updateReadiness']);
+        $this->assertNotSame('ready-to-apply', $results['stale']['updateReadiness'], 'A downloaded base alone is not a rebuilt application.');
+
+        \DockerClient::setMockResponse('/images/' . rawurlencode('stack-worker') . '/json', ['Id' => 'sha256:rebuilt']);
+        \DockerClient::setMockResponse('/images/' . rawurlencode('sha256:rebuilt') . '/json', [
+            'RootFS' => ['Layers' => ['sha256:l1', 'sha256:l2', 'sha256:new-app']],
+        ]);
+        $rebuilt = $checker->checkContainers([
+            ['Name' => 'stale', 'Service' => 'worker', 'Image' => 'stack-worker'],
+        ], ['worker' => $build]);
+        $this->assertSame('ready-to-apply', $rebuilt['stale']['updateReadiness']);
+        $this->assertSame('sha256:rebuilt', $rebuilt['stale']['localImage']);
+        $this->assertTrue($rebuilt['stale']['hasUpdate']);
     }
 
     public function testNamedBuildImageFallsBackToBaseOnlyWithoutARemoteDigest(): void

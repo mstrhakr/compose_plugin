@@ -113,7 +113,7 @@ class ComposeUpdateCheck
      * image fall back to that check when the image tag has no remote digest.
      *
      * @param array<string, array{build: array<string, mixed>, image: ?string}> $buildConfigs Keyed by service name
-     * @return array<string, array{local: string, remote: string, status: string, hasUpdate: bool}>
+     * @return array<string, array{local: string, remote: string, status: string, hasUpdate: bool, localImage: string, updateKind: string, updateReadiness: string}>
      */
     public function checkContainers(array $containers, array $buildConfigs = []): array
     {
@@ -144,10 +144,14 @@ class ComposeUpdateCheck
                 composeLogger('Container image digest unavailable', ['container' => $name], 'user', 'warning', 'update-check');
             }
             if ($build !== null && $remote === null && $local !== null) {
-                $results[$name] = $this->checkBuiltImage($name, $local, $build['build'], $baseCache);
+                $results[$name] = $this->checkBuiltImage($name, $local, $image, $build['build'], $baseCache);
                 continue;
             }
             $results[$name] = $this->summarize($local, $remote)['result'];
+            $tagImage = (string) ($imageResult['local'] ?? '');
+            $results[$name]['localImage'] = $tagImage;
+            $results[$name]['updateKind'] = 'image';
+            $results[$name]['updateReadiness'] = self::imageReadiness($local, $tagImage, $remote);
         }
         return $results;
     }
@@ -281,11 +285,14 @@ class ComposeUpdateCheck
      *
      * @param array<string, mixed> $build
      * @param array<string, array{digest: string, diffIds: string[]}|null> $baseCache
-     * @return array{local: string, remote: string, status: string, hasUpdate: bool}
+     * @return array{local: string, remote: string, status: string, hasUpdate: bool, localImage: string, updateKind: string, updateReadiness: string}
      */
-    private function checkBuiltImage(string $container, string $imageId, array $build, array &$baseCache): array
+    private function checkBuiltImage(string $container, string $imageId, string $image, array $build, array &$baseCache): array
     {
-        $unknown = ['local' => $imageId, 'remote' => '', 'status' => 'unknown', 'hasUpdate' => false];
+        $unknown = [
+            'local' => $imageId, 'remote' => '', 'status' => 'unknown', 'hasUpdate' => false,
+            'localImage' => '', 'updateKind' => 'build-base', 'updateReadiness' => 'unknown',
+        ];
         $base = self::resolveDockerfileBaseImage($build);
         if ($base === null || $base === 'scratch') {
             composeLogger('Build base image unavailable for update check', [
@@ -295,7 +302,9 @@ class ComposeUpdateCheck
             return $unknown;
         }
         if (strpos($base, '@sha256:') !== false) {
-            return ['local' => $imageId, 'remote' => $imageId, 'status' => 'up-to-date', 'hasUpdate' => false];
+            return array_replace($unknown, [
+                'remote' => $imageId, 'status' => 'up-to-date', 'updateReadiness' => 'current',
+            ]);
         }
 
         $baseKey = ContainerInfo::normalizeImageForUpdateCheck($base);
@@ -316,12 +325,34 @@ class ComposeUpdateCheck
         }
 
         $current = array_slice(array_values($layers), 0, count($remote['diffIds'])) === $remote['diffIds'];
+        $tagImage = $this->inspectLocalConfigDigest($image);
+        $ready = false;
+        if (!$current && $tagImage !== null && $tagImage !== $imageId) {
+            $tagInspect = (new DockerClient())->getDockerJSON('/images/' . rawurlencode($tagImage) . '/json');
+            $tagLayers = $tagInspect['RootFS']['Layers'] ?? null;
+            $ready = is_array($tagLayers)
+                && array_slice(array_values($tagLayers), 0, count($remote['diffIds'])) === $remote['diffIds'];
+        }
         return [
             'local' => $imageId,
             'remote' => $remote['digest'],
             'status' => $current ? 'up-to-date' : 'update-available',
             'hasUpdate' => !$current,
+            'localImage' => (string) ($tagImage ?? ''),
+            'updateKind' => 'build-base',
+            'updateReadiness' => $current ? 'current' : ($ready ? 'ready-to-apply' : 'rebuild-required'),
         ];
+    }
+
+    public static function imageReadiness(?string $containerImage, ?string $localImage, ?string $remoteImage): string
+    {
+        if (!$containerImage || !$remoteImage) {
+            return 'unknown';
+        }
+        if ($containerImage === $remoteImage) {
+            return 'current';
+        }
+        return $localImage === $remoteImage ? 'ready-to-apply' : 'download-required';
     }
 
     /** @param array<string, mixed> $build */

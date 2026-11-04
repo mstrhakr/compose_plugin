@@ -637,6 +637,9 @@ function createContainerInfo(raw) {
         updateStatus: updateStatus,
         localSha: raw.localSha || raw.LocalSha || '',
         remoteSha: raw.remoteSha || raw.RemoteSha || '',
+        localImageSha: raw.localImageSha || '',
+        updateKind: raw.updateKind || 'image',
+        updateReadiness: raw.updateReadiness || 'unknown',
         isPinned: (raw.isPinned !== undefined) ? !!raw.isPinned : false,
         pinnedDigest: raw.pinnedDigest || raw.PinnedDigest || '',
         icon: raw.icon || raw.Icon || '',
@@ -670,6 +673,8 @@ function mergeContainerUpdateStatus(container, update, onlyIfUnknown) {
         return container;
     }
     if (incoming.updateStatus !== 'up-to-date' && incoming.updateStatus !== 'update-available') {
+        container.updateReadiness = 'unknown';
+        container.localImageSha = '';
         return container;
     }
     if (onlyIfUnknown && (current.updateStatus === 'up-to-date' || current.updateStatus === 'update-available')) {
@@ -679,6 +684,9 @@ function mergeContainerUpdateStatus(container, update, onlyIfUnknown) {
     container.updateStatus = incoming.updateStatus;
     container.localSha = incoming.localSha;
     container.remoteSha = incoming.remoteSha;
+    container.localImageSha = incoming.localImageSha;
+    container.updateKind = incoming.updateKind;
+    container.updateReadiness = incoming.updateReadiness;
     return container;
 }
 

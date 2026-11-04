@@ -105,6 +105,9 @@ class StackUpdateService
                     'status' => $check['status'],
                     'localSha' => $this->shortDigest((string) $check['local']),
                     'remoteSha' => $this->shortDigest((string) $check['remote']),
+                    'localImageSha' => $this->shortDigest((string) ($check['localImage'] ?? '')),
+                    'updateKind' => $check['updateKind'] ?? 'image',
+                    'updateReadiness' => $check['updateReadiness'] ?? 'unknown',
                 ]);
                 if ($enrich !== null) {
                     $enrich($stack->projectFolder, $update);
