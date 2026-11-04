@@ -15,6 +15,7 @@ function harness(config = {}) {
         composeEscapeHtml: value => value,
         basename: path => path.split('/').pop(),
         caURL: 'exec', compURL: 'compose',
+        composeUpdateCheckState: {}, composeUpdateCheckRevision: {}, stackDetailsPrefetchCache: {},
         confirmedComposeAction: (path, options) => events.push({ path, ...options }),
         performComposeAction: options => events.push(options),
         setStackActionInProgress: () => {},
@@ -43,7 +44,9 @@ function harness(config = {}) {
     for (const name of ['composeUpdateScopeOptionHtml', 'ForceUpdateStackConfirmed', 'UpdateStackConfirmed',
         'renderStackActionDialog', 'composeUpdateDigestDetails', 'executeUpdateAllStacks', 'updateAllStacks', 'showProfileSelector',
         'updateStackUpdateUI', 'showUpdateWarning', 'createContainerInfo', 'composeImageUpdateKey', 'mergeContainerUpdateStatus',
-        'mergeStackUpdateStatus', 'mergeUpdateStatus', 'checkAllUpdates']) {
+        'mergeStackUpdateStatus', 'mergeUpdateStatus', 'checkAllUpdates', 'composeUpdateCheckBadge',
+        'setComposeUpdateCheckState', 'composeCheckedContainers', 'composeContainerUpdateBadge',
+        'checkStackUpdates', 'createStackInfo']) {
         const match = source.match(new RegExp(`^function ${name}\\([^]*?\\n\\}`, 'm'));
         assert.ok(match, `Missing function ${name}`);
         vm.runInContext(match[0], context);
@@ -143,7 +146,7 @@ for (const initial of [false, true]) {
     };
     context.showStackActionDialog('update', '/stacks/test', 'wrong-default');
     assert.equal(events[0].rendered[3], '');
-    assert.equal(events[0].rendered[4], containers);
+    assert.equal(events[0].rendered[4].map(container => container.name).join(','), 'running-app,stopped-backup');
     context.$.post = (url, payload, callback) => {
         callback({ result: 'error' });
         return { fail: () => {} };
@@ -271,17 +274,74 @@ for (const response of ['', 'not json', JSON.stringify({ result: 'error', messag
     const { context } = harness();
     let markup = '';
     let disabled;
-    const row = { find: () => ({ html: value => { markup = value; } }) };
+    const row = { length: 1, data: () => 'test', attr: () => 'stack-row-test',
+        find: () => ({ html: value => { markup = value; } }) };
     context.composeLogger = () => {};
     context.$ = selector => typeof selector === 'object' ? selector : ({
         prop: (key, value) => { if (selector === '#checkUpdatesBtn') disabled = value; return context.$(selector); },
+        length: 1, attr: () => 'stack-row-test', find: () => ({ html: value => { markup = value; } }),
+        html: value => { markup = value; },
         val: () => context.$(selector),
         each: fn => { fn.call(selector.includes('tr.compose-sortable') ? row : { html: value => { markup = value; } }); }
     });
     context.$.post = (url, payload, callback) => { callback(response); return { fail: () => {} }; };
     context.checkAllUpdates();
-    assert.match(markup, /check failed/);
+    assert.match(markup, /check failed/i);
     assert.equal(disabled, false);
+}
+
+{
+    const { context } = harness();
+    const previous = {
+        name: 'app', image: 'app:latest', updateStatus: 'update-available', hasUpdate: true,
+        updateKind: 'build-base', updateReadiness: 'rebuild-required', remoteSha: 'new-base',
+    };
+    context.stackUpdateStatus = { test: { containers: [previous] } };
+    context.stackContainersCache = { test: [{ ...previous }] };
+    context.expandedStacks = { test: true };
+    context.composeEscapeAttr = text => String(text);
+    context.composeLogger = () => {};
+    context.updateUpdateAllButton = () => {};
+    let stackHtml = '', containerHtml = '', complete;
+    const containerRow = {
+        attr: () => 'app', find: () => ({ html: value => { containerHtml = value; } }),
+    };
+    const stackRow = {
+        length: 1, attr: () => 'stack-row-test', data: () => 'test',
+        find: () => ({ html: value => { stackHtml = value; } }),
+    };
+    context.$ = selector => {
+        if (typeof selector === 'object') return selector;
+        if (selector.includes('tr.compose-sortable')) return stackRow;
+        return {
+            html: value => { containerHtml = value; },
+            each: fn => { if (selector.includes('tr[data-container]')) fn.call(containerRow); },
+        };
+    };
+    context.$.post = (url, payload, callback) => {
+        if (payload.action === 'checkStackUpdates') complete = callback;
+        return { fail: () => {} };
+    };
+    context.checkStackUpdates('test');
+    assert.match(stackHtml, /Checking/);
+    assert.match(containerHtml, /Checking/);
+    assert.match(context.composeContainerUpdateBadge(previous, 'test', 'test'), /Checking/);
+    complete(JSON.stringify({ result: 'success', updates: [previous] }));
+    assert.match(stackHtml, /Rebuild/);
+    assert.match(containerHtml, /Rebuild/);
+    assert.doesNotMatch(containerHtml, /Checking/);
+
+    const staleResponse = { containers: [{ ...previous, hasUpdate: false, updateStatus: 'unknown', updateReadiness: 'unknown' }] };
+    assert.equal(context.composeCheckedContainers(staleResponse, 'test', 0)[0].updateReadiness, 'rebuild-required',
+        'An expansion started before a completed check must use the newer check');
+    const freshResponse = { containers: [{ ...previous, hasUpdate: false, updateStatus: 'unknown', updateReadiness: 'unknown' }] };
+    assert.equal(context.composeCheckedContainers(freshResponse, 'test', 1)[0].updateReadiness, 'unknown',
+        'A fresh server invalidation must not be overwritten by older browser evidence');
+
+    context.checkStackUpdates('test');
+    complete(JSON.stringify({ result: 'error', message: 'Registry unavailable' }));
+    assert.match(containerHtml, /Check failed/);
+    assert.doesNotMatch(containerHtml, /Rebuild/);
 }
 
 for (const action of ['update', 'forceUpdate']) {

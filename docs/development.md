@@ -148,6 +148,11 @@ this file. The service-keyed container cache stores metadata only, never update 
 Legacy metadata-cache evidence is stripped when loaded and dropped on the next
 save. Reading legacy saved checks also excludes pinned results from actionable
 update totals, without requiring the user to run another registry check first.
+Main-table and expanded-container cells share explicit checking/failure state.
+Successful checks repaint expanded update cells directly without another details
+request. Details responses use server-owned evidence; only a check completed
+after a details request began may override it. Prefetches carry the same revision,
+so expanding a stack cannot restore a pre-check response or discard a newer check.
 
 ## Troubleshooting
 
