@@ -59,7 +59,21 @@ Updates preserve deployed replica counts and do not start stopped dependencies o
 
 The **Include stopped services — they will be started** checkbox in the Update, Force Update, and Update All dialogs permits existing stopped services (including stopped replicas) to be redeployed and started. It does not activate services without an existing container. Update dialogs show existing containers across deployed profiles instead of asking which profile to start. Set **Include Stopped Services in Manual Updates by Default** in the main plugin settings to choose the initial checkbox state; a dialog override affects only that operation. With action warnings disabled, manual updates use the saved default directly. Automatic updates always ignore this manual preference.
 
-When updates are available, clicking **Update Stack** opens a confirmation dialog listing each container alongside its current and incoming image digest. Containers that are already up to date are dimmed.
+Clicking **Update Stack** opens a compact table showing each service/image and
+runtime state, readiness, and separately labelled container/local/remote image IDs.
+Build-base checks label the remote base separately from the application image.
+The wider dialog keeps small stacks on screen without vertically stacked service
+sections; long lists remain scrollable.
+
+Stack and expanded-container update cells show **Checking...** during a check,
+then display the same completed results. Failed checks are labelled explicitly
+rather than leaving old readiness badges looking like fresh evidence.
+
+For long local builds, select **Run in background** so execution is independent
+of the live terminal connection. Manual updates have no engine command timeout;
+automatic updates apply a 30-minute timeout per Compose command by default.
+A terminal reconnect message alone does not establish that a build timed out.
+Check the stack's last command log and operation result before retrying.
 
 #### Changelogs
 

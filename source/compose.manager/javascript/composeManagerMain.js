@@ -2496,9 +2496,9 @@ function updateAllStacks() {
 }
 
 function composeUpdateScopeOptionHtml(includeStopped) {
-    return '<div style="text-align:left;max-width:450px;margin:16px auto;">' +
+    return '<div class="compose-update-scope" style="text-align:left;margin:10px auto;">' +
         '<label style="cursor:pointer;"><input type="checkbox" id="swal-include-stopped"' + (includeStopped ? ' checked' : '') + '> Include stopped services &mdash; they will be started</label>' +
-        '<p class="compose-text-muted" style="font-size:0.9em;margin:8px 0;">Unchecked: stopped services and mixed running/stopped replicas remain unchanged. Paused/restarting services and one-off jobs remain excluded either way. Only existing stack services participate; undeployed profile services are never started.</p></div>';
+        '<p class="compose-text-muted" style="font-size:0.85em;margin:4px 0;">Off: leave stopped services and mixed running/stopped replicas unchanged. Unsafe states, one-off jobs and undeployed services are always excluded.</p></div>';
 }
 
 function executeUpdateAllStacks(stacks, background, suppressBackgroundNotification = false, includeStopped = false) {
@@ -5928,11 +5928,36 @@ function composeUpdateDigestDetails(container) {
         ['Local application image', container.localImageSha],
         [container.updateKind === 'build-base' ? 'Remote base image' : 'Remote application image', container.remoteSha]
     ];
-    var html = '<div class="compose-text-muted" style="font-size:0.85em;margin-top:4px;">';
+    var html = '<dl class="compose-update-digests compose-text-muted">';
     fields.forEach(function(field) {
-        if (field[1]) html += '<div>' + field[0] + ': <code>' + composeEscapeHtml(field[1]) + '</code></div>';
+        if (field[1]) html += '<dt>' + field[0] + '</dt><dd><code>' + composeEscapeHtml(field[1]) + '</code></dd>';
     });
-    return html + '</div>';
+    return html + '</dl>';
+}
+
+function composeUpdateDetailsTable(containers, path, profile) {
+    var html = '<div class="compose-update-table-wrap"><table class="compose-update-table">' +
+        '<thead><tr><th scope="col">Service / image</th><th scope="col">Readiness</th><th scope="col">Image IDs</th></tr></thead><tbody>';
+    containers.forEach(function(container) {
+        var name = container.name || container.service || 'Unknown';
+        var presentation = composeUpdatePresentation(container);
+        html += '<tr><td><div class="compose-update-service">' +
+            '<img src="' + composeEscapeAttr(composeIconSrc(container.icon, name)) + '" alt="" onerror="composeIconFallback(this)">' +
+            '<div><strong>' + composeEscapeHtml(container.service || name) + '</strong>' +
+            '<div class="compose-text-muted compose-update-reference">' + composeEscapeHtml(container.image || '') + '</div>' +
+            '<div class="compose-text-muted">state: ' + composeEscapeHtml(container.state || 'unknown') + '</div></div></div></td>';
+        html += '<td>' + composeUpdateBadge(container) +
+            '<div class="compose-update-explanation compose-text-muted">' + composeEscapeHtml(presentation.detail) + '</div>';
+        if (container.hasUpdate && !container.isPinned && container.localSha && container.remoteSha
+            && dockerVersionsInstalled && container.updateKind !== 'build-base') {
+            html += '<a href="#" data-changelog-container="' + composeEscapeAttr(name) +
+                '" data-changelog-path="' + composeEscapeAttr(path) + '" data-changelog-profile="' + composeEscapeAttr(profile || '') +
+                '" onclick="showComposeChangelog(this.dataset.changelogContainer,this.dataset.changelogPath,this.dataset.changelogProfile);return false;">' +
+                '<i class="fa fa-list"></i> Changelog</a>';
+        }
+        html += '</td><td>' + composeUpdateDigestDetails(container) + '</td></tr>';
+    });
+    return html + '</tbody></table></div>';
 }
 
 function renderStackActionDialog(action, displayName, path, profile, containers, hasBuild, showRemoveOrphans, showDetails) {
@@ -6024,14 +6049,16 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
     if (!cfg) return;
 
     // Build HTML content for the dialog
-    var html = '<div style="text-align:left;max-width:450px;margin:0 auto;color:var(--text-color, var(--dynamix-sb-body-text-color));">';
-    html += '<div style="margin-bottom:18px;">' + cfg.description + '</div>';
+    var html = '<div style="text-align:left;' + (cfg.showUpdateReadiness ? '' : 'max-width:450px;') + 'margin:0 auto;color:var(--text-color, var(--dynamix-sb-body-text-color));">';
+    html += '<div style="margin-bottom:10px;">' + cfg.description + '</div>';
     if (cfg.showUpdateReadiness) {
-        html += '<div class="compose-text-muted">Readiness reflects the last check, not a live guarantee. Build on update still controls rebuilding.</div>';
+        html += '<div class="compose-text-muted" style="font-size:0.85em;">Readiness reflects the last check. Build on update still controls rebuilding.</div>';
     }
 
     // Container list with icons
-    if (containers && containers.length > 0) {
+    if (cfg.showUpdateReadiness && containers && containers.length > 0) {
+        html += composeUpdateDetailsTable(containers, path, profile);
+    } else if (containers && containers.length > 0) {
         html += '<div style="background:var(--alt-background-color);border-radius:6px;padding:12px 14px;margin:12px 0;">';
         html += '<div class="compose-text-muted" style="font-weight:bold;margin-bottom:10px;font-size:0.9em;"><i class="fa fa-cubes"></i> ' + cfg.listTitle + '</div>';
 
@@ -6046,46 +6073,22 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             var stateClass = state === 'running' ? 'compose-status-success' : (state === 'paused' ? 'compose-status-warning' : 'compose-text-muted');
             var stateIcon = state === 'running' ? 'play' : (state === 'paused' ? 'pause' : 'square');
 
-            // Check if this container has an update available
-            var hasUpdate = container.hasUpdate || false;
-            var presentation = composeUpdatePresentation(container);
-            var localSha = container.localSha || '';
-            var remoteSha = container.remoteSha || '';
-
             var iconSrc = composeIconSrc(container.icon, containerName);
             iconSrc = composeEscapeAttr(iconSrc);
 
-            // Grey out containers without updates when showing update dialog
-            var rowOpacity = (cfg.showUpdateReadiness && presentation.label === 'Current') ? '0.5' : '1';
             var isLast = (index === containers.length - 1);
             var borderStyle = isLast ? '' : 'border-bottom:1px solid var(--dynamix-box-inner-div-border-color);';
 
-            html += '<div style="display:flex;align-items:center;padding:8px 4px;' + borderStyle + 'opacity:' + rowOpacity + ';">';
+            html += '<div style="display:flex;align-items:center;padding:8px 4px;' + borderStyle + '">';
             html += '<img src="' + iconSrc + '" style="width:28px;height:28px;margin-right:10px;border-radius:4px;" onerror="composeIconFallback(this)">';
             html += '<div style="flex:1;">';
             html += '<div style="font-weight:bold;">' + composeEscapeHtml(shortName);
-            // Show update badge if update is available (for update action)
-            if (cfg.showUpdateReadiness && hasUpdate) {
-                html += ' <span class="compose-status-warning" style="font-size:0.7em;padding:2px 6px;border-radius:3px;margin-left:6px;">UPDATE</span>';
-            } else if (cfg.showUpdateReadiness && presentation.label === 'Current') {
-                html += ' <span class="compose-status-success" style="font-size:0.8em;margin-left:6px;"><i class="fa fa-check"></i></span>';
-            }
             html += '</div>';
             html += '<div class="compose-text-muted" style="font-size:0.85em;margin-top:2px;">';
             html += '<i class="fa fa-' + stateIcon + ' ' + stateClass + '" style="margin-right:4px;"></i>';
             html += composeEscapeHtml(imageName) + ' : <span class="compose-status-info">' + composeEscapeHtml(imageTag) + '</span>';
             html += ' <span class="' + stateClass + '">(state: ' + composeEscapeHtml(state) + ')</span>';
 
-            if (cfg.showUpdateReadiness) {
-                html += '<div style="margin-top:4px;">' + composeUpdateBadge(container) + '</div>';
-                html += '<div class="compose-text-muted" style="margin-top:4px;">' + composeEscapeHtml(presentation.detail) + '</div>';
-                html += composeUpdateDigestDetails(container);
-                if (hasUpdate && localSha && remoteSha) {
-                    if (dockerVersionsInstalled && container.updateKind !== 'build-base') {
-                        html += '<div style="margin-top:4px;"><a href="#" data-changelog-container="' + composeEscapeAttr(containerName) + '" data-changelog-path="' + composeEscapeAttr(path) + '" data-changelog-profile="' + composeEscapeAttr(profile || '') + '" onclick="showComposeChangelog(this.dataset.changelogContainer,this.dataset.changelogPath,this.dataset.changelogProfile);return false;" style="font-size:0.85em;"><i class="fa fa-list" style="margin-right:3px;"></i>Changelog</a></div>';
-                    }
-                }
-            }
             html += '</div></div></div>';
         });
 
@@ -6148,7 +6151,8 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             title: cfg.title,
             text: html + (isUpdate ? composeUpdateScopeOptionHtml(includeStoppedDefault) : ''),
             html: true,
-            type: 'warning',
+            type: isUpdate ? undefined : 'warning',
+            customClass: isUpdate ? 'compose-update-dialog' : '',
             showCancelButton: true,
             confirmButtonText: cfg.confirmText,
             cancelButtonText: 'Cancel'

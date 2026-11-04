@@ -153,6 +153,10 @@ Successful checks repaint expanded update cells directly without another details
 request. Details responses use server-owned evidence; only a check completed
 after a details request began may override it. Prefetches carry the same revision,
 so expanding a stack cannot restore a pre-check response or discard a newer check.
+Update/force dialogs use a scoped, responsive SweetAlert class and a three-column
+service/readiness/image-ID table. Other lifecycle dialogs retain their layout.
+The compact update dialog omits the large warning icon but retains the textual
+warning and explicit confirmation. Narrow screens allow horizontal table scrolling.
 
 ## Troubleshooting
 

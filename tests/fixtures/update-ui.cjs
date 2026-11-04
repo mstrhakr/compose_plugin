@@ -43,6 +43,7 @@ function harness(config = {}) {
     vm.runInContext(fs.readFileSync(`${__dirname}/../../source/compose.manager/javascript/composeUpdateStatus.js`, 'utf8'), context);
     for (const name of ['composeUpdateScopeOptionHtml', 'ForceUpdateStackConfirmed', 'UpdateStackConfirmed',
         'renderStackActionDialog', 'composeUpdateDigestDetails', 'executeUpdateAllStacks', 'updateAllStacks', 'showProfileSelector',
+        'composeUpdateDetailsTable',
         'updateStackUpdateUI', 'showUpdateWarning', 'createContainerInfo', 'composeImageUpdateKey', 'mergeContainerUpdateStatus',
         'mergeStackUpdateStatus', 'mergeUpdateStatus', 'checkAllUpdates', 'composeUpdateCheckBadge',
         'setComposeUpdateCheckState', 'composeCheckedContainers', 'composeContainerUpdateBadge',
@@ -359,7 +360,28 @@ for (const action of ['update', 'forceUpdate']) {
     assert.match(dialog, /Local application image/);
     assert.match(dialog, /last check/);
     assert.match(dialog, /state: exited/);
+    assert.match(dialog, /<table class="compose-update-table">/);
+    assert.match(dialog, /Service \/ image/);
+    assert.equal(h.events[0].dialog.customClass, 'compose-update-dialog');
+    assert.equal(h.events[0].dialog.type, undefined, 'Compact update dialog must not reserve space for a large warning icon');
     assert.doesNotMatch(dialog, /arrow-right|data-changelog-container/);
+}
+{
+    const { context } = harness();
+    context.composeIconSrc = () => 'icon.png';
+    context.composeEscapeAttr = text => String(text).replace(/"/g, '&quot;');
+    context.composeEscapeHtml = text => String(text).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    context.dockerVersionsInstalled = true;
+    const html = context.composeUpdateDetailsTable([
+        { name: 'db', service: '<db>', image: 'registry:5000/db:latest', state: 'running',
+            hasUpdate: true, updateReadiness: 'download-required', localSha: 'old', remoteSha: 'new' },
+        { name: 'app', image: 'built-app', state: 'running', hasUpdate: true,
+            updateKind: 'build-base', updateReadiness: 'rebuild-required', remoteSha: 'base' },
+    ], '/stacks/test', '');
+    assert.equal((html.match(/<tr>/g) || []).length, 3, 'Two services must use two table rows plus the header');
+    assert.match(html, /&lt;db&gt;/);
+    assert.match(html, /registry:5000\/db:latest/);
+    assert.equal((html.match(/data-changelog-container=/g) || []).length, 1, 'Only published-image changes offer a changelog');
 }
 {
     const { context, events } = harness({ DISABLE_ACTION_WARNINGS: 'true' });

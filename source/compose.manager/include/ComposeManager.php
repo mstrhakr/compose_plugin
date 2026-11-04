@@ -329,6 +329,84 @@ if ($cpuCount <= 0) {
         position: relative;
         z-index: 1;
     }
+    .sweet-alert.compose-update-dialog {
+        box-sizing: border-box;
+        width: min(960px, calc(100vw - 32px));
+        margin-left: 0;
+        margin-top: 0 !important;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        max-height: calc(100vh - 32px);
+        overflow-y: auto;
+        padding: 18px 22px;
+    }
+
+    .compose-update-dialog h2 {
+        margin: 4px 0 12px;
+        font-size: 24px;
+    }
+
+    .compose-update-table-wrap {
+        margin: 12px 0;
+        overflow-x: auto;
+    }
+
+    .compose-update-table {
+        width: 100%;
+        table-layout: fixed;
+        border-collapse: collapse;
+        font-size: 13px;
+        text-align: left;
+    }
+
+    .compose-update-table th,
+    .compose-update-table td {
+        padding: 8px;
+        vertical-align: top;
+        border-bottom: 1px solid var(--dynamix-box-inner-div-border-color, #666);
+        overflow-wrap: anywhere;
+    }
+
+    .compose-update-table th:nth-child(1) { width: 32%; }
+    .compose-update-table th:nth-child(2) { width: 30%; }
+    .compose-update-table th:nth-child(3) { width: 38%; }
+
+    .compose-update-service {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
+    }
+
+    .compose-update-service img {
+        width: 26px;
+        height: 26px;
+        flex: 0 0 26px;
+    }
+
+    .compose-update-reference,
+    .compose-update-explanation {
+        margin-top: 4px;
+        font-size: 12px;
+    }
+
+    .compose-update-digests {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 4px 8px;
+        margin: 0;
+        font-size: 12px;
+    }
+
+    .compose-update-digests dt,
+    .compose-update-digests dd {
+        margin: 0;
+    }
+
+    @media (max-width: 640px) {
+        .sweet-alert.compose-update-dialog { padding: 14px; }
+        .compose-update-table { min-width: 560px; }
+    }
 </style>
 
 <?php
