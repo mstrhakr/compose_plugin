@@ -71,7 +71,7 @@ foreach (StackInfo::allFromRoot($compose_root) as $stackInfo) {
 
     $updateContainers = $savedUpdateStatus[$stackInfo->projectFolder]['containers'] ?? [];
     $updateStatus = 'unknown';
-    if (array_filter($updateContainers, static fn(array $ct): bool => !empty($ct['hasUpdate']))) {
+    if (array_filter($updateContainers, static fn(array $ct): bool => !empty($ct['hasUpdate']) && empty($ct['isPinned']))) {
         $updateStatus = 'update-available';
     } elseif ($updateContainers && !array_filter($updateContainers, static fn(array $ct): bool =>
         empty($ct['isPinned']) && ($ct['updateReadiness'] ?? 'unknown') !== 'current')) {

@@ -216,12 +216,21 @@ console.log('Compact readiness badges, mixed summaries, stopped-stack visibility
         name: 'app', image: 'app:latest', hasUpdate: true, updateStatus: 'update-available',
         updateReadiness: 'ready-to-apply', localImageSha: 'old-evidence'
     }] };
-    const fresh = { containers: [{ name: 'app', image: 'app:latest', updateStatus: 'unknown', updateReadiness: 'unknown' }] };
+    const fresh = { hasUpdate: true, containers: [{
+        name: 'app', image: 'app:latest', hasUpdate: true, updateStatus: 'update-available',
+        updateReadiness: 'unknown', localImageSha: '',
+    }] };
     context.mergeStackUpdateStatus(fresh, prior, true);
-    assert.equal(fresh.hasUpdate, true, 'An unknown check retains pending history');
+    assert.equal(fresh.hasUpdate, true, 'Server-owned pending history is preserved without browser enrichment');
     assert.equal(fresh.containers[0].updateReadiness, 'unknown');
     assert.equal(fresh.containers[0].localImageSha, '');
     assert.equal(context.composeStackUpdatePresentation(fresh.containers).label, 'Pending');
+    const noHistory = { hasUpdate: false, containers: [{
+        name: 'app', image: 'app:latest', hasUpdate: false, updateStatus: 'unknown', updateReadiness: 'unknown',
+    }] };
+    context.mergeStackUpdateStatus(noHistory, prior, true);
+    assert.equal(noHistory.hasUpdate, false, 'A fresh server result cannot regain discarded browser history');
+    assert.equal(context.composeStackUpdatePresentation(noHistory.containers).label, '1 unchecked');
     const success = { containers: [{
         name: 'app', image: 'app:latest', updateStatus: 'up-to-date', updateReadiness: 'current', localImageSha: 'new-evidence'
     }] };

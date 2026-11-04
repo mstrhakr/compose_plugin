@@ -121,7 +121,8 @@ class ComposeUpdateCheck
         foreach ($containers as $container) {
             $image = trim((string) ($container['Image'] ?? $container['image'] ?? ''));
             $build = $buildConfigs[ContainerInfo::resolveService($container)] ?? null;
-            if ($image !== '' && ($build === null || $build['image'] !== null)) {
+            if ($image !== '' && strpos($image, '@sha256:') === false
+                && ($build === null || $build['image'] !== null)) {
                 $images[] = $image;
             }
         }
@@ -142,6 +143,13 @@ class ComposeUpdateCheck
             $remote = !empty($imageResult['remote']) ? (string) $imageResult['remote'] : null;
             if ($local === null) {
                 composeLogger('Container image digest unavailable', ['container' => $name], 'user', 'warning', 'update-check');
+            }
+            if (strpos($image, '@sha256:') !== false) {
+                $results[$name] = $this->summarize($local, $local)['result'] + [
+                    'localImage' => (string) ($local ?? ''), 'updateKind' => 'image',
+                    'updateReadiness' => $local === null ? 'unknown' : 'current',
+                ];
+                continue;
             }
             if ($build !== null && $remote === null && $local !== null) {
                 $results[$name] = $this->checkBuiltImage($name, $local, $image, $build['build'], $baseCache);

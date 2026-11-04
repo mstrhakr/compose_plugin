@@ -111,23 +111,13 @@ if (!function_exists('composeSavePersistentContainerCache')) {
     }
 }
 
-if (!function_exists('composeCacheContainerUpdate')) {
-    function composeCacheContainerUpdate(array &$cache, ContainerInfo $update): void
+if (!function_exists('composeCacheContainerMetadata')) {
+    function composeCacheContainerMetadata(array &$cache, ContainerInfo $update): void
     {
         if ($update->service === '') {
             return;
         }
         $raw = $cache[$update->service] ?? [];
-        $cached = ContainerInfo::fromDockerInspect($raw);
-        if (($cached->image !== '' && (
-                ContainerInfo::normalizeImageForUpdateCheck($cached->image)
-                    !== ContainerInfo::normalizeImageForUpdateCheck($update->image)
-                || $cached->pinnedDigest !== $update->pinnedDigest
-            ))
-            || (isset($raw['name']) && $raw['name'] !== $update->name)) {
-            unset($raw['hasUpdate'], $raw['updateStatus'], $raw['localSha'], $raw['remoteSha'],
-                $raw['localImageSha'], $raw['updateKind'], $raw['updateReadiness']);
-        }
         $raw['name'] = $update->name;
         $raw['service'] = $update->service;
         $raw['image'] = $update->image;
@@ -135,8 +125,7 @@ if (!function_exists('composeCacheContainerUpdate')) {
             $raw['icon'] = $update->icon;
         }
         $container = ContainerInfo::fromDockerInspect($raw);
-        $container->mergeUpdateStatus($update);
-        $cache[$update->service] = $container->toArray();
+        $cache[$update->service] = $container->toMetadataArray();
     }
 }
 
@@ -352,7 +341,7 @@ if (!function_exists('composeCheckStackUpdatesForUi')) {
             if (!isset($cache[$stackName])) {
                 $cache[$stackName] = [];
             }
-            composeCacheContainerUpdate($cache[$stackName], $update);
+            composeCacheContainerMetadata($cache[$stackName], $update);
             $dirty = true;
         };
         $results = (new StackUpdateService())->checkStacks($stacks, $enrich, $replaceSavedStatus);
@@ -1928,6 +1917,17 @@ switch ($_POST['action']) {
         $hostIP = composeResolveDockerHostIp();
 
         $containers = [];
+        try {
+            $savedUpdates = StackUpdateService::readSavedResults()[$stackInfo->projectFolder]['containers'] ?? [];
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Unable to read saved container updates: ' . $e->getMessage(), null, 'user', 'error', 'update-check');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
+            break;
+        }
+        $updatesByName = [];
+        foreach ($savedUpdates as $update) {
+            $updatesByName[$update['name']] = ContainerInfo::fromUpdateResponse($update);
+        }
         // Load update status once before the loop (static data, doesn't change per-container)
         $updateStatusFile = UNRAID_UPDATE_STATUS_FILE;
         $updateStatusData = [];
@@ -1942,6 +1942,7 @@ switch ($_POST['action']) {
         $stackState = $stackInfo->getStackState();
 
         foreach ($rows as $rawContainer) {
+            $containerImageId = '';
             composeLogger('getStackContainers found container row', [
                 'rawContainer' => $rawContainer
             ], 'user', 'debug', 'getStackContainers');
@@ -1953,6 +1954,7 @@ switch ($_POST['action']) {
                 if ($inspectOutput) {
                     $inspect = json_decode($inspectOutput, true);
                     if ($inspect) {
+                        $containerImageId = str_replace('sha256:', '', $inspect['Image'] ?? '');
                         // Extract useful info from inspect
                         $rawContainer['ID'] = $inspect['Id'] ?? '';
                         $rawContainer['Image'] = $inspect['Config']['Image'] ?? '';
@@ -2103,7 +2105,19 @@ switch ($_POST['action']) {
                 }
             }
             // Normalize through ContainerInfo for consistent camelCase output
-            $containers[] = ContainerInfo::fromDockerInspect($rawContainer)->toArray();
+            $container = ContainerInfo::fromDockerInspect($rawContainer);
+            $savedUpdate = $updatesByName[$container->name] ?? null;
+            if ($savedUpdate !== null && ($savedUpdate->localSha === '' || $containerImageId === ''
+                || str_starts_with($containerImageId, $savedUpdate->localSha))) {
+                if ($savedUpdate->updateStatus === 'unknown'
+                    && $container->image !== '' && $container->pinnedDigest === $savedUpdate->pinnedDigest
+                    && ContainerInfo::normalizeImageForUpdateCheck($container->image)
+                        === ContainerInfo::normalizeImageForUpdateCheck($savedUpdate->image)) {
+                    $container = ContainerInfo::fromDockerInspect($container->toMetadataArray());
+                }
+                $container->mergeUpdateStatus($savedUpdate);
+            }
+            $containers[] = $container->toArray();
         }
 
         // --- Persistent container metadata cache ---
@@ -2114,12 +2128,7 @@ switch ($_POST['action']) {
         foreach ($containers as &$ct) {
             $service = $ct['service'] ?? $ct['Name'] ?? '';
             if ($service) {
-                if ($ct['updateStatus'] === 'unknown' && isset($cache[$stackKey][$service])) {
-                    $current = ContainerInfo::fromDockerInspect($ct);
-                    $current->mergeUpdateStatus(ContainerInfo::fromDockerInspect($cache[$stackKey][$service]));
-                    $ct = $current->toArray();
-                }
-                $cache[$stackKey][$service] = $ct;
+                $cache[$stackKey][$service] = ContainerInfo::fromDockerInspect($ct)->toMetadataArray();
             }
         }
         unset($ct);

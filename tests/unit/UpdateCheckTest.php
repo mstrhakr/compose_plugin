@@ -212,6 +212,23 @@ class UpdateCheckTest extends TestCase
         ];
     }
 
+    public function testPinnedContainersNeverCheckOrOfferTheMutableTag(): void
+    {
+        $checker = new class extends \ComposeUpdateCheck {
+            public function checkMany(array $images): array
+            {
+                throw new \LogicException('Pinned images must not query mutable tags.');
+            }
+        };
+        \DockerClient::setMockResponse('/containers/pinned/json', ['Image' => 'sha256:old']);
+        $result = $checker->checkContainers([[
+            'Name' => 'pinned', 'Image' => 'alpine:latest@sha256:pinned',
+        ]])['pinned'];
+        $this->assertFalse($result['hasUpdate']);
+        $this->assertSame('up-to-date', $result['status']);
+        $this->assertSame('current', $result['updateReadiness']);
+    }
+
     #[\PHPUnit\Framework\Attributes\DataProvider('readinessCases')]
     public function testImageReadinessUsesThreeIndependentImageIds(?string $container, ?string $local, ?string $remote, string $expected): void
     {

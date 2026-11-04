@@ -131,7 +131,7 @@ class ExecActionsTest extends TestCase
         return $stackPath;
     }
 
-    public function testUpdateResultsReplacePersistentCacheWithoutLosingRuntimeMetadata(): void
+    public function testUpdateEnrichmentCachesOnlyMetadataWithoutLosingRuntimeFields(): void
     {
         $this->executeAction('getPersistentContainerCache');
         $cache = ['db' => [
@@ -145,7 +145,7 @@ class ExecActionsTest extends TestCase
             'localSha' => 'old-local',
             'remoteSha' => 'old-remote',
         ]];
-        \composeCacheContainerUpdate($cache, \ContainerInfo::fromUpdateResponse([
+        \composeCacheContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
             'container' => 'stack-db-1',
             'service' => 'db',
             'image' => 'postgres:18',
@@ -155,31 +155,31 @@ class ExecActionsTest extends TestCase
             'remoteSha' => 'new',
         ]));
 
-        $this->assertFalse($cache['db']['hasUpdate']);
-        $this->assertSame('new', $cache['db']['localSha']);
+        $this->assertArrayNotHasKey('hasUpdate', $cache['db']);
+        $this->assertArrayNotHasKey('localSha', $cache['db']);
         $this->assertSame('running', $cache['db']['state']);
         $this->assertSame('/existing-icon.png', $cache['db']['icon']);
 
-        \composeCacheContainerUpdate($cache, \ContainerInfo::fromUpdateResponse([
+        \composeCacheContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
             'container' => 'stack-db-1',
             'service' => 'db',
             'image' => 'postgres:18',
             'status' => 'unknown',
         ]));
-        $this->assertSame('up-to-date', $cache['db']['updateStatus']);
-        $this->assertSame('new', $cache['db']['remoteSha']);
+        $this->assertArrayNotHasKey('updateStatus', $cache['db']);
+        $this->assertArrayNotHasKey('remoteSha', $cache['db']);
 
-        \composeCacheContainerUpdate($cache, \ContainerInfo::fromUpdateResponse([
+        \composeCacheContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
             'container' => 'stack-db-1',
             'service' => 'db',
             'image' => 'postgres:19',
             'status' => 'unknown',
         ]));
-        $this->assertSame('unknown', $cache['db']['updateStatus']);
-        $this->assertSame('', $cache['db']['localSha']);
+        $this->assertArrayNotHasKey('updateStatus', $cache['db']);
+        $this->assertArrayNotHasKey('localSha', $cache['db']);
     }
 
-    public function testUnknownUpdatePreservesNormalizedImageAliasAndInvalidatesDifferentPins(): void
+    public function testMetadataCacheNeverRetainsOldEvidenceAcrossImageChanges(): void
     {
         $this->executeAction('getPersistentContainerCache');
         $cache = ['db' => [
@@ -192,28 +192,28 @@ class ExecActionsTest extends TestCase
             'remoteSha' => 'old-remote',
         ]];
 
-        \composeCacheContainerUpdate($cache, \ContainerInfo::fromUpdateResponse([
+        \composeCacheContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
             'container' => 'stack-db-1',
             'service' => 'db',
             'image' => 'postgres:18',
             'status' => 'unknown',
         ]));
 
-        $this->assertSame('update-available', $cache['db']['updateStatus']);
-        $this->assertSame('old-local', $cache['db']['localSha']);
-        $this->assertSame('old-remote', $cache['db']['remoteSha']);
+        $this->assertArrayNotHasKey('updateStatus', $cache['db']);
+        $this->assertArrayNotHasKey('localSha', $cache['db']);
+        $this->assertArrayNotHasKey('remoteSha', $cache['db']);
 
         $cache['db']['image'] = 'postgres:18@sha256:' . str_repeat('a', 64);
-        \composeCacheContainerUpdate($cache, \ContainerInfo::fromUpdateResponse([
+        \composeCacheContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
             'container' => 'stack-db-1',
             'service' => 'db',
             'image' => 'postgres:18@sha256:' . str_repeat('b', 64),
             'status' => 'unknown',
         ]));
 
-        $this->assertSame('unknown', $cache['db']['updateStatus']);
-        $this->assertSame('', $cache['db']['localSha']);
-        $this->assertSame('', $cache['db']['remoteSha']);
+        $this->assertArrayNotHasKey('updateStatus', $cache['db']);
+        $this->assertArrayNotHasKey('localSha', $cache['db']);
+        $this->assertArrayNotHasKey('remoteSha', $cache['db']);
     }
 
     public function testComposeServiceCanBeResolvedFromDockerLabels(): void
@@ -242,14 +242,14 @@ class ExecActionsTest extends TestCase
             'updateStatus' => 'up-to-date',
             'remoteSha' => 'new',
         ]];
-        \composeCacheContainerUpdate($cache, \ContainerInfo::fromUpdateResponse([
+        \composeCacheContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
             'container' => 'stack-db-2',
             'service' => 'db',
             'image' => 'postgres:18',
             'status' => 'unknown',
         ]));
-        $this->assertSame('unknown', $cache['db']['updateStatus']);
-        $this->assertSame('', $cache['db']['remoteSha']);
+        $this->assertArrayNotHasKey('updateStatus', $cache['db']);
+        $this->assertArrayNotHasKey('remoteSha', $cache['db']);
     }
 
     public function testClearUpdateCacheRemovesUpdateFieldsButPreservesContainerMetadata(): void
@@ -374,9 +374,61 @@ class ExecActionsTest extends TestCase
                 $this->assertFalse($saved['empty-stack']['hasUpdate']);
                 $this->assertSame('empty-stack', $saved['empty-stack']['projectName']);
             }
+
         } finally {
             putenv('PATH=' . $path);
             @unlink(COMPOSE_UPDATE_STATUS_FILE);
+        }
+    }
+
+    public function testExpandedContainersUsePerReplicaSavedEvidenceInsteadOfServiceCache(): void
+    {
+        $this->createTestStack('replicas');
+        $bin = $this->createTempDir();
+        $rows = [];
+        $saved = [];
+        $script = "#!/bin/sh\ncase \"\$1\" in\ncompose) printf '%s\\n'";
+        foreach (['1', '2', '3'] as $replica) {
+            $name = 'app-' . $replica;
+            $rows[] = ['Name' => $name, 'Service' => 'app', 'Image' => 'stack-app', 'State' => 'running'];
+            $saved[] = \ContainerInfo::fromUpdateResponse([
+                'name' => $name, 'service' => 'app', 'image' => 'stack-app',
+                'hasUpdate' => true, 'updateStatus' => 'update-available',
+                'localSha' => 'old' . $replica, 'remoteSha' => 'base-new',
+                'updateKind' => 'build-base',
+                'updateReadiness' => $replica === '2' ? 'unknown' : 'rebuild-required',
+            ])->toUpdateArray();
+        }
+        foreach ($rows as $row) {
+            $script .= ' ' . escapeshellarg(json_encode($row));
+        }
+        $script .= ";;\ninspect) case \"\$2\" in\n";
+        foreach ($rows as $i => $row) {
+            $script .= $row['Name'] . ") printf '%s\\n' " . escapeshellarg(json_encode([
+                'Image' => 'sha256:' . ($i === 2 ? 'recreated' : 'old' . ($i + 1)),
+                'Config' => ['Image' => 'stack-app'], 'State' => [],
+            ])) . ";;\n";
+        }
+        $script .= "esac;;\nesac\n";
+        file_put_contents($bin . '/docker', $script);
+        chmod($bin . '/docker', 0755);
+        file_put_contents(COMPOSE_UPDATE_STATUS_FILE, json_encode(['replicas' => ['containers' => $saved]]));
+        $path = getenv('PATH');
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        try {
+            foreach ([1, 2] as $reload) {
+                $response = json_decode($this->executeAction('getStackContainers', ['script' => 'replicas']), true);
+                $this->assertSame('success', $response['result']);
+                $this->assertSame(['rebuild-required', 'unknown', 'unknown'], array_column($response['containers'], 'updateReadiness'));
+                $this->assertSame([true, true, false], array_column($response['containers'], 'hasUpdate'));
+                $cache = json_decode(file_get_contents(COMPOSE_CONTAINER_CACHE_FILE), true);
+                $this->assertArrayNotHasKey('hasUpdate', $cache['replicas']['app']);
+                $this->assertArrayNotHasKey('updateReadiness', $cache['replicas']['app']);
+            }
+        } finally {
+            putenv('PATH=' . $path);
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+            @unlink(COMPOSE_CONTAINER_CACHE_FILE);
         }
     }
 

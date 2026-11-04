@@ -2118,6 +2118,14 @@ class ContainerInfo
         ];
     }
 
+    public function toMetadataArray(): array
+    {
+        return array_diff_key($this->toArray(), array_flip([
+            'hasUpdate', 'updateStatus', 'localSha', 'remoteSha',
+            'localImageSha', 'updateKind', 'updateReadiness',
+        ]));
+    }
+
     /**
      * Create a ContainerInfo from a `docker ps --format '{{json .}}'` row.
      *

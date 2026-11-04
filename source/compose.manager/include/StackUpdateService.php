@@ -116,7 +116,7 @@ class StackUpdateService
                     $enrich($stack->projectFolder, $update);
                 }
                 $updates[] = $update->toUpdateArray();
-                $hasUpdate = $hasUpdate || $check['hasUpdate'];
+                $hasUpdate = $hasUpdate || ($update->hasUpdate && !$update->isPinned);
             }
             $results[$stack->projectFolder] = [
                 'projectName' => $stack->projectFolder,
@@ -124,8 +124,7 @@ class StackUpdateService
                 'containers' => $updates,
             ];
         }
-        $this->saveResults($results, $replaceSavedStatus);
-        return $results;
+        return $this->saveResults($results, $replaceSavedStatus);
     }
 
     private function shortDigest(string $digest): string
@@ -133,15 +132,38 @@ class StackUpdateService
         return str_starts_with($digest, 'sha256:') ? substr($digest, 7, 12) : $digest;
     }
 
-    private function saveResults(array $results, bool $replaceSavedStatus): void
+    private function saveResults(array $results, bool $replaceSavedStatus): array
     {
-        self::accessSavedResults(static function (array $saved) use ($results): array {
+        $saved = self::accessSavedResults(static function (array $saved) use ($results, $replaceSavedStatus): array {
             $now = time();
+            $next = $replaceSavedStatus ? [] : $saved;
             foreach ($results as $name => $result) {
-                $saved[$name] = $result + ['lastChecked' => $now];
+                $previous = [];
+                foreach ($saved[$name]['containers'] ?? [] as $container) {
+                    $previous[$container['name']] = ContainerInfo::fromUpdateResponse($container);
+                }
+                $result['hasUpdate'] = false;
+                foreach ($result['containers'] as &$container) {
+                    $fresh = ContainerInfo::fromUpdateResponse($container);
+                    $old = $previous[$fresh->name] ?? null;
+                    if ($fresh->updateStatus === 'unknown' && !$fresh->isPinned && $old !== null
+                        && $old->hasUpdate && $fresh->pinnedDigest === $old->pinnedDigest
+                        && ContainerInfo::normalizeImageForUpdateCheck($fresh->image)
+                            === ContainerInfo::normalizeImageForUpdateCheck($old->image)
+                        && ($fresh->localSha === '' || $fresh->localSha === $old->localSha)) {
+                        $old->mergeUpdateStatus($fresh);
+                        $container = array_replace($old->toUpdateArray(), [
+                            'service' => $fresh->service, 'image' => $fresh->image, 'icon' => $fresh->icon,
+                        ]);
+                    }
+                    $result['hasUpdate'] = $result['hasUpdate'] || ($container['hasUpdate'] && !$container['isPinned']);
+                }
+                unset($container);
+                $next[$name] = $result + ['lastChecked' => $now];
             }
-            return $saved;
+            return $next;
         }, $replaceSavedStatus);
+        return array_intersect_key($saved, $results);
     }
 
     public static function readSavedResults(): array
@@ -184,9 +206,21 @@ class StackUpdateService
             if ($raw === false) {
                 throw new RuntimeException('Unable to read stack update status.');
             }
-            $saved = !$replace && $raw !== '' ? json_decode($raw, true, 512, JSON_THROW_ON_ERROR) : [];
+            try {
+                $saved = $raw !== '' ? json_decode($raw, true, 512, JSON_THROW_ON_ERROR) : [];
+            } catch (JsonException $e) {
+                if (!$replace) {
+                    throw $e;
+                }
+                composeLogger('Replacing corrupt saved stack update status: ' . $e->getMessage(), null, 'user', 'warning', 'update-check');
+                $saved = [];
+            }
             if (!is_array($saved)) {
-                throw new RuntimeException('Invalid saved stack update status.');
+                if (!$replace) {
+                    throw new RuntimeException('Invalid saved stack update status.');
+                }
+                composeLogger('Replacing invalid saved stack update status.', null, 'user', 'warning', 'update-check');
+                $saved = [];
             }
             if ($change === null) {
                 return $saved;

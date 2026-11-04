@@ -727,7 +727,7 @@ function createStackInfo(project, containers, opts) {
  * @returns {Object} The mutated stackInfo
  */
 function mergeStackUpdateStatus(stackInfo, prevStatus, freshCheck) {
-    if (!prevStatus) return stackInfo;
+    if (!prevStatus || freshCheck) return stackInfo;
 
     // Copy stack-level fields
     ['lastChecked', 'updateAvailable', 'checking', 'checked'].forEach(function(k) {
@@ -750,16 +750,11 @@ function mergeStackUpdateStatus(stackInfo, prevStatus, freshCheck) {
         });
         stackInfo.containers.forEach(function(c) {
             var cName = c.name;
-            var unknownCheck = freshCheck && c.updateStatus !== 'up-to-date' && c.updateStatus !== 'update-available';
             if (previousByName[cName]) mergeContainerUpdateStatus(c, previousByName[cName], true);
-            if (unknownCheck) {
-                c.updateReadiness = 'unknown';
-                c.localImageSha = '';
-            }
         });
         // Recompute stack-level hasUpdate from merged containers
         stackInfo.hasUpdate = stackInfo.containers.some(function(c) {
-            return c.hasUpdate;
+            return c.hasUpdate && !c.isPinned;
         });
     }
 

@@ -124,14 +124,20 @@ points load it before their renderer. Stack summaries show a single pending
 state or a total with a tooltip breakdown; dialogs label application and base
 digests separately rather than comparing unlike image IDs with an arrow.
 Main-table and dashboard stack summaries use the same presentation helper.
-Fresh unknown check results may retain pending-update history but invalidate
-local readiness evidence; cached display enrichment must not restore it.
+Fresh unknown check results retain matching pending-update history centrally
+under the saved-status lock, but invalidate local readiness evidence. The returned
+result is the persisted result: browser merges must not resurrect discarded history.
+Image-reference, pin, name and known container-image changes invalidate history.
+Expanded rows read this per-container evidence, not the service-keyed metadata
+cache. Saved evidence for an older container image is not reapplied after recreation.
+Pinned application images do not query mutable tags or contribute actionable updates.
 Bulk failures include structured server errors, empty replies, and invalid JSON.
 `StackUpdateService` also owns saved-status reads, merges, removals and clears.
 Readers take a shared lock; writers take an exclusive lock on the same file.
 Clear writes an empty result without unlinking the lock's inode. Invalid saved
 JSON is reported explicitly; a full replacement check or cache clear can recover
-it. Endpoint and dashboard adapters must not read or rewrite this file directly.
+it with a warning. Endpoint and dashboard adapters must use the service to access
+this file. The service-keyed container cache stores metadata only, never update evidence.
 
 ## Troubleshooting
 
