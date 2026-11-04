@@ -32,7 +32,7 @@ class ComposeCommandBuilderTest extends TestCase
         $this->assertSame([...$normal, '--recreate'], $force);
         $this->assertSame([...$normal, '--automatic-update'], $automatic);
         $this->assertContains('--build', $normal);
-        $this->assertContains('-gdev', $normal);
+        $this->assertNotContains('-gdev', $normal);
         $this->assertNotContains('-gdefault', $normal);
         $this->assertContains('registry-login', $normal);
         $this->assertContains('-e' . $dir . '/.env', $normal);
@@ -41,14 +41,10 @@ class ComposeCommandBuilderTest extends TestCase
         file_put_contents($dir . '/build_on_update', 'false');
         $disabled = \StackUpdateService::buildUpdateCommand($stack, $cfg, ['automatic' => true]);
         $this->assertNotContains('--build', $disabled);
-        $chosen = \StackUpdateService::buildUpdateCommand($stack, $cfg, ['profiles' => ['chosen']]);
-        $this->assertContains('-gchosen', $chosen);
-        $this->assertNotContains('-gdev', $chosen);
-        $empty = \StackUpdateService::buildUpdateCommand($stack, $cfg, ['profiles' => []]);
-        $this->assertSame([], array_values(array_filter($empty, static fn(string $arg): bool => str_starts_with($arg, '-g'))));
+        $this->assertSame([], array_values(array_filter($normal, static fn(string $arg): bool => str_starts_with($arg, '-g'))));
     }
 
-    public function testCliUpdateArgumentsUseServiceProfilePolicy(): void
+    public function testCliUpdateSpecLeavesRuntimeScopeToTheEngine(): void
     {
         $dir = $this->tempRoot . '/cli-update';
         mkdir($dir);
@@ -64,9 +60,9 @@ class ComposeCommandBuilderTest extends TestCase
         $this->assertSame(0, $exit, implode("\n", $output));
         $response = json_decode(implode("\n", $output), true);
         $this->assertSame('success', $response['result']);
-        $this->assertSame(['active'], $response['data']['profiles']);
+        $this->assertSame([], $response['data']['profiles']);
         $this->assertSame(
-            \StackUpdateService::buildUpdateArguments(\StackInfo::fromProject($this->tempRoot, 'cli-update')),
+            \StackUpdateService::resolveUpdateSpec(\StackInfo::fromProject($this->tempRoot, 'cli-update')),
             $response['data']
         );
     }
@@ -172,7 +168,7 @@ class ComposeCommandBuilderTest extends TestCase
         $this->assertSame($overridePath, $info->getOverridePath(), 'The preferred write target must remain available.');
     }
 
-    public function testBuildForActionUsesRunningProfilesForUpdate(): void
+    public function testUpdateSpecDoesNotUseHistoricalRunningProfiles(): void
     {
         $stack = 'profiles-update-running';
         $stackDir = $this->tempRoot . '/' . $stack;
@@ -182,9 +178,9 @@ class ComposeCommandBuilderTest extends TestCase
         file_put_contents($stackDir . '/running_profiles', 'hotfix,metrics');
 
         $info = \StackInfo::fromProject($this->tempRoot, $stack);
-        $spec = \StackUpdateService::buildUpdateArguments($info);
+        $spec = \StackUpdateService::resolveUpdateSpec($info);
 
-        $this->assertSame(['hotfix', 'metrics'], $spec['profiles']);
+        $this->assertSame([], $spec['profiles']);
     }
 
     public function testBuildIncludesCredentialOnlyForRegistryActions(): void
@@ -202,7 +198,7 @@ class ComposeCommandBuilderTest extends TestCase
         $this->assertSame('', \ComposeCommandBuilder::buildForAction($info, 'logs')['credentialId']);
     }
 
-    public function testBuildForActionFallsBackToDefaultProfilesForUpdate(): void
+    public function testUpdateSpecDoesNotFallBackToDefaultProfiles(): void
     {
         $stack = 'profiles-update-default';
         $stackDir = $this->tempRoot . '/' . $stack;
@@ -211,9 +207,9 @@ class ComposeCommandBuilderTest extends TestCase
         file_put_contents($stackDir . '/default_profile', 'dev,prod');
 
         $info = \StackInfo::fromProject($this->tempRoot, $stack);
-        $spec = \StackUpdateService::buildUpdateArguments($info);
+        $spec = \StackUpdateService::resolveUpdateSpec($info);
 
-        $this->assertSame(['dev', 'prod'], $spec['profiles']);
+        $this->assertSame([], $spec['profiles']);
     }
 
     public function testBuildForActionUsesWildcardForDown(): void

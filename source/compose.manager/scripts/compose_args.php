@@ -65,7 +65,7 @@ if ($composeRoot === '' || $project === '' || $action === '') {
 
 try {
     $data = $action === 'update'
-        ? StackUpdateService::buildUpdateArguments(StackInfo::fromProject($composeRoot, $project), $stackPath)
+        ? StackUpdateService::resolveUpdateSpec(StackInfo::fromProject($composeRoot, $project), $stackPath)
         : ComposeCommandBuilder::fromProject($composeRoot, $project, $action, $stackPath);
     emitSuccess($data, $format);
     exit(0);

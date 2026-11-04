@@ -154,7 +154,7 @@ class UpdateCheckTest extends TestCase
     public function testMissingAttachedCredentialFailsExplicitlyWithoutAnonymousFallback(): void
     {
         $checker = new \ComposeUpdateCheck($this->createTempDir() . '/status.json', 'missing');
-        $result = $checker->check('ghcr.io/org/private:latest');
+        $result = $checker->checkMany(['ghcr.io/org/private:latest'])['ghcr.io/org/private:latest'];
         $this->assertSame('unknown', $result['status']);
         $this->assertContains('Unable to load attached registry credential for update check', $GLOBALS['composeLoggerMessages']);
     }
@@ -166,7 +166,7 @@ class UpdateCheckTest extends TestCase
             'username' => 'user', 'secret' => 'repository-only-token',
         ]);
         $checker = new \ComposeUpdateCheck($this->createTempDir() . '/status.json', $credential['id']);
-        $result = $checker->check('ghcr.io/org/private:latest');
+        $result = $checker->checkMany(['ghcr.io/org/private:latest'])['ghcr.io/org/private:latest'];
         $this->assertSame('unknown', $result['status']);
         $this->assertContains('Unable to load attached registry credential for update check', $GLOBALS['composeLoggerMessages']);
         $this->assertStringNotContainsString('repository-only-token', implode("\n", $GLOBALS['composeLoggerMessages']));

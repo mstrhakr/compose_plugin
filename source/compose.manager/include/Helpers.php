@@ -291,9 +291,6 @@ function echoComposeCommand($action, array $options = [])
             if (isset($_POST['includeStopped'])) {
                 $updateOptions['includeStopped'] = (string) $_POST['includeStopped'] === '1';
             }
-            if ($profile !== '') {
-                $updateOptions['profiles'] = array_values(array_filter(array_map('trim', explode(',', $profile))));
-            }
             $composeCommand = StackUpdateService::buildUpdateCommand($stackInfo, $cfg, $updateOptions);
         } else {
             $args = $stackInfo->buildComposeArgs();

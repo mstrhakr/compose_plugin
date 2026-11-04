@@ -3438,10 +3438,10 @@ class StackInfo
     }
 
     /**
-     * Get the profiles that were active when the stack was last started/updated.
+     * Get the profiles selected by the last start or Git deployment.
      *
      * Reads the `running_profiles` metadata file written by compose.sh on
-     * successful `up` or `update` operations.
+     * successful `up` or Git deployment operations. Scoped updates leave it unchanged.
      *
      * @return string[]
      */

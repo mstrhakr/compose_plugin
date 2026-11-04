@@ -23,29 +23,20 @@ class StackUpdateService
         return ($cfg['BUILD_ON_UPDATE_DEFAULT'] ?? 'false') === 'true';
     }
 
-    /**
-     * @param string[]|null $profiles Explicit empty selection must not fall back.
-     * @return array<string, mixed>
-     */
-    public static function buildUpdateArguments(StackInfo $stack, ?string $stackPath = null, ?array $profiles = null): array
+    /** @return array<string, mixed> */
+    public static function resolveUpdateSpec(StackInfo $stack, ?string $stackPath = null): array
     {
-        if ($profiles === null) {
-            $profiles = $stack->getRunningProfiles();
-            if (empty($profiles)) {
-                $profiles = $stack->getDefaultProfiles();
-            }
-        }
-        return ComposeCommandBuilder::buildForAction($stack, 'update', $stackPath, array_values($profiles));
+        return ComposeCommandBuilder::buildForAction($stack, 'update', $stackPath, []);
     }
 
     /**
      * @param array<string, mixed> $cfg
-     * @param array{profiles?: string[], recreate?: bool, automatic?: bool, includeStopped?: bool} $options
+     * @param array{recreate?: bool, automatic?: bool, includeStopped?: bool} $options
      * @return string[]
      */
     public static function buildUpdateCommand(StackInfo $stack, array $cfg, array $options = []): array
     {
-        $spec = self::buildUpdateArguments($stack, null, $options['profiles'] ?? null);
+        $spec = self::resolveUpdateSpec($stack);
         return ComposeCommandBuilder::buildUpdateCommand($spec, [
             'build' => self::resolveBuildOnUpdate($stack->path, $cfg),
             'recreate' => !empty($options['recreate']),
@@ -90,7 +81,6 @@ class StackUpdateService
                 $checks = $checker->checkContainers($rows, $stack->getBuildConfigs());
             }
             $updates = [];
-            $hasUpdate = false;
             foreach ($rows as $row) {
                 $container = array_change_key_case($row, CASE_LOWER);
                 $name = trim((string) ($container['name'] ?? $container['names'] ?? ''));
@@ -118,11 +108,9 @@ class StackUpdateService
                     $enrich($stack->projectFolder, $update);
                 }
                 $updates[] = $update->toUpdateArray();
-                $hasUpdate = $hasUpdate || ($update->hasUpdate && !$update->isPinned);
             }
             $results[$stack->projectFolder] = [
                 'projectName' => $stack->projectFolder,
-                'hasUpdate' => $hasUpdate,
                 'containers' => $updates,
             ];
         }

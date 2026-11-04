@@ -729,17 +729,9 @@ function createStackInfo(project, containers, opts) {
 function mergeStackUpdateStatus(stackInfo, prevStatus, freshCheck) {
     if (!prevStatus || freshCheck) return stackInfo;
 
-    // Copy stack-level fields
-    ['lastChecked', 'updateAvailable', 'checking', 'checked'].forEach(function(k) {
-        if (k === 'lastChecked') {
-            if ((typeof stackInfo[k] === 'undefined' || stackInfo[k] === null)
-                && typeof prevStatus[k] !== 'undefined') {
-                stackInfo[k] = prevStatus[k];
-            }
-        } else if (typeof prevStatus[k] !== 'undefined') {
-            stackInfo[k] = prevStatus[k];
-        }
-    });
+    if (stackInfo.lastChecked == null && prevStatus.lastChecked !== undefined) {
+        stackInfo.lastChecked = prevStatus.lastChecked;
+    }
 
     // Merge container-level update data
     if (prevStatus.containers && stackInfo.containers) {

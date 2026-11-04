@@ -136,7 +136,7 @@ clear_follow_pid() {
     fi
 }
 
-# Persist selected profile names for later operations (e.g. update target scope).
+# Persist deployment profile selection for lifecycle UI and Git deployments.
 persist_running_profiles() {
   if [ -z "$stack_path" ] || [ ! -d "$stack_path" ]; then
     return

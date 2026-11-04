@@ -43,21 +43,6 @@ class ComposeUpdateCheck
     }
 
     /**
-     * Check a single image and persist its entry.
-     *
-     * @param string $image Image reference (e.g. "redis:8", "ghcr.io/foo/bar:latest").
-     * @return array{local: string, remote: string, status: string, hasUpdate: bool}
-     */
-    public function check(string $image): array
-    {
-        $results = $this->checkMany([$image]);
-        $key = ContainerInfo::normalizeImageForUpdateCheck($image);
-        return $results[$key] ?? [
-            'local' => '', 'remote' => '', 'status' => 'unknown', 'hasUpdate' => false,
-        ];
-    }
-
-    /**
      * Check a batch of images. Reads and writes the shared status file
      * exactly once around the batch, and only touches entries for the
      * provided images. Duplicate images in $images are checked only once.
@@ -256,25 +241,6 @@ class ComposeUpdateCheck
             $index = $previous;
         }
         return null;
-    }
-
-    /**
-     * Read the currently persisted status entry for an image (if any).
-     * Does not perform any network or docker calls.
-     *
-     * @return array{local: string, remote: string, status: string}|null
-     */
-    public function readStatus(string $image): ?array
-    {
-        $image = ContainerInfo::normalizeImageForUpdateCheck($image);
-        $status = $this->loadStatus();
-        $entry = $status[$image] ?? null;
-        if (!is_array($entry)) return null;
-        return [
-            'local'  => (string) ($entry['local']  ?? ''),
-            'remote' => (string) ($entry['remote'] ?? ''),
-            'status' => (string) ($entry['status'] ?? 'undef'),
-        ];
     }
 
     // ------------------------------------------------------------------
