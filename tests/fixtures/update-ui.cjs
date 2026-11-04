@@ -309,18 +309,20 @@ for (const response of ['', 'not json', JSON.stringify({ result: 'error', messag
     };
     const stackRow = {
         length: 1, attr: () => 'stack-row-test', data: () => 'test',
+        each: fn => fn.call(stackRow),
         find: () => ({ html: value => { stackHtml = value; } }),
     };
     context.$ = selector => {
         if (typeof selector === 'object') return selector;
         if (selector.includes('tr.compose-sortable')) return stackRow;
         return {
+            prop() { return this; }, val() { return this; },
             html: value => { containerHtml = value; },
             each: fn => { if (selector.includes('tr[data-container]')) fn.call(containerRow); },
         };
     };
     context.$.post = (url, payload, callback) => {
-        if (payload.action === 'checkStackUpdates') complete = callback;
+        if (payload.action === 'checkStackUpdates' || payload.action === 'checkAllStacksUpdates') complete = callback;
         return { fail: () => {} };
     };
     context.checkStackUpdates('test');
@@ -353,6 +355,12 @@ for (const response of ['', 'not json', JSON.stringify({ result: 'error', messag
     complete(JSON.stringify({ result: 'error', message: 'Registry unavailable' }));
     assert.match(containerHtml, /Check failed/);
     assert.doesNotMatch(containerHtml, /Rebuild/);
+    context.checkAllUpdates();
+    assert.match(stackHtml, /Checking/);
+    assert.match(containerHtml, /Checking/);
+    complete(JSON.stringify({ result: 'success', stacks: { test: { containers: [previous], hasUpdate: true } } }));
+    assert.match(stackHtml, /Rebuild/);
+    assert.match(containerHtml, /Rebuild/);
 }
 
 for (const action of ['update', 'forceUpdate']) {
