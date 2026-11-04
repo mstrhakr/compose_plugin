@@ -12,7 +12,7 @@ test_setup() {
     export COMPOSE_MANAGER_CFG_FILE="$TEST_TEMP_DIR/settings"
     export CHANGE=true BUILD_CHANGE=false STOPPED=false
     export PS_EXIT=0 INSPECT_EXIT=0 IMAGE_INSPECT_EXIT=0 PULL_EXIT=0 BUILD_PULL_EXIT=0 BUILD_EXIT=0 UP_EXIT=0
-    unset RUNTIME_ROWS CONFIG_SERVICES CONFIG_EXIT CONFIG_PROFILES
+    unset RUNTIME_ROWS CONFIG_SERVICES CONFIG_EXIT CONFIG_PROFILES TARGET_IMAGE
     : > "$CALLS"
     mkdir -p "$TEST_TEMP_DIR/bin" "$TEST_TEMP_DIR/stack"
     cp "$BATS_TEST_DIRNAME/../fixtures/update-docker.sh" "$TEST_TEMP_DIR/bin/docker"
@@ -96,6 +96,33 @@ run_auto_adapter() {
     assert_success
     grep -F 'up -d --scale app=1 --pull never --no-deps app' "$CALLS"
     [ "$(cat "$TEST_TEMP_DIR/outcome")" = updated ]
+}
+
+@test "manual updates do not inspect historical image tags before reconciling" {
+    export IMAGE_INSPECT_EXIT=1
+    run_update
+    assert_success
+    ! grep -F 'image inspect' "$CALLS"
+    grep -F ' up ' "$CALLS"
+}
+
+@test "automatic updates resolve the configured target instead of the historical tag" {
+    export TARGET_IMAGE=registry.example/app:new-tag
+    run_update --automatic-update
+    assert_success
+    grep -Fx "image inspect --format={{.Id}} $TARGET_IMAGE" "$CALLS"
+    ! grep -Fx 'image inspect --format={{.Id}} stack-app' "$CALLS"
+    grep -F ' up ' "$CALLS"
+}
+
+@test "replicas share one runtime snapshot and one target image inspection" {
+    export RUNTIME_ROWS=$'id1|app|running|False\nid2|app|running|False\nid3|web|running|False'
+    export CONFIG_SERVICES=$'app\nweb'
+    run_update --automatic-update
+    assert_success
+    [ "$(grep -c '^inspect ' "$CALLS")" = 1 ]
+    [ "$(grep -c '^image inspect ' "$CALLS")" = 1 ]
+    grep -F -- '--scale app=2 --scale web=1' "$CALLS"
 }
 
 @test "successful manual pull does not rebuild published buildable images without opt-in" {

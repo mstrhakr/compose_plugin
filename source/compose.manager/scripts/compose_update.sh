@@ -35,11 +35,13 @@ update_failed() {
 
 run_stack_update() {
   local ids id details current_image image_ref image_id rc rebuild=false needs_update=false
-  local service state oneoff configured_services profiles profile arg selected_ids="" had_skips=false
+  local service state oneoff configured_services profiles profile arg had_skips=false
   local old_images="" new_images=""
   local -a pull_args=() up_args=(-d "${cmd_args[@]}") stale_images=() services=() candidates=()
   local -a update_profile_args=(--profile '*')
   local -A counts=() running=() stopped=() unsafe=() container_services=()
+  local -A configured=() selected=() container_images=() target_images=()
+  local -a container_ids=()
 
   for arg in "${cmd_args[@]}"; do
     if [ "$arg" = --remove-orphans ]; then
@@ -50,7 +52,7 @@ run_stack_update() {
   done
 
   # Enumerate the runtime project, not the saved/default profile selection.
-  if ! ids=$(docker ps -aq --filter "label=com.docker.compose.project=$name"); then
+  if ! ids=$(docker ps --no-trunc -aq --filter "label=com.docker.compose.project=$name"); then
     update_failed 1 "enumerate containers for"
     return 1
   fi
@@ -72,15 +74,25 @@ run_stack_update() {
     update_failed 1 "resolve services for"
     return 1
   fi
+  while IFS= read -r service; do
+    [ -z "$service" ] || configured[$service]=true
+  done <<< "$configured_services"
   while IFS= read -r id; do
     [ -n "$id" ] || continue
-    if ! details=$(docker inspect --format='{{ index .Config.Labels "com.docker.compose.service" }}|{{.State.Status}}|{{ index .Config.Labels "com.docker.compose.oneoff" }}' "$id"); then
-      update_failed 1 "inspect container for"
+    container_ids+=("$id")
+  done <<< "$ids"
+  if (( ${#container_ids[@]} )); then
+    if ! details=$(docker inspect --format='{{.Id}}|{{ index .Config.Labels "com.docker.compose.service" }}|{{.State.Status}}|{{ index .Config.Labels "com.docker.compose.oneoff" }}|{{.Image}}' "${container_ids[@]}"); then
+      update_failed 1 "inspect containers for"
       return 1
     fi
-    IFS='|' read -r service state oneoff <<< "$details"
+  else
+    details=""
+  fi
+  while IFS='|' read -r id service state oneoff current_image; do
+    [ -n "$id" ] || continue
     case "${oneoff,,}" in true) continue ;; esac
-    if [[ ! "$service" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || [ -z "$state" ]; then
+    if [[ ! "$service" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || [ -z "$state" ] || [ -z "$current_image" ]; then
       update_failed 1 "read container service metadata for"
       return 1
     fi
@@ -89,15 +101,16 @@ run_stack_update() {
     fi
     counts[$service]=$(( ${counts[$service]:-0} + 1 ))
     container_services[$id]="$service"
+    container_images[$id]="$current_image"
     case "$state" in
       running) running[$service]=true ;;
       exited|created) stopped[$service]=true ;;
       *) unsafe[$service]="$state" ;;
     esac
-  done <<< "$ids"
+  done <<< "$details"
 
   for service in "${candidates[@]}"; do
-    if ! grep -Fxq -- "$service" <<< "$configured_services"; then
+    if [ -z "${configured[$service]:-}" ]; then
       echo "Skipping service '$service': no longer defined in Compose."
       log_msg WARNING "Skipping update of $name/$service: service no longer defined"
       had_skips=true
@@ -113,12 +126,8 @@ run_stack_update() {
       fi
     else
       services+=("$service")
+      selected[$service]=true
       up_args+=(--scale "$service=${counts[$service]}")
-      for id in $ids; do
-        if [ "${container_services[$id]:-}" = "$service" ]; then
-          selected_ids+="$id"$'\n'
-        fi
-      done
     fi
   done
   if (( ${#services[@]} == 0 )); then
@@ -131,17 +140,11 @@ run_stack_update() {
   # Capture only selected containers, including tags moved by an earlier pull.
   while IFS= read -r id; do
     [ -n "$id" ] || continue
-    if ! details=$(docker inspect --format='{{.Image}} {{.Config.Image}}' "$id"); then
-      update_failed 1 "inspect container for"
-      return 1
+    service="${container_services[$id]:-}"
+    if [ -n "$service" ] && [ -n "${selected[$service]:-}" ]; then
+      old_images+="${container_images[$id]}"$'\n'
     fi
-    read -r current_image image_ref <<< "$details"
-    if [ -z "$current_image" ] || [ -z "$image_ref" ]; then
-      update_failed 1 "read container image metadata for"
-      return 1
-    fi
-    old_images+="$current_image"$'\n'
-  done <<< "$selected_ids"
+  done <<< "$ids"
 
   if [ "$build_on_update" = true ]; then
     rebuild=true
@@ -182,23 +185,31 @@ run_stack_update() {
     fi
   fi
 
-  # Compare against the actual running containers, not just tags before and after pull.
-  while IFS= read -r id; do
-    [ -n "$id" ] || continue
-    if ! details=$(docker inspect --format='{{.Image}} {{.Config.Image}}' "$id"); then
-      update_failed 1 "inspect container for"
-      return 1
-    fi
-    read -r current_image image_ref <<< "$details"
-    if [ -z "$current_image" ] || [ -z "$image_ref" ] ||
-       ! image_id=$(docker image inspect --format='{{.Id}}' "$image_ref") || [ -z "$image_id" ]; then
-      update_failed 1 "inspect image for"
-      return 1
-    fi
-    if [ "$current_image" != "$image_id" ]; then
-      needs_update=true
-    fi
-  done <<< "$selected_ids"
+  if [ "$automatic_update" = true ]; then
+    # Let Compose resolve generated build tags too; never guess them from container history.
+    for service in "${services[@]}"; do
+      if ! image_ref=$(update_compose config --images "$service") || [ -z "$image_ref" ] || [[ "$image_ref" == *$'\n'* ]]; then
+        update_failed 1 "resolve target image for"
+        return 1
+      fi
+      if [ -z "${target_images[$image_ref]:-}" ]; then
+        if ! image_id=$(docker image inspect --format='{{.Id}}' "$image_ref") || [ -z "$image_id" ]; then
+          update_failed 1 "inspect image for"
+          return 1
+        fi
+        target_images[$image_ref]="$image_id"
+      fi
+      selected[$service]="${target_images[$image_ref]}"
+    done
+    while IFS= read -r id; do
+      [ -n "$id" ] || continue
+      service="${container_services[$id]:-}"
+      if [ -n "$service" ] && [ -n "${selected[$service]:-}" ] &&
+         [ "${container_images[$id]}" != "${selected[$service]}" ]; then
+        needs_update=true
+      fi
+    done <<< "$ids"
+  fi
   if [ "$automatic_update" = true ] && [ "$needs_update" != true ]; then
     echo "No updates for stack '$name'."
     save_result success 0 update

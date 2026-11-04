@@ -12,14 +12,12 @@ elif [ "$1" = inspect ]; then
   if [[ "$*" == *State.Status* ]]; then
     if [ -n "${RUNTIME_ROWS:-}" ]; then
       while IFS='|' read -r id service state oneoff; do
-        if [ "$id" = "${!#}" ]; then
-          echo "$service|$state|${oneoff:-False}"
-          exit 0
-        fi
+        echo "$id|$service|$state|${oneoff:-False}|$OLD_ID"
       done <<< "$RUNTIME_ROWS"
-      exit 1
+      exit 0
     fi
-    if [ "${STOPPED:-false}" = true ]; then echo 'app|exited|False'; else echo 'app|running|False'; fi
+    if [ "${STOPPED:-false}" = true ]; then state=exited; else state=running; fi
+    echo "container-id|app|$state|False|$OLD_ID"
   else
     echo "$OLD_ID stack-app"
   fi
@@ -35,6 +33,8 @@ else
         [ "${CONFIG_EXIT:-0}" = 0 ] || exit "$CONFIG_EXIT"
         if [ "${2:-}" = --profiles ]; then
           printf '%s\n' "${CONFIG_PROFILES:-}"
+        elif [ "${2:-}" = --images ]; then
+          printf '%s\n' "${TARGET_IMAGE:-stack-app}"
         else
           printf '%s\n' "${CONFIG_SERVICES:-app}"
         fi
