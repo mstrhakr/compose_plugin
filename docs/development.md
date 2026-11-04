@@ -151,6 +151,10 @@ Fresh unknown check results retain matching pending-update history centrally
 under the saved-status lock, but invalidate local readiness evidence. The returned
 result is the persisted result: browser merges must not resurrect discarded history.
 Image-reference, pin, name and known container-image changes invalidate history.
+For build-base checks, use container inspection's `Config.Image` as the application
+reference for local-tag lookup and persisted evidence. Docker's ps output may
+instead show a short image ID after the tag moves; persisting that display value
+causes the expanded endpoint to reject otherwise valid evidence as a tag change.
 Expanded rows read this per-container evidence, not the service-keyed metadata
 cache. Saved evidence for an older container image is not reapplied after recreation.
 Pinned application images do not query mutable tags or contribute actionable updates.

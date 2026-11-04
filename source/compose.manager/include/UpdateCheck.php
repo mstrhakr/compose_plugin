@@ -102,7 +102,7 @@ class ComposeUpdateCheck
      * image fall back to that check when the image tag has no remote digest.
      *
      * @param array<string, array{build: array<string, mixed>, image: ?string}> $buildConfigs Keyed by service name
-     * @return array<string, array{local: string, remote: string, status: string, hasUpdate: bool, localImage: string, updateKind: string, updateReadiness: string}>
+     * @return array<string, array{local: string, remote: string, status: string, hasUpdate: bool, localImage: string, updateKind: string, updateReadiness: string, image?: string}>
      */
     public function checkContainers(array $containers, array $buildConfigs = []): array
     {
@@ -140,7 +140,10 @@ class ComposeUpdateCheck
                 continue;
             }
             if ($build !== null && $remote === null && $local !== null) {
-                $results[$name] = $this->checkBuiltImage($name, $local, $image, $build['build']);
+                // Docker ps can show an image ID after its original tag moves.
+                $reference = (string) ($inspect['Config']['Image'] ?? $image);
+                $results[$name] = $this->checkBuiltImage($name, $local, $reference, $build['build'])
+                    + ['image' => $reference];
                 continue;
             }
             $results[$name] = $this->summarize($local, $remote)['result'];

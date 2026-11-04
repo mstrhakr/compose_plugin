@@ -94,7 +94,7 @@ class StackUpdateService
                 $update = ContainerInfo::fromUpdateResponse([
                     'container' => $name,
                     'service' => ContainerInfo::resolveService($container),
-                    'image' => $image,
+                    'image' => $check['image'] ?? $image,
                     'icon' => '',
                     'hasUpdate' => $check['hasUpdate'],
                     'status' => $check['status'],

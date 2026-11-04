@@ -412,7 +412,7 @@ class ExecActionsTest extends TestCase
         $script = "#!/bin/sh\ncase \"\$1\" in\ncompose) printf '%s\\n'";
         foreach (['1', '2', '3'] as $replica) {
             $name = 'app-' . $replica;
-            $rows[] = ['Name' => $name, 'Service' => 'app', 'Image' => 'stack-app', 'State' => 'running'];
+            $rows[] = ['Name' => $name, 'Service' => 'app', 'Image' => 'old' . $replica, 'State' => 'running'];
             $saved[] = \ContainerInfo::fromUpdateResponse([
                 'name' => $name, 'service' => 'app', 'image' => 'stack-app',
                 'hasUpdate' => true, 'updateStatus' => 'update-available',
@@ -446,6 +446,56 @@ class ExecActionsTest extends TestCase
                 $cache = json_decode(file_get_contents(COMPOSE_CONTAINER_CACHE_FILE), true);
                 $this->assertArrayNotHasKey('hasUpdate', $cache['replicas']['app']);
                 $this->assertArrayNotHasKey('updateReadiness', $cache['replicas']['app']);
+            }
+        } finally {
+            putenv('PATH=' . $path);
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+            @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+        }
+    }
+
+    public function testBuildOnlyImageIdRowsKeepEvidenceAcrossCheckReloadAndExpansion(): void
+    {
+        $this->createTestStack('build-only');
+        $context = $this->createTempDir();
+        file_put_contents($context . '/Dockerfile', "FROM alpine@sha256:pinned-base\n");
+        $bin = $this->createTempDir();
+        $imageId = 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+        $row = [
+            'Name' => 'built-app', 'Names' => 'built-app', 'Service' => 'app',
+            'Image' => '0123456789ab', 'State' => 'running',
+            'Labels' => 'com.docker.compose.project=build-only,com.docker.compose.service=app',
+        ];
+        $inspect = ['Image' => $imageId, 'Config' => ['Image' => 'build-only-app'], 'State' => []];
+        $config = ['services' => ['app' => ['build' => ['context' => $context]]]];
+        file_put_contents($bin . '/docker', "#!/bin/sh\ncase \"\$*\" in\n"
+            . "*'config --format json'*) printf '%s\\n' " . escapeshellarg(json_encode($config)) . " ;;\n"
+            . "inspect*) printf '%s\\n' " . escapeshellarg(json_encode($inspect)) . " ;;\n"
+            . "*) printf '%s\\n' " . escapeshellarg(json_encode($row)) . " ;;\nesac\n");
+        chmod($bin . '/docker', 0755);
+        \DockerClient::setMockResponse('/containers/built-app/json', $inspect);
+        $path = getenv('PATH');
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        try {
+            foreach (['checkStackUpdates', 'checkAllStacksUpdates'] as $action) {
+                \StackInfo::clearCache();
+                $response = json_decode($this->executeAction($action, ['script' => 'build-only']), true);
+                $this->assertSame('success', $response['result']);
+                $updates = $action === 'checkStackUpdates'
+                    ? $response['updates'] : $response['stacks']['build-only']['containers'];
+                $this->assertNotEmpty($updates, json_encode($response));
+                $this->assertSame('build-only-app', $updates[0]['image']);
+                $this->assertSame('current', $updates[0]['updateReadiness']);
+                $this->assertSame('build-base', $updates[0]['updateKind']);
+                for ($reload = 0; $reload < 2; $reload++) {
+                    \StackInfo::clearCache();
+                    $saved = json_decode($this->executeAction('getSavedUpdateStatus'), true);
+                    $this->assertSame('build-only-app', $saved['stacks']['build-only']['containers'][0]['image']);
+                    $details = json_decode($this->executeAction('getStackContainers', ['script' => 'build-only']), true);
+                    $this->assertSame('success', $details['result']);
+                    $this->assertSame('current', $details['containers'][0]['updateReadiness']);
+                    $this->assertSame('build-base', $details['containers'][0]['updateKind']);
+                }
             }
         } finally {
             putenv('PATH=' . $path);

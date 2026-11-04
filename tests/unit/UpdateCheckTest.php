@@ -361,7 +361,9 @@ class UpdateCheckTest extends TestCase
             }
         };
         \DockerClient::setMockResponse('/containers/current/json', ['Image' => 'sha256:built-current']);
-        \DockerClient::setMockResponse('/containers/stale/json', ['Image' => 'sha256:built-stale']);
+        \DockerClient::setMockResponse('/containers/stale/json', [
+            'Image' => 'sha256:built-stale', 'Config' => ['Image' => 'stack-worker'],
+        ]);
         \DockerClient::setMockResponse('/images/' . rawurlencode('sha256:built-current') . '/json', ['RootFS' => ['Layers' => ['sha256:l1', 'sha256:l2', 'sha256:mine']]]);
         \DockerClient::setMockResponse('/images/' . rawurlencode('sha256:built-stale') . '/json', ['RootFS' => ['Layers' => ['sha256:l1', 'sha256:old', 'sha256:mine']]]);
 
@@ -370,7 +372,7 @@ class UpdateCheckTest extends TestCase
         \DockerClient::setMockResponse('/images/' . rawurlencode('lscr.io/linuxserver/code-server:latest') . '/json', ['Id' => 'sha256:base-new']);
         $results = $checker->checkContainers([
             ['Name' => 'current', 'Service' => 'app', 'Image' => 'stack-app'],
-            ['Names' => 'stale', 'Labels' => 'com.docker.compose.service=worker,com.docker.compose.project=stack', 'Image' => 'stack-worker'],
+            ['Names' => 'stale', 'Labels' => 'com.docker.compose.service=worker,com.docker.compose.project=stack', 'Image' => 'built-stale'],
         ], ['app' => $build, 'worker' => $build]);
 
         $this->assertSame([], $checker->checkedImages, 'Build-only images must not be looked up on a registry.');
@@ -383,6 +385,7 @@ class UpdateCheckTest extends TestCase
         $this->assertSame('sha256:built-stale', $results['stale']['local']);
         $this->assertSame('rebuild-required', $results['stale']['updateReadiness']);
         $this->assertSame('build-base', $results['stale']['updateKind']);
+        $this->assertSame('stack-worker', $results['stale']['image']);
         $this->assertSame('current', $results['current']['updateReadiness']);
         $this->assertNotSame('ready-to-apply', $results['stale']['updateReadiness'], 'A downloaded base alone is not a rebuilt application.');
 
