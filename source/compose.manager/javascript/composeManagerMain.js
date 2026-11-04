@@ -5709,19 +5709,21 @@ function mergeUpdateStatus(containers, project, onlyIfUnknown) {
     if (!containers || !stackUpdateStatus[project] || !stackUpdateStatus[project].containers) {
         return containers;
     }
+    var updatesByName = new Map();
+    var updatesByService = new Map();
+    stackUpdateStatus[project].containers.forEach(function(update) {
+        var info = createContainerInfo(update);
+        if (info.name) updatesByName.set(info.name, info);
+        if (info.service) updatesByService.set(info.service, info);
+    });
     containers.forEach(function(container) {
-        var cInfo = createContainerInfo(container);
-        stackUpdateStatus[project].containers.forEach(function(update) {
-            var uInfo = createContainerInfo(update);
-            var sameName = cInfo.name && uInfo.name && cInfo.name === uInfo.name;
-            var sameService = cInfo.service && uInfo.service && cInfo.service === uInfo.service;
-            if (sameName || sameService) {
-                mergeContainerUpdateStatus(container, update, onlyIfUnknown !== false);
-                if ((!container.icon || !isValidIconSrc(container.icon)) && uInfo.icon) {
-                    container.icon = uInfo.icon;
-                }
-            }
-        });
+        var info = createContainerInfo(container);
+        var update = updatesByName.get(info.name) || updatesByService.get(info.service);
+        if (!update) return;
+        mergeContainerUpdateStatus(container, update, onlyIfUnknown !== false);
+        if ((!container.icon || !isValidIconSrc(container.icon)) && update.icon) {
+            container.icon = update.icon;
+        }
     });
     return containers;
 }

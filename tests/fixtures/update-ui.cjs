@@ -43,7 +43,7 @@ function harness(config = {}) {
     for (const name of ['composeUpdateScopeOptionHtml', 'ForceUpdateStackConfirmed', 'UpdateStackConfirmed',
         'renderStackActionDialog', 'composeUpdateDigestDetails', 'executeUpdateAllStacks', 'updateAllStacks', 'showProfileSelector',
         'updateStackUpdateUI', 'showUpdateWarning', 'createContainerInfo', 'composeImageUpdateKey', 'mergeContainerUpdateStatus',
-        'mergeStackUpdateStatus', 'checkAllUpdates']) {
+        'mergeStackUpdateStatus', 'mergeUpdateStatus', 'checkAllUpdates']) {
         const match = source.match(new RegExp(`^function ${name}\\([^]*?\\n\\}`, 'm'));
         assert.ok(match, `Missing function ${name}`);
         vm.runInContext(match[0], context);
@@ -209,6 +209,29 @@ console.log('Update modal defaults, overrides, warning bypass, runtime details, 
     assert.match(markup, /1 unchecked/);
 }
 console.log('Compact readiness badges, mixed summaries, stopped-stack visibility, and digest labels passed.');
+
+{
+    const { context } = harness();
+    context.isValidIconSrc = () => true;
+    const normalize = context.createContainerInfo;
+    for (const count of [10, 100, 200]) {
+        let normalizations = 0;
+        context.createContainerInfo = raw => { normalizations++; return normalize(raw); };
+        const containers = Array.from({ length: count }, (_, i) => ({
+            name: `app-${i}`, service: 'app', image: 'app:latest', updateStatus: 'unknown',
+        }));
+        context.stackUpdateStatus = { test: { containers: containers.map((container, i) => ({
+            ...container, updateStatus: 'update-available', hasUpdate: true,
+            remoteSha: `target-${i}`, updateReadiness: 'rebuild-required',
+        })) } };
+        context.mergeUpdateStatus(containers, 'test');
+        assert.ok(normalizations <= 4 * count, `Expected linear work, got ${normalizations} for ${count}`);
+        containers.forEach((container, i) => assert.equal(container.remoteSha, `target-${i}`));
+        const newReplica = { name: 'new-replica', service: 'app', image: 'app:latest' };
+        context.mergeUpdateStatus([newReplica], 'test');
+        assert.equal(newReplica.remoteSha, undefined, 'Service fallback must not copy a different replica\'s evidence');
+    }
+}
 
 {
     const { context } = harness();

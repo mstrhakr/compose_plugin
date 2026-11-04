@@ -101,6 +101,11 @@ Adjust PHPStan rules or baseline as needed when adding new code.
 - Build-context resolution uses the bounded process runner, keeps Compose warnings
   separate from JSON, and reports command/JSON failures explicitly. An unavailable
   configuration must never be treated as a valid empty build map.
+- A check workflow reuses one image checker per attached credential. Remote
+  manifests and base configs are memoized only for that workflow, on instances
+  bound to one credential and the host platform. Local container/tag evidence is
+  always reread; remote failures are memoized too, avoiding repeated failed requests.
+  No new disk cache is introduced.
 - `StackUpdateService::buildUpdateCommand()` owns update profile/build policy and operation preparation. Individual/force and bulk UI actions call it; cron and Auto-update **Run Now** use its `automaticUpdateInvocation()`. The CLI argument adapter uses `buildUpdateArguments()` for update actions, so it shares profile resolution too. `ComposeCommandBuilder` resolves common stack arguments and encodes the service's resolved operation; it does not select update policy.
 - `scripts/compose.sh update` owns credentials and the project lock, then invokes `scripts/compose_update.sh`. This is the single implementation of image pulling, optional rebuilding, running-image comparison, recreation, and post-success cleanup.
 - `scripts/compose_autoupdate.sh` is only a notification/concurrency adapter. Do not add Docker operations or another stack lock there. Its legacy positional/environment invocation is retained for compatibility; application callers pass the shared builder's arguments.

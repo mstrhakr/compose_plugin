@@ -72,6 +72,7 @@ class UpdateCheckTest extends TestCase
         $this->assertIsString($address);
         $router = $directory . '/registry.php';
         file_put_contents($router, '<?php
+            file_put_contents(' . var_export($directory . '/requests', true) . ', "request\n", FILE_APPEND);
             $authorization = $_SERVER["HTTP_AUTHORIZATION"] ?? "";
             $basic = "Basic " . base64_encode("registry-user:fixture-token");
             $mode = ' . var_export($mode, true) . ';
@@ -128,6 +129,18 @@ class UpdateCheckTest extends TestCase
             $this->assertSame($reject ? '' : 'sha256:new', $results['private-app']['remote']);
             $cached = json_decode((string) file_get_contents($directory . '/status.json'), true);
             $this->assertSame($reject ? '' : 'sha256:new', $cached['ghcr.io/org/private:latest']['configDigest']);
+            $requestCount = count(file($directory . '/requests'));
+            \DockerClient::setMockResponse('/containers/private-app/json', ['Image' => 'sha256:new']);
+            for ($stack = 0; $stack < 10; $stack++) {
+                $recheck = $checker->checkContainers([['Name' => 'private-app', 'Image' => 'ghcr.io/org/private:latest']]);
+                $this->assertFalse($recheck['private-app']['hasUpdate'], 'Local runtime evidence must not be memoized.');
+            }
+            $this->assertCount($requestCount, file($directory . '/requests'), 'Remote evidence is fetched once per checker.');
+            $class = get_class($checker);
+            $isolated = new $class($directory . '/isolated.json', 'missing');
+            $isolated->endpoint = $checker->endpoint;
+            $isolatedResult = $isolated->checkContainers([['Name' => 'private-app', 'Image' => 'ghcr.io/org/private:latest']]);
+            $this->assertSame('unknown', $isolatedResult['private-app']['status'], 'A different credential cannot reuse authenticated results.');
             $this->assertStringNotContainsString('fixture-token', json_encode($cached));
             $this->assertStringNotContainsString('fixture-token', implode("\n", $GLOBALS['composeLoggerMessages'] ?? []));
         } finally {
@@ -383,6 +396,12 @@ class UpdateCheckTest extends TestCase
         $this->assertSame('ready-to-apply', $rebuilt['stale']['updateReadiness']);
         $this->assertSame('sha256:rebuilt', $rebuilt['stale']['localImage']);
         $this->assertTrue($rebuilt['stale']['hasUpdate']);
+        for ($stack = 0; $stack < 10; $stack++) {
+            $checker->checkContainers([
+                ['Name' => 'stale', 'Service' => 'worker', 'Image' => 'stack-worker'],
+            ], ['worker' => $build]);
+        }
+        $this->assertSame(['lscr.io/linuxserver/code-server:latest'], $checker->fetched, 'Base lookups are shared across stacks.');
     }
 
     public function testNamedBuildImageFallsBackToBaseOnlyWithoutARemoteDigest(): void

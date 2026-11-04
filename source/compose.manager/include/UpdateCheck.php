@@ -31,6 +31,10 @@ class ComposeUpdateCheck
     /** @var string Path to the shared Unraid update-status JSON file. */
     private string $statusFile;
     private ?string $credentialId;
+    /** @var array<string, array|null> */
+    private array $remoteManifests = [];
+    /** @var array<string, array{digest: string, diffIds: string[]}|null> */
+    private array $baseConfigs = [];
 
     public function __construct(?string $statusFile = null, ?string $credentialId = null)
     {
@@ -128,7 +132,6 @@ class ComposeUpdateCheck
         }
         $imageResults = $images ? $this->checkMany($images) : [];
         $client = new DockerClient();
-        $baseCache = [];
         $results = [];
         foreach ($containers as $container) {
             $name = trim((string) ($container['Name'] ?? $container['name'] ?? $container['Names'] ?? ''));
@@ -152,7 +155,7 @@ class ComposeUpdateCheck
                 continue;
             }
             if ($build !== null && $remote === null && $local !== null) {
-                $results[$name] = $this->checkBuiltImage($name, $local, $image, $build['build'], $baseCache);
+                $results[$name] = $this->checkBuiltImage($name, $local, $image, $build['build']);
                 continue;
             }
             $results[$name] = $this->summarize($local, $remote)['result'];
@@ -283,10 +286,9 @@ class ComposeUpdateCheck
      * remote base image's layers (rootfs.diff_ids).
      *
      * @param array<string, mixed> $build
-     * @param array<string, array{digest: string, diffIds: string[]}|null> $baseCache
      * @return array{local: string, remote: string, status: string, hasUpdate: bool, localImage: string, updateKind: string, updateReadiness: string}
      */
-    private function checkBuiltImage(string $container, string $imageId, string $image, array $build, array &$baseCache): array
+    private function checkBuiltImage(string $container, string $imageId, string $image, array $build): array
     {
         $unknown = [
             'local' => $imageId, 'remote' => '', 'status' => 'unknown', 'hasUpdate' => false,
@@ -307,10 +309,10 @@ class ComposeUpdateCheck
         }
 
         $baseKey = ContainerInfo::normalizeImageForUpdateCheck($base);
-        if (!array_key_exists($baseKey, $baseCache)) {
-            $baseCache[$baseKey] = $this->fetchRemoteImageConfig($baseKey);
+        if (!array_key_exists($baseKey, $this->baseConfigs)) {
+            $this->baseConfigs[$baseKey] = $this->fetchRemoteImageConfig($baseKey);
         }
-        $remote = $baseCache[$baseKey];
+        $remote = $this->baseConfigs[$baseKey];
         $inspect = (new DockerClient())->getDockerJSON('/images/' . rawurlencode($imageId) . '/json');
         $layers = $inspect['RootFS']['Layers'] ?? null;
         if ($remote === null || !is_array($layers) || $layers === []) {
@@ -568,6 +570,15 @@ class ComposeUpdateCheck
      * @return array{configDigest: string, blobUrl: string, header: string[], basicUserPwd: ?string}|null
      */
     private function fetchRemoteManifest(string $image): ?array
+    {
+        if (!array_key_exists($image, $this->remoteManifests)) {
+            $this->remoteManifests[$image] = $this->requestRemoteManifest($image);
+        }
+        return $this->remoteManifests[$image];
+    }
+
+    /** @return array{configDigest: string, blobUrl: string, header: string[], basicUserPwd: ?string}|null */
+    private function requestRemoteManifest(string $image): ?array
     {
         try {
             $auth = $this->resolveRegistryAuth($image);

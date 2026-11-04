@@ -77,6 +77,7 @@ class StackUpdateService
     public function checkStacks(array $stacks, ?callable $enrich = null, bool $replaceSavedStatus = false): array
     {
         $results = [];
+        $checkers = [];
         foreach ($stacks as $stack) {
             $rows = array_values(array_filter(
                 $stack->getContainerList(),
@@ -84,7 +85,8 @@ class StackUpdateService
             ));
             $checks = [];
             if ($rows) {
-                $checker = new ComposeUpdateCheck(null, $stack->getCredentialId());
+                $credentialId = $stack->getCredentialId();
+                $checker = $checkers[$credentialId ?? ''] ??= new ComposeUpdateCheck(null, $credentialId);
                 $checks = $checker->checkContainers($rows, $stack->getBuildConfigs());
             }
             $updates = [];
