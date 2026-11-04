@@ -12,7 +12,7 @@ test_setup() {
     export COMPOSE_MANAGER_CFG_FILE="$TEST_TEMP_DIR/settings"
     export CHANGE=true BUILD_CHANGE=false STOPPED=false
     export PS_EXIT=0 INSPECT_EXIT=0 IMAGE_INSPECT_EXIT=0 PULL_EXIT=0 BUILD_PULL_EXIT=0 BUILD_EXIT=0 UP_EXIT=0
-    unset RUNTIME_ROWS CONFIG_SERVICES CONFIG_EXIT CONFIG_PROFILES TARGET_IMAGE
+    unset RUNTIME_ROWS CONFIG_SERVICES CONFIG_EXIT CONFIG_PROFILES TARGET_IMAGE TARGET_CONFIG COMPOSE_COMPATIBILITY
     : > "$CALLS"
     mkdir -p "$TEST_TEMP_DIR/bin" "$TEST_TEMP_DIR/stack"
     cp "$BATS_TEST_DIRNAME/../fixtures/update-docker.sh" "$TEST_TEMP_DIR/bin/docker"
@@ -113,6 +113,34 @@ run_auto_adapter() {
     grep -Fx "image inspect --format={{.Id}} $TARGET_IMAGE" "$CALLS"
     ! grep -Fx 'image inspect --format={{.Id}} stack-app' "$CALLS"
     grep -F ' up ' "$CALLS"
+}
+
+@test "automatic target resolution ignores unselected dependency images" {
+    export TARGET_CONFIG='{"name":"stack","services":{"app":{"image":"app:new-tag"},"db":{"image":"db:latest"}}}'
+    run_update --automatic-update
+    assert_success
+    grep -Fx 'image inspect --format={{.Id}} app:new-tag' "$CALLS"
+    ! grep -F 'image inspect --format={{.Id}} db:latest' "$CALLS"
+}
+
+@test "build only targets use Compose project naming including compatibility mode" {
+    export TARGET_CONFIG='{"name":"stack","services":{"app":{"build":{"context":"."}}}}'
+    run_update --automatic-update
+    assert_success
+    grep -Fx 'image inspect --format={{.Id}} stack-app' "$CALLS"
+    : > "$CALLS"
+    export COMPOSE_COMPATIBILITY=true
+    run_update --automatic-update
+    assert_success
+    grep -Fx 'image inspect --format={{.Id}} stack_app' "$CALLS"
+}
+
+@test "malformed target config fails explicitly before recreating" {
+    export TARGET_CONFIG=invalid-json
+    run_update --automatic-update
+    assert_failure
+    assert_output_contains 'Failed to resolve target images'
+    ! grep -F ' up ' "$CALLS"
 }
 
 @test "replicas share one runtime snapshot and one target image inspection" {

@@ -33,8 +33,18 @@ else
         [ "${CONFIG_EXIT:-0}" = 0 ] || exit "$CONFIG_EXIT"
         if [ "${2:-}" = --profiles ]; then
           printf '%s\n' "${CONFIG_PROFILES:-}"
-        elif [ "${2:-}" = --images ]; then
-          printf '%s\n' "${TARGET_IMAGE:-stack-app}"
+        elif [ "${2:-}" = --format ]; then
+          if [ -n "${TARGET_CONFIG:-}" ]; then
+            printf '%s\n' "$TARGET_CONFIG"
+          else
+            printf '{"name":"stack","services":{'
+            separator=""
+            while IFS= read -r service; do
+              printf '%s"%s":{"image":"%s"}' "$separator" "$service" "${TARGET_IMAGE:-stack-app}"
+              separator=","
+            done <<< "${CONFIG_SERVICES:-app}"
+            printf '}}\n'
+          fi
         else
           printf '%s\n' "${CONFIG_SERVICES:-app}"
         fi

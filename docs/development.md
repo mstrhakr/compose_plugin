@@ -113,8 +113,10 @@ Adjust PHPStan rules or baseline as needed when adding new code.
 - Automatic mode excludes stopped services and only recreates when selected container images changed. Manual mode reconciles configuration for selected services; force recreation is a separate flag. `StackUpdateService` resolves `UPDATE_INCLUDE_STOPPED_DEFAULT` (off when absent) and an optional per-operation `includeStopped` override. The individual/force and bulk endpoints accept explicit `includeStopped=1` or `0`; omission uses the global default. Automatic mode ignores both. The builder encodes manual inclusion as `--include-stopped`, permitting existing created/exited services, including mixed running/stopped replicas, to participate and start.
 - Runtime metadata and image IDs come from one batched container inspection.
   Selection uses service maps rather than scanning every container per service.
-  Automatic comparison resolves each selected service's current target with
-  Compose (including generated build tags), then inspects each unique image once.
+  Automatic comparison reads one resolved Compose JSON service map (service
+  selection also includes dependencies). Only selected targets are compared;
+  build-only tags use Compose project/service naming, including compatibility mode.
+  Each unique target image is inspected once.
   Manual reconciliation never requires an image-tag comparison.
 - Paused, restarting, dead/removing services and mixed running/stopped replicas (without manual inclusion) are skipped with an explanation. Other eligible services can update. Explicit service targets, `up --no-deps`, and per-service `--scale` values preserve existing replica counts and prevent dependency or undeployed-service startup. Removed services are reported and skipped. Git-source deployments remain a separate transaction because they must also manage checkout and rollback.
 - The engine reports `updated`, `unchanged`, `skipped`, `partial`, or `failed` through a private outcome file used by the adapter. `partial` means services were excluded for safety or are no longer defined; automatic updates issue an incomplete-update warning, not a success notification. Ordinary excluded stopped services do not trigger this warning. Stack operation results retain the existing success/failed JSON format.

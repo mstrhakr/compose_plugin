@@ -33,14 +33,33 @@ update_failed() {
   return "$code"
 }
 
+update_target_images() {
+  # shellcheck disable=SC2016  # These variables belong to PHP.
+  "${COMPOSE_MANAGER_PHP:-php}" -r '
+$config = json_decode(stream_get_contents(STDIN), true, 512, JSON_THROW_ON_ERROR);
+if (!is_array($config["services"] ?? null) || empty($config["name"])) {
+    throw new RuntimeException("Missing resolved Compose services or project name.");
+}
+$separator = filter_var(getenv("COMPOSE_COMPATIBILITY"), FILTER_VALIDATE_BOOLEAN) ? "_" : "-";
+foreach ($config["services"] as $service => $definition) {
+    // Compose names build-only images from the resolved project and service.
+    $image = $definition["image"] ?? ($config["name"] . $separator . $service);
+    if (!is_string($image) || $image === "" || strpbrk($image, "|\r\n") !== false) {
+        throw new RuntimeException("Invalid target image for " . $service);
+    }
+    echo $service, "|", $image, PHP_EOL;
+}
+'
+}
+
 run_stack_update() {
   local ids id details current_image image_ref image_id rc rebuild=false needs_update=false
-  local service state oneoff configured_services profiles profile arg had_skips=false
+  local service state oneoff configured_services profiles profile arg targets config_json had_skips=false
   local old_images="" new_images=""
   local -a pull_args=() up_args=(-d "${cmd_args[@]}") stale_images=() services=() candidates=()
   local -a update_profile_args=(--profile '*')
   local -A counts=() running=() stopped=() unsafe=() container_services=()
-  local -A configured=() selected=() container_images=() target_images=()
+  local -A configured=() selected=() container_images=() target_images=() service_images=()
   local -a container_ids=()
 
   for arg in "${cmd_args[@]}"; do
@@ -186,9 +205,18 @@ run_stack_update() {
   fi
 
   if [ "$automatic_update" = true ]; then
-    # Let Compose resolve generated build tags too; never guess them from container history.
+    # Config service selection includes dependencies; read a keyed map, not an image list.
+    if ! config_json=$(update_compose config --format json "${services[@]}") ||
+       ! targets=$(update_target_images <<< "$config_json"); then
+      update_failed 1 "resolve target images for"
+      return 1
+    fi
+    while IFS='|' read -r service image_ref; do
+      [ -z "$service" ] || service_images[$service]="$image_ref"
+    done <<< "$targets"
     for service in "${services[@]}"; do
-      if ! image_ref=$(update_compose config --images "$service") || [ -z "$image_ref" ] || [[ "$image_ref" == *$'\n'* ]]; then
+      image_ref="${service_images[$service]:-}"
+      if [ -z "$image_ref" ]; then
         update_failed 1 "resolve target image for"
         return 1
       fi
