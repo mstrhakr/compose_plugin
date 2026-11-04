@@ -97,6 +97,32 @@ for (const kind of ['image', 'build-base']) {
     }
 }
 
+{
+    const { context } = harness();
+    const job = {
+        name: 'job', service: 'app', image: 'app:latest', state: 'exited', oneOff: true,
+        hasUpdate: true, updateStatus: 'update-available', updateReadiness: 'ready-to-apply',
+    };
+    const normalized = context.createContainerInfo(job);
+    assert.equal(normalized.oneOff, true);
+    assert.equal(normalized.hasUpdate, false);
+    assert.equal(normalized.updateStatus, 'unknown');
+    assert.equal(normalized.updateReadiness, 'unknown');
+    assert.equal(context.composeUpdatePresentation(job).label, 'Job');
+    const stack = context.createStackInfo('jobs', [job]);
+    assert.equal(stack.containers.length, 1, 'Jobs must stay visible in runtime details');
+    assert.equal(stack.hasUpdate, false, 'Expansion must not make job-only stacks pending');
+    context.mergeContainerUpdateStatus(normalized, { ...job, oneOff: false }, false);
+    assert.equal(normalized.hasUpdate, false, 'Stale browser history cannot restore job evidence');
+    const regular = { ...job, name: 'app', oneOff: false };
+    assert.equal(context.createStackInfo('mixed', [job, regular]).hasUpdate, true,
+        'Excluding jobs must not hide a regular service update');
+    const current = { ...regular, hasUpdate: false, updateStatus: 'up-to-date', updateReadiness: 'current' };
+    const summary = context.composeStackUpdatePresentation([job, current]);
+    assert.equal(summary.label, 'Current');
+    assert.equal(summary.needsCheck, false, 'Jobs must not make checked services appear unchecked');
+}
+
 for (const action of ['update', 'forceUpdate']) {
     for (const initial of [false, true]) {
         const config = { UPDATE_INCLUDE_STOPPED_DEFAULT: initial ? 'true' : 'false' };

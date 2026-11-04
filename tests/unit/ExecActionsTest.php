@@ -460,6 +460,70 @@ class ExecActionsTest extends TestCase
         }
     }
 
+    public function testOneOffRemainsVisibleButCannotRegainPendingEvidenceOnExpansion(): void
+    {
+        $this->createTestStack('jobs');
+        $directory = $this->createTempDir();
+        $job = [
+            'Name' => 'job', 'Names' => 'job', 'Service' => 'app',
+            'Image' => 'registry.example/app:latest', 'State' => 'exited',
+            'Labels' => 'com.docker.compose.project=jobs,com.docker.compose.service=app,com.docker.compose.oneoff=True',
+        ];
+        $inspect = [
+            'Id' => 'job-id', 'Image' => 'sha256:old',
+            'Config' => ['Image' => $job['Image'], 'Labels' => [
+                'com.docker.compose.project' => 'jobs', 'com.docker.compose.service' => 'app',
+                'com.docker.compose.oneoff' => 'True',
+            ]],
+            'State' => ['Status' => 'exited'],
+        ];
+        file_put_contents($directory . '/docker', "#!/bin/sh\ncase \"\$1\" in\n"
+            . "ps) echo " . escapeshellarg(json_encode($job)) . " ;;\n"
+            . "compose) echo " . escapeshellarg(json_encode(array_diff_key($job, ['Labels' => true]))) . " ;;\n"
+            . "inspect) echo " . escapeshellarg(json_encode($inspect)) . " ;;\nesac\n");
+        chmod($directory . '/docker', 0755);
+        $path = getenv('PATH');
+        putenv('PATH=' . $directory . PATH_SEPARATOR . $path);
+        try {
+            foreach (['checkStackUpdates', 'checkAllStacksUpdates'] as $action) {
+                \StackInfo::clearCache();
+                $response = json_decode($this->executeAction($action, ['script' => 'jobs']), true);
+                $this->assertSame('success', $response['result']);
+                $updates = $action === 'checkStackUpdates' ? $response['updates'] : $response['stacks']['jobs']['containers'];
+                $this->assertSame([], $updates);
+                $this->assertFalse(\StackUpdateService::readSavedResults()['jobs']['hasUpdate']);
+            }
+            file_put_contents(UNRAID_UPDATE_STATUS_FILE, json_encode([$job['Image'] => [
+                'local' => 'sha256:new', 'remote' => 'sha256:new', 'configDigest' => 'sha256:new', 'status' => 'true',
+            ]]));
+            file_put_contents(COMPOSE_UPDATE_STATUS_FILE, json_encode(['jobs' => [
+                'hasUpdate' => true, 'containers' => [[
+                    'name' => 'job', 'image' => $job['Image'], 'localSha' => 'old', 'remoteSha' => 'new',
+                    'hasUpdate' => true, 'updateStatus' => 'update-available', 'updateReadiness' => 'ready-to-apply',
+                ]],
+            ]]));
+            foreach ([1, 2] as $reload) {
+                \StackInfo::clearCache();
+                $response = json_decode($this->executeAction('getStackContainers', ['script' => 'jobs']), true);
+                $this->assertSame('success', $response['result']);
+                $this->assertCount(1, $response['containers'], 'Runtime jobs remain visible.');
+                $container = $response['containers'][0];
+                $this->assertSame('job', $container['name']);
+                $this->assertTrue($container['oneOff'], 'Inspection must recover labels omitted by older Compose ps.');
+                $this->assertFalse($container['hasUpdate']);
+                $this->assertSame('unknown', $container['updateStatus']);
+                $this->assertSame('', $container['remoteSha']);
+                $cache = json_decode(file_get_contents(COMPOSE_CONTAINER_CACHE_FILE), true);
+                $this->assertArrayNotHasKey('app', $cache['jobs'], 'A job must not replace service metadata.');
+            }
+        } finally {
+            putenv('PATH=' . $path);
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+            @unlink(UNRAID_UPDATE_STATUS_FILE);
+            @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+        }
+    }
+
     public function testExpandedContainersUsePerReplicaSavedEvidenceInsteadOfServiceCache(): void
     {
         $this->createTestStack('replicas');

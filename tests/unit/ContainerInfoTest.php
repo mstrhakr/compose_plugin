@@ -362,7 +362,7 @@ class ContainerInfoTest extends TestCase
 
         $arr = $info->toUpdateArray();
 
-        $expected = ['name', 'service', 'image', 'icon', 'hasUpdate', 'updateStatus', 'localSha', 'remoteSha',
+        $expected = ['name', 'oneOff', 'service', 'image', 'icon', 'hasUpdate', 'updateStatus', 'localSha', 'remoteSha',
             'localImageSha', 'updateKind', 'updateReadiness', 'isPinned', 'pinnedDigest'];
         $this->assertSame($expected, array_keys($arr));
         $this->assertSame('abcdef1234567890abcdef1234567890', $arr['pinnedDigest']);
@@ -371,6 +371,36 @@ class ContainerInfoTest extends TestCase
         // Should NOT contain non-update fields
         $this->assertArrayNotHasKey('state', $arr);
         $this->assertArrayNotHasKey('ports', $arr);
+    }
+
+    public function testOneOffIdentitySurvivesNormalizationAndBlocksSharedOrSavedUpdates(): void
+    {
+        $pending = [
+            'name' => 'job', 'service' => 'app', 'image' => 'app:latest', 'state' => 'exited',
+            'hasUpdate' => true, 'updateStatus' => 'update-available', 'updateReadiness' => 'ready-to-apply',
+            'localSha' => 'old', 'remoteSha' => 'new', 'localImageSha' => 'new',
+        ];
+        foreach ([
+            ['Labels' => 'com.docker.compose.oneoff=True'],
+            ['Labels' => ['com.docker.compose.oneoff' => 'True']],
+            ['oneOff' => true],
+        ] as $identity) {
+            $job = \ContainerInfo::fromDockerInspect($pending + $identity);
+            $this->assertTrue($job->oneOff);
+            $this->assertSame('exited', $job->state);
+            $this->assertFalse($job->hasUpdate);
+            $this->assertSame('unknown', $job->updateStatus);
+            $this->assertSame('', $job->remoteSha);
+            $job->mergeUpdateStatus(\ContainerInfo::fromUpdateResponse($pending));
+            $this->assertFalse($job->hasUpdate);
+            $this->assertSame('unknown', $job->updateReadiness);
+            $this->assertTrue(\ContainerInfo::fromDockerInspect($job->toMetadataArray())->oneOff);
+            $this->assertTrue(\ContainerInfo::fromUpdateResponse($job->toUpdateArray())->oneOff);
+            $this->assertTrue(\ContainerInfo::fromDockerPs($pending + $identity)->oneOff);
+        }
+        $regular = \ContainerInfo::fromDockerInspect($pending + ['Labels' => 'com.docker.compose.oneoff=False']);
+        $this->assertFalse($regular->oneOff);
+        $this->assertTrue($regular->hasUpdate);
     }
 
     public function testReadinessSurvivesFactoriesSerializationAndStatusMerging(): void

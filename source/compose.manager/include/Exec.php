@@ -1958,6 +1958,7 @@ switch ($_POST['action']) {
                     $inspect = json_decode($inspectOutput, true);
                     if ($inspect) {
                         $containerImageId = str_replace('sha256:', '', $inspect['Image'] ?? '');
+                        $rawContainer['Labels'] = $inspect['Config']['Labels'] ?? ($rawContainer['Labels'] ?? []);
                         // Extract useful info from inspect
                         $rawContainer['ID'] = $inspect['Id'] ?? '';
                         $rawContainer['Image'] = $inspect['Config']['Image'] ?? '';
@@ -2128,6 +2129,9 @@ switch ($_POST['action']) {
         $stackKey = $stackInfo->projectFolder;
         if (!isset($cache[$stackKey])) $cache[$stackKey] = [];
         foreach ($containers as &$ct) {
+            if (ContainerInfo::isOneOff($ct)) {
+                continue;
+            }
             $service = $ct['service'] ?? $ct['Name'] ?? '';
             if ($service) {
                 $cache[$stackKey][$service] = ContainerInfo::fromDockerInspect($ct)->toMetadataArray();

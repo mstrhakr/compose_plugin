@@ -1,4 +1,7 @@
 function composeUpdatePresentation(container) {
+    if (container.oneOff) {
+        return { label: 'Job', icon: 'clock-o', color: 'grey-text', detail: 'One-off Compose jobs are not update targets.' };
+    }
     if (container.isPinned) {
         return { label: 'Pinned', icon: 'thumb-tack', color: 'cyan-text', detail: 'Image is pinned to a digest.' };
     }
@@ -32,7 +35,7 @@ function composeUpdatePresentationBadge(presentation) {
 }
 
 function composeStackUpdatePresentation(containers) {
-    containers = containers || [];
+    containers = (containers || []).filter(function(container) { return !container.oneOff; });
     var counts = {};
     var pending = [];
     containers.forEach(function(container) {

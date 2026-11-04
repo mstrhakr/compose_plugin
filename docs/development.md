@@ -196,6 +196,11 @@ Individual and bulk update checks use one strict, label-bearing `docker ps`
 snapshot, independent of Compose's version-specific `ps` response. Enumeration
 failures, malformed rows, and incomplete JSON abort the check before saving;
 only a successful empty snapshot can clear evidence for removed containers.
+One-off jobs remain visible in runtime details, but carry a `oneOff` identity
+flag through normalization and caches. Shared image status, saved results, and
+browser merges cannot make them actionable updates. They do not overwrite
+service-keyed metadata or contribute to parent update totals.
+Details label these containers as **Job**, not pending or unchecked services.
 Dockerfile scanning consumes all heredoc bodies before interpreting subsequent
 instructions. Image-backed named build contexts are resolved to their image
 reference; service/directory contexts remain unknown. A digest-pinned base is

@@ -169,7 +169,9 @@ class StackUpdateService
             $stack['hasUpdate'] = false;
             foreach ($stack['containers'] as &$container) {
                 $info = ContainerInfo::fromUpdateResponse($container);
-                if ($info->isPinned) {
+                if ($info->oneOff) {
+                    $container = $info->toUpdateArray();
+                } elseif ($info->isPinned) {
                     $container['hasUpdate'] = false;
                     $container['isPinned'] = true;
                     $container['pinnedDigest'] = $info->pinnedDigest;

@@ -52,6 +52,24 @@ class StackUpdateServiceTest extends TestCase
         }
     }
 
+    public function testSavedOneOffEvidenceDoesNotEnableUpdateActions(): void
+    {
+        file_put_contents(COMPOSE_UPDATE_STATUS_FILE, json_encode(['stack' => [
+            'hasUpdate' => true, 'containers' => [[
+                'name' => 'job', 'image' => 'app:latest', 'oneOff' => true,
+                'hasUpdate' => true, 'updateStatus' => 'update-available',
+            ]],
+        ]]));
+        try {
+            $saved = \StackUpdateService::readSavedResults();
+            $this->assertFalse($saved['stack']['hasUpdate']);
+            $this->assertFalse($saved['stack']['containers'][0]['hasUpdate']);
+            $this->assertTrue($saved['stack']['containers'][0]['oneOff']);
+        } finally {
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+        }
+    }
+
     public function testLegacyPinnedResultsDoNotEnableUpdateActionsBeforeTheNextCheck(): void
     {
         file_put_contents(COMPOSE_UPDATE_STATUS_FILE, json_encode(['stack' => [

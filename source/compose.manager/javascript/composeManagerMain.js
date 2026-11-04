@@ -626,6 +626,7 @@ function createContainerInfo(raw) {
     var service = raw.service || raw.Service || name;
     var updateStatus = raw.updateStatus || raw.UpdateStatus || raw.status || '';
     var hasUpdate = (raw.hasUpdate !== undefined) ? !!raw.hasUpdate : (updateStatus === 'update-available');
+    var oneOff = raw.oneOff === true || raw.oneOff === 'true';
 
     return {
         name: name,
@@ -633,13 +634,14 @@ function createContainerInfo(raw) {
         image: raw.image || raw.Image || '',
         state: raw.state || raw.State || '',
         isRunning: (raw.state || raw.State || '') === 'running',
-        hasUpdate: hasUpdate,
-        updateStatus: updateStatus,
+        oneOff: oneOff,
+        hasUpdate: !oneOff && hasUpdate,
+        updateStatus: oneOff ? 'unknown' : updateStatus,
         localSha: raw.localSha || raw.LocalSha || '',
         remoteSha: raw.remoteSha || raw.RemoteSha || '',
         localImageSha: raw.localImageSha || '',
         updateKind: raw.updateKind || 'image',
-        updateReadiness: raw.updateReadiness || 'unknown',
+        updateReadiness: oneOff ? 'unknown' : (raw.updateReadiness || 'unknown'),
         isPinned: (raw.isPinned !== undefined) ? !!raw.isPinned : false,
         pinnedDigest: raw.pinnedDigest || raw.PinnedDigest || '',
         icon: raw.icon || raw.Icon || '',
@@ -667,6 +669,7 @@ function mergeContainerUpdateStatus(container, update, onlyIfUnknown) {
     var current = createContainerInfo(container);
     var incoming = createContainerInfo(update);
     if (!current || !incoming) return container;
+    if (current.oneOff || incoming.oneOff) return container;
     if (current.name && incoming.name && current.name !== incoming.name) return container;
     if (current.image && incoming.image
         && composeImageUpdateKey(current.image) !== composeImageUpdateKey(incoming.image)) {

@@ -76,6 +76,16 @@ missing architectures and ARM variants, single-architecture mismatches, and
 isolation from Unraid's host-only shared cache. These are deterministic fixture
 checks, not a live cross-architecture Docker build.
 
+Second-review regressions cover relative workdirs in direct and legacy automatic
+invocations; punctuation-prefixed service names with positional option delimiters
+in manual/automatic pull, build, config, up, and cleanup paths; strict enumeration
+errors preserving the saved file byte-for-byte; and successful empty snapshots
+clearing removed-container evidence. Individual and bulk checks use the same
+Docker rows even when an older Compose fixture omits labels. One-off jobs remain
+visible through repeated expansion, but cannot regain pending status from shared
+or saved evidence, overwrite service metadata, or contribute to browser update
+totals. Regular services retain their normal update behavior.
+
 Plugin-written shared-cache entries include `configDigest`, bound to the remote
 config digest value. Runtime refreshes compare the actual container image ID
 only when that value matches `remote`. Unmarked native/legacy entries retain

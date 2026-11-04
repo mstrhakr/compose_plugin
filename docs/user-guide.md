@@ -99,6 +99,8 @@ is shown separately.
   container has not been recreated with it.
 - **Rebuild**: a build-only application needs rebuilding against a newer base.
   Downloading the base image alone does not make the application ready.
+- **Job**: a one-off `docker compose run` container. It remains visible in runtime
+  details but is not checked or counted as a pending stack update.
 - **Pending**: an update is known, but download/build readiness is unverified.
 - **Current**, **Pinned**, and **Unchecked** remain distinct.
 

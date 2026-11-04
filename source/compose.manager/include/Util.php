@@ -1871,6 +1871,8 @@ class ContainerInfo
     public string $state = '';
     /** @var bool Whether the container is currently running */
     public bool $isRunning = false;
+    /** @var bool Whether this container is a Compose run job, not an update target */
+    public bool $oneOff = false;
     /** @var bool Whether an image update is available */
     public bool $hasUpdate = false;
     /** @var string Update status text (unknown/up-to-date/update-available) */
@@ -1916,7 +1918,8 @@ class ContainerInfo
 
     public static function isOneOff(array $raw): bool
     {
-        return strtolower(self::composeLabel($raw, 'oneoff')) === 'true';
+        return filter_var($raw['oneOff'] ?? false, FILTER_VALIDATE_BOOLEAN)
+            || strtolower(self::composeLabel($raw, 'oneoff')) === 'true';
     }
 
     private static function composeLabel(array $raw, string $key): string
@@ -1962,6 +1965,7 @@ class ContainerInfo
     public static function fromDockerInspect(array $raw): self
     {
         $info = new self();
+        $info->oneOff = self::isOneOff($raw);
         $info->name = $raw['Name'] ?? $raw['name'] ?? '';
         $info->id = $raw['ID'] ?? $raw['Id'] ?? $raw['id'] ?? '';
         $info->service = self::resolveService($raw);
@@ -1990,6 +1994,7 @@ class ContainerInfo
 
         // Derive pinned status from @sha256: in image reference
         $info->derivePinned();
+        $info->excludeOneOffUpdate();
 
         return $info;
     }
@@ -2006,6 +2011,7 @@ class ContainerInfo
     public static function fromUpdateResponse(array $raw): self
     {
         $info = new self();
+        $info->oneOff = self::isOneOff($raw);
         $info->name = $raw['container'] ?? $raw['name'] ?? $raw['Name'] ?? '';
         $info->id = $raw['ID'] ?? $raw['Id'] ?? $raw['id'] ?? '';
         $info->service = $raw['service'] ?? $raw['Service'] ?? '';
@@ -2020,6 +2026,7 @@ class ContainerInfo
         $info->updateReadiness = $raw['updateReadiness'] ?? 'unknown';
 
         $info->derivePinned();
+        $info->excludeOneOffUpdate();
 
         return $info;
     }
@@ -2032,6 +2039,10 @@ class ContainerInfo
      */
     public function mergeUpdateStatus(ContainerInfo $update): void
     {
+        if ($this->oneOff || $update->oneOff) {
+            $this->excludeOneOffUpdate();
+            return;
+        }
         if ($this->name !== '' && $update->name !== '' && $this->name !== $update->name) {
             return;
         }
@@ -2073,6 +2084,7 @@ class ContainerInfo
             'image' => $this->image,
             'state' => $this->state,
             'isRunning' => $this->isRunning,
+            'oneOff' => $this->oneOff,
             'hasUpdate' => $this->hasUpdate,
             'updateStatus' => $this->updateStatus,
             'localSha' => $this->localSha,
@@ -2103,6 +2115,7 @@ class ContainerInfo
     {
         return [
             'name' => $this->name,
+            'oneOff' => $this->oneOff,
             'service' => $this->service,
             'image' => $this->image,
             'icon' => $this->icon,
@@ -2138,6 +2151,7 @@ class ContainerInfo
     public static function fromDockerPs(array $raw): self
     {
         $info = new self();
+        $info->oneOff = self::isOneOff($raw);
         $info->name = ltrim(trim($raw['Names'] ?? $raw['Name'] ?? $raw['name'] ?? ''), '/');
         $info->service = self::resolveService($raw);
         $info->id = $raw['ID'] ?? $raw['Id'] ?? $raw['id'] ?? '';
@@ -2146,6 +2160,19 @@ class ContainerInfo
         $info->isRunning = ($info->state === 'running');
         $info->derivePinned();
         return $info;
+    }
+
+    private function excludeOneOffUpdate(): void
+    {
+        if (!$this->oneOff) {
+            return;
+        }
+        $this->hasUpdate = false;
+        $this->updateStatus = 'unknown';
+        $this->updateReadiness = 'unknown';
+        $this->localSha = '';
+        $this->remoteSha = '';
+        $this->localImageSha = '';
     }
 
     /**
