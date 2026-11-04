@@ -300,6 +300,9 @@ fi
 # project directory itself so it matches plain `cd <dir> && docker compose ...`,
 # which is the behavior the project was validated against.
 compose_base=(docker compose "${env_args[@]}" "${file_args[@]}" "${profile_args[@]}")
+if [ -n "$project_directory" ]; then
+  compose_base+=(--project-directory "$project_directory")
+fi
 
 if ! validate_project_name "$name"; then
   log_msg "ERROR" "Invalid resolved project name"

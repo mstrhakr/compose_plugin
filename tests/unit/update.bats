@@ -77,6 +77,22 @@ run_auto_adapter() {
     ! grep -F rmi "$CALLS"
 }
 
+@test "legacy automatic files retain an explicit Compose project directory" {
+    export COMPOSE_PROJECT_DIR="$TEST_TEMP_DIR/stack"
+    run bash "$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh" \
+        "$TEST_TEMP_DIR/a compose.yaml" stack
+    assert_success
+    grep -F "compose -f $TEST_TEMP_DIR/a compose.yaml --project-directory $COMPOSE_PROJECT_DIR -p stack pull --ignore-buildable app" "$CALLS"
+}
+
+@test "legacy automatic file lists retain an explicit Compose project directory" {
+    export COMPOSE_PROJECT_DIR="$TEST_TEMP_DIR/stack"
+    export COMPOSE_FILE_LIST="$TEST_TEMP_DIR/first.yaml:$TEST_TEMP_DIR/second.yaml"
+    run bash "$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh" stack
+    assert_success
+    grep -F "compose -f $TEST_TEMP_DIR/first.yaml -f $TEST_TEMP_DIR/second.yaml --project-directory $COMPOSE_PROJECT_DIR -p stack pull --ignore-buildable app" "$CALLS"
+}
+
 @test "failure to enumerate containers fails before pulling" {
     export PS_EXIT=1
     run_update --automatic-update

@@ -27,7 +27,8 @@ if [ "${1:-}" != -cupdate ]; then
   if [ -n "$file_list" ]; then
     IFS="${COMPOSE_PATH_SEPARATOR:-:}" read -r -a files <<< "$file_list"
     for file in "${files[@]}"; do args+=("-f$file"); done
-  elif [ -n "${COMPOSE_PROJECT_DIR:-}" ]; then
+  fi
+  if [ -n "${COMPOSE_PROJECT_DIR:-}" ]; then
     args+=("-w$COMPOSE_PROJECT_DIR")
   fi
   if [ -n "${COMPOSE_ENV_FILE:-}" ]; then args+=("-e$COMPOSE_ENV_FILE"); fi
