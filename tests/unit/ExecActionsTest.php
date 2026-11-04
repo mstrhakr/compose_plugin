@@ -216,6 +216,28 @@ class ExecActionsTest extends TestCase
         $this->assertArrayNotHasKey('remoteSha', $cache['db']);
     }
 
+    public function testLegacyMetadataCacheEvidenceIsNotReturnedAndIsRemovedOnSave(): void
+    {
+        file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, json_encode(['stack' => ['app' => [
+            'name' => 'app-1', 'service' => 'app', 'image' => 'app:latest',
+            'state' => 'running', 'icon' => '/existing.png',
+            'hasUpdate' => true, 'updateStatus' => 'update-available', 'updateReadiness' => 'ready-to-apply',
+        ]]]));
+        try {
+            $response = json_decode($this->executeAction('getPersistentContainerCache'), true);
+            $container = $response['cache']['stack']['app'];
+            $this->assertSame('running', $container['state']);
+            $this->assertSame('/existing.png', $container['icon']);
+            $this->assertArrayNotHasKey('hasUpdate', $container);
+            $this->assertArrayNotHasKey('updateReadiness', $container);
+            \composeSavePersistentContainerCache($response['cache']);
+            $saved = json_decode(file_get_contents(COMPOSE_CONTAINER_CACHE_FILE), true);
+            $this->assertArrayNotHasKey('hasUpdate', $saved['stack']['app']);
+        } finally {
+            @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+        }
+    }
+
     public function testComposeServiceCanBeResolvedFromDockerLabels(): void
     {
         $this->executeAction('getPersistentContainerCache');

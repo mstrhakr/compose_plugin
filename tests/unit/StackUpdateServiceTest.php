@@ -10,6 +10,24 @@ require_once '/usr/local/emhttp/plugins/compose.manager/include/StackUpdateServi
 
 class StackUpdateServiceTest extends TestCase
 {
+    public function testLegacyPinnedResultsDoNotEnableUpdateActionsBeforeTheNextCheck(): void
+    {
+        file_put_contents(COMPOSE_UPDATE_STATUS_FILE, json_encode(['stack' => [
+            'hasUpdate' => true, 'containers' => [[
+                'name' => 'app', 'image' => 'alpine:latest@sha256:pinned',
+                'hasUpdate' => true, 'updateStatus' => 'update-available',
+            ]],
+        ]]));
+        try {
+            $saved = \StackUpdateService::readSavedResults();
+            $this->assertFalse($saved['stack']['hasUpdate']);
+            $this->assertFalse($saved['stack']['containers'][0]['hasUpdate']);
+            $this->assertTrue($saved['stack']['containers'][0]['isPinned']);
+        } finally {
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+        }
+    }
+
     public function testFreshResultsAndPersistenceSharePendingHistoryForSingleAndFullChecks(): void
     {
         $save = new \ReflectionMethod(\StackUpdateService::class, 'saveResults');

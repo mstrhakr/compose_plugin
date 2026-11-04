@@ -145,6 +145,9 @@ Clear writes an empty result without unlinking the lock's inode. Invalid saved
 JSON is reported explicitly; a full replacement check or cache clear can recover
 it with a warning. Endpoint and dashboard adapters must use the service to access
 this file. The service-keyed container cache stores metadata only, never update evidence.
+Legacy metadata-cache evidence is stripped when loaded and dropped on the next
+save. Reading legacy saved checks also excludes pinned results from actionable
+update totals, without requiring the user to run another registry check first.
 
 ## Troubleshooting
 

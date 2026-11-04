@@ -158,7 +158,25 @@ class StackUpdateService
 
     public static function readSavedResults(): array
     {
-        return self::accessSavedResults();
+        $saved = self::accessSavedResults();
+        foreach ($saved as &$stack) {
+            if (!isset($stack['containers'])) {
+                continue;
+            }
+            $stack['hasUpdate'] = false;
+            foreach ($stack['containers'] as &$container) {
+                $info = ContainerInfo::fromUpdateResponse($container);
+                if ($info->isPinned) {
+                    $container['hasUpdate'] = false;
+                    $container['isPinned'] = true;
+                    $container['pinnedDigest'] = $info->pinnedDigest;
+                }
+                $stack['hasUpdate'] = $stack['hasUpdate'] || ($info->hasUpdate && !$info->isPinned);
+            }
+            unset($container);
+        }
+        unset($stack);
+        return $saved;
     }
 
     public static function clearSavedResults(): void

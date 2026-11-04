@@ -99,7 +99,20 @@ if (!function_exists('composeLoadPersistentContainerCache')) {
             return [];
         }
         $decoded = json_decode(file_get_contents($cacheFile), true);
-        return is_array($decoded) ? $decoded : [];
+        $cache = is_array($decoded) ? $decoded : [];
+        foreach ($cache as &$containers) {
+            if (!is_array($containers)) {
+                continue;
+            }
+            foreach ($containers as &$container) {
+                if (is_array($container)) {
+                    $container = ContainerInfo::fromDockerInspect($container)->toMetadataArray();
+                }
+            }
+            unset($container);
+        }
+        unset($containers);
+        return $cache;
     }
 }
 
@@ -423,9 +436,7 @@ switch ($_POST['action']) {
         echo json_encode(['result' => 'success', 'visibility' => $normalized]);
         break;
     case 'getPersistentContainerCache':
-        $cacheFile = COMPOSE_CONTAINER_CACHE_FILE;
-        $cache = is_file($cacheFile) ? json_decode(file_get_contents($cacheFile), true) : [];
-        echo json_encode(['result' => 'success', 'cache' => is_array($cache) ? $cache : []]);
+        echo json_encode(['result' => 'success', 'cache' => composeLoadPersistentContainerCache()]);
         break;
     case 'getComposeLoadSnapshot':
         $snapshotFile = '/tmp/compose_info_nchan.snapshot.json';
@@ -1037,14 +1048,6 @@ switch ($_POST['action']) {
             break;
         }
         $containerCache = composeLoadPersistentContainerCache();
-        foreach ($containerCache as &$cachedStack) {
-            foreach ($cachedStack as &$cachedContainer) {
-                unset($cachedContainer['hasUpdate'], $cachedContainer['updateStatus'], $cachedContainer['localSha'], $cachedContainer['remoteSha'],
-                    $cachedContainer['localImageSha'], $cachedContainer['updateKind'], $cachedContainer['updateReadiness']);
-            }
-            unset($cachedContainer);
-        }
-        unset($cachedStack);
         composeSavePersistentContainerCache($containerCache);
         // Also clear entries from Unraid's update status that were created by compose manager
         // by removing entries that don't correspond to running Docker containers
@@ -2121,8 +2124,7 @@ switch ($_POST['action']) {
         }
 
         // --- Persistent container metadata cache ---
-        $cacheFile = COMPOSE_CONTAINER_CACHE_FILE;
-        $cache = is_file($cacheFile) ? json_decode(file_get_contents($cacheFile), true) : [];
+        $cache = composeLoadPersistentContainerCache();
         $stackKey = $stackInfo->projectFolder;
         if (!isset($cache[$stackKey])) $cache[$stackKey] = [];
         foreach ($containers as &$ct) {
@@ -2132,7 +2134,7 @@ switch ($_POST['action']) {
             }
         }
         unset($ct);
-        file_put_contents($cacheFile, json_encode($cache, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        composeSavePersistentContainerCache($cache);
 
         echo json_encode(['result' => 'success', 'containers' => $containers, 'stackState' => $stackState, 'projectName' => $stackInfo->projectFolder, 'startedAt' => $stackInfo->getStartedAt()]);
         composeLogger('getStackContainers done', [
