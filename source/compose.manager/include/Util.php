@@ -1908,6 +1908,31 @@ class ContainerInfo
 
     private function __construct() {}
 
+    public static function resolveService(array $raw): string
+    {
+        $service = trim((string) ($raw['Service'] ?? $raw['service'] ?? ''));
+        return $service !== '' ? $service : self::composeLabel($raw, 'service');
+    }
+
+    public static function isOneOff(array $raw): bool
+    {
+        return strtolower(self::composeLabel($raw, 'oneoff')) === 'true';
+    }
+
+    private static function composeLabel(array $raw, string $key): string
+    {
+        $key = 'com.docker.compose.' . $key;
+        $labels = $raw['Labels'] ?? $raw['labels'] ?? [];
+        if (is_array($labels)) {
+            return trim((string) ($labels[$key] ?? ''));
+        }
+        if (is_string($labels)
+            && preg_match('/(?:^|,)\s*' . preg_quote($key, '/') . '=([^,]+)/', $labels, $matches)) {
+            return trim($matches[1]);
+        }
+        return '';
+    }
+
     /**
      * Normalize Docker image name for update checking.
      *
@@ -1939,7 +1964,7 @@ class ContainerInfo
         $info = new self();
         $info->name = $raw['Name'] ?? $raw['name'] ?? '';
         $info->id = $raw['ID'] ?? $raw['Id'] ?? $raw['id'] ?? '';
-        $info->service = $raw['Service'] ?? $raw['service'] ?? '';
+        $info->service = self::resolveService($raw);
         $info->image = $raw['Image'] ?? $raw['image'] ?? '';
         $info->state = strtolower($raw['State'] ?? $raw['state'] ?? '');
         $info->isRunning = ($info->state === 'running');
@@ -2106,6 +2131,7 @@ class ContainerInfo
     {
         $info = new self();
         $info->name = ltrim(trim($raw['Names'] ?? $raw['Name'] ?? $raw['name'] ?? ''), '/');
+        $info->service = self::resolveService($raw);
         $info->id = $raw['ID'] ?? $raw['Id'] ?? $raw['id'] ?? '';
         $info->image = $raw['Image'] ?? $raw['image'] ?? '';
         $info->state = strtolower($raw['State'] ?? $raw['state'] ?? '');

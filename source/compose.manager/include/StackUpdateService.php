@@ -78,7 +78,10 @@ class StackUpdateService
     {
         $results = [];
         foreach ($stacks as $stack) {
-            $rows = $stack->getContainerList();
+            $rows = array_values(array_filter(
+                $stack->getContainerList(),
+                static fn(array $row): bool => !ContainerInfo::isOneOff($row)
+            ));
             $checks = [];
             if ($rows) {
                 $checker = new ComposeUpdateCheck(null, $stack->getCredentialId());
@@ -98,7 +101,7 @@ class StackUpdateService
                 ];
                 $update = ContainerInfo::fromUpdateResponse([
                     'container' => $name,
-                    'service' => self::resolveContainerService($container),
+                    'service' => ContainerInfo::resolveService($container),
                     'image' => $image,
                     'icon' => '',
                     'hasUpdate' => $check['hasUpdate'],
@@ -123,23 +126,6 @@ class StackUpdateService
         }
         $this->saveResults($results, $replaceSavedStatus);
         return $results;
-    }
-
-    public static function resolveContainerService(array $container): string
-    {
-        $service = trim((string) ($container['Service'] ?? $container['service'] ?? ''));
-        if ($service !== '') {
-            return $service;
-        }
-        $labels = $container['Labels'] ?? $container['labels'] ?? '';
-        if (is_array($labels)) {
-            return trim((string) ($labels['com.docker.compose.service'] ?? ''));
-        }
-        if (is_string($labels)
-            && preg_match('/(?:^|,)\s*com\.docker\.compose\.service=([^,]+)/', $labels, $matches)) {
-            return trim($matches[1]);
-        }
-        return '';
     }
 
     private function shortDigest(string $digest): string

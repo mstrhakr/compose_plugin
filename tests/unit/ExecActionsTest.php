@@ -220,15 +220,15 @@ class ExecActionsTest extends TestCase
     {
         $this->executeAction('getPersistentContainerCache');
 
-        $this->assertSame('db', \composeResolveContainerService([
+        $this->assertSame('db', \ContainerInfo::resolveService([
             'Names' => 'stack-db-1',
             'Labels' => 'com.docker.compose.project=stack,com.docker.compose.service=db',
         ]));
-        $this->assertSame('web', \composeResolveContainerService([
+        $this->assertSame('web', \ContainerInfo::resolveService([
             'Service' => 'web',
             'Labels' => 'com.docker.compose.service=other',
         ]));
-        $this->assertSame('backup', \composeResolveContainerService([
+        $this->assertSame('backup', \ContainerInfo::resolveService([
             'Labels' => ['com.docker.compose.service' => 'backup'],
         ]));
     }
@@ -306,9 +306,13 @@ class ExecActionsTest extends TestCase
             'Labels' => 'com.docker.compose.project=private-stack,com.docker.compose.service=backup',
         ];
         $commands = $dockerDir . '/commands';
+        $job = [
+            'Names' => 'private-job', 'Image' => 'ghcr.io/org/private:latest', 'State' => 'exited',
+            'Labels' => 'com.docker.compose.project=private-stack,com.docker.compose.service=app,com.docker.compose.oneoff=True',
+        ];
         file_put_contents($docker, "#!/bin/sh\ncase \"\$1\" in\n"
             . "compose|ps) printf '%s\\n' " . escapeshellarg(json_encode($row))
-            . ' ' . escapeshellarg(json_encode($stopped)) . " ;;\nesac\n"
+            . ' ' . escapeshellarg(json_encode($stopped)) . ' ' . escapeshellarg(json_encode($job)) . " ;;\nesac\n"
             . "printf '%s\\n' \"\$*\" >> " . escapeshellarg($commands) . "\n");
         chmod($docker, 0755);
         $path = getenv('PATH');

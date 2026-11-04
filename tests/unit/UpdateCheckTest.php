@@ -340,7 +340,7 @@ class UpdateCheckTest extends TestCase
         \DockerClient::setMockResponse('/images/' . rawurlencode('lscr.io/linuxserver/code-server:latest') . '/json', ['Id' => 'sha256:base-new']);
         $results = $checker->checkContainers([
             ['Name' => 'current', 'Service' => 'app', 'Image' => 'stack-app'],
-            ['Name' => 'stale', 'Service' => 'worker', 'Image' => 'stack-worker'],
+            ['Names' => 'stale', 'Labels' => 'com.docker.compose.service=worker,com.docker.compose.project=stack', 'Image' => 'stack-worker'],
         ], ['app' => $build, 'worker' => $build]);
 
         $this->assertSame([], $checker->checkedImages, 'Build-only images must not be looked up on a registry.');
@@ -361,7 +361,7 @@ class UpdateCheckTest extends TestCase
             'RootFS' => ['Layers' => ['sha256:l1', 'sha256:l2', 'sha256:new-app']],
         ]);
         $rebuilt = $checker->checkContainers([
-            ['Name' => 'stale', 'Service' => 'worker', 'Image' => 'stack-worker'],
+            ['Names' => 'stale', 'labels' => ['com.docker.compose.service' => 'worker'], 'Image' => 'stack-worker'],
         ], ['worker' => $build]);
         $this->assertSame('ready-to-apply', $rebuilt['stale']['updateReadiness']);
         $this->assertSame('sha256:rebuilt', $rebuilt['stale']['localImage']);

@@ -120,7 +120,7 @@ class ComposeUpdateCheck
         $images = [];
         foreach ($containers as $container) {
             $image = trim((string) ($container['Image'] ?? $container['image'] ?? ''));
-            $build = $buildConfigs[$this->containerService($container)] ?? null;
+            $build = $buildConfigs[ContainerInfo::resolveService($container)] ?? null;
             if ($image !== '' && ($build === null || $build['image'] !== null)) {
                 $images[] = $image;
             }
@@ -135,7 +135,7 @@ class ComposeUpdateCheck
             if ($name === '' || $image === '') {
                 continue;
             }
-            $build = $buildConfigs[$this->containerService($container)] ?? null;
+            $build = $buildConfigs[ContainerInfo::resolveService($container)] ?? null;
             $imageResult = $imageResults[ContainerInfo::normalizeImageForUpdateCheck($image)] ?? [];
             $inspect = $client->getDockerJSON('/containers/' . rawurlencode($name) . '/json');
             $local = !empty($inspect['Image']) ? (string) $inspect['Image'] : null;
@@ -269,15 +269,6 @@ class ComposeUpdateCheck
     // ------------------------------------------------------------------
     // Internals
     // ------------------------------------------------------------------
-
-    private function containerService(array $container): string
-    {
-        $service = trim((string) ($container['Service'] ?? $container['service'] ?? ''));
-        if ($service === '' && is_array($container['Labels'] ?? null)) {
-            $service = trim((string) ($container['Labels']['com.docker.compose.service'] ?? ''));
-        }
-        return $service;
-    }
 
     /**
      * A locally built image is current when its layers still start with the

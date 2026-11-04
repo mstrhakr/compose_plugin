@@ -140,13 +140,6 @@ if (!function_exists('composeCacheContainerUpdate')) {
     }
 }
 
-if (!function_exists('composeResolveContainerService')) {
-    function composeResolveContainerService(array $container): string
-    {
-        return StackUpdateService::resolveContainerService($container);
-    }
-}
-
 if (!function_exists('composeResolveDockerHostIp')) {
     /**
      * Resolve the Docker host IP across multiple Unraid WebUI versions.
