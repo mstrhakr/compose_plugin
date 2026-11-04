@@ -10,6 +10,7 @@ USER_NAME="${USER_NAME:-root}"
 REMOTE_DIR="${REMOTE_DIR:-/tmp}"
 PACKAGE_PATH=""
 SKIP_BUILD=false
+SKIP_TESTS=false
 COMPOSE_VERSION=""
 QUICK=false
 
@@ -60,6 +61,8 @@ Usage: $0 [options]
   -RemoteDir <remote-dir>
   -PackagePath <package.txz>
   -SkipBuild
+  -SkipTests, --SkipTests, --skip-tests
+      Skip build.sh's pre-build tests (tests run by default).
   -ComposeVersion <compose-version>
   -Quick
   -Help
@@ -84,6 +87,8 @@ while [[ $# -gt 0 ]]; do
       PACKAGE_PATH="$2"; shift 2;;
     -SkipBuild|--SkipBuild)
       SKIP_BUILD=true; shift;;
+    -SkipTests|--SkipTests|--skip-tests)
+      SKIP_TESTS=true; shift;;
     -ComposeVersion|--ComposeVersion)
       COMPOSE_VERSION="$2"; shift 2;;
     -Quick|--Quick)
@@ -164,6 +169,7 @@ else
     build_args=()
     [[ -n "$VERSION" ]] && build_args+=("-Version" "$VERSION")
     [[ "$DEV" == true ]] && build_args+=("-Dev")
+    [[ "$SKIP_TESTS" == true ]] && build_args+=("-SkipTests")
     [[ -n "$COMPOSE_VERSION" ]] && build_args+=("-ComposeVersion" "$COMPOSE_VERSION")
 
     echo "Building package via build.sh..."

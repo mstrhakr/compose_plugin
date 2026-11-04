@@ -160,6 +160,12 @@ warning and explicit confirmation. Narrow screens allow horizontal table scrolli
 
 ## Troubleshooting
 
+For local deployment after validating the current code, use
+`bash deploy.sh -Dev -RemoteHost <host> --skip-tests` to build and deploy without
+repeating the pre-build test suite. `-SkipTests` and `--SkipTests` are aliases.
+Tests still run by default; this option does not skip packaging or installation.
+`-SkipBuild` instead reuses an existing package and already bypasses build tests.
+
 - If vendor binaries are missing, re-run `composer install`.
 - If integration tests fail with environment errors, confirm the plugin-tests environment variables and the unRAID test instance are correct.
 
