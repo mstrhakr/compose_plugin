@@ -312,6 +312,27 @@ class UpdateCheckTest extends TestCase
             'unresolved arg is unknown' => ["FROM \${MISSING}\n", [], null],
             'scratch' => ["FROM alpine AS a\nFROM scratch\nCOPY --from=a / /\n", [], 'scratch'],
             'heredoc body is ignored' => ["FROM alpine:3\nRUN <<EOF\nFROM ubuntu\nEOF\n", [], 'alpine:3'],
+            'multiple heredocs are consumed in order' => [
+                "FROM alpine:3\nCOPY <<FIRST <<SECOND /app/\nhello\nFIRST\nFROM ubuntu:24.04\nSECOND\n",
+                [], 'alpine:3',
+            ],
+            'multiple quoted tab stripped heredocs allow a later real stage' => [
+                "FROM alpine:3\nRUN <<'FIRST' 3<<-\"SECOND\"\nFROM fake:first\nFIRST\n\tFROM fake:second\n\tSECOND\nFROM redis:8\n",
+                [], 'redis:8',
+            ],
+            'image backed named context' => [
+                "FROM base\n", ['additional_contexts' => ['base' => 'docker-image://alpine:3.20']], 'alpine:3.20',
+            ],
+            'service backed named context is unknown' => [
+                "FROM base\n", ['additional_contexts' => ['base' => 'service:builder']], null,
+            ],
+            'directory backed named context is unknown' => [
+                "FROM base\n", ['additional_contexts' => ['base' => '/tmp/base']], null,
+            ],
+            'named context reached through stage alias' => [
+                "FROM base AS builder\nFROM builder\n",
+                ['additional_contexts' => ['base' => 'docker-image://alpine:3.20']], 'alpine:3.20',
+            ],
             'quoted dash heredoc is ignored' => ["FROM golang:1 AS b\nCOPY <<-\"END\" /x\n\tFROM ubuntu\n\tEND\nFROM alpine:3\n", [], 'alpine:3'],
             'here-string is not a heredoc' => ["FROM golang:1 AS b\nRUN read x <<<hello\nFROM alpine:3.20\n", [], 'alpine:3.20'],
             'shell shift is not a heredoc' => ["FROM golang:1 AS b\nRUN echo \$((1<<2))\nFROM alpine:3.20\n", [], 'alpine:3.20'],
@@ -338,6 +359,24 @@ class UpdateCheckTest extends TestCase
         file_put_contents($context . '/docker/app.Dockerfile', "FROM redis:8\n");
         $this->assertSame('redis:8', \ComposeUpdateCheck::resolveDockerfileBaseImage(['context' => $context, 'dockerfile' => 'docker/app.Dockerfile']));
         $this->assertNull(\ComposeUpdateCheck::resolveDockerfileBaseImage(['context' => 'https://github.com/org/repo.git']));
+    }
+
+    public function testPinnedBaseNeverReportsApplicationDigestAsRemoteBase(): void
+    {
+        $checker = new class extends \ComposeUpdateCheck {
+            protected function fetchRemoteImageConfig(string $image): ?array
+            {
+                throw new \LogicException('Pinned base must not query a mutable tag.');
+            }
+        };
+        \DockerClient::setMockResponse('/containers/app/json', ['Image' => 'sha256:application']);
+        $result = $checker->checkContainers([['Name' => 'app', 'Service' => 'app', 'Image' => 'stack-app']], [
+            'app' => ['build' => ['dockerfile_inline' => 'FROM alpine@sha256:pinned-base'], 'image' => null],
+        ])['app'];
+        $this->assertSame('up-to-date', $result['status']);
+        $this->assertSame('current', $result['updateReadiness']);
+        $this->assertSame('', $result['remote']);
+        $this->assertSame('sha256:application', $result['local']);
     }
 
     public function testBuildOnlyContainersAreCheckedAgainstTheirBaseImage(): void

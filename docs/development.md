@@ -187,6 +187,11 @@ registry lookup for an explicitly named application image remains unknown,
 preserving matching pending evidence rather than replacing it with base evidence.
 Legacy automatic invocations retain `COMPOSE_PROJECT_DIR` alongside explicit
 files as an actual Compose `--project-directory` argument.
+Dockerfile scanning consumes all heredoc bodies before interpreting subsequent
+instructions. Image-backed named build contexts are resolved to their image
+reference; service/directory contexts remain unknown. A digest-pinned base is
+current without a mutable registry check, but has no remote base config digest
+unless one was actually resolved (the application ID is never substituted).
 
 For local deployment after validating the current code, use
 `bash deploy.sh -Dev -RemoteHost <host> --skip-tests` to build and deploy without

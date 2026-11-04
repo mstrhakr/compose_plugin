@@ -252,6 +252,12 @@ class ComposeUpdateCheck
                 }
             }
             if ($previous === null) {
+                $contexts = $build['additional_contexts'] ?? [];
+                if (is_array($contexts) && array_key_exists($from, $contexts)) {
+                    $context = $contexts[$from];
+                    return is_string($context) && str_starts_with($context, 'docker-image://')
+                        ? (substr($context, strlen('docker-image://')) ?: null) : null;
+                }
                 return strtolower($from) === 'scratch' ? 'scratch' : $from;
             }
             $index = $previous;
@@ -286,7 +292,7 @@ class ComposeUpdateCheck
         }
         if (strpos($base, '@sha256:') !== false) {
             return array_replace($unknown, [
-                'remote' => $imageId, 'status' => 'up-to-date', 'updateReadiness' => 'current',
+                'status' => 'up-to-date', 'updateReadiness' => 'current',
             ]);
         }
 
@@ -378,11 +384,12 @@ class ComposeUpdateCheck
 
         $instructions = [];
         $pending = '';
-        $heredoc = null;
+        $heredocs = [];
         foreach ($lines as $line) {
-            if ($heredoc !== null) {
+            if ($heredocs !== []) {
+                $heredoc = $heredocs[0];
                 if (($heredoc['strip'] ? ltrim($line, "\t") : $line) === $heredoc['word']) {
-                    $heredoc = null;
+                    array_shift($heredocs);
                 }
                 continue;
             }
@@ -409,8 +416,7 @@ class ComposeUpdateCheck
             if (in_array($instruction, ['RUN', 'COPY', 'ADD'], true)) {
                 foreach (preg_split('/\s+/', $m[2]) as $token) {
                     if (preg_match('/^\d*<<(-?)(["\']?)([^<"\']+)\2$/', $token, $h)) {
-                        $heredoc = ['strip' => $h[1] === '-', 'word' => $h[3]];
-                        break;
+                        $heredocs[] = ['strip' => $h[1] === '-', 'word' => $h[3]];
                     }
                 }
             }
