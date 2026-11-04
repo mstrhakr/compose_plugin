@@ -130,8 +130,12 @@ against conflicting host-theme rules, without contacting an Unraid server. Run
 `cd tests/e2e && npm test -- tests/compose-update-layout.spec.ts` after installing
 the existing E2E dependencies and browsers. They check column overflow, image-ID
 alignment, independent list scrolling, sticky headers, visible controls, and
-dialog dismissal for small/large stacks on desktop and phone viewports. Screenshots
+dialog dismissal for small/large stacks on desktop and phone viewports. The host
+library's inline content display must not disable the flex body: only the service
+list may scroll, not the action footer. Screenshots
 are saved in the ignored E2E test results directory for visual inspection.
+See [update UI integration gates](testing.md#update-ui-pre-pr-and-integration-gates)
+for the response-order/recreation regressions and deferred combined-branch tests.
 
 `javascript/composeUpdateStatus.js` owns readiness labels and compact badges for
 the main table, expanded containers, dialogs, and dashboard. Both page entry

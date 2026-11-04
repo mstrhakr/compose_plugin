@@ -98,6 +98,68 @@ The scheduled auto-update runner also checks running containers against their cu
 
 The browser regressions cover known/unknown merges, image changes, incomplete-check presentation, polling retries after request/parse failures, failed action dispatch, and runtime-state ordering during row refresh.
 
+### Update UI Pre-PR and Integration Gates
+
+Run the update browser suites together, without a live host or saved credentials:
+
+```bash
+cd tests/e2e
+npm test -- tests/compose-update-state.spec.ts tests/compose-update-evidence-flow.spec.ts tests/compose-update-layout.spec.ts
+```
+
+These execute production frontend functions using isolated DOM/transport adapters:
+
+- The Node fixture (`node tests/fixtures/update-ui.cjs`, also run by update Bats)
+  deterministically completes details/check responses in both orders for published
+  and build-base images. Fresh unknown results must win over older browser history.
+- Browser evidence flows check readiness through check, expand, collapse, re-expand,
+  and a real browser reload using mocked server-owned evidence. Recreating the
+  application image during an in-flight check must not attach old-image evidence
+  to the replacement, even when its service/name/tag are unchanged.
+- Layout tests cover light/dark theme rules, long image references, 1/2/18-service
+  stacks, desktop/phone viewports, and a reduced 854x480 viewport approximating the
+  available CSS space at 150% desktop zoom. This is not a native browser-zoom test.
+  The fixture reproduces SweetAlert's inline `display:block` content style.
+  Service scrolling must not move the footer or make the dialog itself scroll.
+  At constrained heights the content body may also scroll to expose options;
+  that scroll must likewise leave the footer fixed outside the content.
+
+The adapters do **not** substitute for running the complete page and the actual
+Unraid SweetAlert library together. Retain the following live-host gates:
+
+- [ ] Confirm checkbox defaults and confirmation payload, Cancel/Escape without
+  dispatch, keyboard focus/Tab behavior, and reopening details after Changelog.
+- [ ] Verify actual light/dark themes and native browser zoom, including footer
+  visibility and keyboard access through long service lists.
+- [ ] Check normal-image and build-only stacks, a stopped sibling, mixed replicas,
+  and a long background build. Checks must remain read-only; updates must mutate
+  only eligible existing services. A terminal reconnect alone is not proof of a
+  command timeout: inspect the last command log and operation result on failure.
+
+After rebasing `fix/ui-runtime-consistency` onto the merged update branch, add
+combined-code tests rather than copying the other branch's runtime owner here:
+
+- [ ] Cross runtime-request generations with update-check revisions in both
+  response orders. Stale runtime data must not replace newer runtime state, stale
+  evidence must not replace newer checks, and neither guard may discard valid
+  independent changes owned by the other.
+- [ ] Queued/running dispatch receipts must not imply completion. Completed
+  actions must reconcile affected stacks and invalidate obsolete evidence even
+  after terminal close/reconnect; failed completion must never imply success.
+- [ ] Update stack A while checking stack B. Preserve B's progress, evidence,
+  and expanded/collapsed state.
+- [ ] Failed dispatch, runtime refresh, and update checks must release busy
+  controls, retain truthful status, and permit retry.
+- [ ] Run both branches' update-state, runtime-consistency, and operation-state
+  suites together, followed by canonical `bash test.sh`.
+
+PR handoff: describe the update-evidence/runtime-reconciliation ownership boundary,
+the above deferred gates, and actual test scope in the PR body. The last checked
+merge preview against `fix/ui-runtime-consistency` conflicted in
+`composeManagerMain.js`, `Helpers.php`, and `ExecActionsTest.php`; this is a snapshot,
+not a guarantee about future tips. Resolve deliberately, preserving both freshness
+guards and completion receipts. A clean textual merge is not a behavior test.
+
 ### Archived Plugin Migration
 
 The ordinary identity tests use temporary stack metadata and injected Docker evidence. Event integration cases execute real scripts against a temporary runtime and fake Docker; scheduler cases verify blocked migrations remain retryable. The opt-in real-Docker matrix creates random `cm183_` projects, then removes their test containers, networks and volumes. Its bind-data case uses a disposable Docker volume's host path, not a user directory. It requires Docker Compose and access to the `alpine:3.20` image.

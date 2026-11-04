@@ -64,7 +64,9 @@ runtime state, readiness, and separately labelled container/local/remote image I
 Build-base checks label the remote base separately from the application image.
 The wider dialog keeps small stacks on screen without vertically stacked service
 sections. Long lists scroll independently with a sticky header, keeping options
-and action buttons accessible. On narrow screens, services switch to stacked rows
+and action buttons accessible. In short windows the content body can also scroll,
+but Update/Cancel remain in a separate footer outside the scrolling content.
+On narrow screens, services switch to stacked rows
 so image names and readiness explanations remain readable without sideways scrolling.
 
 Stack and expanded-container update cells show **Checking...** during a check,

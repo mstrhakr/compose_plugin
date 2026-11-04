@@ -358,9 +358,11 @@ if ($cpuCount <= 0) {
     }
 
     .sweet-alert.compose-update-dialog > p {
-        display: flex;
+        /* SweetAlert sets display:block inline when it opens HTML content. */
+        display: flex !important;
         flex-direction: column;
         min-height: 0;
+        overflow-y: auto;
         width: auto;
         margin: 0;
         padding: 0;
@@ -500,7 +502,10 @@ if ($cpuCount <= 0) {
     }
 
     .sweet-alert.compose-update-dialog .sa-button-container {
+        position: static;
         flex-shrink: 0;
+        padding-top: 12px;
+        border-top: 1px solid var(--dynamix-box-inner-div-border-color, #666);
         text-align: right;
     }
 

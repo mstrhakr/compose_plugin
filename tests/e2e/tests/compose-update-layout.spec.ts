@@ -17,15 +17,18 @@ for (const viewport of [
   { width: 1280, height: 720 },
   { width: 1920, height: 1080 },
   { width: 390, height: 844 },
+  { width: 854, height: 480 },
 ]) {
+  for (const theme of ['dark', 'light']) {
   for (const count of [1, 2, 18]) {
-    test(`update dialog fits ${count} services at ${viewport.width}x${viewport.height}`, async ({ page }) => {
+    test(`${theme} update dialog fits ${count} services at ${viewport.width}x${viewport.height}`, async ({ page }) => {
       await page.setViewportSize(viewport);
       // Reproduce host-theme rules that previously squeezed the modal and overlapped its columns.
       await page.setContent(`<style>
-        body { font: 14px Arial; background: #111; color: #eee; }
+        :root { --alt-background-color: ${theme === 'light' ? '#eee' : '#262626'}; }
+        body { font: 14px Arial; background: ${theme === 'light' ? '#fff' : '#111'}; color: ${theme === 'light' ? '#222' : '#eee'}; }
         .sweet-alert { position: fixed; width: 600px !important; padding: 20px;
-          margin-left: -300px; margin-top: -200px; background: #222; border: 1px solid #888; }
+          margin-left: -300px; margin-top: -200px; background: ${theme === 'light' ? '#fafafa' : '#222'}; border: 1px solid #888; }
         .sweet-alert p { text-align: center; }
         table td, table th { white-space: nowrap; }
         dt { float: left; width: 160px; font-weight: bold; }
@@ -51,7 +54,7 @@ for (const viewport of [
           swal: (options: { title: string; text: string; customClass: string; confirmButtonText: string }) => {
             const modal = document.createElement('div');
             modal.className = `sweet-alert showSweetAlert ${options.customClass}`;
-            modal.innerHTML = '<h2></h2><p></p><div class="sa-button-container"><button>Cancel</button><button class="confirm"></button></div>';
+            modal.innerHTML = '<h2></h2><p style="display:block"></p><div class="sa-button-container"><button>Cancel</button><button class="confirm"></button></div>';
             modal.querySelector('h2')!.textContent = options.title;
             modal.querySelector('p')!.innerHTML = options.text;
             modal.querySelector('.confirm')!.textContent = options.confirmButtonText;
@@ -79,6 +82,7 @@ for (const viewport of [
         const list = element.querySelector('.compose-update-table-wrap')!;
         const listRect = list.getBoundingClientRect();
         const options = element.querySelector('.compose-update-options')!.getBoundingClientRect();
+        const body = element.querySelector(':scope > p')!.getBoundingClientRect();
         const buttons = element.querySelector('.sa-button-container')!.getBoundingClientRect();
         const overflows: string[] = [];
         element.querySelectorAll('td').forEach(cell => {
@@ -106,6 +110,7 @@ for (const viewport of [
           listScroll: list.scrollHeight - list.clientHeight,
           horizontalScroll: list.scrollWidth - list.clientWidth,
           optionsBelowList: options.top >= listRect.bottom,
+          footerGap: buttons.top - body.bottom,
           buttonsVisible: buttons.bottom <= innerHeight,
           overflows, overlappingIds,
         };
@@ -113,21 +118,29 @@ for (const viewport of [
       expect(layout.top).toBeGreaterThanOrEqual(0);
       expect(layout.bottom).toBeLessThanOrEqual(viewport.height);
       expect(layout.width).toBeLessThanOrEqual(viewport.width - 30);
-      if (viewport.width > 640) expect(layout.width).toBeGreaterThan(900);
+      if (viewport.width >= 1280) expect(layout.width).toBeGreaterThan(900);
       expect(layout.modalScroll).toBeLessThanOrEqual(1);
       expect(layout.horizontalScroll).toBeLessThanOrEqual(1);
       expect(layout.optionsBelowList).toBe(true);
+      expect(layout.footerGap).toBeGreaterThanOrEqual(-1);
       expect(layout.buttonsVisible).toBe(true);
       expect(layout.overflows).toEqual([]);
       expect(layout.overlappingIds).toBe(false);
       if (count === 18) expect(layout.listScroll).toBeGreaterThan(0);
-      if (count <= 2 && viewport.width > 640) expect(layout.listScroll).toBeLessThanOrEqual(1);
+      if (count <= 2 && viewport.width >= 1280) expect(layout.listScroll).toBeLessThanOrEqual(1);
       await page.screenshot({ path: test.info().outputPath('update-dialog.png') });
       await page.locator('#swal-include-stopped').check();
       await expect(page.locator('#swal-include-stopped')).toBeChecked();
       if (count === 18) {
+        const footer = modal.locator('.sa-button-container');
+        const before = await footer.boundingBox();
         await page.locator('.compose-update-table-wrap').evaluate(element => { element.scrollTop = element.scrollHeight; });
         await expect(page.locator('.confirm')).toBeVisible();
+        await modal.evaluate(element => { element.scrollTop = element.scrollHeight; });
+        await modal.locator(':scope > p').evaluate(element => { element.scrollTop = element.scrollHeight; });
+        expect(await footer.boundingBox()).toEqual(before);
+        expect(await modal.evaluate(element => element.scrollTop)).toBe(0);
+        await modal.locator('.confirm').click({ trial: true });
         if (viewport.width > 640) {
           const headerPinned = await modal.evaluate(element => {
             const list = element.querySelector('.compose-update-table-wrap')!.getBoundingClientRect();
@@ -143,5 +156,6 @@ for (const viewport of [
       });
       await expect(modal).toBeHidden();
     });
+  }
   }
 }
