@@ -7022,6 +7022,9 @@ function saveGitAutoDeploy(autoDeploy) {
         script: project,
         autoDeploy: autoDeploy
     }).then(function(data) {
+        if (editorModal.currentProject !== project) {
+            return;
+        }
         var response = tryParseJson(data);
         if (!response || response.result !== 'success') {
             $saved.hide();
@@ -7035,8 +7038,47 @@ function saveGitAutoDeploy(autoDeploy) {
         }
         $saved.text('Saved').show();
     }).fail(function() {
+        if (editorModal.currentProject !== project) {
+            return;
+        }
         $saved.hide();
         swal({ title: 'Automatic deploys not changed', text: 'Request failed.', type: 'error' });
+        showGitSourceForStack(project, true);
+    });
+}
+
+// Save the Sources tab's "Recreate every container" checkbox at once (it is not part of Apply).
+function saveGitRecreateOnFolderChange(recreateOnFolderChange) {
+    var project = editorModal.currentProject;
+    var $saved = $('#settings-git-recreate-on-folder-change-saved');
+    $saved.text('Saving...').show();
+    $.post(caURL, {
+        action: 'setGitRecreateOnFolderChange',
+        script: project,
+        recreateOnFolderChange: recreateOnFolderChange ? 'true' : 'false'
+    }).then(function(data) {
+        if (editorModal.currentProject !== project) {
+            return;
+        }
+        var response = tryParseJson(data);
+        if (!response || response.result !== 'success') {
+            $saved.hide();
+            swal({
+                title: 'Recreate setting not changed',
+                text: (response && response.message) || 'Unexpected response from server.',
+                type: 'error'
+            });
+            // Show the setting as it is saved, not as it was clicked.
+            showGitSourceForStack(project, true);
+            return;
+        }
+        $saved.text('Saved').show();
+    }).fail(function() {
+        if (editorModal.currentProject !== project) {
+            return;
+        }
+        $saved.hide();
+        swal({ title: 'Recreate setting not changed', text: 'Request failed.', type: 'error' });
         showGitSourceForStack(project, true);
     });
 }
@@ -7081,6 +7123,8 @@ function renderGitSource(git) {
     $('#settings-git-source-table').show();
     $('#settings-git-auto-deploy').val(git.autoDeploy || 'off');
     $('#settings-git-auto-deploy-saved').hide();
+    $('#settings-git-recreate-on-folder-change').prop('checked', git.recreateOnFolderChange !== false);
+    $('#settings-git-recreate-on-folder-change-saved').hide();
 
     // What the next deploy will stop on (or offer to save and discard, from the stack menu),
     // on this tab and above the compose file, so it is seen where the file is edited.
