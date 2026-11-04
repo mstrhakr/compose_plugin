@@ -63,7 +63,9 @@ Clicking **Update Stack** opens a compact table showing each service/image and
 runtime state, readiness, and separately labelled container/local/remote image IDs.
 Build-base checks label the remote base separately from the application image.
 The wider dialog keeps small stacks on screen without vertically stacked service
-sections; long lists remain scrollable.
+sections. Long lists scroll independently with a sticky header, keeping options
+and action buttons accessible. On narrow screens, services switch to stacked rows
+so image names and readiness explanations remain readable without sideways scrolling.
 
 Stack and expanded-container update cells show **Checking...** during a check,
 then display the same completed results. Failed checks are labelled explicitly

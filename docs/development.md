@@ -125,6 +125,14 @@ Regression coverage: `UpdateCommandPathsTest.php` checks the real individual/for
 
 The update-details dialog lists existing runtime containers rather than hypothetical services from a selected/default profile. Update actions bypass the profile selector because deployed runtime scope is authoritative. Both individual/force and bulk dialogs seed the include-stopped checkbox from the plugin setting; changing it does not save configuration. With action warnings disabled, the saved default is used directly. Bulk update can include fully stopped stacks when explicitly enabled. `tests/fixtures/update-ui.cjs` exercises the real frontend functions with lightweight UI/transport stubs, invoked by the Bats suite when Node.js is available.
 
+The isolated Playwright layout tests render the real update-dialog markup and CSS
+against conflicting host-theme rules, without contacting an Unraid server. Run
+`cd tests/e2e && npm test -- tests/compose-update-layout.spec.ts` after installing
+the existing E2E dependencies and browsers. They check column overflow, image-ID
+alignment, independent list scrolling, sticky headers, visible controls, and
+dialog dismissal for small/large stacks on desktop and phone viewports. Screenshots
+are saved in the ignored E2E test results directory for visual inspection.
+
 `javascript/composeUpdateStatus.js` owns readiness labels and compact badges for
 the main table, expanded containers, dialogs, and dashboard. Both page entry
 points load it before their renderer. Stack summaries show a single pending

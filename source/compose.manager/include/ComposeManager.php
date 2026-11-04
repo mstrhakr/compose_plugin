@@ -331,81 +331,195 @@ if ($cpuCount <= 0) {
     }
     .sweet-alert.compose-update-dialog {
         box-sizing: border-box;
-        width: min(960px, calc(100vw - 32px));
-        margin-left: 0;
+        width: min(1040px, calc(100vw - 32px)) !important;
+        max-width: calc(100vw - 32px) !important;
+        margin-left: 0 !important;
         margin-top: 0 !important;
         left: 50%;
         top: 50%;
-        transform: translate(-50%, -50%);
+        transform: translate(-50%, -50%) !important;
         max-height: calc(100vh - 32px);
         overflow-y: auto;
-        padding: 18px 22px;
+        padding: 20px 24px;
+        text-align: left;
     }
 
-    .compose-update-dialog h2 {
-        margin: 4px 0 12px;
+    .sweet-alert.compose-update-dialog.showSweetAlert {
+        display: flex !important;
+        flex-direction: column;
+    }
+
+    .sweet-alert.compose-update-dialog h2 {
+        flex-shrink: 0;
+        margin: 0 0 16px;
         font-size: 24px;
+        line-height: 1.3;
+        overflow-wrap: anywhere;
     }
 
-    .compose-update-table-wrap {
-        margin: 12px 0;
-        overflow-x: auto;
+    .sweet-alert.compose-update-dialog > p {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        width: auto;
+        margin: 0;
+        padding: 0;
+        text-align: left;
+        line-height: 1.5;
+        white-space: normal;
     }
 
-    .compose-update-table {
+    .sweet-alert.compose-update-dialog .compose-update-content {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-content > :not(.compose-update-table-wrap) {
+        flex-shrink: 0;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-table-wrap {
+        flex: 0 1 auto;
+        min-height: 80px;
+        margin: 16px 0;
+        overflow: auto;
+        border: 1px solid var(--dynamix-box-inner-div-border-color, #666);
+        border-radius: 6px;
+        scrollbar-gutter: stable;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-table {
         width: 100%;
         table-layout: fixed;
         border-collapse: collapse;
         font-size: 13px;
         text-align: left;
+        line-height: 1.5;
     }
 
-    .compose-update-table th,
-    .compose-update-table td {
-        padding: 8px;
+    .sweet-alert.compose-update-dialog .compose-update-table th,
+    .sweet-alert.compose-update-dialog .compose-update-table td {
+        box-sizing: border-box;
+        padding: 12px;
         vertical-align: top;
         border-bottom: 1px solid var(--dynamix-box-inner-div-border-color, #666);
+        white-space: normal !important;
         overflow-wrap: anywhere;
     }
 
-    .compose-update-table th:nth-child(1) { width: 32%; }
-    .compose-update-table th:nth-child(2) { width: 30%; }
-    .compose-update-table th:nth-child(3) { width: 38%; }
+    .sweet-alert.compose-update-dialog .compose-update-table th {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        background: var(--alt-background-color, #262626);
+        font-size: 12px;
+    }
 
-    .compose-update-service {
+    .sweet-alert.compose-update-dialog .compose-update-table th:nth-child(1) { width: 38%; }
+    .sweet-alert.compose-update-dialog .compose-update-table th:nth-child(2) { width: 27%; }
+    .sweet-alert.compose-update-dialog .compose-update-table th:nth-child(3) { width: 35%; }
+    .sweet-alert.compose-update-dialog .compose-update-table tr:last-child td { border-bottom: 0; }
+
+    .sweet-alert.compose-update-dialog .compose-update-service {
         display: flex;
-        gap: 8px;
+        gap: 10px;
         align-items: flex-start;
     }
 
-    .compose-update-service img {
-        width: 26px;
-        height: 26px;
-        flex: 0 0 26px;
+    .sweet-alert.compose-update-dialog .compose-update-service > div {
+        min-width: 0;
     }
 
-    .compose-update-reference,
-    .compose-update-explanation {
-        margin-top: 4px;
+    .sweet-alert.compose-update-dialog .compose-update-service img {
+        width: 28px;
+        height: 28px;
+        flex: 0 0 28px;
+        object-fit: contain;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-reference,
+    .sweet-alert.compose-update-dialog .compose-update-explanation {
+        margin: 4px 0;
         font-size: 12px;
+        white-space: normal;
+        overflow-wrap: anywhere;
     }
 
-    .compose-update-digests {
+    .sweet-alert.compose-update-dialog .compose-update-digests {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-        gap: 4px 8px;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 100px);
+        gap: 6px 12px;
         margin: 0;
         font-size: 12px;
+        line-height: 1.5;
     }
 
-    .compose-update-digests dt,
-    .compose-update-digests dd {
+    .sweet-alert.compose-update-dialog .compose-update-digests dt,
+    .sweet-alert.compose-update-dialog .compose-update-digests dd {
+        float: none;
+        position: static;
+        width: auto;
+        min-width: 0;
         margin: 0;
+        padding: 0;
+        text-align: left;
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-digests dt {
+        font-weight: normal;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-digests code {
+        padding: 0;
+        font-size: 11px;
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-options {
+        padding-top: 12px;
+        border-top: 1px solid var(--dynamix-box-inner-div-border-color, #666);
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-background {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-options label {
+        cursor: pointer;
+    }
+
+    .sweet-alert.compose-update-dialog .compose-update-options input {
+        flex-shrink: 0;
+        margin: 0;
+    }
+
+    .sweet-alert.compose-update-dialog .sa-button-container {
+        flex-shrink: 0;
+        text-align: right;
     }
 
     @media (max-width: 640px) {
         .sweet-alert.compose-update-dialog { padding: 14px; }
-        .compose-update-table { min-width: 560px; }
+        .sweet-alert.compose-update-dialog .compose-update-table thead { display: none; }
+        .sweet-alert.compose-update-dialog .compose-update-table,
+        .sweet-alert.compose-update-dialog .compose-update-table tbody,
+        .sweet-alert.compose-update-dialog .compose-update-table tr,
+        .sweet-alert.compose-update-dialog .compose-update-table td {
+            display: block;
+            width: 100%;
+        }
+        .sweet-alert.compose-update-dialog .compose-update-table td { border: 0; padding: 8px 12px; }
+        .sweet-alert.compose-update-dialog .compose-update-table tr + tr {
+            border-top: 1px solid var(--dynamix-box-inner-div-border-color, #666);
+        }
+        .sweet-alert.compose-update-dialog .compose-update-table td + td { padding-top: 0; }
+        .sweet-alert.compose-update-dialog .compose-update-digests { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
     }
 </style>
 

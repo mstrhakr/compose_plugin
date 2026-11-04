@@ -5936,7 +5936,7 @@ function composeUpdateDigestDetails(container) {
 }
 
 function composeUpdateDetailsTable(containers, path, profile) {
-    var html = '<div class="compose-update-table-wrap"><table class="compose-update-table">' +
+    var html = '<div class="compose-update-table-wrap" role="region" aria-label="Service update details" tabindex="0"><table class="compose-update-table">' +
         '<thead><tr><th scope="col">Service / image</th><th scope="col">Readiness</th><th scope="col">Image IDs</th></tr></thead><tbody>';
     containers.forEach(function(container) {
         var name = container.name || container.service || 'Unknown';
@@ -6049,7 +6049,8 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
     if (!cfg) return;
 
     // Build HTML content for the dialog
-    var html = '<div style="text-align:left;' + (cfg.showUpdateReadiness ? '' : 'max-width:450px;') + 'margin:0 auto;color:var(--text-color, var(--dynamix-sb-body-text-color));">';
+    var html = '<div' + (cfg.showUpdateReadiness ? ' class="compose-update-content"' : '') +
+        ' style="text-align:left;' + (cfg.showUpdateReadiness ? '' : 'max-width:450px;') + 'margin:0 auto;color:var(--text-color, var(--dynamix-sb-body-text-color));">';
     html += '<div style="margin-bottom:10px;">' + cfg.description + '</div>';
     if (cfg.showUpdateReadiness) {
         html += '<div class="compose-text-muted" style="font-size:0.85em;">Readiness reflects the last check. Build on update still controls rebuilding.</div>';
@@ -6120,8 +6121,13 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
         '<input type="checkbox" id="swal-run-bg-checkbox" style="width:16px;height:16px;cursor:pointer;">' +
         '<label for="swal-run-bg-checkbox" style="cursor:pointer;user-select:none;margin:0;font-size:0.95em;">Run in background</label>' +
         '</div>';
-    html += followLogsHtml + bgCheckboxHtml;
-    html += '</div>';
+    if (cfg.showUpdateReadiness) {
+        html += '<div class="compose-update-options"><div class="compose-update-background">' +
+            '<input type="checkbox" id="swal-run-bg-checkbox">' +
+            '<label for="swal-run-bg-checkbox">Run in background</label></div>';
+    } else {
+        html += followLogsHtml + bgCheckboxHtml + '</div>';
+    }
 
     // Fetch config to determine default checkbox state, then show swal (or skip warnings)
     getConfig().then(function(pluginCfg) {
@@ -6149,7 +6155,7 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
         // Use native swal (SweetAlert 1.x) with callback style
         swal({
             title: cfg.title,
-            text: html + (isUpdate ? composeUpdateScopeOptionHtml(includeStoppedDefault) : ''),
+            text: html + (isUpdate ? composeUpdateScopeOptionHtml(includeStoppedDefault) + '</div></div>' : ''),
             html: true,
             type: isUpdate ? undefined : 'warning',
             customClass: isUpdate ? 'compose-update-dialog' : '',
