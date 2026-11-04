@@ -222,6 +222,14 @@ console.log('Compact readiness badges, mixed summaries, stopped-stack visibility
     assert.equal(fresh.containers[0].updateReadiness, 'unknown');
     assert.equal(fresh.containers[0].localImageSha, '');
     assert.equal(context.composeStackUpdatePresentation(fresh.containers).label, 'Pending');
+    const success = { containers: [{
+        name: 'app', image: 'app:latest', updateStatus: 'up-to-date', updateReadiness: 'current', localImageSha: 'new-evidence'
+    }] };
+    context.mergeStackUpdateStatus(success, { containers: [
+        { name: 'app', image: 'app:latest', updateStatus: 'unknown', updateReadiness: 'unknown' }
+    ] }, true);
+    assert.equal(success.containers[0].updateReadiness, 'current', 'Cached unknown must not invalidate a successful fresh check');
+    assert.equal(success.containers[0].localImageSha, 'new-evidence');
     assert.equal(context.composeStackUpdatePresentation([]).label, 'Unchecked');
     assert.equal(context.composeStackUpdatePresentation([{ isPinned: true }]).label, 'All pinned');
     assert.equal(context.composeStackUpdatePresentation([{ updateReadiness: 'current' }, { updateReadiness: 'unknown' }]).label, '1 unchecked');
