@@ -675,7 +675,7 @@ function mergeContainerUpdateStatus(container, update, onlyIfUnknown) {
     if (onlyIfUnknown && (current.updateStatus === 'up-to-date' || current.updateStatus === 'update-available')) {
         return container;
     }
-    if (incoming.updateStatus !== 'up-to-date' && incoming.updateStatus !== 'update-available') {
+    if (onlyIfUnknown && incoming.updateStatus !== 'up-to-date' && incoming.updateStatus !== 'update-available') {
         container.updateReadiness = 'unknown';
         container.localImageSha = '';
         return container;

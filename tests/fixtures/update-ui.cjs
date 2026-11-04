@@ -338,6 +338,16 @@ for (const response of ['', 'not json', JSON.stringify({ result: 'error', messag
     const freshResponse = { containers: [{ ...previous, hasUpdate: false, updateStatus: 'unknown', updateReadiness: 'unknown' }] };
     assert.equal(context.composeCheckedContainers(freshResponse, 'test', 1)[0].updateReadiness, 'unknown',
         'A fresh server invalidation must not be overwritten by older browser evidence');
+    const invalidated = {
+        ...previous, hasUpdate: false, updateStatus: 'unknown', updateReadiness: 'unknown',
+        remoteSha: '', localImageSha: '',
+    };
+    context.stackUpdateStatus.test = { containers: [invalidated] };
+    context.updateStackUpdateUI('test', context.stackUpdateStatus.test, true);
+    assert.equal(context.stackContainersCache.test[0].hasUpdate, false, 'An authoritative unknown must clear cached pending evidence');
+    assert.equal(context.stackContainersCache.test[0].updateStatus, 'unknown');
+    assert.equal(context.stackContainersCache.test[0].remoteSha, '');
+    assert.match(containerHtml, /Unchecked/);
 
     context.checkStackUpdates('test');
     complete(JSON.stringify({ result: 'error', message: 'Registry unavailable' }));
