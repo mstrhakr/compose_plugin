@@ -116,6 +116,11 @@ These execute production frontend functions using isolated DOM/transport adapter
   and a real browser reload using mocked server-owned evidence. Recreating the
   application image during an in-flight check must not attach old-image evidence
   to the replacement, even when its service/name/tag are unchanged.
+- PHP endpoint regressions cover Docker ps returning a short application image ID
+  while inspection returns its original tag. The exact pending-base case runs the
+  real layer comparison with a fixture remote base, persists the Rebuild result,
+  then repeatedly reads saved status and expanded containers. Both must retain
+  pending state, build-base kind, readiness and image evidence without rechecking.
 - Layout tests cover light/dark theme rules, long image references, 1/2/18-service
   stacks, desktop/phone viewports, and a reduced 854x480 viewport approximating the
   available CSS space at 150% desktop zoom. This is not a native browser-zoom test.

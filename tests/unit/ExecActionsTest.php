@@ -504,6 +504,75 @@ class ExecActionsTest extends TestCase
         }
     }
 
+    public function testBuildOnlyRebuildSurvivesReloadAndExpansionWhenPsShowsImageId(): void
+    {
+        $this->createTestStack('build-only');
+        $context = $this->createTempDir();
+        file_put_contents($context . '/Dockerfile', "FROM fixture/base:latest\n");
+        $imageId = 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+        $reference = 'build-only-app';
+        $row = [
+            'Name' => 'built-app', 'Service' => 'app', 'Image' => '0123456789ab', 'State' => 'running',
+        ];
+        $inspect = ['Image' => $imageId, 'Config' => ['Image' => $reference], 'State' => []];
+        \DockerClient::setMockResponse('/containers/built-app/json', $inspect);
+        \DockerClient::setMockResponse('/images/' . rawurlencode($imageId) . '/json', [
+            'RootFS' => ['Layers' => ['sha256:old-base', 'sha256:application']],
+        ]);
+        \DockerClient::setMockResponse('/images/' . rawurlencode($reference) . '/json', ['Id' => $imageId]);
+        $checker = new class extends \ComposeUpdateCheck {
+            protected function fetchRemoteImageConfig(string $image): ?array
+            {
+                return ['digest' => 'sha256:new-base', 'diffIds' => ['sha256:new-base-layer']];
+            }
+        };
+        $result = $checker->checkContainers([$row], [
+            'app' => ['image' => null, 'build' => ['context' => $context]],
+        ])['built-app'];
+        $this->assertSame('rebuild-required', $result['updateReadiness']);
+        $this->assertTrue($result['hasUpdate']);
+        $this->assertSame($reference, $result['image']);
+        $update = \ContainerInfo::fromUpdateResponse([
+            'name' => 'built-app', 'service' => 'app', 'image' => $result['image'],
+            'localSha' => substr($result['local'], 7, 12),
+            'remoteSha' => $result['remote'], 'hasUpdate' => $result['hasUpdate'],
+            'status' => $result['status'], 'updateKind' => $result['updateKind'],
+            'updateReadiness' => $result['updateReadiness'],
+        ])->toUpdateArray();
+        $save = new \ReflectionMethod(\StackUpdateService::class, 'saveResults');
+        $save->invoke(new \StackUpdateService(), [
+            'build-only' => ['projectName' => 'build-only', 'containers' => [$update]],
+        ], false);
+        $bin = $this->createTempDir();
+        file_put_contents($bin . '/docker', "#!/bin/sh\ncase \"\$1\" in\n"
+            . "inspect) printf '%s\\n' " . escapeshellarg(json_encode($inspect)) . " ;;\n"
+            . "compose) printf '%s\\n' " . escapeshellarg(json_encode($row)) . " ;;\nesac\n");
+        chmod($bin . '/docker', 0755);
+        $path = getenv('PATH');
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        try {
+            for ($refresh = 0; $refresh < 3; $refresh++) {
+                \StackInfo::clearCache();
+                $saved = json_decode($this->executeAction('getSavedUpdateStatus'), true);
+                $this->assertTrue($saved['stacks']['build-only']['hasUpdate']);
+                $this->assertSame('rebuild-required', $saved['stacks']['build-only']['containers'][0]['updateReadiness']);
+                $details = json_decode($this->executeAction('getStackContainers', ['script' => 'build-only']), true);
+                $this->assertSame('success', $details['result']);
+                $container = $details['containers'][0];
+                $this->assertSame($reference, $container['image']);
+                $this->assertTrue($container['hasUpdate']);
+                $this->assertSame('build-base', $container['updateKind']);
+                $this->assertSame('rebuild-required', $container['updateReadiness']);
+                $this->assertSame($update['localSha'], $container['localSha']);
+                $this->assertSame($update['remoteSha'], $container['remoteSha']);
+            }
+        } finally {
+            putenv('PATH=' . $path);
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+            @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+        }
+    }
+
     public function testUpdateCheckReportsPersistenceFailureInsteadOfSuccess(): void
     {
         $this->createTestStack('empty-stack');
