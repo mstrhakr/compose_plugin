@@ -57,6 +57,8 @@ Manual **Update Stack** also reconciles Compose configuration changes, even when
 
 Updates preserve deployed replica counts and do not start stopped dependencies or one-off jobs. Paused/restarting services and services with a mixture of running and stopped replicas are skipped with an explanation rather than changing their state unexpectedly; other eligible services can still update. Automatic updates report these cases as incomplete updates. Manual updates leave stopped services unchanged by default, including fully stopped stacks.
 
+The **Include stopped services — they will be started** checkbox in the Update, Force Update, and Update All dialogs permits existing stopped services (including stopped replicas) to be redeployed and started. It does not activate services without an existing container. Update dialogs show existing containers across deployed profiles instead of asking which profile to start. Set **Include Stopped Services in Manual Updates by Default** in the main plugin settings to choose the initial checkbox state; a dialog override affects only that operation. With action warnings disabled, manual updates use the saved default directly. Automatic updates always ignore this manual preference.
+
 When updates are available, clicking **Update Stack** opens a confirmation dialog listing each container alongside its current and incoming image digest. Containers that are already up to date are dimmed.
 
 #### Changelogs

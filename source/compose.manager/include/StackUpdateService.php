@@ -40,7 +40,7 @@ class StackUpdateService
 
     /**
      * @param array<string, mixed> $cfg
-     * @param array{profiles?: string[], recreate?: bool, automatic?: bool} $options
+     * @param array{profiles?: string[], recreate?: bool, automatic?: bool, includeStopped?: bool} $options
      * @return string[]
      */
     public static function buildUpdateCommand(StackInfo $stack, array $cfg, array $options = []): array
@@ -50,6 +50,8 @@ class StackUpdateService
             'build' => self::resolveBuildOnUpdate($stack->path, $cfg),
             'recreate' => !empty($options['recreate']),
             'automatic' => !empty($options['automatic']),
+            'includeStopped' => empty($options['automatic'])
+                && ($options['includeStopped'] ?? (($cfg['UPDATE_INCLUDE_STOPPED_DEFAULT'] ?? 'false') === 'true')),
             'debug' => ($cfg['DEBUG_TO_LOG'] ?? 'false') === 'true',
         ]);
     }

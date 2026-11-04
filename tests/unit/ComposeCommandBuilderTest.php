@@ -71,6 +71,28 @@ class ComposeCommandBuilderTest extends TestCase
         );
     }
 
+    public function testManualStoppedDefaultCanBeOverriddenButNeverEnablesAutomaticInclusion(): void
+    {
+        $dir = $this->tempRoot . '/scope-options';
+        mkdir($dir);
+        file_put_contents($dir . '/compose.yaml', "services:\n  web:\n    image: nginx\n");
+        $stack = \StackInfo::fromProject($this->tempRoot, 'scope-options');
+        foreach ([false, true] as $default) {
+            $cfg = ['UPDATE_INCLUDE_STOPPED_DEFAULT' => $default ? 'true' : 'false'];
+            $command = \StackUpdateService::buildUpdateCommand($stack, $cfg);
+            $this->assertSame($default, in_array('--include-stopped', $command, true));
+            foreach ([false, true] as $include) {
+                foreach ([false, true] as $automatic) {
+                    $command = \StackUpdateService::buildUpdateCommand($stack, $cfg, [
+                        'includeStopped' => $include, 'automatic' => $automatic,
+                    ]);
+                    $this->assertSame($include && !$automatic, in_array('--include-stopped', $command, true));
+                }
+            }
+        }
+        $this->assertSame('false', parse_ini_file(dirname(__DIR__, 2) . '/source/compose.manager/default.cfg')['UPDATE_INCLUDE_STOPPED_DEFAULT']);
+    }
+
     protected function setUp(): void
     {
         parent::setUp();

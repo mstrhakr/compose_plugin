@@ -375,3 +375,37 @@ run_auto_adapter() {
     assert_output_contains "Scoped updates cannot remove unrelated orphan containers"
     ! grep -E ' (pull|build|up)( |$)' "$CALLS"
 }
+
+@test "manual update modal preserves defaults and transmits per-operation scope" {
+    command -v node >/dev/null || skip "Node.js is required for update modal regression tests"
+    run node "$BATS_TEST_DIRNAME/../fixtures/update-ui.cjs"
+    assert_success
+}
+
+@test "background manual updates report safety skips instead of full success" {
+    export RUNTIME_ROWS=$'app|app|running|False\nweb|web|paused|False'
+    export CONFIG_SERVICES=$'app\nweb'
+    run bash "$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_background.sh" \
+        -cupdate -pstack -s "$TEST_TEMP_DIR/stack"
+    assert_success
+    grep -F 'Stack update incomplete: stack' "$NOTIFICATIONS"
+    ! grep -F 'completed successfully' "$NOTIFICATIONS"
+}
+
+@test "background manual updates report fully stopped stacks as skipped" {
+    export STOPPED=true
+    run bash "$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_background.sh" \
+        -cupdate -pstack -s "$TEST_TEMP_DIR/stack"
+    assert_success
+    grep -F 'Stack update skipped: stack' "$NOTIFICATIONS"
+    ! grep -E ' (pull|build|up)( |$)' "$CALLS"
+}
+
+@test "background manual inclusion starts selected stopped services" {
+    export STOPPED=true
+    run bash "$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_background.sh" \
+        -cupdate -pstack -s "$TEST_TEMP_DIR/stack" --include-stopped
+    assert_success
+    grep -F 'up -d --scale app=1 --pull never --no-deps app' "$CALLS"
+    grep -F 'Stack update complete: stack' "$NOTIFICATIONS"
+}

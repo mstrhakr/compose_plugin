@@ -2361,12 +2361,9 @@ function updateUpdateAllButton() {
     for (var stackName in stackUpdateStatus) {
         var stackInfo = stackUpdateStatus[stackName];
         if (!stackInfo.hasUpdate) continue;
-        // Derive running state from DOM — saved status may be stale
         var $row = $('#compose_stacks tr.compose-sortable[data-project="' + stackName + '"]');
         if ($row.length === 0) continue;
-        var stateText = $row.find('.state').text();
-        var isRunning = stateText.indexOf('started') !== -1 || stateText.indexOf('partial') !== -1;
-        if (isRunning) stacksWithUpdates++;
+        stacksWithUpdates++;
     }
     $('#updateAllBtn').prop('disabled', stacksWithUpdates === 0);
 }
@@ -2384,7 +2381,7 @@ function updateAllStacks() {
         if ($stackRow.length === 0) continue;
         // Derive running state from DOM — saved status may be stale
         var rowStateText = $stackRow.find('.state').text();
-        if (rowStateText.indexOf('started') === -1 && rowStateText.indexOf('partial') === -1) continue;
+        var isRunning = rowStateText.indexOf('started') !== -1 || rowStateText.indexOf('partial') !== -1;
 
         var autostart = $stackRow.find('.auto_start').is(':checked');
 
@@ -2397,7 +2394,8 @@ function updateAllStacks() {
         stacks.push({
             project: stackName,
             projectName: projectName,
-            path: path
+            path: path,
+            isRunning: isRunning
         });
     }
 
@@ -2414,7 +2412,7 @@ function updateAllStacks() {
         return composeEscapeHtml(s.projectName);
     }).join('<br>');
     var title = autostartOnly ? 'Update Autostart Stacks?' : 'Update All Stacks?';
-    var confirmText = 'Yes, update ' + stacks.length + ' stack' + (stacks.length > 1 ? 's' : '');
+    var confirmText = 'Update eligible services';
 
     var bgCheckboxHtml = '<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--dynamix-box-inner-div-border-color);display:flex;align-items:center;gap:8px;">' +
         '<input type="checkbox" id="swal-run-bg-updateall" style="width:16px;height:16px;cursor:pointer;">' +
@@ -2424,16 +2422,17 @@ function updateAllStacks() {
     getConfig().then(function(pluginCfg) {
         var bgDefault = pluginCfg && pluginCfg.RUN_IN_BACKGROUND_DEFAULT === 'true';
         var disableWarnings = pluginCfg && pluginCfg.DISABLE_ACTION_WARNINGS === 'true';
+        var includeStoppedDefault = pluginCfg && pluginCfg.UPDATE_INCLUDE_STOPPED_DEFAULT === 'true';
 
         if (disableWarnings) {
-            executeUpdateAllStacks(stacks, bgDefault, bgDefault);
+            executeUpdateAllStacks(stacks, bgDefault, bgDefault, includeStoppedDefault);
             return;
         }
 
         swal({
             title: title,
             html: true,
-            text: '<div style="background:var(--alt-background-color);text-align:left;max-width:400px;margin:0 auto;"><p>The following stacks will be updated:</p><div style="background:var(--background-color);padding:10px;border-radius:4px;max-height:200px;overflow-y:auto;margin:10px 0;">' + stackNames + '</div><p class="compose-status-warning"><i class="fa fa-warning"></i> This will pull new images and recreate containers.</p></div>' + bgCheckboxHtml,
+            text: '<div style="background:var(--alt-background-color);text-align:left;max-width:400px;margin:0 auto;"><p>Stacks with pending updates:</p><div style="background:var(--background-color);padding:10px;border-radius:4px;max-height:200px;overflow-y:auto;margin:10px 0;">' + stackNames + '</div><p class="compose-status-warning"><i class="fa fa-warning"></i> This will pull new images and recreate eligible services. Fully stopped stacks are left unchanged unless stopped services are included.</p></div>' + composeUpdateScopeOptionHtml(includeStoppedDefault) + bgCheckboxHtml,
             type: 'warning',
             showCancelButton: true,
             confirmButtonText: confirmText,
@@ -2441,7 +2440,7 @@ function updateAllStacks() {
         }, function(confirmed) {
             if (confirmed) {
                 var runInBackground = $('#swal-run-bg-updateall').is(':checked');
-                executeUpdateAllStacks(stacks, runInBackground);
+                executeUpdateAllStacks(stacks, runInBackground, false, $('#swal-include-stopped').is(':checked'));
             }
         });
 
@@ -2454,7 +2453,24 @@ function updateAllStacks() {
     });
 }
 
-function executeUpdateAllStacks(stacks, background, suppressBackgroundNotification = false) {
+function composeUpdateScopeOptionHtml(includeStopped) {
+    return '<div style="text-align:left;max-width:450px;margin:16px auto;">' +
+        '<label style="cursor:pointer;"><input type="checkbox" id="swal-include-stopped"' + (includeStopped ? ' checked' : '') + '> Include stopped services &mdash; they will be started</label>' +
+        '<p class="compose-text-muted" style="font-size:0.9em;margin:8px 0;">Unchecked: stopped services and mixed running/stopped replicas remain unchanged. Paused/restarting services and one-off jobs remain excluded either way. Only existing stack services participate; undeployed profile services are never started.</p></div>';
+}
+
+function executeUpdateAllStacks(stacks, background, suppressBackgroundNotification = false, includeStopped = false) {
+    stacks = stacks.filter(function(stack) {
+        return includeStopped || stack.isRunning;
+    });
+    if (stacks.length === 0) {
+        swal({
+            title: 'No Eligible Stacks',
+            text: 'These stacks are stopped. Include stopped services to update and start them.',
+            type: 'info'
+        });
+        return;
+    }
     var height = 800;
     var width = 1200;
 
@@ -2484,7 +2500,8 @@ function executeUpdateAllStacks(stacks, background, suppressBackgroundNotificati
             requestUrl: compURL,
             payload: {
                 action: 'composeUpdateMultiple',
-                paths: JSON.stringify(paths)
+                paths: JSON.stringify(paths),
+                includeStopped: includeStopped ? '1' : '0'
             },
             background: background,
             suppressBackgroundNotification: suppressBackgroundNotification,
@@ -4316,26 +4333,7 @@ function editStackSettings(myID) {
 // Unified update warning dialog - called from stack row and container table
 function showUpdateWarning(project, stackId, updateAction) {
     var path = compose_root + '/' + project;
-    // Use row metadata so profile selection behavior matches context menu actions.
-    var $stackRow = $('#compose_stacks tr.compose-sortable[data-project="' + project + '"]');
-    var profiles = [];
-    var runningProfile = '';
-    var defaultProfile = '';
-    updateAction = updateAction || 'update';
-
-    if ($stackRow.length > 0) {
-        profiles = $stackRow.data('profiles') || [];
-        runningProfile = $stackRow.attr('data-running-profile') || '';
-        defaultProfile = $stackRow.attr('data-default-profile') || '';
-    }
-
-    if (profiles.length > 0) {
-        showProfileSelector(updateAction, path, profiles, runningProfile, defaultProfile);
-    } else if (updateAction === 'forceUpdate') {
-        ForceUpdateStack(path);
-    } else {
-        UpdateStack(path);
-    }
+    showStackActionDialog(updateAction || 'update', path, '');
 }
 
 // Show a brief swal when a background command is dispatched
@@ -4874,6 +4872,7 @@ function ForceUpdateStackConfirmed(path, opts) {
             action: 'composeUpPullBuild',
             path: path,
             recreate: '1',
+            includeStopped: opts.includeStopped ? '1' : '0',
             profile: opts.profile || ''
         },
         background: !!opts.background,
@@ -5241,6 +5240,7 @@ function UpdateStackConfirmed(path, opts) {
         payload: {
             action: 'composeUpPullBuild',
             path: path,
+            includeStopped: opts.includeStopped ? '1' : '0',
             profile: opts.profile || ''
         },
         background: !!opts.background,
@@ -5851,6 +5851,23 @@ function showStackActionDialog(action, path, profile) {
         hasBuild = $stackRow.data('hasbuild') == "1";
     }
 
+    if (action === 'update' || action === 'forceUpdate') {
+        $.post(caURL, { action: 'getStackContainers', script: project }, function(data) {
+            var response = tryParseJson(data);
+            if (!response || response.result !== 'success' || !Array.isArray(response.containers)) {
+                swal({ title: 'Update details unavailable', text: 'Could not load existing stack containers. Refresh and try again.', type: 'error' });
+                return;
+            }
+            var containers = mergeUpdateStatus(response.containers, project);
+            waitForStackActionDialogClose(function() {
+                renderStackActionDialog(action, displayName, path, '', containers, hasBuild, false);
+            });
+        }).fail(function() {
+            swal({ title: 'Update details unavailable', text: 'Could not load existing stack containers. Refresh and try again.', type: 'error' });
+        });
+        return;
+    }
+
     // Always use getProfileServices for both profile and no-profile cases
     var cachedContainers = (stackId && stackContainersCache[stackId]) ? stackContainersCache[stackId] : [];
     composeLogger('profile/unified AJAX start', {
@@ -6034,7 +6051,7 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             title: 'Force Update: ' + composeEscapeHtml(displayName),
             description: 'This will pull the latest images and rebuild containers in <b>' + composeEscapeHtml(displayName) + '</b>, even if no updates are detected.',
             listTitle: 'CONTAINERS',
-            warning: 'All containers will be recreated with freshly pulled images.',
+            warning: 'Eligible services will be recreated with freshly pulled images.',
             warningIcon: 'exclamation-triangle',
             warningColor: window.getComputedStyle(document.documentElement).getPropertyValue('--brand-orange') || window.getComputedStyle(document.documentElement).getPropertyValue('--dynamix-sb-message-link-color'),
             confirmText: 'Force Update',
@@ -6150,6 +6167,8 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
         var bgDefault = pluginCfg && pluginCfg.RUN_IN_BACKGROUND_DEFAULT === 'true';
         removeOrphansDefault = pluginCfg && pluginCfg.REMOVE_ORPHANS_DEFAULT === 'true';
         var disableWarnings = pluginCfg && pluginCfg.DISABLE_ACTION_WARNINGS === 'true';
+        var isUpdate = action === 'update' || action === 'forceUpdate';
+        var includeStoppedDefault = pluginCfg && pluginCfg.UPDATE_INCLUDE_STOPPED_DEFAULT === 'true';
 
         if (disableWarnings) {
             // In default background mode (warnings disabled and background enabled), don't show toast if background is used
@@ -6157,7 +6176,8 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
                 profile: profile,
                 background: bgDefault,
                 suppressBackgroundNotification: bgDefault,
-                removeOrphans: removeOrphansDefault
+                removeOrphans: removeOrphansDefault,
+                includeStopped: includeStoppedDefault
             });
             return;
         }
@@ -6168,7 +6188,7 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
         // Use native swal (SweetAlert 1.x) with callback style
         swal({
             title: cfg.title,
-            text: html,
+            text: html + (isUpdate ? composeUpdateScopeOptionHtml(includeStoppedDefault) : ''),
             html: true,
             type: 'warning',
             showCancelButton: true,
@@ -6186,7 +6206,8 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
                     background: runInBackground,
                     suppressBackgroundNotification: runInBackground,
                     removeOrphans: removeOrphans,
-                    followLogs: followLogs
+                    followLogs: followLogs,
+                    includeStopped: isUpdate && $('#swal-include-stopped').is(':checked')
                 });
             }
         });
@@ -6452,6 +6473,10 @@ function executeStackAction(action) {
 
 // gitOptions is for action 'gitDeploy' only: {project, commit}.
 function showProfileSelector(action, path, profiles, runningProfile, defaultProfile, gitOptions) {
+    if (action === 'update' || action === 'forceUpdate') {
+        showStackActionDialog(action, path, '');
+        return;
+    }
     if (typeof runningProfile === 'undefined') {
         runningProfile = '';
     }

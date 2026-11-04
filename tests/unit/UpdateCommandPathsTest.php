@@ -10,7 +10,15 @@ require_once '/usr/local/emhttp/plugins/compose.manager/include/Helpers.php';
 
 final class UpdateCommandPathsTest extends TestCase
 {
-    public function testIndividualForceAndBulkUseTheSameUpdateCommand(): void
+    public static function manualScopeOptions(): array
+    {
+        return [
+            [false, null], [true, null], [false, '1'], [true, '0'], [true, '1'], [false, '0'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('manualScopeOptions')]
+    public function testIndividualForceAndBulkUseTheSameUpdateCommand(bool $default, ?string $override): void
     {
         global $compose_root, $plugin_root, $sName, $socket_name;
         $compose_root = $this->createTempDir();
@@ -20,6 +28,7 @@ final class UpdateCommandPathsTest extends TestCase
         $this->mockPluginConfig($sName, [
             'DEBUG_TO_LOG' => 'false',
             'BUILD_ON_UPDATE_DEFAULT' => 'true',
+            'UPDATE_INCLUDE_STOPPED_DEFAULT' => $default ? 'true' : 'false',
         ]);
         \StackInfo::clearCache();
         $dir = $compose_root . '/update-paths';
@@ -30,7 +39,7 @@ final class UpdateCommandPathsTest extends TestCase
         file_put_contents($varDir . '/var.ini', "mdState=STARTED\n");
         \PluginTests\StreamWrapper\UnraidStreamWrapper::addMapping('/var/local/emhttp/var.ini', $varDir . '/var.ini');
         $stack = \StackInfo::fromProject($compose_root, 'update-paths');
-        $cfg = ['BUILD_ON_UPDATE_DEFAULT' => 'true'];
+        $cfg = ['BUILD_ON_UPDATE_DEFAULT' => 'true', 'UPDATE_INCLUDE_STOPPED_DEFAULT' => $default ? 'true' : 'false'];
 
         foreach (['individual', 'force', 'bulk'] as $entry) {
             $GLOBALS['composeLoggerMessages'] = [];
@@ -40,10 +49,17 @@ final class UpdateCommandPathsTest extends TestCase
                 'paths' => json_encode([$dir]),
                 'recreate' => $entry === 'force' ? '1' : '0',
             ];
+            if ($override !== null) {
+                $_POST['includeStopped'] = $override;
+            }
             ob_start();
             include '/usr/local/emhttp/plugins/compose.manager/include/ComposeUtil.php';
             ob_end_clean();
-            $expected = \StackUpdateService::buildUpdateCommand($stack, $cfg, ['recreate' => $entry === 'force']);
+            $options = ['recreate' => $entry === 'force'];
+            if ($override !== null) {
+                $options['includeStopped'] = $override === '1';
+            }
+            $expected = \StackUpdateService::buildUpdateCommand($stack, $cfg, $options);
             $quoted = implode(' ', array_map('escapeshellarg', $expected));
             $logs = implode("\n", $GLOBALS['composeLoggerMessages']);
             if ($entry === 'bulk') {
@@ -52,6 +68,8 @@ final class UpdateCommandPathsTest extends TestCase
                 unlink($matches[1]);
             }
             $this->assertStringContainsString($quoted, $logs, $entry);
+            $this->assertSame($override === null ? $default : $override === '1', str_contains($logs, "'--include-stopped'"));
+            $this->assertSame($cfg['UPDATE_INCLUDE_STOPPED_DEFAULT'], \parse_plugin_cfg($sName)['UPDATE_INCLUDE_STOPPED_DEFAULT']);
         }
         $_POST = [];
         \StackInfo::clearCache();

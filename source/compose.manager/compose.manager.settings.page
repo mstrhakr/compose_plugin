@@ -2737,6 +2737,19 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         </dl>
 
         <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Include Stopped Services in Manual Updates by Default)_:</dt>
+            <dd>
+                <input type="checkbox" name="UPDATE_INCLUDE_STOPPED_DEFAULT" id="UPDATE_INCLUDE_STOPPED_DEFAULT" class="compose-toggle" <?= ($cfg['UPDATE_INCLUDE_STOPPED_DEFAULT'] ?? 'false') == 'true' ? 'checked' : '' ?>>
+                <blockquote class="inline_help">
+                    Included stopped services will be recreated and started during manual Update, Force Update, and Update All.
+                    This sets the initial choice in the update dialog; changing that choice affects only that operation.
+                    With action warnings disabled, manual updates use this default without a dialog.
+                    Automatic updates ignore this setting. Paused/restarting services, one-off jobs, and previously undeployed services remain excluded.
+                </blockquote>
+            </dd>
+        </dl>
+
+        <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Create Missing External Networks)_:</dt>
             <dd>
                 <input type="checkbox" name="CREATE_MISSING_EXTERNAL_NETWORKS" id="CREATE_MISSING_EXTERNAL_NETWORKS" class="compose-toggle" <?= ($cfg['CREATE_MISSING_EXTERNAL_NETWORKS'] ?? 'false') == 'true' ? 'checked' : '' ?>>

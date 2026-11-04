@@ -302,6 +302,9 @@ function echoComposeCommand($action, array $options = [])
 
         if ($action === 'update') {
             $updateOptions = ['recreate' => $recreate];
+            if (isset($_POST['includeStopped'])) {
+                $updateOptions['includeStopped'] = (string) $_POST['includeStopped'] === '1';
+            }
             if ($profile !== '') {
                 $updateOptions['profiles'] = array_values(array_filter(array_map('trim', explode(',', $profile))));
             }
@@ -651,9 +654,13 @@ function echoComposeCommandMultiple($action, array $options = [])
 
         $stackNames[] = $stackInfo->getName();
         if ($action === 'update') {
-            $composeCommand = StackUpdateService::buildUpdateCommand($stackInfo, $cfg, [
+            $updateOptions = [
                 'recreate' => !empty($options['recreate']),
-            ]);
+            ];
+            if (isset($_POST['includeStopped'])) {
+                $updateOptions['includeStopped'] = (string) $_POST['includeStopped'] === '1';
+            }
+            $composeCommand = StackUpdateService::buildUpdateCommand($stackInfo, $cfg, $updateOptions);
         } else {
             $args = $stackInfo->buildComposeArgs();
 

@@ -16,7 +16,7 @@ class ComposeCommandBuilder
      * Encode an already resolved update operation; policy belongs to StackUpdateService.
      *
      * @param array<string, mixed> $spec
-     * @param array{build: bool, recreate: bool, automatic: bool, debug: bool} $options
+     * @param array{build: bool, recreate: bool, automatic: bool, includeStopped: bool, debug: bool} $options
      * @return string[]
      */
     public static function buildUpdateCommand(array $spec, array $options): array
@@ -48,6 +48,9 @@ class ComposeCommandBuilder
         }
         if (!empty($options['automatic'])) {
             $command[] = '--automatic-update';
+        }
+        if ($options['includeStopped']) {
+            $command[] = '--include-stopped';
         }
         if ($options['debug']) {
             $command[] = '--debug';
