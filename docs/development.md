@@ -103,7 +103,7 @@ Adjust PHPStan rules or baseline as needed when adding new code.
   configuration must never be treated as a valid empty build map.
 - A check workflow reuses one image checker per attached credential. Remote
   manifests and base configs are memoized only for that workflow, on instances
-  bound to one credential and the host platform. Local container/tag evidence is
+  bound to one credential, with platform-specific cache keys. Local container/tag evidence is
   always reread; remote failures are memoized too, avoiding repeated failed requests.
   No new disk cache is introduced.
 - `StackUpdateService::buildUpdateCommand()` owns build/inclusion policy and operation preparation. Individual/force and bulk UI actions call it; cron and Auto-update **Run Now** use its `automaticUpdateInvocation()`. The CLI adapter uses `resolveUpdateSpec()` for the structured update specification. Update specs do not read deployment profile history or default profiles: runtime scope belongs to the locked engine. Profile history remains necessary for lifecycle UI and Git deployments. `ComposeCommandBuilder` resolves common stack arguments and encodes the service's resolved operation; it does not select update policy.
@@ -192,6 +192,14 @@ instructions. Image-backed named build contexts are resolved to their image
 reference; service/directory contexts remain unknown. A digest-pinned base is
 current without a mutable registry check, but has no remote base config digest
 unless one was actually resolved (the application ID is never substituted).
+Base checks retain the originating stage's `FROM --platform`, including global
+ARG expansion and the automatic BUILDPLATFORM/TARGETPLATFORM defaults. Compose
+service `platform:` supplies the default target and is also used for published
+buildable application checks. Manifest and base-layer caches are keyed by both
+image and platform. Missing architectures/variants and unresolved platforms
+remain unknown; no unrelated architecture is selected as a fallback.
+Non-host platform checks stay in canonical stack evidence and do not overwrite
+Unraid's shared image-status cache, which has no platform dimension.
 
 For local deployment after validating the current code, use
 `bash deploy.sh -Dev -RemoteHost <host> --skip-tests` to build and deploy without

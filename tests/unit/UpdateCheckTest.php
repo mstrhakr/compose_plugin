@@ -71,6 +71,7 @@ class UpdateCheckTest extends TestCase
         fclose($socket);
         $this->assertIsString($address);
         $router = $directory . '/registry.php';
+        $hostPlatform = explode('/', (new \ReflectionMethod(\ComposeUpdateCheck::class, 'hostPlatform'))->invoke(null));
         file_put_contents($router, '<?php
             file_put_contents(' . var_export($directory . '/requests', true) . ', "request\n", FILE_APPEND);
             $authorization = $_SERVER["HTTP_AUTHORIZATION"] ?? "";
@@ -86,6 +87,12 @@ class UpdateCheckTest extends TestCase
                 http_response_code(401);
                 header($mode === "basic" ? \'WWW-Authenticate: Basic realm="fixture"\'
                     : \'WWW-Authenticate: Bearer realm="http://' . $address . '/token",service="fixture",scope="repository:org/private:pull"\');
+                exit;
+            }
+            if (str_contains($_SERVER["REQUEST_URI"], "/blobs/")) {
+                echo json_encode(' . var_export([
+                    'os' => $hostPlatform[0], 'architecture' => $hostPlatform[1], 'variant' => $hostPlatform[2] ?? '',
+                ], true) . ');
                 exit;
             }
             echo json_encode(["config" => ["digest" => "sha256:new"]]);
@@ -177,7 +184,7 @@ class UpdateCheckTest extends TestCase
         $checker = new class extends \ComposeUpdateCheck {
             public array $checkedImages = [];
 
-            public function checkMany(array $images): array
+            public function checkMany(array $images, ?string $platform = null): array
             {
                 $this->checkedImages = $images;
                 return ['library/postgres:18' => [
@@ -228,7 +235,7 @@ class UpdateCheckTest extends TestCase
     public function testPinnedContainersNeverCheckOrOfferTheMutableTag(): void
     {
         $checker = new class extends \ComposeUpdateCheck {
-            public function checkMany(array $images): array
+            public function checkMany(array $images, ?string $platform = null): array
             {
                 throw new \LogicException('Pinned images must not query mutable tags.');
             }
@@ -364,7 +371,7 @@ class UpdateCheckTest extends TestCase
     public function testPinnedBaseNeverReportsApplicationDigestAsRemoteBase(): void
     {
         $checker = new class extends \ComposeUpdateCheck {
-            protected function fetchRemoteImageConfig(string $image): ?array
+            protected function fetchRemoteImageConfig(string $image, ?string $platform = null): ?array
             {
                 throw new \LogicException('Pinned base must not query a mutable tag.');
             }
@@ -387,13 +394,13 @@ class UpdateCheckTest extends TestCase
             public array $checkedImages = [];
             public array $fetched = [];
 
-            public function checkMany(array $images): array
+            public function checkMany(array $images, ?string $platform = null): array
             {
                 $this->checkedImages = $images;
                 return [];
             }
 
-            protected function fetchRemoteImageConfig(string $image): ?array
+            protected function fetchRemoteImageConfig(string $image, ?string $platform = null): ?array
             {
                 $this->fetched[] = $image;
                 return ['digest' => 'sha256:base-new', 'diffIds' => ['sha256:l1', 'sha256:l2']];
@@ -451,12 +458,12 @@ class UpdateCheckTest extends TestCase
         $context = $this->createTempDir();
         file_put_contents($context . '/Dockerfile', "FROM alpine:3.20\n");
         $checker = new class extends \ComposeUpdateCheck {
-            public function checkMany(array $images): array
+            public function checkMany(array $images, ?string $platform = null): array
             {
                 return ['ghcr.io/org/published:latest' => ['local' => '', 'remote' => 'sha256:published', 'status' => 'up-to-date', 'hasUpdate' => false]];
             }
 
-            protected function fetchRemoteImageConfig(string $image): ?array
+            protected function fetchRemoteImageConfig(string $image, ?string $platform = null): ?array
             {
                 throw new \LogicException('A failed application lookup must not check its base.');
             }
@@ -483,7 +490,7 @@ class UpdateCheckTest extends TestCase
     public function testPublishedContainerUsesInspectedReferenceWhenPsShowsAnImageId(): void
     {
         $checker = new class extends \ComposeUpdateCheck {
-            public function checkMany(array $images): array
+            public function checkMany(array $images, ?string $platform = null): array
             {
                 \PHPUnit\Framework\Assert::assertSame(['registry.example/app:latest'], $images);
                 return ['registry.example/app:latest' => [
@@ -499,5 +506,125 @@ class UpdateCheckTest extends TestCase
         $this->assertSame('registry.example/app:latest', $result['image']);
         $this->assertSame('update-available', $result['status']);
         $this->assertSame('ready-to-apply', $result['updateReadiness']);
+    }
+
+    public function testPlatformSelectionNeverFallsBackToAnotherArchitectureOrVariant(): void
+    {
+        $select = new \ReflectionMethod(\ComposeUpdateCheck::class, 'pickPlatformManifestDigest');
+        $checker = new \ComposeUpdateCheck();
+        $manifests = [
+            ['platform' => ['os' => 'unknown', 'architecture' => 'unknown'], 'digest' => 'attestation'],
+            ['platform' => ['os' => 'linux', 'architecture' => 'arm', 'variant' => 'v6'], 'digest' => 'arm-v6'],
+            ['platform' => ['os' => 'linux', 'architecture' => 'arm', 'variant' => 'v7'], 'digest' => 'arm-v7'],
+            ['platform' => ['os' => 'linux', 'architecture' => 'arm64', 'variant' => 'v8'], 'digest' => 'arm64'],
+        ];
+        $this->assertNull($select->invoke($checker, $manifests, 'linux/amd64'));
+        $this->assertNull($select->invoke($checker, $manifests, 'windows/arm64'));
+        $this->assertNull($select->invoke($checker, $manifests, 'linux/arm/v8'));
+        $this->assertNull($select->invoke($checker, $manifests, '${UNRESOLVED}'));
+        $this->assertSame('arm-v6', $select->invoke($checker, $manifests, 'linux/arm/v6'));
+        $this->assertSame('arm-v7', $select->invoke($checker, $manifests, 'linux/arm/v7'));
+        $this->assertSame('arm64', $select->invoke($checker, $manifests, 'linux/arm64'));
+    }
+
+    public function testPlatformFlowsThroughBaseResolutionRegistrySelectionAndBothCaches(): void
+    {
+        $directory = $this->createTempDir();
+        mkdir($directory . '/base/manifests', 0755, true);
+        mkdir($directory . '/base/blobs');
+        $manifests = [];
+        foreach (['amd64', 'arm64'] as $arch) {
+            $manifests[] = [
+                'platform' => ['os' => 'linux', 'architecture' => $arch],
+                'digest' => 'sha256:manifest-' . $arch,
+            ];
+            file_put_contents($directory . '/base/manifests/sha256:manifest-' . $arch, json_encode([
+                'config' => ['digest' => 'sha256:config-' . $arch],
+            ]));
+            file_put_contents($directory . '/base/blobs/sha256:config-' . $arch, json_encode([
+                'os' => 'linux', 'architecture' => $arch,
+                'rootfs' => ['diff_ids' => ['sha256:layer-' . $arch]],
+            ]));
+        }
+        file_put_contents($directory . '/base/manifests/latest', json_encode(['manifests' => $manifests]));
+        $checker = new class($directory . '/status.json') extends \ComposeUpdateCheck {
+            public string $endpoint;
+            protected function resolveRegistryAuth(string $image): array
+            {
+                return ['apiUrl' => $this->endpoint, 'repository' => '', 'imageName' => 'base', 'imageTag' => 'latest'];
+            }
+        };
+        $checker->endpoint = 'file://' . $directory . '/';
+        foreach (['amd64', 'arm64'] as $arch) {
+            \DockerClient::setMockResponse('/containers/' . $arch . '/json', ['Image' => 'sha256:app-' . $arch]);
+            \DockerClient::setMockResponse('/images/' . rawurlencode('sha256:app-' . $arch) . '/json', [
+                'RootFS' => ['Layers' => ['sha256:layer-' . $arch, 'sha256:application']],
+            ]);
+        }
+        $rows = [
+            ['Name' => 'amd64', 'Service' => 'amd64', 'Image' => 'stack-amd64'],
+            ['Name' => 'arm64', 'Service' => 'arm64', 'Image' => 'stack-arm64'],
+        ];
+        $builds = [
+            'amd64' => ['build' => ['dockerfile_inline' => 'FROM --platform=linux/amd64 base:latest'], 'image' => null],
+            'arm64' => ['build' => ['dockerfile_inline' => "ARG TARGETPLATFORM\nFROM --platform=\$TARGETPLATFORM base:latest AS first\nFROM first"], 'image' => null, 'platform' => 'linux/arm64'],
+        ];
+        foreach ([0, 1] as $repeat) {
+            $result = $checker->checkContainers($rows, $builds);
+            foreach (['amd64', 'arm64'] as $arch) {
+                $this->assertSame('up-to-date', $result[$arch]['status']);
+                $this->assertSame('sha256:config-' . $arch, $result[$arch]['remote']);
+                $this->assertSame('current', $result[$arch]['updateReadiness']);
+            }
+        }
+        foreach (['amd64', 'arm64'] as $arch) {
+            $result = $checker->checkMany(['base:latest'], 'linux/' . $arch);
+            $this->assertSame('sha256:config-' . $arch, $result['library/base:latest']['remote']);
+        }
+        $this->assertSame('', $checker->checkMany(['base:latest'], 'linux/arm/v7')['library/base:latest']['remote']);
+        $host = new \ReflectionMethod(\ComposeUpdateCheck::class, 'hostPlatform');
+        $hostArch = explode('/', $host->invoke(null))[1];
+        if (in_array($hostArch, ['amd64', 'arm64'], true)) {
+            $cached = json_decode((string) file_get_contents($directory . '/status.json'), true);
+            $this->assertSame('sha256:config-' . $hostArch, $cached['library/base:latest']['remote']);
+        }
+
+        $unknown = $checker->checkContainers([$rows[0]], [
+            'amd64' => ['build' => ['dockerfile_inline' => 'FROM --platform=${UNRESOLVED} base:latest'], 'image' => null],
+        ]);
+        $this->assertSame('unknown', $unknown['amd64']['status']);
+
+        $published = $checker->checkContainers([$rows[1]], [
+            'arm64' => ['build' => ['dockerfile_inline' => 'FROM base:latest'], 'image' => 'base:latest', 'platform' => 'linux/arm64'],
+        ]);
+        $this->assertSame('sha256:config-arm64', $published['arm64']['remote']);
+        $this->assertSame('image', $published['arm64']['updateKind']);
+
+        foreach ([
+            'FROM base:latest',
+            'FROM --platform=linux/arm64 base:latest',
+            "ARG BASEPLATFORM=linux/amd64\nFROM --platform=\$BASEPLATFORM base:latest",
+        ] as $dockerfile) {
+            $result = $checker->checkContainers([$rows[1]], [
+                'arm64' => [
+                    'build' => ['dockerfile_inline' => $dockerfile, 'args' => ['BASEPLATFORM' => 'linux/arm64']],
+                    'image' => null, 'platform' => 'linux/arm64',
+                ],
+            ]);
+            $this->assertSame('up-to-date', $result['arm64']['status']);
+            $this->assertSame('sha256:config-arm64', $result['arm64']['remote']);
+        }
+
+        file_put_contents($directory . '/base/manifests/latest', json_encode([
+            'config' => ['digest' => 'sha256:config-amd64'],
+        ]));
+        $class = get_class($checker);
+        $single = new $class($directory . '/single-status.json');
+        $single->endpoint = $checker->endpoint;
+        $this->assertSame('', $single->checkMany(['base:latest'], 'linux/arm64')['library/base:latest']['remote']);
+        $this->assertSame(
+            'sha256:config-amd64',
+            $single->checkMany(['base:latest'], 'linux/amd64')['library/base:latest']['remote']
+        );
     }
 }

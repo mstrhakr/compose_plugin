@@ -154,7 +154,7 @@ final class GitStackInfoTest extends TestCase
         file_put_contents($this->clone . '/whoami/app/Dockerfile', "FROM alpine:3.20\n");
         file_put_contents(
             $this->clone . '/whoami/compose.yaml',
-            "services:\n  whoami:\n    image: traefik/whoami\n  app:\n    build: ./app\n    profiles: [dev]\n"
+            "services:\n  whoami:\n    image: traefik/whoami\n  app:\n    build: ./app\n    platform: linux/arm64\n    profiles: [dev]\n"
         );
         // The default-profile build check found nothing and cached that.
         file_put_contents($this->stackDir . '/has_build', '0');
@@ -165,6 +165,7 @@ final class GitStackInfoTest extends TestCase
         $this->assertSame(['app'], array_keys($builds));
         $this->assertNull($builds['app']['image']);
         $this->assertSame($this->clone . '/whoami/app', $builds['app']['build']['context']);
+        $this->assertSame('linux/arm64', $builds['app']['platform']);
     }
 
     public function testMissingOverridesAreLeftOut(): void

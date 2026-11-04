@@ -66,6 +66,16 @@ Known image-check results replace older results, including `hasUpdate: false` an
 
 An image without a conclusive check is shown as **unchecked**, not **up-to-date**. Incomplete checks log whether the local or remote config digest was unavailable. Each container's actual image ID is compared with the remote config digest, so pulling a tag without recreating the container cannot hide its pending update. Registry checks are batched by image reference, but replicas are compared separately. The checker compares platform-specific image config digests, so a changed multi-architecture index alone does not imply an update for this host. Digest-pinned image behavior is unchanged.
 
+Review regressions cover explicit automatic project directories with single files
+and file lists; inspected references when Docker lists short image IDs; application
+registry failure preserving pending evidence; pinned bases without fabricated
+remote IDs; multiple heredocs; and image-backed versus unsupported named contexts.
+Platform tests exercise real local manifest/config files for amd64 and arm64,
+FROM/Compose/ARG platform selection, stage aliases, both platform-keyed caches,
+missing architectures and ARM variants, single-architecture mismatches, and
+isolation from Unraid's host-only shared cache. These are deterministic fixture
+checks, not a live cross-architecture Docker build.
+
 Plugin-written shared-cache entries include `configDigest`, bound to the remote
 config digest value. Runtime refreshes compare the actual container image ID
 only when that value matches `remote`. Unmarked native/legacy entries retain

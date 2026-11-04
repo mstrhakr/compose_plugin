@@ -521,7 +521,7 @@ class ExecActionsTest extends TestCase
         ]);
         \DockerClient::setMockResponse('/images/' . rawurlencode($reference) . '/json', ['Id' => $imageId]);
         $checker = new class extends \ComposeUpdateCheck {
-            protected function fetchRemoteImageConfig(string $image): ?array
+            protected function fetchRemoteImageConfig(string $image, ?string $platform = null): ?array
             {
                 return ['digest' => 'sha256:new-base', 'diffIds' => ['sha256:new-base-layer']];
             }

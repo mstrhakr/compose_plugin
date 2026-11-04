@@ -48,10 +48,11 @@ class ComposeUpdateCheck
      * provided images. Duplicate images in $images are checked only once.
      *
      * @param string[] $images
+     * @param string|null $platform Target os/architecture[/variant], or the host platform
      * @return array<string, array{local: string, remote: string, status: string, hasUpdate: bool}>
      *   Keys are normalized image names.
      */
-    public function checkMany(array $images): array
+    public function checkMany(array $images, ?string $platform = null): array
     {
         $status = $this->loadStatus();
         $results = [];
@@ -64,24 +65,28 @@ class ComposeUpdateCheck
             }
 
             $local  = $this->inspectLocalConfigDigest($image);
-            $remote = $this->fetchRemoteConfigDigest($image);
+            $remote = $this->fetchRemoteConfigDigest($image, $platform);
             if (!$local || !$remote) {
                 composeLogger('Image update check incomplete', [
                     'image' => $image,
+                    'platform' => $platform ?? self::hostPlatform(),
                     'localDigestAvailable' => (bool) $local,
                     'remoteDigestAvailable' => (bool) $remote,
                 ], 'user', 'warning', 'update-check');
             }
             $summary = $this->summarize($local, $remote);
 
-            $status[$image] = [
-                'local'  => (string) ($local ?? ''),
-                'remote' => (string) ($remote ?? ''),
-                'status' => $summary['statusRaw'],
-                // Bind provenance to the value: native writers may replace remote independently.
-                'configDigest' => (string) ($remote ?? ''),
-            ];
-            $dirty = true;
+            // Unraid's shared cache has no platform dimension; keep foreign targets out.
+            if ($platform === null || $platform === self::hostPlatform()) {
+                $status[$image] = [
+                    'local'  => (string) ($local ?? ''),
+                    'remote' => (string) ($remote ?? ''),
+                    'status' => $summary['statusRaw'],
+                    // Bind provenance to the value: native writers may replace remote independently.
+                    'configDigest' => (string) ($remote ?? ''),
+                ];
+                $dirty = true;
+            }
             $results[$image] = $summary['result'];
         }
 
@@ -101,7 +106,7 @@ class ComposeUpdateCheck
      * against their Dockerfile base image instead. Services that also name an
      * image retain unknown application evidence when registry checks fail.
      *
-     * @param array<string, array{build: array<string, mixed>, image: ?string}> $buildConfigs Keyed by service name
+     * @param array<string, array{build: array<string, mixed>, image: ?string, platform?: string}> $buildConfigs Keyed by service name
      * @return array<string, array{local: string, remote: string, status: string, hasUpdate: bool, localImage: string, updateKind: string, updateReadiness: string, image?: string}>
      */
     public function checkContainers(array $containers, array $buildConfigs = []): array
@@ -124,11 +129,14 @@ class ComposeUpdateCheck
             $build = $buildConfigs[ContainerInfo::resolveService($container)] ?? null;
             if ($image !== '' && strpos($image, '@sha256:') === false
                 && ($build === null || $build['image'] !== null)) {
-                $images[] = $image;
+                $images[$build['platform'] ?? ''][] = $image;
             }
         }
         unset($container);
-        $imageResults = $images ? $this->checkMany($images) : [];
+        $imageResults = [];
+        foreach ($images as $platform => $references) {
+            $imageResults[$platform] = $this->checkMany($references, $platform !== '' ? $platform : null);
+        }
         $results = [];
         foreach ($containers as $container) {
             $name = trim((string) ($container['Name'] ?? $container['name'] ?? $container['Names'] ?? ''));
@@ -137,7 +145,7 @@ class ComposeUpdateCheck
                 continue;
             }
             $build = $buildConfigs[ContainerInfo::resolveService($container)] ?? null;
-            $imageResult = $imageResults[ContainerInfo::normalizeImageForUpdateCheck($image)] ?? [];
+            $imageResult = $imageResults[$build['platform'] ?? ''][ContainerInfo::normalizeImageForUpdateCheck($image)] ?? [];
             $inspect = $inspections[$name] ?? [];
             $local = !empty($inspect['Image']) ? (string) $inspect['Image'] : null;
             $remote = !empty($imageResult['remote']) ? (string) $imageResult['remote'] : null;
@@ -153,9 +161,8 @@ class ComposeUpdateCheck
                 continue;
             }
             if ($build !== null && $build['image'] === null && $local !== null) {
-                $reference = (string) ($inspect['Config']['Image'] ?? $image);
-                $results[$name] = $this->checkBuiltImage($name, $local, $reference, $build['build'])
-                    + ['image' => $reference];
+                $results[$name] = $this->checkBuiltImage($name, $local, $image, $build['build'], $build['platform'] ?? null)
+                    + ['image' => $image];
                 continue;
             }
             $results[$name] = $this->summarize($local, $remote)['result'];
@@ -179,6 +186,15 @@ class ComposeUpdateCheck
      */
     public static function resolveDockerfileBaseImage(array $build): ?string
     {
+        return self::resolveDockerfileBase($build)['image'] ?? null;
+    }
+
+    /**
+     * @param array<string, mixed> $build
+     * @return array{image: string, platform: string}|null
+     */
+    private static function resolveDockerfileBase(array $build, ?string $platform = null): ?array
+    {
         $dockerfile = self::readDockerfile($build);
         if ($dockerfile === null) {
             return null;
@@ -191,7 +207,8 @@ class ComposeUpdateCheck
             }
         }
 
-        $globalArgs = [];
+        $host = self::hostPlatform();
+        $globalArgs = ['BUILDPLATFORM' => $host, 'TARGETPLATFORM' => $platform ?? $host];
         $stages = [];
         foreach (self::dockerfileInstructions($dockerfile) as [$instruction, $arguments]) {
             if ($instruction === 'ARG' && $stages === []) {
@@ -205,9 +222,13 @@ class ComposeUpdateCheck
                         $literal = trim($parts[1], '"\'');
                         $default = $literal === '' ? '' : self::expandDockerfileArgs($literal, $globalArgs);
                     }
-                    $globalArgs[$parts[0]] = $buildArgs[$parts[0]] ?? $default;
+                    $globalArgs[$parts[0]] = $buildArgs[$parts[0]] ?? $default ?? ($globalArgs[$parts[0]] ?? null);
                 }
             } elseif ($instruction === 'FROM') {
+                $stagePlatform = $platform ?? $host;
+                if (preg_match('/(?:^|\s)--platform=(\S+)/', $arguments, $match)) {
+                    $stagePlatform = self::expandDockerfileArgs($match[1], $globalArgs);
+                }
                 $tokens = array_values(array_filter(
                     preg_split('/\s+/', $arguments),
                     static fn(string $token): bool => $token !== '' && strpos($token, '--') !== 0
@@ -217,6 +238,7 @@ class ComposeUpdateCheck
                 }
                 $stages[] = [
                     'from' => self::expandDockerfileArgs($tokens[0], $globalArgs),
+                    'platform' => $stagePlatform,
                     'name' => (isset($tokens[2]) && strtoupper($tokens[1]) === 'AS') ? strtolower($tokens[2]) : null,
                 ];
             }
@@ -252,13 +274,22 @@ class ComposeUpdateCheck
                 }
             }
             if ($previous === null) {
+                $stagePlatform = $stages[$index]['platform'];
+                if ($stagePlatform === null || !self::validPlatform($stagePlatform)) {
+                    return null;
+                }
                 $contexts = $build['additional_contexts'] ?? [];
                 if (is_array($contexts) && array_key_exists($from, $contexts)) {
                     $context = $contexts[$from];
-                    return is_string($context) && str_starts_with($context, 'docker-image://')
-                        ? (substr($context, strlen('docker-image://')) ?: null) : null;
+                    if (!is_string($context) || !str_starts_with($context, 'docker-image://')) {
+                        return null;
+                    }
+                    $from = substr($context, strlen('docker-image://'));
+                    if ($from === '') {
+                        return null;
+                    }
                 }
-                return strtolower($from) === 'scratch' ? 'scratch' : $from;
+                return ['image' => strtolower($from) === 'scratch' ? 'scratch' : $from, 'platform' => $stagePlatform];
             }
             $index = $previous;
         }
@@ -276,13 +307,14 @@ class ComposeUpdateCheck
      * @param array<string, mixed> $build
      * @return array{local: string, remote: string, status: string, hasUpdate: bool, localImage: string, updateKind: string, updateReadiness: string}
      */
-    private function checkBuiltImage(string $container, string $imageId, string $image, array $build): array
+    private function checkBuiltImage(string $container, string $imageId, string $image, array $build, ?string $platform = null): array
     {
         $unknown = [
             'local' => $imageId, 'remote' => '', 'status' => 'unknown', 'hasUpdate' => false,
             'localImage' => '', 'updateKind' => 'build-base', 'updateReadiness' => 'unknown',
         ];
-        $base = self::resolveDockerfileBaseImage($build);
+        $resolved = self::resolveDockerfileBase($build, $platform);
+        $base = $resolved['image'] ?? null;
         if ($base === null || $base === 'scratch') {
             composeLogger('Build base image unavailable for update check', [
                 'container' => $container,
@@ -297,10 +329,12 @@ class ComposeUpdateCheck
         }
 
         $baseKey = ContainerInfo::normalizeImageForUpdateCheck($base);
-        if (!array_key_exists($baseKey, $this->baseConfigs)) {
-            $this->baseConfigs[$baseKey] = $this->fetchRemoteImageConfig($baseKey);
+        $platform = $resolved['platform'];
+        $cacheKey = $baseKey . '|' . $platform;
+        if (!array_key_exists($cacheKey, $this->baseConfigs)) {
+            $this->baseConfigs[$cacheKey] = $this->fetchRemoteImageConfig($baseKey, $platform);
         }
-        $remote = $this->baseConfigs[$baseKey];
+        $remote = $this->baseConfigs[$cacheKey];
         $inspect = (new DockerClient())->getDockerJSON('/images/' . rawurlencode($imageId) . '/json');
         $layers = $inspect['RootFS']['Layers'] ?? null;
         if ($remote === null || !is_array($layers) || $layers === []) {
@@ -456,9 +490,9 @@ class ComposeUpdateCheck
      *
      * @return array{digest: string, diffIds: string[]}|null
      */
-    protected function fetchRemoteImageConfig(string $image): ?array
+    protected function fetchRemoteImageConfig(string $image, ?string $platform = null): ?array
     {
-        $manifest = $this->fetchRemoteManifest($image);
+        $manifest = $this->fetchRemoteManifest($image, $platform);
         if ($manifest === null) {
             return null;
         }
@@ -547,9 +581,9 @@ class ComposeUpdateCheck
      * return no digest. Manifest digests cannot be compared to Docker's
      * local config digest.
      */
-    private function fetchRemoteConfigDigest(string $image): ?string
+    private function fetchRemoteConfigDigest(string $image, ?string $platform = null): ?string
     {
-        return $this->fetchRemoteManifest($image)['configDigest'] ?? null;
+        return $this->fetchRemoteManifest($image, $platform)['configDigest'] ?? null;
     }
 
     /**
@@ -557,22 +591,26 @@ class ComposeUpdateCheck
      *
      * @return array{configDigest: string, blobUrl: string, header: string[], basicUserPwd: ?string}|null
      */
-    private function fetchRemoteManifest(string $image): ?array
+    private function fetchRemoteManifest(string $image, ?string $platform = null): ?array
     {
-        if (!array_key_exists($image, $this->remoteManifests)) {
-            $this->remoteManifests[$image] = $this->requestRemoteManifest($image);
+        $platform ??= self::hostPlatform();
+        $key = $image . '|' . $platform;
+        if (!array_key_exists($key, $this->remoteManifests)) {
+            $this->remoteManifests[$key] = self::validPlatform($platform)
+                ? $this->requestRemoteManifest($image, $platform) : null;
         }
-        return $this->remoteManifests[$image];
+        return $this->remoteManifests[$key];
     }
 
     /** @return array{configDigest: string, blobUrl: string, header: string[], basicUserPwd: ?string}|null */
-    private function requestRemoteManifest(string $image): ?array
+    private function requestRemoteManifest(string $image, string $platform): ?array
     {
         try {
             $auth = $this->resolveRegistryAuth($image);
         } catch (RuntimeException $error) {
             composeLogger('Unable to load attached registry credential for update check', [
                 'image' => $image,
+                'platform' => $platform,
                 'credentialId' => $this->credentialId,
             ], 'user', 'error', 'update-check');
             return null;
@@ -643,7 +681,7 @@ class ComposeUpdateCheck
         ], true) || !empty($manifest['manifests']);
 
         if ($isIndex && is_array($manifest['manifests'] ?? null)) {
-            $platformDigest = $this->pickPlatformManifestDigest($manifest['manifests']);
+            $platformDigest = $this->pickPlatformManifestDigest($manifest['manifests'], $platform);
             if (!$platformDigest) {
                 return null;
             }
@@ -660,9 +698,23 @@ class ComposeUpdateCheck
         if ($configDigest === '') {
             return null;
         }
+        $blobUrl = sprintf('%s%s%s/blobs/%s', $auth['apiUrl'], $auth['repository'], $auth['imageName'], $configDigest);
+        if (!$isIndex) {
+            $config = $this->httpGetJson($blobUrl, $header, $basicUserPwd);
+            if ($config === null || $this->pickPlatformManifestDigest([[
+                'platform' => [
+                    'os' => $config['os'] ?? '',
+                    'architecture' => $config['architecture'] ?? '',
+                    'variant' => $config['variant'] ?? '',
+                ],
+                'digest' => $configDigest,
+            ]], $platform) === null) {
+                return null;
+            }
+        }
         return [
             'configDigest' => $configDigest,
-            'blobUrl' => sprintf('%s%s%s/blobs/%s', $auth['apiUrl'], $auth['repository'], $auth['imageName'], $configDigest),
+            'blobUrl' => $blobUrl,
             'header' => $header,
             'basicUserPwd' => $basicUserPwd,
         ];
@@ -716,49 +768,46 @@ class ComposeUpdateCheck
         return is_array($json) ? $json : null;
     }
 
-    /**
-     * Pick the manifest entry matching the running host's platform.
-     * Preferences (in order):
-     *   1. Exact match on os=linux + architecture=<host arch>.
-     *   2. linux/amd64 as a safe fallback (Unraid is amd64 today; future-
-     *      proofed for ARM Unraid via the arch map).
-     *   3. First non-attestation entry with a digest.
-     *
-     * Attestation manifests (architecture=="unknown", added by buildx for
-     * SBOM/provenance) are always skipped so they can't be selected as the
-     * "image" to compare.
-     */
-    private function pickPlatformManifestDigest(array $manifests): ?string
+    private static function hostPlatform(): string
     {
         $archMap = [
             'x86_64'  => 'amd64',
             'amd64'   => 'amd64',
             'aarch64' => 'arm64',
             'arm64'   => 'arm64',
-            'armv7l'  => 'arm',
-            'armv6l'  => 'arm',
+            'armv7l'  => 'arm/v7',
+            'armv6l'  => 'arm/v6',
         ];
-        $wantArch = $archMap[php_uname('m')] ?? 'amd64';
-        $wantOs   = 'linux';
+        return 'linux/' . ($archMap[php_uname('m')] ?? php_uname('m'));
+    }
 
+    private static function validPlatform(string $platform): bool
+    {
+        return preg_match('~^[a-z0-9_.-]+/[a-z0-9_.-]+(?:/[a-z0-9_.-]+)?$~D', $platform) === 1;
+    }
+
+    /** Select only the requested platform; never substitute another architecture. */
+    private function pickPlatformManifestDigest(array $manifests, ?string $platform = null): ?string
+    {
+        $platform ??= self::hostPlatform();
+        if (!self::validPlatform($platform)) {
+            return null;
+        }
+        [$wantOs, $wantArch] = explode('/', $platform);
+        $wantVariant = explode('/', $platform)[2] ?? '';
         foreach ($manifests as $entry) {
             $p = $entry['platform'] ?? [];
             if (($p['architecture'] ?? '') === 'unknown') continue;
-            if (($p['os'] ?? '') === $wantOs && ($p['architecture'] ?? '') === $wantArch) {
+            $variant = $p['variant'] ?? '';
+            // OCI arm64/v8 and arm64 without a variant describe the same baseline.
+            if ($wantArch === 'arm64' && in_array($variant, ['', 'v8'], true)
+                && in_array($wantVariant, ['', 'v8'], true)) {
+                $variant = $wantVariant;
+            }
+            if (($p['os'] ?? '') === $wantOs && ($p['architecture'] ?? '') === $wantArch
+                && $variant === $wantVariant) {
                 if (!empty($entry['digest'])) return (string) $entry['digest'];
             }
-        }
-        foreach ($manifests as $entry) {
-            $p = $entry['platform'] ?? [];
-            if (($p['architecture'] ?? '') === 'unknown') continue;
-            if (($p['os'] ?? '') === 'linux' && ($p['architecture'] ?? '') === 'amd64') {
-                if (!empty($entry['digest'])) return (string) $entry['digest'];
-            }
-        }
-        foreach ($manifests as $entry) {
-            $p = $entry['platform'] ?? [];
-            if (($p['architecture'] ?? '') === 'unknown') continue;
-            if (!empty($entry['digest'])) return (string) $entry['digest'];
         }
         return null;
     }

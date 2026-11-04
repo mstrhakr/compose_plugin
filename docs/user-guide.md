@@ -49,6 +49,13 @@ Individual, **Check All**, and periodic browser update checks inspect all existi
 
 Services built locally from a `build:` section without a published `image:` are checked against the base image of their Dockerfile's final stage. An update is shown when the registry's base image no longer matches the layers the local image was built on. To apply it, enable **Build on update** for the stack; **Update Stack** then rebuilds with `docker compose build --pull` so the newer base image is used (base images that only exist locally are built from the local copy).
 
+Base checks honor the originating stage's platform and the Compose service's
+default platform. Unsupported/unresolved platforms and non-image named build
+contexts remain unchecked rather than being compared against an unrelated image.
+Services with an explicit `image:` retain application-image checks: a registry
+failure cannot be treated as proof that the application is current merely because
+its Dockerfile base is current.
+
 Individual updates, bulk updates, and scheduled auto-updates all use the same update engine and honor the stack's **Build on update** setting, falling back to the global default. When refreshing base images fails, the engine logs a warning before retrying the build with local base images.
 
 Automatic updates only operate on eligible running services, not stopped siblings or undeployed profile services. With **Build on update** enabled, each scheduled run performs a cached build of those services to discover base-image or source changes; containers are recreated only when their running image IDs differ from the resulting local images. Unchanged and stopped stacks do not produce success notifications. Build failures are reported through logs and notifications without proceeding to recreation.

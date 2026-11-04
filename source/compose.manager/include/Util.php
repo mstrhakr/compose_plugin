@@ -3990,7 +3990,7 @@ class StackInfo
      * Resolved build sections for services that build locally, including
      * services behind profiles (hasBuildConfig() only sees default ones).
      *
-     * @return array<string, array{build: array<string, mixed>, image: ?string}> Keyed by service name
+     * @return array<string, array{build: array<string, mixed>, image: ?string, platform?: string}> Keyed by service name
      */
     public function getBuildConfigs(): array
     {
@@ -4023,6 +4023,9 @@ class StackInfo
             }
             $image = trim((string) ($definition['image'] ?? ''));
             $builds[(string) $service] = ['build' => $definition['build'], 'image' => $image !== '' ? $image : null];
+            if (is_string($definition['platform'] ?? null) && $definition['platform'] !== '') {
+                $builds[(string) $service]['platform'] = $definition['platform'];
+            }
         }
         return $builds;
     }

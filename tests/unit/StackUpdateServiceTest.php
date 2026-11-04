@@ -13,12 +13,12 @@ class StackUpdateServiceTest extends TestCase
     public function testNamedBuildRegistryFailurePreservesPendingApplicationEvidence(): void
     {
         $checker = new class extends \ComposeUpdateCheck {
-            public function checkMany(array $images): array
+            public function checkMany(array $images, ?string $platform = null): array
             {
                 return [];
             }
 
-            protected function fetchRemoteImageConfig(string $image): ?array
+            protected function fetchRemoteImageConfig(string $image, ?string $platform = null): ?array
             {
                 throw new \LogicException('Application registry failure must not fall back to a public base.');
             }
