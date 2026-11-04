@@ -106,6 +106,22 @@ run_auto_adapter() {
     grep -F 'up -d --scale app=1 --pull never --no-deps app' "$CALLS"
 }
 
+@test "relative workdir is forwarded as the absolute Compose project directory" {
+    run bash -c 'cd "$1" && bash "$2" -cupdate -pstack -wstack' \
+        _ "$TEST_TEMP_DIR" "$COMPOSE_SCRIPT"
+    assert_success
+    grep -F "compose --project-directory $TEST_TEMP_DIR/stack -p stack pull app" "$CALLS"
+    ! grep -F 'project-directory stack ' "$CALLS"
+}
+
+@test "legacy automatic relative project directory is resolved only once" {
+    export COMPOSE_PROJECT_DIR=stack
+    run bash -c 'cd "$1" && bash "$2" "$1/input.yaml" stack' \
+        _ "$TEST_TEMP_DIR" "$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
+    assert_success
+    grep -F "compose -f $TEST_TEMP_DIR/input.yaml --project-directory $TEST_TEMP_DIR/stack -p stack pull --ignore-buildable app" "$CALLS"
+}
+
 @test "manual updates reconcile even when image IDs are unchanged" {
     export CHANGE=false
     run_update

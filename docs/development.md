@@ -187,6 +187,8 @@ registry lookup for an explicitly named application image remains unknown,
 preserving matching pending evidence rather than replacing it with base evidence.
 Legacy automatic invocations retain `COMPOSE_PROJECT_DIR` alongside explicit
 files as an actual Compose `--project-directory` argument.
+The wrapper canonicalizes that directory after changing into it, so relative
+workdirs are not resolved a second time by Compose.
 Dockerfile scanning consumes all heredoc bodies before interpreting subsequent
 instructions. Image-backed named build contexts are resolved to their image
 reference; service/directory contexts remain unknown. A digest-pinned base is

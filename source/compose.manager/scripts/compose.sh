@@ -293,6 +293,7 @@ if [ -n "$project_directory" ]; then
     log_msg "ERROR" "Failed to cd into project directory: $project_directory"
     exit 1
   fi
+  project_directory="$PWD"
 fi
 
 # Build the compose base command as an array (no eval needed).
