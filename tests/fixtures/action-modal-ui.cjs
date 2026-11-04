@@ -159,4 +159,80 @@ for (const native of [true, false]) {
 
 assert.ok(!/openBox\(/.test(main.replace(/function openComposeActionBox\([^]*?\n\}/, '')),
     'All main-page action terminals must use the no-navigation wrapper');
+
+{
+    const attributes = { 'data-ctids': 'oldcontainer1,oldcontainer2' };
+    const data = {};
+    const timers = new Map();
+    const requests = [];
+    const renderedHealth = [];
+    const aggregateMembership = [];
+    let response;
+    const row = {
+        length: 1,
+        attr(key, value) {
+            if (value === undefined) return key === 'id' ? 'stack-row-1' : attributes[key];
+            attributes[key] = value;
+            return this;
+        },
+        data(key, value) { data[key] = value; return this; },
+        is: () => true,
+        slideDown() {},
+    };
+    const context = {
+        caURL: 'exec', composeHealthRefreshTimers: {}, composeUpdateCheckRevision: {},
+        pendingComposeRefreshCount: 0, stackContainersCache: {}, stackStartedAtCache: {},
+        expandedStacks: { 1: true },
+        composeLogger: () => {},
+        processPendingUpdateChecks: () => {},
+        composeCheckedContainers: value => value.containers,
+        triggerComposeListRefreshedDebounced: () => aggregateMembership.push(attributes['data-ctids']),
+        setTimeout: fn => { const key = {}; timers.set(key, fn); return key; },
+        clearTimeout: key => timers.delete(key),
+        $: () => row,
+        renderContainerDetails: (id, containers) => renderedHealth.push(containers.map(ct => ct.health)),
+    };
+    context.$.post = (url, payload, callback) => {
+        requests.push(payload.script);
+        callback(JSON.stringify(response));
+        return { fail() {} };
+    };
+    load(context, main, ['composeNormalizeHealthStatus', 'reconcileStackRuntimeMetadata',
+        'refreshStackRow', 'refreshStackByProject']);
+    context.updateParentStackFromContainers = (id, project) => {
+        context.reconcileStackRuntimeMetadata(row, project, context.stackContainersCache[id]);
+    };
+    const containers = [
+        { id: 'a'.repeat(64), name: 'database', state: 'running', isRunning: true, health: 'healthy' },
+        { id: 'b'.repeat(64), name: 'app', state: 'running', isRunning: true, health: 'starting' },
+    ];
+    response = { result: 'success', containers };
+    context.refreshStackRow('1', 'stack');
+    assert.deepEqual(aggregateMembership, ['aaaaaaaaaaaa,bbbbbbbbbbbb'],
+        'Metric membership switches from old IDs to replacement IDs');
+    assert.equal(data.ctids, attributes['data-ctids'], 'jQuery and DOM memberships agree');
+    assert.deepEqual(Array.from(data.containers), ['database', 'app']);
+    assert.equal(timers.size, 1, 'Starting health schedules another inspect refresh');
+    context.refreshStackRow('1', 'stack');
+    assert.equal(timers.size, 1, 'Repeated close/completion refreshes do not multiply health polls');
+    response.containers[1].health = 'healthy';
+    const [key, callback] = [...timers][0];
+    timers.delete(key);
+    callback();
+    assert.deepEqual(requests, ['stack', 'stack', 'stack']);
+    assert.deepEqual(Array.from(renderedHealth.at(-1)), ['healthy', 'healthy'],
+        'Expanded health follows starting to healthy without navigation');
+    assert.equal(timers.size, 0, 'Settled health stops polling');
+    assert.equal(aggregateMembership.length, 1, 'Health-only updates retain metric membership');
+    response.containers[1].health = 'starting';
+    context.refreshStackRow('1', 'stack');
+    response.containers[1].health = 'unhealthy';
+    context.refreshStackRow('1', 'stack');
+    assert.equal(timers.size, 0, 'Unhealthy is a terminal result, not an endless starting spinner');
+    response.containers = [];
+    context.refreshStackRow('1', 'stack');
+    assert.equal(attributes['data-ctids'], '');
+    assert.deepEqual(Array.from(data.containers), []);
+}
+
 console.log('Action modal close regressions passed.');

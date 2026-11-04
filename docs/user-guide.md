@@ -89,6 +89,9 @@ Closing an action terminal refreshes the affected stack rows without reloading
 the page. Closing is not completion: operation tracking continues independently,
 and refreshes the stack again when its operation lock is released. Dashboard
 action terminals refresh the Compose tile when closed.
+Recreated container IDs are also refreshed for live stack metrics. Containers
+whose health is still `starting` are checked again every five seconds until
+their health settles; closing the terminal does not freeze that first snapshot.
 Check the stack's last command log and operation result before retrying.
 
 #### Changelogs

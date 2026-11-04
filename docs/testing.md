@@ -194,6 +194,10 @@ URLs; explicit close callbacks; and a still-locked operation completing after
 early close. Close must refresh without clearing busy state or cancelling polls.
 Dashboard coverage also exercises its direct Shadowbox fallback and globally
 accessible callback.
+The post-operation runtime regression replaces both container IDs, checks DOM
+and jQuery metric membership, and follows health from starting to healthy (or
+unhealthy) through real targeted refresh callbacks. Health polling must stop
+when settled and must not multiply when close and completion both refresh.
 
 Docker visibility tests run without any inline Compose table. They cover delayed
 Docker table insertion, row replacement, removed stacks, case-sensitive names,

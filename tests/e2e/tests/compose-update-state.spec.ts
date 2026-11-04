@@ -302,6 +302,7 @@ test.describe('Compose update state regressions', () => {
         function buildStackInfoFromCache() { return createStackInfo('stack', [{ name: 'app', state: 'running' }]); }
         function deriveStackState() { return { label: 'started', state: 'started', runningCount: 1, totalCount: 1, colorClass: 'green-text' }; }
         function applyListEnhancements() {}
+        function reconcileStackRuntimeMetadata() {}
         ${refresh}
         updateParentStackFromContainers('1', 'stack');
       `);

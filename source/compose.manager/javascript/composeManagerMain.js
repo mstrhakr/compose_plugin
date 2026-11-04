@@ -760,6 +760,7 @@ function mergeStackUpdateStatus(stackInfo, prevStatus, freshCheck) {
 
 // Timers for async operations (plugin-specific to avoid collision with Unraid's global timers)
 var composeTimers = {};
+var composeHealthRefreshTimers = {};
 var composeListRefreshedDebounceTimer = null;
 
 function triggerComposeListRefreshedDebounced(delayMs) {
@@ -9449,6 +9450,35 @@ function buildStackInfoFromCache(stackId, project) {
     return createStackInfo(project, containers);
 }
 
+function reconcileStackRuntimeMetadata($stackRow, project, containers) {
+    var ids = containers.map(function(container) {
+        return String(container.id || '').replace(/^sha256:/, '').slice(0, 12);
+    }).filter(Boolean).join(',');
+    var names = JSON.stringify(containers.map(function(container) {
+        return container.name;
+    }).filter(Boolean));
+    var changed = $stackRow.attr('data-ctids') !== ids;
+    $stackRow.attr('data-ctids', ids).data('ctids', ids);
+    $stackRow.attr('data-containers', names).data('containers', JSON.parse(names));
+    if (changed) {
+        triggerComposeListRefreshedDebounced();
+    }
+
+    var starting = containers.some(function(container) {
+        return container.isRunning && composeNormalizeHealthStatus(container.health, container.state) === 'starting';
+    });
+    if (!starting) {
+        clearTimeout(composeHealthRefreshTimers[project]);
+        delete composeHealthRefreshTimers[project];
+    } else if (!composeHealthRefreshTimers[project]) {
+        // The operation lock can be released before Docker's health checks settle.
+        composeHealthRefreshTimers[project] = setTimeout(function() {
+            delete composeHealthRefreshTimers[project];
+            refreshStackByProject(project);
+        }, 5000);
+    }
+}
+
 // Update only the parent stack row using cached container details
 function updateParentStackFromContainers(stackId, project) {
     try {
@@ -9466,6 +9496,7 @@ function updateParentStackFromContainers(stackId, project) {
         // Update the update-column using existing helper (expects stackInfo)
         var stackInfo = buildStackInfoFromCache(stackId, project);
         if (stackUpdateStatus[project]) stackInfo.lastChecked = stackUpdateStatus[project].lastChecked;
+        reconcileStackRuntimeMetadata($stackRow, project, stackInfo.containers);
 
         // Cache the merged update status and apply UI update
         stackUpdateStatus[project] = stackInfo;
