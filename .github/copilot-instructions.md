@@ -36,6 +36,21 @@ for project setup and architecture.
 - When extracting shared code, validate its callers as well as the extracted
   module. Passing tests or lint on the new file alone is insufficient.
 
+## Reviewing changes and feedback
+
+- Validate each finding against the implementation, then inspect callers,
+  sibling workflows, and tangentially related paths for the same failure mode
+  and nearby correctness issues. Keep that expansion evidence-driven; do not
+  turn a focused fix into unrelated cleanup.
+- Review maintainability alongside correctness: DRY, SOLID ownership boundaries,
+  existing shared helpers, and algorithmic complexity. State Big-O for affected
+  hot paths and check repeated I/O, N+1 work, unbounded resources, and races.
+- Before fixing, identify the existing contract: response shapes, failure
+  behavior, lifecycle/ownership, scope, and intentional caller differences.
+  Preserve it and test related entry points; ask before changing semantics.
+- Report confirmed defects separately from design concerns, with locations,
+  concrete fixes, and regression evidence. Commit fixes in validated slices.
+
 ## Before each code commit
 
 - Commit completed, validated work in coherent slices as you go, before
