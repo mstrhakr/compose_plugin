@@ -405,6 +405,61 @@ ${fn('beginStackRuntimeRequest', 'prefetchStackDetailsInBackground')}`;
     }
   });
 
+  test('image-preparing Up and single updates require successful persisted recheck preparation', async ({ page }) => {
+    const preparation = fn('prepareStackRechecks', 'updateStackUpdateUI');
+    const confirmed = fn('confirmedComposeAction', 'ComposeRecreateConfirmed');
+    const force = fn('ForceUpdateStackConfirmed', 'ForceUpdateStack');
+    const update = fn('UpdateStackConfirmed', 'UpdateStack');
+    const results = await page.evaluate(({ preparation, confirmed, force, update }) =>
+      ['up', 'prepareUp', 'update', 'force'].flatMap(action =>
+        ['network', 'empty', 'invalid', 'error', 'success'].map(mode => new Function('action', 'mode', `
+          var requests = [], dispatched = [], notices = [], caURL = '/exec', compURL = '/compose';
+          var $ = { extend: (...args) => Object.assign({}, ...args.filter(value => typeof value === 'object')) };
+          $.ajax = options => {
+            requests.push(options.data);
+            return {
+              done(callback) {
+                if (mode !== 'network') callback(mode === 'empty' ? '' : mode === 'invalid' ? '{broken' : { result: mode });
+                return this;
+              },
+              fail(callback) { if (mode === 'network') callback(); return this; }
+            };
+          };
+          function basename(path) { return path.split('/').pop(); }
+          function composeIdentityBlocked() { return false; }
+          function composeLogger() {}
+          function tryParseJson(value) { try { return JSON.parse(value); } catch { return null; } }
+          function swal(value) { notices.push(value.type); }
+          function performComposeAction(options) { dispatched.push(options); }
+          ${preparation}
+          ${confirmed}
+          ${force}
+          ${update}
+          if (action === 'update') UpdateStackConfirmed('/stacks/app', { includeStopped: true, profile: 'worker' });
+          else if (action === 'force') ForceUpdateStackConfirmed('/stacks/app', { includeStopped: true });
+          else ComposeUpConfirmed('/stacks/app', { prepareImages: action === 'prepareUp', profile: 'worker', background: true });
+          return { action, mode, requests, dispatched, notices };
+        `)(action, mode))), { preparation, confirmed, force, update });
+    for (const result of results) {
+      const shouldDispatch = result.action === 'up' || result.mode === 'success';
+      expect(result.dispatched.length).toBe(shouldDispatch ? 1 : 0);
+      expect(result.requests.length).toBe(result.action === 'up' ? 0 : 1);
+      expect(result.notices).toEqual(shouldDispatch ? [] : ['error']);
+      if (result.requests.length) {
+        expect(result.requests[0]).toEqual({ action: 'markStackForRecheck', stacks: '["app"]' });
+      }
+      if (shouldDispatch && ['up', 'prepareUp'].includes(result.action)) {
+        expect(result.dispatched[0].payload.prepareImages).toBe(result.action === 'prepareUp' ? '1' : '0');
+        expect(result.dispatched[0].payload.profile).toBe('worker');
+        expect(result.dispatched[0].background).toBe(true);
+      }
+      if (shouldDispatch && result.action === 'update') {
+        expect(result.dispatched[0].payload.includeStopped).toBe('1');
+        expect(result.dispatched[0].payload.profile).toBe('worker');
+      }
+    }
+  });
+
   test('malformed, empty and failed container responses clean progress and request reconciliation', async ({ page }) => {
     const container = fn('containerAction', 'addComposeStackContext');
     const result = await page.evaluate(container => ['malformed', 'empty', 'network', 'server'].map(mode => new Function('mode', `

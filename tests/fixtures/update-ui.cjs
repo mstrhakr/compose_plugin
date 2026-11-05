@@ -49,7 +49,7 @@ function harness(config = {}) {
     vm.runInContext(fs.readFileSync(`${__dirname}/../../source/compose.manager/javascript/composeUpdateStatus.js`, 'utf8'), context);
     for (const name of ['ComposeUpConfirmed', 'composeUpdateScopeOptionHtml', 'ForceUpdateStackConfirmed', 'UpdateStackConfirmed',
         'renderStackActionDialog', 'showStackActionDialog', 'composeUpdateDigestDetails', 'executeUpdateAllStacks', 'updateAllStacks', 'showProfileSelector',
-        'composeUpdateDetailsTable',
+        'composeUpdateDetailsTable', 'prepareStackRechecks',
         'updateStackUpdateUI', 'showUpdateWarning', 'createContainerInfo', 'composeImageUpdateKey', 'mergeContainerUpdateStatus',
         'mergeStackUpdateStatus', 'mergeUpdateStatus', 'checkAllUpdates', 'composeUpdateCheckBadge',
         'setComposeUpdateCheckState', 'composeCheckedContainers', 'composeContainerUpdateBadge',

@@ -42,6 +42,12 @@ Attached Up/log-following with safe detach and reconnect is deferred beyond
 this beta in [feature request #197](https://github.com/mstrhakr/compose_plugin/issues/197).
 The new finite-action controls do not implement that long-running lifecycle.
 
+Pull/Build & Up persists a post-operation image recheck before dispatch; ordinary
+Up does not. Update, Force Update, and Update All share the same validated
+preparation step. Empty, malformed, refused, or failed preparation prevents
+dispatch with an explicit error. Mark/clear endpoints report persistence failure
+rather than claiming a saved change.
+
 Pending post-update checks use one busy-aware drain for both progressive rows
 and completed runtime refreshes; queued/running operations keep their pending
 checks until completion, including an action started before a deferred drain.

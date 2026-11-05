@@ -111,6 +111,32 @@ class ExecActionsTest extends TestCase
         return $output ?: '';
     }
 
+    public function testRecheckPersistencePreservesResponseContractsAndReportsWriteFailure(): void
+    {
+        $original = is_file(PENDING_RECHECK_FILE) ? file_get_contents(PENDING_RECHECK_FILE) : null;
+        try {
+            file_put_contents(PENDING_RECHECK_FILE, '{"existing":1}');
+            $marked = json_decode($this->executeAction('markStackForRecheck', ['stacks' => '["constructor","app"]']), true);
+            $this->assertSame('success', $marked['result']);
+            $this->assertSame(['existing', 'constructor', 'app'], $marked['pending']);
+            $saved = json_decode((string) file_get_contents(PENDING_RECHECK_FILE), true);
+            $this->assertIsInt($saved['app']);
+            $cleared = json_decode($this->executeAction('clearStackRecheck', ['stacks' => '["app"]']), true);
+            $this->assertSame(['result' => 'success', 'remaining' => ['existing', 'constructor']], $cleared);
+            unlink(PENDING_RECHECK_FILE);
+            mkdir(PENDING_RECHECK_FILE);
+            foreach (['markStackForRecheck', 'clearStackRecheck'] as $action) {
+                $response = json_decode($this->executeAction($action, ['stacks' => '["app"]']), true);
+                $this->assertSame('error', $response['result']);
+                $this->assertNotEmpty($response['message']);
+            }
+        } finally {
+            if (is_dir(PENDING_RECHECK_FILE)) rmdir(PENDING_RECHECK_FILE);
+            if ($original !== null) file_put_contents(PENDING_RECHECK_FILE, $original);
+            else @unlink(PENDING_RECHECK_FILE);
+        }
+    }
+
     /**
      * Create a test stack directory
      */

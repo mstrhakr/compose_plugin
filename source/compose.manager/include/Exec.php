@@ -2457,7 +2457,12 @@ switch ($_POST['action']) {
             $pending[$stackName] = time();
         }
 
-        file_put_contents($pendingRecheckFile, json_encode($pending, JSON_PRETTY_PRINT));
+        $contents = json_encode($pending, JSON_PRETTY_PRINT);
+        if ($contents === false || @file_put_contents($pendingRecheckFile, $contents, LOCK_EX) !== strlen($contents)) {
+            composeLogger('Unable to persist pending update rechecks', null, 'user', 'error', 'update-check');
+            echo json_encode(['result' => 'error', 'message' => 'Unable to persist pending update rechecks.']);
+            break;
+        }
         echo json_encode(['result' => 'success', 'pending' => array_keys($pending)]);
         break;
 
@@ -2493,7 +2498,12 @@ switch ($_POST['action']) {
             unset($pending[$stackName]);
         }
 
-        file_put_contents($pendingRecheckFile, json_encode($pending, JSON_PRETTY_PRINT));
+        $contents = json_encode($pending, JSON_PRETTY_PRINT);
+        if ($contents === false || @file_put_contents($pendingRecheckFile, $contents, LOCK_EX) !== strlen($contents)) {
+            composeLogger('Unable to clear pending update rechecks', null, 'user', 'error', 'update-check');
+            echo json_encode(['result' => 'error', 'message' => 'Unable to clear pending update rechecks.']);
+            break;
+        }
         echo json_encode(['result' => 'success', 'remaining' => array_keys($pending)]);
         break;
 

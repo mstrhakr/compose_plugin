@@ -2570,22 +2570,9 @@ function executeUpdateAllStacks(stacks, background, suppressBackgroundNotificati
         stackNames.forEach(function(stackName) {
             setStackActionInProgress(stackName, false, null, operations[stackName]);
         });
-        composeLogger('Failed to mark stacks for update recheck', { stacks: stackNames }, 'user', 'error', 'update-all');
-        swal({ title: 'Update All Failed', text: 'Could not prepare update checks. No update was dispatched.', type: 'error' });
     }
 
-    // Mark stacks for recheck server-side (persists across page reload)
-    $.ajax({
-        url: caURL,
-        method: 'POST',
-        timeout: 30000,
-        data: { action: 'markStackForRecheck', stacks: JSON.stringify(stackNames) }
-    }).done(function(data) {
-        var response = typeof data === 'string' ? tryParseJson(data) : data;
-        if (!response || response.result !== 'success') {
-            failUpdatePreparation();
-            return;
-        }
+    prepareStackRechecks(stackNames, 'Update All Failed', function() {
         performMultipleComposeAction(stacks, {
             stackNames: stackNames,
             actionName: 'update',
@@ -2600,7 +2587,28 @@ function executeUpdateAllStacks(stacks, background, suppressBackgroundNotificati
             suppressBackgroundNotification: suppressBackgroundNotification,
             pendingReload: false
         }, operations);
-    }).fail(failUpdatePreparation);
+    }, failUpdatePreparation);
+}
+
+function prepareStackRechecks(stackNames, title, done, onFailure) {
+    function fail() {
+        if (onFailure) onFailure();
+        composeLogger('Failed to prepare update checks', { stacks: stackNames }, 'user', 'error', 'stack-action');
+        swal({ title: title, text: 'Could not prepare update checks. No action was dispatched.', type: 'error' });
+    }
+    $.ajax({
+        url: caURL,
+        method: 'POST',
+        timeout: 30000,
+        data: { action: 'markStackForRecheck', stacks: JSON.stringify(stackNames) }
+    }).done(function(data) {
+        var response = typeof data === 'string' ? tryParseJson(data) : data;
+        if (!response || response.result !== 'success') {
+            fail();
+            return;
+        }
+        done();
+    }).fail(fail);
 }
 
 // Update UI for a single stack's update status
@@ -4775,6 +4783,9 @@ function confirmedComposeAction(path, opts) {
 function ComposeUpConfirmed(path, opts) {
     opts = opts || {};
     confirmedComposeAction(path, {
+        preAction: opts.prepareImages ? function(done) {
+            prepareStackRechecks([basename(path)], 'Compose Up Failed', done);
+        } : null,
         actionName: 'up',
         titlePrefix: 'Compose Up',
         requestUrl: compURL,
@@ -4888,10 +4899,7 @@ function ForceUpdateStackConfirmed(path, opts) {
 
     confirmedComposeAction(path, {
         preAction: function(done) {
-            $.post(caURL, {
-                action: 'markStackForRecheck',
-                stacks: JSON.stringify([stackName])
-            }, done);
+            prepareStackRechecks([stackName], 'Force Update Failed', done);
         },
         actionName: 'forceUpdate',
         titlePrefix: 'Force Update',
@@ -5249,10 +5257,7 @@ function UpdateStackConfirmed(path, opts) {
 
     confirmedComposeAction(path, {
         preAction: function(done) {
-            $.post(caURL, {
-                action: 'markStackForRecheck',
-                stacks: JSON.stringify([stackName])
-            }, done);
+            prepareStackRechecks([stackName], 'Update Failed', done);
         },
         actionName: 'update',
         titlePrefix: 'Update',

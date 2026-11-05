@@ -145,7 +145,7 @@ for (const name of ['executeStartAllStacks', 'executeStopAllStacks']) {
         done(callback) { callback({ result: 'success' }); return this; },
         fail() { return this; },
     });
-    load(context, main, ['executeUpdateAllStacks']);
+    load(context, main, ['executeUpdateAllStacks', 'prepareStackRechecks']);
     context.executeUpdateAllStacks([{ project: 'one', path: '/one', isRunning: true },
         { project: 'two', path: '/two', isRunning: true }], false);
     assert.deepEqual(events.filter(event => event[0] === 'poll'), [['poll', 'one'], ['poll', 'two']]);
