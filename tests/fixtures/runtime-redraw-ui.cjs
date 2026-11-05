@@ -177,7 +177,7 @@ assert.equal(healthWrites, 1, 'Changed health still updates');
     assert.equal(visible, false, 'Refreshing a closed menu never opens it');
 }
 {
-    const stored = {}, menus = [];
+    const stored = {}, menus = [], enhancements = [];
     let writes = 0, temporary = false;
     const table = {
         data(key, value) { if (arguments.length === 2) { stored[key] = value; return this; } return stored[key]; },
@@ -187,7 +187,10 @@ assert.equal(healthWrites, 1, 'Changed health still updates');
         },
     };
     const ctx = {
-        $: () => table, window: {}, setTimeout() {}, composeStackActionInProgress: {},
+        $: () => table, window: {
+            composeColCustomizer: { reapply(root) { assert.equal(root, table); enhancements.push('columns'); } },
+            composeDockerLoadRenderCached(containers, root) { assert.equal(root, table); enhancements.push(containers.length); },
+        }, setTimeout() {}, composeStackActionInProgress: {},
         composeEscapeHtml: String, composeEscapeAttr: String, composeIconSrc: () => '',
         composeContainerUpdateBadge: () => '', composeRenderHealthBadge: () => '',
         composeNormalizeContainerKey: String, addComposeContainerContext: id => menus.push(id),
@@ -206,6 +209,7 @@ assert.equal(healthWrites, 1, 'Changed health still updates');
     temporary = true;
     ctx.renderContainerDetails('1', containers, 'app');
     assert.equal(writes, 2, 'Temporary action indicators bypass the HTML cache');
+    assert.deepEqual(enhancements, ['columns', 1, 'columns', 1], 'Only changed tables request scoped enhancements');
 }
 {
     const requests = [], timers = new Map();
@@ -254,5 +258,56 @@ assert.equal(healthWrites, 1, 'Changed health still updates');
     requests[3].fail({}, 'timeout'); requests[3].always();
     assert.equal(timers.size, 0, 'Deleted rows never restart health polling');
     assert.equal(ctx.pendingComposeRefreshCount, 0);
+}
+{
+    const reads = [], selected = [];
+    let aggregates = 0;
+    const cache = {};
+    for (let i = 0; i < 1000; i++) {
+        Object.defineProperty(cache, String(i), { enumerable: true, get() {
+            reads.push(String(i));
+            return { cpuText: '2', mem: '1 GiB' };
+        } });
+    }
+    const cell = { removeClass() { return this; }, text() { return this; }, html() { return this; }, css() { return this; } };
+    const root = { find(selector) { selected.push(selector); return cell; } };
+    const ctx = {
+        composeLoadById: cache, composeNormalizeContainerKey: String,
+        composeEscapeSelectorFragment: String, isComposeLoadVisible: () => true,
+        formatInOutHtml: () => '', renderStackAggregates() { aggregates++; },
+        composeLoadLastRenderMs: 0, $: () => cell,
+    };
+    vm.createContext(ctx);
+    vm.runInContext(source.match(/^            function renderComposeLoadCache\([^]*?\n            \}/m)[0], ctx);
+    for (let i = 0; i < 30; i++) ctx.renderComposeLoadCache([{ id: String(i) }], root);
+    assert.equal(reads.length, 30, 'Thirty single-container renders read thirty cached metrics, not 30,000');
+    assert.equal(selected.length, 180, 'Scoped rendering touches only six cells per requested container');
+    assert.equal(aggregates, 0, 'Detail rendering does not recompute global stack aggregates');
+    ctx.renderComposeLoadCache();
+    assert.equal(reads.length, 1030, 'Global metrics refresh still renders the full cache');
+    assert.equal(aggregates, 1);
+}
+{
+    const columns = fs.readFileSync(`${__dirname}/../../source/compose.manager/javascript/composeColumnCustomizer.js`, 'utf8');
+    let globalSelections = 0, scopedSelections = 0, stackReorders = 0, serviceReorders = 0;
+    const tables = { toggleClass() {}, each() {} };
+    const ctx = {
+        prefs: { service: { cpu: true }, stack: { cpu: true } },
+        $() { globalSelections++; return tables; },
+        reorderStackTable() { stackReorders++; }, reorderServiceTables(selected) {
+            assert.equal(selected, tables); serviceReorders++;
+        },
+        forceTableLayoutReflow() {}, applyStackWidthMath() {}, syncStackColspans() {},
+    };
+    vm.createContext(ctx);
+    vm.runInContext(columns.match(/^    function applyScope\([^]*?\n    \}/m)[0], ctx);
+    const root = { find(selector) { assert.equal(selector, '.compose-ct-table'); scopedSelections++; return tables; } };
+    for (let i = 0; i < 30; i++) ctx.applyScope('service', root);
+    assert.equal(scopedSelections, 30);
+    assert.equal(globalSelections, 0, 'Per-table enhancements never select all page tables');
+    assert.equal(stackReorders, 0);
+    assert.equal(serviceReorders, 30);
+    ctx.applyScope('stack');
+    assert.equal(stackReorders, 1, 'Global preferences retain stack layout reconciliation');
 }
 console.log('Runtime redraw and busy context-menu regressions passed.');

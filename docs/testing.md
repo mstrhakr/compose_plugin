@@ -229,6 +229,14 @@ prefetch waiters invalidated by actions.
 
 ### UI stabilization live-testing checkpoint
 
+Exercise out-of-order Dashboard list/detail responses and early terminal close
+followed by completion. Repeated actions must retain the original operation
+owner. Restart a container whose rendered fields do not change: its spinner
+must clear and menu actions become available again. Interrupt a starting-health
+snapshot and confirm polling resumes, then stops when health settles or the
+stack is removed. With many expanded stacks, detail refreshes must not reorder
+unrelated tables; metrics and column preferences must remain intact.
+
 For `Pull/Build & Up`, verify a never-created stack and an entirely stopped
 stack, default-only and selected/all profiles, mixed published/build-only
 services, registry credentials, foreground/background receipts, and configured

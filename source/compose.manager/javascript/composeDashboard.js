@@ -457,7 +457,7 @@
             });
             $('#compose_stacks_status').text(statusText);
 
-            if (window.hideDockerComposeContainers && data.composeContainerNames && data.composeContainerNames.length > 0) {
+            if (window.hideDockerComposeContainers && Array.isArray(data.composeContainerNames)) {
                 scheduleComposeContainerHiding(data.composeContainerNames);
             }
 
@@ -608,6 +608,7 @@
 
     var composeContainerNameSet = null;
     var hideContainersSetup = false;
+    var composeHidingTimer = null;
 
     function setDockerViewVisibility(visible) {
         var $dockerView = $('#docker_view');
@@ -621,31 +622,23 @@
     }
 
     function scheduleComposeContainerHiding(containerNames) {
-        if (!containerNames || containerNames.length === 0) return;
-
-        var names = containerNames.slice();
+        clearTimeout(composeHidingTimer);
+        setupComposeContainerHiding(containerNames);
         var attempts = 0;
-        var maxAttempts = 120;
-
         function tryHide() {
+            composeHidingTimer = null;
             if (!window.hideDockerComposeContainers) return;
-            if ($('#docker_view').length) {
-                setupComposeContainerHiding(names);
+            doHideContainers();
+            attempts++;
+            if (attempts < 120) {
+                composeHidingTimer = setTimeout(tryHide, 1000);
             }
         }
-
-        tryHide();
-        var poller = setInterval(function() {
-            attempts += 1;
-            tryHide();
-            if (attempts >= maxAttempts) {
-                clearInterval(poller);
-            }
-        }, 1000);
+        composeHidingTimer = setTimeout(tryHide, 1000);
     }
 
     function setupComposeContainerHiding(containerNames) {
-        if (!containerNames || containerNames.length === 0) return;
+        if (!Array.isArray(containerNames)) return;
 
         debugLog('Setting up compose container hiding for:', containerNames);
 
@@ -673,10 +666,6 @@
         setTimeout(function() {
             setDockerViewVisibility(true);
         }, 250);
-        setTimeout(doHideContainers, 500);
-        setTimeout(doHideContainers, 1500);
-        setTimeout(doHideContainers, 3000);
-        setTimeout(doHideContainers, 5000);
     }
 
     function doHideContainers() {
@@ -688,12 +677,11 @@
         var hiddenCount = 0;
         $dockerView.find('span.outer.apps').each(function() {
             var $el = $(this);
-            if ($el.hasClass('compose-hidden-container')) return;
-
             var name = extractContainerName($el);
-            if (name && composeContainerNameSet[name.toLowerCase()]) {
+            var hide = !!(name && composeContainerNameSet[name.toLowerCase()]);
+            if ($el.hasClass('compose-hidden-container') !== hide) {
                 debugLog('Hiding Docker tile container:', name);
-                $el.addClass('compose-hidden-container');
+                $el.toggleClass('compose-hidden-container', hide);
                 hiddenCount++;
             }
         });

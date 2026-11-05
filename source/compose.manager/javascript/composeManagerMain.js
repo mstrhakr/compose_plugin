@@ -3246,24 +3246,31 @@ $(function() {
                 }
             };
 
-            function renderComposeLoadCache() {
+            function renderComposeLoadCache(containers, $root) {
                 if (!isComposeLoadVisible()) {
                     return;
                 }
 
-                for (var shortId in composeLoadById) {
+                var ids = Array.isArray(containers) ? containers.map(function(container) {
+                    return composeNormalizeContainerKey(container.id);
+                }) : Object.keys(composeLoadById);
+                function select(selector) { return $root ? $root.find(selector) : $(selector); }
+                ids.forEach(function(shortId) {
                     var info = composeLoadById[shortId];
+                    if (!info) return;
                     var selectorId = composeEscapeSelectorFragment(shortId);
-                    $('.compose-cpu-' + selectorId).removeClass('compose-text-muted').text(info.cpuText + ' / 100%');
-                    $('.compose-mem-' + selectorId).removeClass('compose-text-muted').text(info.mem);
-                    $('.compose-netio-' + selectorId).removeClass('compose-text-muted').html(formatInOutHtml(info.netInput, info.netOutput, 'in', 'out'));
-                    $('.compose-blockio-' + selectorId).removeClass('compose-text-muted').html(formatInOutHtml(info.blockInput, info.blockOutput, 'read', 'write'));
-                    $('#compose-cpu-bar-' + selectorId).css('width', info.cpuText);
-                    $('#compose-mem-bar-' + selectorId).css('width', Math.min(info.memPercent || 0, 100).toFixed(2) + '%');
-                }
+                    select('.compose-cpu-' + selectorId).removeClass('compose-text-muted').text(info.cpuText + ' / 100%');
+                    select('.compose-mem-' + selectorId).removeClass('compose-text-muted').text(info.mem);
+                    select('.compose-netio-' + selectorId).removeClass('compose-text-muted').html(formatInOutHtml(info.netInput, info.netOutput, 'in', 'out'));
+                    select('.compose-blockio-' + selectorId).removeClass('compose-text-muted').html(formatInOutHtml(info.blockInput, info.blockOutput, 'read', 'write'));
+                    select('#compose-cpu-bar-' + selectorId).css('width', info.cpuText);
+                    select('#compose-mem-bar-' + selectorId).css('width', Math.min(info.memPercent || 0, 100).toFixed(2) + '%');
+                });
 
-                renderStackAggregates();
-                composeLoadLastRenderMs = Date.now();
+                if (!$root) {
+                    renderStackAggregates();
+                    composeLoadLastRenderMs = Date.now();
+                }
             }
 
             function scheduleComposeLoadRender(forceImmediate) {
@@ -9514,10 +9521,10 @@ function renderContainerDetails(stackId, containers, project) {
     $container.data('runtime-busy', busy);
 
     if (window.composeColCustomizer && typeof window.composeColCustomizer.reapply === 'function') {
-        window.composeColCustomizer.reapply();
+        window.composeColCustomizer.reapply($container);
     }
     if (window.composeDockerLoadRenderCached && typeof window.composeDockerLoadRenderCached === 'function') {
-        window.composeDockerLoadRenderCached();
+        window.composeDockerLoadRenderCached(containers, $container);
     }
 
     // Update the parent stack row shortly after rendering so counts and status

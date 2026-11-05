@@ -48,6 +48,21 @@ reconciliation path rather than adding a second runtime-state writer.
 
 ## Contract
 
+Dashboard list snapshots own a generation; detail snapshots also own a
+per-stack request generation. Superseded successes and failures cannot mutate
+the current view. An accepted Dashboard action keeps its owner until completion
+or tracking failure; repeated dispatches cannot replace it.
+
+Health-settling refreshes reuse the accepted runtime cache and the single
+per-project timer after failed requests. Removed rows and settled health stop
+retries. Unchanged detail markup may be reused only after temporary indicators
+are cleared; menu busy-state reconciliation does not require table replacement.
+
+Detail enhancements are scoped to the changed table and its containers.
+Global column preference changes and scheduled metrics renders retain their
+whole-page paths. Dashboard Docker hiding owns one bounded scheduler and always
+uses the latest membership, including an empty set after removal.
+
 `Pull/Build & Up` is a deployment action, not an alias for Update. It uses
 profile selection and the normal Up path, with shared image preparation from
 the update module under the same operation lock/receipt. It pulls published

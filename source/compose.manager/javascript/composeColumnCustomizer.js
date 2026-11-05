@@ -147,14 +147,14 @@
         return out;
     }
 
-    function applyScope(scope) {
+    function applyScope(scope, $root) {
         var selector = scope === 'stack' ? '#compose_stacks' : '.compose-ct-table';
-        var $tables = $(selector);
+        var $tables = $root ? $root.find(selector) : $(selector);
 
         if (scope === 'stack') {
             reorderStackTable();
         } else {
-            reorderServiceTables();
+            reorderServiceTables($tables);
         }
 
         Object.keys(prefs[scope]).forEach(function(col) {
@@ -259,10 +259,10 @@
         });
     }
 
-    function reorderServiceTables() {
+    function reorderServiceTables($tables) {
         var order = getScopeRenderOrder('service');
 
-        $('.compose-ct-table').each(function() {
+        ($tables || $('.compose-ct-table')).each(function() {
             var $table = $(this);
 
             $table.find('tr').each(function() {
@@ -608,8 +608,9 @@
             });
         },
 
-        reapply: function() {
-            applyAll();
+        reapply: function($root) {
+            if ($root) applyScope('service', $root);
+            else applyAll();
         },
 
         syncColspans: function() {

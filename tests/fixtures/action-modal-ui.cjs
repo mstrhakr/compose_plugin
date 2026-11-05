@@ -304,6 +304,29 @@ for (const native of [true, false]) {
     assert.ok(requests.every(request => request.options.timeout === 30000));
 }
 
+{
+    const timers = new Map(), snapshots = [];
+    let id = 0, passes = 0;
+    const context = {
+        window: { hideDockerComposeContainers: true }, composeHidingTimer: null,
+        setTimeout(callback) { timers.set(++id, callback); return id; },
+        clearTimeout(key) { timers.delete(key); },
+        setupComposeContainerHiding(names) { snapshots.push(names); },
+        doHideContainers() { passes++; },
+    };
+    load(context, dashboard, ['scheduleComposeContainerHiding'], '    ');
+    for (let i = 0; i < 30; i++) context.scheduleComposeContainerHiding(['app-' + i]);
+    assert.equal(timers.size, 1, 'Refreshes share one bounded hiding scheduler');
+    context.scheduleComposeContainerHiding([]);
+    assert.deepEqual(snapshots.at(-1), [], 'Empty membership also reconciles filtering');
+    for (let i = 0; i < 120; i++) {
+        const [key, callback] = timers.entries().next().value;
+        timers.delete(key); callback();
+    }
+    assert.equal(passes, 120);
+    assert.equal(timers.size, 0, 'Fallback polling terminates after its bounded window');
+}
+
 assert.ok(!/openBox\(/.test(main.replace(/function openComposeActionBox\([^]*?\n\}/, '')),
     'All main-page action terminals must use the no-navigation wrapper');
 
