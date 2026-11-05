@@ -9,6 +9,7 @@ const context = {
         attach(selector, options) { menus.push(options); },
     },
     fixContextDropdownOverflow() {},
+    refreshComposeContextMenu(id, options) { destroyed++; menus.push(options); },
     swal() { warnings++; },
 };
 let destroyed = 0, warnings = 0, mutations = 0;
@@ -113,4 +114,59 @@ assert.equal(healthCell.html(), before);
 health = 'healthy';
 context.updateParentStackFromContainers('1', 'app');
 assert.equal(healthWrites, 1, 'Changed health still updates');
+
+{
+    const events = [];
+    let visible = true, focused = 'Stop', position = { top: '240px', left: '50px' }, scroll = 18;
+    const anchor = {
+        length: 1, text: () => 'Stop',
+        attr(name, value) { events.push([name, value]); return this; },
+        on(name, callback) {
+            const event = { preventDefault() { events.push('prevented'); },
+                stopImmediatePropagation() { events.push('blocked'); } };
+            callback(event);
+            return this;
+        },
+        first() { return this; },
+        filter(callback) { callback.call(this); return this; },
+        trigger(name) { focused = 'Stop'; events.push(name); return this; },
+    };
+    const item = { addClass() { return this; }, find: () => anchor };
+    const menu = {
+        is: () => visible,
+        css(key) {
+            if (typeof key === 'string') return position[key];
+            position = key;
+            return this;
+        },
+        hasClass: () => true,
+        scrollTop(value) { if (arguments.length) { scroll = value; return this; } return scroll; },
+        find: () => anchor,
+        children: () => ({ each(callback) { callback.call(item, 0); } }),
+        toggleClass(name, value) { events.push([name, value]); return this; },
+        show() { visible = true; return this; },
+    };
+    const adapter = {
+        $: value => value === item ? item : value === anchor ? anchor : menu,
+        context: { attach() {
+            visible = false;
+            focused = null;
+            position = {};
+            scroll = 0;
+        } },
+        fixContextDropdownOverflow() {},
+    };
+    vm.createContext(adapter);
+    vm.runInContext(source.match(/^function refreshComposeContextMenu\([^]*?\n\}/m)[0], adapter);
+    adapter.refreshComposeContextMenu('stack-1', [{ text: 'Stop', disabled: true }]);
+    assert.equal(visible, true, 'Changed options preserve an open menu');
+    assert.equal(position.top, '240px');
+    assert.equal(position.left, '50px');
+    assert.equal(scroll, 18);
+    assert.equal(focused, 'Stop');
+    assert.ok(events.includes('blocked'), 'Disabled options are enforced even if host ignores disabled');
+    visible = false;
+    adapter.refreshComposeContextMenu('stack-1', [{ text: 'Stop' }]);
+    assert.equal(visible, false, 'Refreshing a closed menu never opens it');
+}
 console.log('Runtime redraw and busy context-menu regressions passed.');

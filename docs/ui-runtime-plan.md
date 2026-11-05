@@ -30,6 +30,10 @@ menu actions, editing and update checks; logs/WebUI remain accessible. Health
 `starting` by itself does not disable actions. Stale menu callbacks and container
 actions also check current operation ownership before dispatch; backend locks
 remain authoritative for operations from other clients.
+When menu inputs do change, the menu adapter preserves an open menu's position,
+scroll and focused action across the host library's rebuild. Progressive-list
+finalization must not close already initialized menus. Disabled actions are
+enforced by the adapter because the host context library ignores that option.
 
 Review the bottom action controls during this UI work, especially the scope of
 the autostart-only checkbox and the grouping of affected actions. Agree on the

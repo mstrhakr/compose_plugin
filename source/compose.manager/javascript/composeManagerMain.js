@@ -9710,6 +9710,36 @@ function updateParentStackFromContainers(stackId, project) {
 }
 
 // Attach context menu to container icon (like Docker tab's addDockerContainerContext)
+function refreshComposeContextMenu(elementId, options) {
+    var $menu = $('#dropdown-' + elementId);
+    var open = $menu.is(':visible');
+    var position = open ? { top: $menu.css('top'), left: $menu.css('left') } : null;
+    var above = open && $menu.hasClass('dropdown-context-up');
+    var scroll = open ? $menu.scrollTop() : 0;
+    var $focused = open ? $menu.find('a:focus') : $();
+    var focusText = $focused.length ? $focused.text() : null;
+    context.attach('#' + elementId, options);
+    fixContextDropdownOverflow(elementId);
+    $menu = $('#dropdown-' + elementId);
+    // The host menu library ignores the disabled option; enforce it in our adapter.
+    $menu.children('li').each(function(index) {
+        if (!options[index] || !options[index].disabled) return;
+        $(this).addClass('disabled').find('a').attr('aria-disabled', 'true')
+            .on('click.compose-disabled', function(event) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+            });
+    });
+    if (open) {
+        $menu.toggleClass('dropdown-context-up', !!above).css(position).show().scrollTop(scroll);
+        if (focusText !== null) {
+            $menu.find('a').filter(function() {
+                return $(this).text() === focusText;
+            }).first().trigger('focus');
+        }
+    }
+}
+
 // Keep a context dropdown above the footer and extend the scrollable area so it stays reachable
 // (same fix as unraid/webgui#2639)
 function fixContextDropdownOverflow(elementId) {
@@ -9853,8 +9883,7 @@ function addComposeContainerContext(elementId) {
 
     // Ensure stale menu bindings don't persist across state transitions
     $el.off('contextmenu');
-    context.attach('#' + elementId, opts);
-    fixContextDropdownOverflow(elementId);
+    refreshComposeContextMenu(elementId, opts);
 }
 
 function containerAction(containerName, action, stackId) {
@@ -10373,10 +10402,8 @@ function addComposeStackContext(elementId) {
             action(e);
         };
     });
-    context.destroy('#' + elementId);
-    context.attach('#' + elementId, opts);
+    refreshComposeContextMenu(elementId, opts);
     $el.data('compose-menu-state', menuState);
-    fixContextDropdownOverflow(elementId);
 }
 
 // Event delegation for docker-style container actions
