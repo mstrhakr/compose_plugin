@@ -2354,6 +2354,24 @@ switch ($_POST['action']) {
         echo json_encode(['result' => 'success', 'log' => $logContent]);
         break;
 
+    case 'getUiOperation':
+        require_once __DIR__ . '/UiOperation.php';
+        $script = getPostScript();
+        try {
+            if (!$script) throw new InvalidArgumentException('Stack not specified.');
+            $file = composeUiOperationFile($script, (string) ($_POST['operationId'] ?? ''));
+            if (!is_file($file)) throw new RuntimeException('Operation receipt is unavailable.');
+            $receipt = json_decode((string) file_get_contents($file), true);
+            if (!is_array($receipt) || !in_array($receipt['state'] ?? '', ['queued', 'running', 'completed'], true)) {
+                throw new RuntimeException('Operation receipt is invalid.');
+            }
+            echo json_encode(['result' => 'success', 'operation' => $receipt]);
+        } catch (RuntimeException | InvalidArgumentException $error) {
+            composeLogger('Unable to read UI operation receipt', ['message' => $error->getMessage()], 'user', 'error', 'operation');
+            echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);
+        }
+        break;
+
     case 'checkStackLock':
         // Check if a stack is currently locked (operation in progress)
         $script = getPostScript();

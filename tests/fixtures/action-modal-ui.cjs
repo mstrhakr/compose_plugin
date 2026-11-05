@@ -17,12 +17,18 @@ function harness(response) {
     const events = [];
     const timers = [];
     const context = {
-        caURL: 'exec', compURL: 'compose', pendingComposeReloadStacks: [],
+        caURL: 'exec', compURL: 'compose', pendingComposeReloadStacks: [], composeStackActionInProgress: {},
         composeActionStateText: () => 'working',
         basename: path => path.split('/').pop(),
         composeIdentityBlocked: () => false,
         tryParseJson: data => { try { return JSON.parse(data); } catch { return null; } },
-        setStackActionInProgress: (...args) => events.push(['busy', ...args]),
+        setStackActionInProgress: (project, busy, text, owner) => {
+            events.push(['busy', project, busy]);
+            if (busy) return context.composeStackActionInProgress[project] = {};
+            if (!owner || context.composeStackActionInProgress[project] === owner) {
+                delete context.composeStackActionInProgress[project];
+            }
+        },
         pollBackgroundCompletion: project => events.push(['poll', project]),
         refreshStackByProject: project => events.push(['refresh', project]),
         checkPendingRechecks: () => events.push(['rechecks']),
@@ -33,22 +39,26 @@ function harness(response) {
         setTimeout: fn => timers.push(fn),
         $: () => ({ text: () => {} }),
     };
-    context.$.post = (url, payload, callback) => {
-        events.push(['request', payload]);
-        callback(response);
-        return { fail() {} };
+    context.$.ajax = options => {
+        events.push(['request', options.data]);
+        return {
+            done(callback) { callback(response); return this; },
+            fail() { return this; },
+        };
     };
     load(context, main, ['composeActionBoxClosed', 'openComposeActionBox', 'performComposeAction',
-        'executeStartAllStacks', 'executeStopAllStacks', 'ComposeRecreateConfirmed']);
+        'performMultipleComposeAction', 'executeStartAllStacks', 'executeStopAllStacks', 'ComposeRecreateConfirmed']);
     return { context, events, timers };
 }
 
-for (const response of ['/terminal.php?done=1', JSON.stringify('/terminal.php?done=1')]) {
-    const { context, events } = harness(response);
+{
+    const url = '/plugins/compose.manager/include/ShowTtyd.php?done=1';
     const project = 'stack "quoted", \u00fc';
+    const response = JSON.stringify({ url, operations: { [project]: 'receipt-one' } });
+    const { context, events } = harness(response);
     context.performComposeAction({ stackName: project, actionName: 'up' });
     const modal = events.find(event => event[0] === 'modal');
-    assert.equal(modal[1], '/terminal.php?done=1');
+    assert.equal(modal[1], url);
     assert.equal(modal[6], 'composeActionBoxClosed');
     assert.deepEqual(events.filter(event => event[0] === 'poll'), [['poll', project]]);
     assert.ok(!events.some(event => event[0] === 'busy' && event[2] === false));
@@ -60,7 +70,10 @@ for (const response of ['/terminal.php?done=1', JSON.stringify('/terminal.php?do
 }
 
 for (const name of ['executeStartAllStacks', 'executeStopAllStacks']) {
-    const { context, events } = harness('/terminal.php');
+    const { context, events } = harness(JSON.stringify({
+        url: '/plugins/compose.manager/include/ShowTtyd.php',
+        operations: { one: 'receipt-one', two: 'receipt-two' },
+    }));
     context[name]({ stacks: [{ project: 'one', path: '/one' }, { project: 'two', path: '/two' }] });
     assert.deepEqual(events.filter(event => event[0] === 'poll'), [['poll', 'one'], ['poll', 'two']]);
     const modal = events.find(event => event[0] === 'modal');
@@ -75,11 +88,15 @@ for (const name of ['executeStartAllStacks', 'executeStopAllStacks']) {
     assert.ok(!events.some(event => event[0] === 'modal'));
 }
 {
-    const { context, events, timers } = harness('/terminal.php');
-    let locked = true;
+    const { context, events, timers } = harness(JSON.stringify({
+        url: '/plugins/compose.manager/include/ShowTtyd.php', operations: { one: 'receipt-one' },
+    }));
+    context.performComposeAction({ stackName: 'one' });
+    const operation = context.composeStackActionInProgress.one;
+    let receipt = { state: 'running' };
     context.$.ajax = () => ({
         done(callback) {
-            callback({ result: 'success', locked });
+            callback({ result: 'success', operation: receipt });
             return this;
         },
         fail() { return this; },
@@ -87,12 +104,12 @@ for (const name of ['executeStartAllStacks', 'executeStopAllStacks']) {
     });
     context.Date = Date;
     load(context, main, ['pollBackgroundCompletion']);
-    context.performComposeAction({ stackName: 'one' });
+    context.pollBackgroundCompletion('one', 0, operation);
     timers.shift()();
     assert.ok(!events.some(event => event[0] === 'busy' && event[2] === false));
     context.composeActionBoxClosed('one');
     assert.equal(timers.length, 1, 'Closing a running action preserves its next poll');
-    locked = false;
+    receipt = { state: 'completed', exitCode: 0 };
     timers.shift()();
     assert.ok(events.some(event => event[0] === 'busy' && event[2] === false));
     const refreshes = events.filter(event => event[0] === 'refresh').length;
@@ -118,10 +135,14 @@ for (const name of ['executeStartAllStacks', 'executeStopAllStacks']) {
 {
     const { context, events } = harness('/terminal.php');
     context.setStackActionInProgress = () => {};
-    context.performComposeAction = opts => {
+    context.performMultipleComposeAction = (stacks, opts) => {
         assert.deepEqual(Array.from(opts.stackNames), ['one', 'two']);
-        opts.onComplete(null, '/terminal.php');
+        stacks.forEach(stack => context.pollBackgroundCompletion(stack.project));
     };
+    context.$.ajax = () => ({
+        done(callback) { callback({ result: 'success' }); return this; },
+        fail() { return this; },
+    });
     load(context, main, ['executeUpdateAllStacks']);
     context.executeUpdateAllStacks([{ project: 'one', path: '/one', isRunning: true },
         { project: 'two', path: '/two', isRunning: true }], false);
@@ -181,6 +202,7 @@ assert.ok(!/openBox\(/.test(main.replace(/function openComposeActionBox\([^]*?\n
     };
     const context = {
         caURL: 'exec', composeHealthRefreshTimers: {}, composeUpdateCheckRevision: {},
+        stackRuntimeGeneration: {}, stackDetailsPrefetchCache: {}, stackDetailsDesiredExpanded: {},
         pendingComposeRefreshCount: 0, stackContainersCache: {}, stackStartedAtCache: {},
         expandedStacks: { 1: true },
         composeLogger: () => {},
@@ -192,13 +214,16 @@ assert.ok(!/openBox\(/.test(main.replace(/function openComposeActionBox\([^]*?\n
         $: () => row,
         renderContainerDetails: (id, containers) => renderedHealth.push(containers.map(ct => ct.health)),
     };
-    context.$.post = (url, payload, callback) => {
-        requests.push(payload.script);
-        callback(JSON.stringify(response));
-        return { fail() {} };
+    context.$.ajax = options => {
+        requests.push(options.data.script);
+        return {
+            done(callback) { callback(JSON.stringify(response)); return this; },
+            fail() { return this; },
+            always(callback) { callback(); return this; },
+        };
     };
     load(context, main, ['composeNormalizeHealthStatus', 'reconcileStackRuntimeMetadata',
-        'refreshStackRow', 'refreshStackByProject']);
+        'beginStackRuntimeRequest', 'reconcileStackRuntime', 'refreshStackRow', 'refreshStackByProject']);
     context.updateParentStackFromContainers = (id, project) => {
         context.reconcileStackRuntimeMetadata(row, project, context.stackContainersCache[id]);
     };

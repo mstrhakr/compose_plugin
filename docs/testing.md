@@ -216,6 +216,90 @@ Live-host gates (not replaced by these adapter tests):
   stacks remain visible. Check both tabbed and tabless Docker layouts.
 - [ ] Reload the Docker table after creating/removing a container and verify
   filtering remains correct. Confirm Dashboard hiding remains independent.
+Run `tests/compose-runtime-consistency.spec.ts` alongside
+`tests/compose-update-state.spec.ts` in the same Playwright invocation to cover
+out-of-order runtime responses, invalidated detail prefetches, recreated container
+identities, empty action responses, and metrics publisher recovery. The broader
+rollout and live-host validation gates are in the
+[UI runtime consistency plan](ui-runtime-plan.md).
+
+The runtime suite also covers superseded list metadata/rows, deletion during
+progressive loading, coalesced detail refreshes, collapsed-row failures, and
+prefetch waiters invalidated by actions.
+
+### UI stabilization live-testing checkpoint
+
+Run all isolated UI stabilization regressions together:
+
+```bash
+cd tests/e2e
+./node_modules/.bin/playwright test tests/compose-update-state.spec.ts tests/compose-runtime-consistency.spec.ts tests/compose-operation-state.spec.ts --project chromium
+./node_modules/.bin/tsc --noEmit
+```
+
+Operation tests cover superseded dispatch/poll callbacks, progress reapplied to
+replacement rows, bulk cleanup without clearing newer actions, rejected Update
+All preparation, and malformed/empty/failed container responses. They also cover
+queued/running/completed receipts, malformed or missing completion evidence,
+foreground single/bulk dispatches, explicit nonzero exits, and completion updating
+both parent state and expanded container details from the same fresh snapshot.
+These tests control browser callbacks; they do not prove real Docker or ttyd
+completion.
+
+The backend receipt regressions execute the actual shell wrapper with synthetic
+commands, verify per-dispatch/per-stack isolation and exit status, test the receipt
+endpoint, and verify opt-in foreground dispatch preserves legacy URL responses:
+
+```bash
+vendor/bin/phpunit --no-coverage --no-logging tests/unit/UiOperationTest.php tests/unit/ComposeUtilTest.php tests/unit/ExecActionsTest.php
+```
+
+Deploy the complete branch, including its image-update backend prerequisites.
+From the repository root, the existing deployment helper builds a development
+package, runs its normal checks, and installs it on the explicitly named host:
+
+```bash
+bash deploy.sh -Dev -RemoteHost YOUR_UNRAID_HOST
+```
+
+Use a noncritical test stack and save the currently installed package/version
+for rollback. Do not use `-Quick` for a committed checkpoint: that option copies
+only tracked staged/unstaged source changes, not committed branch differences.
+After installation, hard-refresh the browser so it loads the new JavaScript.
+No live deployment is performed by the isolated test command.
+
+Check the following on the real host, recording browser console errors and
+plugin logs if any row disagrees with Docker:
+
+1. Start, stop, restart, and update a disposable stack, foreground and background.
+   Confirm final parent/detail state without a browser refresh. For foreground
+   actions, test both waiting for completion before Done and closing early.
+   Progress should end when the finite command actually exits, not when the
+   terminal URL arrives or the modal closes. A failed/interrupted command should
+   report failure and reconcile whatever Docker state actually exists.
+2. Collapse/expand details and reload the list during an operation. Progress
+   must survive row replacement, and an older response must not roll state back.
+3. Perform container start/stop/restart/pause/resume from its context menu.
+   Check parent counts, detail status, and recovery after a failed request.
+4. Recreate a container. Confirm the DOM uses its new ID and metrics follow it.
+5. Hide/show the tab and metrics columns; reconnect after a connection loss.
+   Confirm metrics resume without duplicated subscriptions or repeated restarts.
+6. Exercise Start/Stop/Update All, including a failed stack and a slow first
+   stack. A later queued stack must not be reported finished before it runs.
+   Confirm every accepted stack completes independently and an older completion
+   cannot clear a newer action's progress.
+7. Delete a disposable stopped stack while a list reload is pending. It must not
+   reappear from a late row response.
+8. Recreate containers and deploy a disposable git stack from the main view.
+   Check updated parent state, expanded details, and failure notifications.
+9. Exercise **Follow stack logs** separately. Its existing attached-up/Done/detach
+   path is intentionally unchanged and excluded from finite-command receipt
+   tracking. Record startup/Done state mismatches for the remaining lifecycle
+   follow-up rather than treating this mode as covered by finite-command tests.
+
+The [runtime plan](ui-runtime-plan.md) lists the outstanding completion gates.
+Automatic detection of changes made outside the plugin remains next-beta work
+(#194); refresh explicitly when testing such changes.
 
 ### Archived Plugin Migration
 

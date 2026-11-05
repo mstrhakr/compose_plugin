@@ -18,6 +18,7 @@ function harness(config = {}) {
         composeUpdateCheckState: {}, composeUpdateCheckRevision: {}, stackDetailsPrefetchCache: {},
         confirmedComposeAction: (path, options) => events.push({ path, ...options }),
         performComposeAction: options => events.push(options),
+        performMultipleComposeAction: (stacks, options) => events.push(options),
         setStackActionInProgress: () => {},
         composeActionStateText: () => 'updating',
         swal: (options, callback) => {
@@ -35,6 +36,10 @@ function harness(config = {}) {
         events.push({ url, payload });
         if (callback) callback();
     };
+    context.$.ajax = () => ({
+        done(callback) { callback({ result: 'success' }); return this; },
+        fail() { return this; },
+    });
     for (const name of ['ComposeUpConfirmed', 'ComposeDownConfirmed', 'ComposeStopConfirmed',
         'ComposeRestartConfirmed', 'ComposePullConfirmed']) {
         context[name] = () => {};
@@ -173,6 +178,7 @@ for (const initial of [false, true]) {
         };
     };
     context.$.post = (url, payload, callback) => { if (callback) callback(); };
+    context.$.ajax = baseDollar.ajax;
     context.updateAllStacks();
     assert.equal(checked['#swal-include-stopped'], initial);
     checked['#swal-include-stopped'] = !initial;

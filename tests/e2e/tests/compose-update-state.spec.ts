@@ -184,7 +184,7 @@ test.describe('Compose update state regressions', () => {
       };
       const run = new Function('$', 'setTimeout', 'setStackActionInProgress',
         'refreshStackByProject', 'checkPendingRechecks', 'composeLogger', `
-        var caURL = '/exec';
+        var caURL = '/exec', composeStackActionInProgress = {};
         ${parse}
         ${poll}
         pollBackgroundCompletion('stack');
@@ -200,8 +200,8 @@ test.describe('Compose update state regressions', () => {
     expect(result.progress).toEqual([false]);
     expect(result.refreshed).toEqual(['stack']);
     expect(result.rechecks).toBe(1);
-    expect(result.errors).toContain('Lock check request failed');
-    expect(result.errors).toContain('Lock check failed');
+    expect(result.errors).toContain('Completion check request failed');
+    expect(result.errors).toContain('Completion check failed');
     expect(result.pendingTimers).toBe(0);
   });
 
@@ -258,14 +258,14 @@ test.describe('Compose update state regressions', () => {
     const result = await page.evaluate((action) => {
       const progress: boolean[] = [];
       const notices: Array<{ type: string }> = [];
-      const $ = { post: () => ({ fail(callback: () => void) { callback(); } }) };
+      const $ = { ajax: () => ({ done() { return this; }, fail(callback: () => void) { callback(); } }) };
       const run = new Function('$', 'setStackActionInProgress', 'composeLogger', 'swal', `
-        var compURL = '/compose';
+        var compURL = '/compose', composeStackActionInProgress = {};
         function composeActionStateText() { return 'starting...'; }
         ${action}
         performComposeAction({ stackName: 'stack', actionName: 'up', pendingReload: true });
       `);
-      run($, (_stack: string, active: boolean) => progress.push(active), () => {},
+      run($, (_stack: string, active: boolean) => { progress.push(active); }, () => {},
         (notice: { type: string }) => notices.push(notice));
       return { progress, notices };
     }, action);

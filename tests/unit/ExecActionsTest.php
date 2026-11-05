@@ -763,6 +763,30 @@ class ExecActionsTest extends TestCase
         }
     }
 
+    public function testUiOperationEndpointDoesNotTreatMissingOrQueuedReceiptsAsCompleted(): void
+    {
+        require_once '/usr/local/emhttp/plugins/compose.manager/include/UiOperation.php';
+        $id = bin2hex(random_bytes(16));
+        $file = \composeUiOperationFile('operation-stack', $id);
+        if (!is_dir(dirname($file))) mkdir(dirname($file), 0700, true);
+        try {
+            $missing = json_decode($this->executeAction('getUiOperation', ['script' => 'operation-stack', 'operationId' => $id]), true);
+            $this->assertSame('error', $missing['result']);
+            foreach ([['state' => 'queued'], ['state' => 'running'], ['state' => 'completed', 'exitCode' => 7]] as $receipt) {
+                file_put_contents($file, json_encode($receipt));
+                $response = json_decode($this->executeAction('getUiOperation', ['script' => 'operation-stack', 'operationId' => $id]), true);
+                $this->assertSame('success', $response['result']);
+                $this->assertSame($receipt, $response['operation']);
+            }
+            $otherStack = json_decode($this->executeAction('getUiOperation', ['script' => 'other-stack', 'operationId' => $id]), true);
+            $this->assertSame('error', $otherStack['result']);
+            $invalid = json_decode($this->executeAction('getUiOperation', ['script' => 'operation-stack', 'operationId' => '../outside']), true);
+            $this->assertSame('error', $invalid['result']);
+        } finally {
+            @unlink($file);
+        }
+    }
+
     public static function cachedImageStatusCases(): array
     {
         return [
