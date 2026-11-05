@@ -63,6 +63,11 @@ clears only matching marks. A null token cannot consume a subsequently created
 mark. Renewals have distinct identities even within one second. Missing/malformed
 tokens are explicit errors: old browser tabs must refresh after deployment.
 Deletion deliberately removes its stack's entry, rather than acknowledging it.
+The single-stack checker also owns a local request identity. A newer check,
+action start, or deletion invalidates older callbacks, including acknowledgement
+errors. Checks requested while a local action is busy remain queued. Failed
+acknowledgements warn explicitly and retain retryable pending state without
+calling the received image result a failure.
 
 Pending post-update checks use one busy-aware drain for both progressive rows
 and completed runtime refreshes; queued/running operations keep their pending

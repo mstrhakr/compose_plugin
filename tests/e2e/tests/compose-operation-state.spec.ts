@@ -6,7 +6,7 @@ const source = readFileSync(resolve(__dirname, '../../../source/compose.manager/
 function fn(name: string, next: string): string {
   return source.slice(source.indexOf(`function ${name}(`), source.indexOf(`function ${next}(`));
 }
-const state = fn('setStackActionInProgress', 'UpdateStackConfirmed');
+const state = 'var composeUpdateCheckRequests = Object.create(null);\n' + fn('setStackActionInProgress', 'UpdateStackConfirmed');
 const dispatch = `function openComposeActionBox(url) { openBox(url); }\n` + fn('performComposeAction', 'confirmedComposeAction');
 const poll = readFileSync(resolve(__dirname, '../../../source/compose.manager/javascript/composeOperations.js'), 'utf8') +
   fn('pollBackgroundCompletion', 'composeActionStateText');

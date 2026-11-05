@@ -287,6 +287,15 @@ dispatches, missing tracking evidence, transport failure, and nonzero exits.
 Both Dashboard and Compose load the shared completion poller before their page
 adapter. Verify this script ordering and final Dashboard reconciliation on Unraid.
 
+`PendingRechecksTest.php` exercises the real shared/exclusive transaction locks,
+concurrent successful marks, legacy timestamp entries, same-second renewals,
+token-scoped acknowledgement, corruption preservation, and invalid input.
+Endpoint tests verify the unchanged public timestamp map, additive image-check
+token, strict acknowledgement errors, and explicit persistence failures.
+The navigation recheck fixture checks stale responses after a newer action,
+newer-check ownership, busy deferral, and observable read/acknowledgement errors.
+No live Docker calls are needed for these regressions.
+
 The backend receipt regressions execute the actual shell wrapper with synthetic
 commands, verify per-dispatch/per-stack isolation and exit status, test the receipt
 endpoint, and verify opt-in foreground dispatch preserves legacy URL responses:

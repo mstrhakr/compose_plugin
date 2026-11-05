@@ -12,6 +12,11 @@ load '../bats_setup.bash'
     [ "$status" -eq 0 ]
 }
 
+@test "image checks acknowledge only owned recheck tokens and surface persistence failures" {
+    run node "$BATS_TEST_DIRNAME/../fixtures/recheck-ownership-ui.cjs"
+    [ "$status" -eq 0 ]
+}
+
 @test "Docker filtering works without inline Compose UI and keeps header settings independent" {
     run node "$BATS_TEST_DIRNAME/../fixtures/docker-filter-ui.cjs"
     [ "$status" -eq 0 ]

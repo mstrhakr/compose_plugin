@@ -17,6 +17,7 @@ function harness(config = {}) {
         basename: path => path.split('/').pop(),
         caURL: 'exec', compURL: 'compose',
         composeUpdateCheckState: {}, composeUpdateCheckRevision: {}, stackDetailsPrefetchCache: {},
+        composeUpdateCheckRequests: {}, composeStackActionInProgress: {},
         confirmedComposeAction: (path, options) => events.push({ path, ...options }),
         performComposeAction: options => events.push(options),
         performMultipleComposeAction: (stacks, options) => events.push(options),
@@ -449,11 +450,15 @@ for (const response of ['', 'not json', JSON.stringify({ result: 'error', messag
         if (payload.action === 'checkStackUpdates' || payload.action === 'checkAllStacksUpdates') complete = callback;
         return { fail: () => {} };
     };
+    context.$.ajax = () => ({
+        done(callback) { callback({ result: 'success', remaining: [] }); return this; },
+        fail() { return this; },
+    });
     context.checkStackUpdates('test');
     assert.match(stackHtml, /Checking/);
     assert.match(containerHtml, /Checking/);
     assert.match(context.composeContainerUpdateBadge(previous, 'test', 'test'), /Checking/);
-    complete(JSON.stringify({ result: 'success', updates: [previous] }));
+    complete(JSON.stringify({ result: 'success', updates: [previous], recheckToken: null }));
     assert.match(stackHtml, /Rebuild/);
     assert.match(containerHtml, /Rebuild/);
     assert.doesNotMatch(containerHtml, /Checking/);

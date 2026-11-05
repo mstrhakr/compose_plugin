@@ -35,7 +35,7 @@ for (const project of ['constructor', '__proto__', 'ordinary']) {
     };
     vm.createContext(context);
     for (const source of [main, dashboard]) {
-        const declarations = source.match(/^\s*(?:var )?(?:composeStackActionInProgress|stackRuntimeGeneration|stackDetailsPrefetchCache|stackDetailsPrefetchPromises|composeUpdateCheckRevision|stackOperations|stackPaths|stackActionErrors) = .*;$/gm);
+        const declarations = source.match(/^\s*(?:var )?(?:composeStackActionInProgress|composeUpdateCheckRequests|stackRuntimeGeneration|stackDetailsPrefetchCache|stackDetailsPrefetchPromises|composeUpdateCheckRevision|stackOperations|stackPaths|stackActionErrors) = .*;$/gm);
         assert.ok(declarations);
         vm.runInContext(declarations.join('\n'), context);
     }

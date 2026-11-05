@@ -127,5 +127,31 @@ class PendingRechecksTest extends TestCase
                 fclose($handle);
             }
         }
+
+    }
+
+    public function testConcurrentMarksPreserveEverySuccessfulRequest(): void
+    {
+        file_put_contents(PENDING_RECHECK_FILE, '{}');
+        $processes = [];
+        for ($i = 0; $i < 8; $i++) {
+            $code = 'require ' . var_export(dirname(__DIR__) . '/bootstrap.php', true) . ';'
+                . 'require "/usr/local/emhttp/plugins/compose.manager/include/PendingRechecks.php";'
+                . 'PendingRechecks::mark(["stack-' . $i . '"]);';
+            $process = proc_open([PHP_BINARY, '-r', $code], [
+                0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w'],
+            ], $pipes);
+            fclose($pipes[0]);
+            $processes[] = [$process, $pipes];
+        }
+        foreach ($processes as [$process, $pipes]) {
+            stream_get_contents($pipes[1]);
+            $errors = stream_get_contents($pipes[2]);
+            fclose($pipes[1]); fclose($pipes[2]);
+            $this->assertSame(0, proc_close($process), $errors);
+        }
+        $pending = \PendingRechecks::timestamps();
+        $this->assertCount(8, $pending);
+        for ($i = 0; $i < 8; $i++) $this->assertArrayHasKey('stack-' . $i, $pending);
     }
 }

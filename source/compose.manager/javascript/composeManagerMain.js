@@ -2268,13 +2268,22 @@ function loadSavedUpdateStatus() {
 // Check for pending rechecks from recent update operations
 // These stacks need to be rechecked regardless of auto-check interval
 function checkPendingRechecks(callback) {
+    function failed(message) {
+        composeLogger('Unable to read pending image rechecks', { message: message }, 'user', 'error', 'update-check');
+        swal({ title: 'Pending image checks unavailable', text: 'Could not load pending rechecks. Refresh to retry; saved evidence has not been cleared.', type: 'warning' });
+        if (callback) callback(false);
+    }
     $.post(caURL, {
         action: 'getPendingRecheckStacks'
     }, function(data) {
         var hadPendingRechecks = false;
         if (data) {
             try {
-                var response = JSON.parse(data);
+                var response = typeof data === 'string' ? JSON.parse(data) : data;
+                if (!response || response.result !== 'success' || !response.pending || typeof response.pending !== 'object') {
+                    failed(response && response.message);
+                    return;
+                }
                 if (response.result === 'success' && response.pending) {
                     var pendingStacks = Object.keys(response.pending);
                     if (pendingStacks.length > 0) {
@@ -2297,13 +2306,15 @@ function checkPendingRechecks(callback) {
                     }
                 }
             } catch (e) {
-                composeLogger('checkPendingRechecks:failed', {
-                    error: e
-                }, 'user', 'error', 'update-check');
+                failed(String(e));
+                return;
             }
+        } else {
+            failed('Empty response');
+            return;
         }
         if (callback) callback(hadPendingRechecks);
-    });
+    }).fail(function(xhr, status, error) { failed(error || status); });
 }
 
 // Check if auto-update check is needed based on lastChecked timestamp
@@ -2337,6 +2348,7 @@ function checkAutoUpdateIfNeeded(stacks) {
 // Check for updates for all stacks
 var composeUpdateCheckState = Object.create(null);
 var composeUpdateCheckRevision = Object.create(null);
+var composeUpdateCheckRequests = Object.create(null);
 
 function composeUpdateCheckBadge(project) {
     var state = composeUpdateCheckState[project];
@@ -2657,15 +2669,22 @@ function updateStackUpdateUI(stackName, stackInfo, freshCheck) {
 // Check updates for a single stack
 function checkStackUpdates(stackName) {
     var $stackRow = $('#compose_stacks tr.compose-sortable[data-project="' + stackName + '"]');
-    if ($stackRow.length === 0) {
+    if ($stackRow.length === 0 || composeStackActionInProgress[stackName]) {
         pendingUpdateCheckStacks.add(stackName);
         return;
     }
 
     var $updateCell = $stackRow.find('.compose-updatecolumn');
+    var request = {};
+    composeUpdateCheckRequests[stackName] = request;
+    function isCurrent() {
+        return request === composeUpdateCheckRequests[stackName]
+            && !composeStackActionInProgress[stackName];
+    }
     setComposeUpdateCheckState(stackName, 'checking');
 
     function showFailure(message) {
+        if (!isCurrent()) return;
         composeLogger('Update check failed', { stackName: stackName, message: message }, 'user', 'error', 'checkStackUpdates');
         setComposeUpdateCheckState(stackName, 'failed');
         $updateCell.html('<a class="exec orange-text" style="cursor:pointer;white-space:nowrap;" onclick="checkStackUpdates(\'' + composeEscapeAttr(stackName) + '\');"><i class="fa fa-exclamation-circle fa-fw"></i> check failed</a>');
@@ -2675,10 +2694,13 @@ function checkStackUpdates(stackName) {
         action: 'checkStackUpdates',
         script: stackName
     }, function(data) {
+        if (!isCurrent()) return;
         if (data) {
             try {
                 var response = JSON.parse(data);
-                if (response.result === 'success' && Array.isArray(response.updates)) {
+                if (response.result === 'success' && Array.isArray(response.updates)
+                    && (response.recheckToken === null || typeof response.recheckToken === 'string'
+                        && /^[a-f0-9]{64}$/.test(response.recheckToken))) {
                     var stackInfo = createStackInfo(stackName, response.updates, {
                         projectName: response.projectName
                     });
@@ -2689,10 +2711,32 @@ function checkStackUpdates(stackName) {
                     updateUpdateAllButton();
 
                     // Clear the pending recheck flag for this stack (if any)
-                    $.post(caURL, {
-                        action: 'clearStackRecheck',
-                        stacks: JSON.stringify([stackName])
-                    });
+                    function acknowledgementFailed() {
+                        if (!isCurrent()) return;
+                        pendingUpdateCheckStacks.add(stackName);
+                        composeLogger('Unable to acknowledge image recheck', { stack: stackName }, 'user', 'error', 'update-check');
+                        swal({ title: 'Image check completed', text: 'The result was received, but its pending recheck could not be acknowledged. Refresh or check again to retry.', type: 'warning' });
+                    }
+                    var tokens = Object.create(null);
+                    tokens[stackName] = response.recheckToken;
+                    $.ajax({
+                        url: caURL,
+                        method: 'POST',
+                        timeout: 30000,
+                        data: {
+                            action: 'clearStackRecheck',
+                            stacks: JSON.stringify([stackName]),
+                            tokens: JSON.stringify(tokens)
+                        }
+                    }).done(function(data) {
+                        if (!isCurrent()) return;
+                        var acknowledged = typeof data === 'string' ? tryParseJson(data) : data;
+                        if (!acknowledged || acknowledged.result !== 'success' || !Array.isArray(acknowledged.remaining)) {
+                            acknowledgementFailed();
+                        } else if (acknowledged.remaining.some(function(name) { return String(name) === stackName; })) {
+                            pendingUpdateCheckStacks.add(stackName);
+                        }
+                    }).fail(acknowledgementFailed);
                 } else {
                     showFailure(response.message || 'The server did not return an update result.');
                 }
@@ -5187,6 +5231,10 @@ function setStackActionInProgress(stackName, inProgress, text, operation) {
     }, 'user', 'info', 'stack-action');
 
     if (inProgress) {
+        if (composeUpdateCheckRequests[stackName] && composeUpdateCheckState[stackName] === 'checking') {
+            setComposeUpdateCheckState(stackName, 'failed');
+        }
+        delete composeUpdateCheckRequests[stackName];
         beginStackRuntimeRequest(stackName);
         operation = { text: text || 'checking...' };
         composeStackActionInProgress[stackName] = operation;
@@ -8982,6 +9030,7 @@ function purgeDeletedStackCaches(project, stackId) {
     }
 
     delete composeStackActionInProgress[project];
+    delete composeUpdateCheckRequests[project];
     clearTimeout(composeHealthRefreshTimers[project]);
     delete composeHealthRefreshTimers[project];
     beginStackRuntimeRequest(project);

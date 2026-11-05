@@ -235,6 +235,7 @@ test.describe('Compose update state regressions', () => {
           var stackUpdateStatus = {};
           var pendingUpdateCheckStacks = new Set();
           var composeUpdateCheckState = {};
+          var composeUpdateCheckRequests = {}, composeStackActionInProgress = {};
           function updateStackUpdateUI() {}
           function updateUpdateAllButton() {}
           ${factories}

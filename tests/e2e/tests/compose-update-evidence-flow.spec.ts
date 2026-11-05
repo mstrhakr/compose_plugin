@@ -31,7 +31,7 @@ for (const kind of ['image', 'build-base']) {
         const action = new URLSearchParams(route.request().postData() || '').get('action');
         if (action === 'checkStackUpdates') {
           checked = true;
-          await route.fulfill({ json: { result: 'success', updates: [pending] } });
+          await route.fulfill({ json: { result: 'success', updates: [pending], recheckToken: null } });
         } else if (action === 'getStackContainers') {
           if (blockDetails) await new Promise<void>(resolve => { releaseDetails = resolve; });
           const container = recreated
@@ -39,7 +39,7 @@ for (const kind of ['image', 'build-base']) {
             : pending;
           await route.fulfill({ json: { result: 'success', containers: [container] } });
         } else {
-          await route.fulfill({ json: { result: 'success' } });
+          await route.fulfill({ json: { result: 'success', remaining: [] } });
         }
         return;
       }
@@ -64,8 +64,16 @@ for (const kind of ['image', 'build-base']) {
               .then(response => response.text()).then(text => { if (callback) callback(text); });
             return {fail: handler => request.catch(error => handler({}, 'error', error.message))};
           };
+          $.ajax = options => {
+            let success, failure;
+            fetch(options.url, {method:'POST', body:new URLSearchParams(options.data)})
+              .then(response => response.text()).then(text => success(text)).catch(error => failure(error));
+            const request = {done(callback) {success=callback; return request;}, fail(callback) {failure=callback; return request;}};
+            return request;
+          };
           var caURL = '/exec', stackUpdateStatus = {}, stackContainersCache = {},
             composeUpdateCheckState = {}, composeUpdateCheckRevision = {}, stackDetailsPrefetchCache = {},
+            composeUpdateCheckRequests = {}, composeStackActionInProgress = {},
             pendingUpdateCheckStacks = new Set();
           function composeEscapeAttr(value) { return value; }
           function composeLogger() {}
