@@ -5159,6 +5159,12 @@ function refreshStackRow(stackId, project) {
         composeLogger('Runtime refresh request failed', { project: project, status: status, error: error }, 'user', 'error', 'refreshStackRow');
     }).always(function() {
         pendingComposeRefreshCount = Math.max(0, pendingComposeRefreshCount - 1);
+        if (generation === (stackRuntimeGeneration[project] || 0)) {
+            var $row = $('#stack-row-' + stackId);
+            if ($row.length && stackContainersCache[stackId]) {
+                reconcileStackRuntimeMetadata($row, project, stackContainersCache[stackId]);
+            }
+        }
         if (pendingComposeRefreshCount === 0) {
             processPendingUpdateChecks();
         }
@@ -9492,9 +9498,20 @@ function renderContainerDetails(stackId, containers, project) {
 
     html += '</tbody></table>';
 
-    if ($container.data('runtime-html') === html && $container.find('.compose-ct-table').length) return;
+    var busy = !!composeStackActionInProgress[project];
+    if ($container.data('runtime-html') === html && $container.find('.compose-ct-table').length
+        && !$container.find('.compose-status-spinner, .compose-container-spinner, [data-orig-text], [data-orig-class]').length) {
+        if ($container.data('runtime-busy') !== busy) {
+            containers.forEach(function(container, idx) {
+                addComposeContainerContext('ct-' + stackId + '-' + idx);
+            });
+            $container.data('runtime-busy', busy);
+        }
+        return;
+    }
     $container.html(html);
     $container.data('runtime-html', html);
+    $container.data('runtime-busy', busy);
 
     if (window.composeColCustomizer && typeof window.composeColCustomizer.reapply === 'function') {
         window.composeColCustomizer.reapply();

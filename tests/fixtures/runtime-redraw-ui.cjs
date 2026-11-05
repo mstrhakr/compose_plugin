@@ -176,4 +176,83 @@ assert.equal(healthWrites, 1, 'Changed health still updates');
     adapter.refreshComposeContextMenu('stack-1', [{ text: 'Stop' }]);
     assert.equal(visible, false, 'Refreshing a closed menu never opens it');
 }
+{
+    const stored = {}, menus = [];
+    let writes = 0, temporary = false;
+    const table = {
+        data(key, value) { if (arguments.length === 2) { stored[key] = value; return this; } return stored[key]; },
+        html() { writes++; temporary = false; return this; },
+        find(selector) {
+            return { length: selector === '.compose-ct-table' || temporary ? 1 : 0, readmore() { return this; } };
+        },
+    };
+    const ctx = {
+        $: () => table, window: {}, setTimeout() {}, composeStackActionInProgress: {},
+        composeEscapeHtml: String, composeEscapeAttr: String, composeIconSrc: () => '',
+        composeContainerUpdateBadge: () => '', composeRenderHealthBadge: () => '',
+        composeNormalizeContainerKey: String, addComposeContainerContext: id => menus.push(id),
+    };
+    vm.createContext(ctx);
+    vm.runInContext(source.match(/^function renderContainerDetails\([^]*?\n\}/m)[0], ctx);
+    const containers = [{ id: 'one', name: 'app', state: 'running' }];
+    ctx.renderContainerDetails('1', containers, 'app');
+    ctx.renderContainerDetails('1', containers, 'app');
+    assert.equal(writes, 1, 'Unchanged runtime preserves the table');
+    ctx.composeStackActionInProgress.app = {};
+    ctx.renderContainerDetails('1', containers, 'app');
+    delete ctx.composeStackActionInProgress.app;
+    ctx.renderContainerDetails('1', containers, 'app');
+    assert.equal(menus.length, 3, 'Busy transitions reconcile menus without replacing table markup');
+    temporary = true;
+    ctx.renderContainerDetails('1', containers, 'app');
+    assert.equal(writes, 2, 'Temporary action indicators bypass the HTML cache');
+}
+{
+    const requests = [], timers = new Map();
+    let timerId = 0, exists = true;
+    const row = {
+        get length() { return exists ? 1 : 0; },
+        attr(key, value) { return arguments.length === 1 && key === 'id' ? 'stack-row-1' : this; }, data() { return this; },
+    };
+    const ctx = {
+        caURL: 'exec', pendingComposeRefreshCount: 0, composeUpdateCheckRevision: {},
+        stackRuntimeGeneration: {}, stackDetailsPrefetchCache: {}, composeHealthRefreshTimers: {},
+        stackContainersCache: { '1': [{ id: 'one', isRunning: true, health: 'starting' }] },
+        $: () => row, composeLogger() {}, processPendingUpdateChecks() {},
+        triggerComposeListRefreshedDebounced() {}, composeNormalizeHealthStatus: value => value,
+        setTimeout(callback) { timers.set(++timerId, callback); return timerId; },
+        clearTimeout(id) { timers.delete(id); },
+    };
+    ctx.$.ajax = () => {
+        const request = {};
+        requests.push(request);
+        return {
+            done(callback) { request.done = callback; return this; },
+            fail(callback) { request.fail = callback; return this; },
+            always(callback) { request.always = callback; return this; },
+        };
+    };
+    vm.createContext(ctx);
+    for (const name of ['beginStackRuntimeRequest', 'refreshStackRow', 'refreshStackByProject', 'reconcileStackRuntimeMetadata']) {
+        vm.runInContext(source.match(new RegExp(`^function ${name}\\([^]*?\\n\\}`, 'm'))[0], ctx);
+    }
+    ctx.reconcileStackRuntimeMetadata(row, 'app', ctx.stackContainersCache['1']);
+    const tick = () => { const [id, callback] = timers.entries().next().value; timers.delete(id); callback(); };
+    tick();
+    requests[0].fail({}, 'timeout'); requests[0].always();
+    assert.equal(timers.size, 1, 'Failed health snapshot schedules exactly one retry');
+    tick();
+    requests[1].done('{"result":"error"}'); requests[1].always();
+    assert.equal(timers.size, 1, 'Server failure also retries');
+    tick();
+    ctx.stackContainersCache['1'][0].health = 'healthy';
+    requests[2].fail({}, 'timeout'); requests[2].always();
+    assert.equal(timers.size, 0, 'Settled accepted health stops retries');
+    ctx.stackContainersCache['1'][0].health = 'starting';
+    ctx.refreshStackRow('1', 'app');
+    exists = false;
+    requests[3].fail({}, 'timeout'); requests[3].always();
+    assert.equal(timers.size, 0, 'Deleted rows never restart health polling');
+    assert.equal(ctx.pendingComposeRefreshCount, 0);
+}
 console.log('Runtime redraw and busy context-menu regressions passed.');

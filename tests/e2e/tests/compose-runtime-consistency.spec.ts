@@ -289,14 +289,15 @@ test.describe('Runtime reconciliation', () => {
       function composeLogger(message) { notices.push(message); }
       function processPendingUpdateChecks() { completed++; }
       function updateParentStackFromContainers() { throw new Error('Stale cache repaint'); }
-      var $ = { ajax(options) {
+      var $ = () => ({ length: 0 });
+      $.ajax = function(options) {
         timeout = options.timeout;
         return {
           done() { return this; },
           fail(callback) { callback({}, 'timeout', 'request timed out'); return this; },
           always(callback) { callback(); return this; }
         };
-      } };
+      };
       ${runtime}
       ${refresh}
       refreshStackRow('1', 'stack');

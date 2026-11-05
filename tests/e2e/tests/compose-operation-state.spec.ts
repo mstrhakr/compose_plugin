@@ -132,6 +132,7 @@ ${fn('beginStackRuntimeRequest', 'prefetchStackDetailsInBackground')}`;
       function mergeUpdateStatus() {}
       function updateParentStackFromContainers(id) { parent.push(stackContainersCache[id][0].state); }
       function triggerComposeListRefreshedDebounced() {}
+      function reconcileStackRuntimeMetadata() {}
       function processPendingUpdateChecks() {}
       function renderContainerDetails(id, containers) { details.push(containers[0].state); }
       ${runtime}
