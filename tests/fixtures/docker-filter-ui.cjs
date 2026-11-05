@@ -110,6 +110,26 @@ for (const initialTable of [true, false]) {
     assert.equal(h.errors.length, 3, 'Transport failures are reported');
 }
 
+for (const responseBeforeDebounce of [true, false]) {
+    const h = harness();
+    h.finish({ result: 'success', names: ['app'] });
+    h.flush();
+    assert.equal(h.requests.length, 1, 'Initial baseline must not create a redundant membership request');
+    h.handlers['compose-list-loaded']();
+    h.flush();
+    const newRow = { name: 'new-managed', classes: new Set() };
+    h.rows.push(newRow);
+    h.observe([{ target: { inTable: true }, addedNodes: [] }]);
+    if (!responseBeforeDebounce) h.flush();
+    h.finish({ result: 'success', names: ['app'] });
+    h.flush();
+    assert.equal(h.requests.length, 3, 'Row changes during membership fetch require exactly one follow-up regardless of debounce ordering');
+    h.finish({ result: 'success', names: ['app', 'new-managed'] });
+    h.flush();
+    assert.ok(newRow.classes.has('compose-manager-hidden'));
+    assert.equal(h.requests.length, 3, 'Settled membership must not create a request loop');
+}
+
 const settings = fs.readFileSync(`${__dirname}/../../source/compose.manager/compose.manager.settings.page`, 'utf8');
 const toggle = settings.match(/^        function toggleComposeOnTop\([^]*?\n        \}/m);
 assert.ok(toggle);

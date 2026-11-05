@@ -60,6 +60,10 @@ Docker visibility can refresh managed membership even if stopped containers
 remain. Docker-table mutations reapply cached filtering; only changed container
 names, table replacement, or explicit list/removal invalidation fetch membership.
 Routine metrics text updates do not enumerate Docker or saved stacks again.
+Docker-table membership requests retain their own row-name/table baseline.
+Changes during a request cause one coalesced follow-up even if its response
+arrives before the mutation debounce; applying stale membership cannot consume
+the invalidation. Routine unchanged-name mutations still use cached filtering.
 Dashboard actions and stack logs use the metadata path from the latest accepted
 stack snapshot, including a nondefault projects root. Missing paths fail visibly
 instead of falling back to the default root; removed stacks lose their cached path.

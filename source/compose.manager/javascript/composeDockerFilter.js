@@ -7,6 +7,11 @@ $(function() {
     var rowNames = new Set();
     var table = document.getElementById('docker_list');
 
+    function namesChanged(previous, current) {
+        return current.size !== previous.size ||
+            Array.from(current).some(function(name) { return !previous.has(name); });
+    }
+
     function applyFilter() {
         var currentNames = new Set();
         $('#docker_list tr.sortable').each(function() {
@@ -16,18 +21,20 @@ $(function() {
             if (name) currentNames.add(name);
             $row.toggleClass('compose-manager-hidden', names.has(name));
         });
-        var changed = currentNames.size !== rowNames.size ||
-            Array.from(currentNames).some(function(name) { return !rowNames.has(name); });
+        var changed = namesChanged(rowNames, currentNames);
         rowNames = currentNames;
         return changed;
     }
 
     function refresh() {
-        if (!document.getElementById('docker_list')) return;
+        var requestTable = document.getElementById('docker_list');
+        if (!requestTable) return;
         if (inFlight) {
             refreshAgain = true;
             return;
         }
+        applyFilter();
+        var requestRowNames = rowNames;
         inFlight = true;
         $.post('/plugins/compose.manager/include/Exec.php', {
             action: 'getComposeContainerNames'
@@ -45,6 +52,9 @@ $(function() {
             }
             names = new Set(response.names);
             applyFilter();
+            if (requestTable !== document.getElementById('docker_list') || namesChanged(requestRowNames, rowNames)) {
+                refreshAgain = true;
+            }
         }).fail(function(xhr, status, error) {
             console.error('[Compose] Docker filter request failed', status, error);
         }).always(function() {
