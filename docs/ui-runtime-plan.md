@@ -14,6 +14,10 @@ process session independently of ttyd. The terminal is an output viewer:
 same non-cancelling behavior. **Stop command** asks for confirmation and signals
 only that session's process group, not the stack's containers. Already-applied
 changes are not rolled back. Stop also cancels undispatched bulk receipts.
+The cancellation confirmation describes the dispatched command's possible
+effects (detached Up, Down, Stop, Pull, Update, or Git deploy), including partial
+changes and whole-batch cancellation. It does not claim to know the current
+execution phase or guarantee the final container state.
 Once the session completes, these controls become **Done**, with a visible
 nonzero exit status when applicable. Existing run-in-background dispatch and
 its notification behavior are unchanged. Legacy untracked terminals retain

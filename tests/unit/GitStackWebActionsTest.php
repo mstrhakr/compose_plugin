@@ -584,6 +584,8 @@ final class GitStackWebActionsTest extends TestCase
         ]), true);
         $this->assertStringStartsWith('/plugins/compose.manager/include/ShowTtyd.php?done=1&socket=compose_action_', $response['url']);
         parse_str(parse_url($response['url'], PHP_URL_QUERY), $query);
+        $this->assertSame('gitdeploy', $query['command']);
+        $this->assertSame('0', $query['bulk']);
         $session = \composeUiOperationFile('terminal-session', $query['session']);
         $operation = \composeUiOperationFile($folder, $response['operations'][$folder]);
         try {

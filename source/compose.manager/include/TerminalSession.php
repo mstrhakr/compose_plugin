@@ -50,10 +50,11 @@ function composeStopTerminalSession(string $id): void
 /**
  * @param array<string, string> $operations
  */
-function composeEchoTerminalSession(string $command, array $operations, bool $debug, string $logFile = ''): void
+function composeEchoTerminalSession(string $command, array $operations, bool $debug, string $logFile = '', string $action = ''): void
 {
     try {
         $url = composeStartTerminalSession($command, $operations, $debug, $logFile);
+        $url .= '&command=' . rawurlencode($action) . '&bulk=' . (count($operations) > 1 ? '1' : '0');
         echo json_encode(['url' => $url, 'operations' => $operations]);
     } catch (RuntimeException $error) {
         composeLogger('Unable to open managed terminal', ['message' => $error->getMessage()], 'user', 'error', 'operation');

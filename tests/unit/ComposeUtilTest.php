@@ -59,6 +59,8 @@ class ComposeUtilTest extends TestCase
             $response = json_decode((string) ob_get_clean(), true);
             $this->assertStringStartsWith('/plugins/compose.manager/include/ShowTtyd.php?done=1&socket=compose_action_', $response['url']);
             parse_str(parse_url($response['url'], PHP_URL_QUERY), $query);
+            $this->assertSame('up', $query['command']);
+            $this->assertSame('1', $query['bulk']);
             $sessionFiles[] = \composeUiOperationFile('terminal-session', $query['session']) . '.log';
             $sessionFiles[] = \composeUiOperationFile('terminal-session', $query['session']);
             $this->assertSame(['receipt-first', 'receipt-second'], array_keys($response['operations']));
@@ -179,6 +181,8 @@ class ComposeUtilTest extends TestCase
         $tracked = json_decode((string) ob_get_clean(), true);
         $this->assertStringStartsWith('/plugins/compose.manager/include/ShowTtyd.php?done=1&socket=compose_action_', $tracked['url']);
         parse_str(parse_url($tracked['url'], PHP_URL_QUERY), $query);
+        $this->assertSame('up', $query['command']);
+        $this->assertSame('0', $query['bulk']);
         $sessionFile = \composeUiOperationFile('terminal-session', $query['session']);
         unlink($sessionFile . '.log');
         unlink($sessionFile);

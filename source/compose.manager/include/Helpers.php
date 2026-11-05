@@ -383,7 +383,7 @@ function echoComposeCommand($action, array $options = [])
             }, $composeCommand);
             $composeCommandStr = join(" ", $composeCommandEscaped);
             if ($operations && !$followLogs) {
-                composeEchoTerminalSession($composeCommandStr, $operations, $debug, $logFile);
+                composeEchoTerminalSession($composeCommandStr, $operations, $debug, $logFile, $action);
                 return;
             }
             // Use a per-stack socket for logs so viewing logs doesn't conflict
@@ -589,7 +589,7 @@ function echoGitDeployCommand(array $options = []): void
     $composeCommand = composeTrackUiCommand($composeCommand, $stack->projectFolder, $operations);
     $composeCommandString = implode(' ', array_map('escapeshellarg', $composeCommand));
     if ($operations) {
-        composeEchoTerminalSession($composeCommandString, $operations, $debug, getLastCmdLogFileForComposeAction('gitdeploy', $stack->path));
+        composeEchoTerminalSession($composeCommandString, $operations, $debug, getLastCmdLogFileForComposeAction('gitdeploy', $stack->path), 'gitdeploy');
         return;
     }
     execComposeCommandInTTY($composeCommandString, $debug, getLastCmdLogFileForComposeAction('gitdeploy', $stack->path));
@@ -789,7 +789,7 @@ function echoComposeCommandMultiple($action, array $options = [])
 
     $ttydCommand = "bash " . escapeshellarg($tmpScript);
     if ($operations) {
-        composeEchoTerminalSession($ttydCommand, $operations, $debug);
+        composeEchoTerminalSession($ttydCommand, $operations, $debug, '', $action);
         return;
     }
     execComposeCommandInTTY($ttydCommand, $debug);

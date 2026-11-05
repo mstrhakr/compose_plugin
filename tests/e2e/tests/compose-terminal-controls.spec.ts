@@ -11,6 +11,44 @@ const markup = `
 
 test.use({ storageState: { cookies: [], origins: [] } });
 
+for (const [command, effect] of [
+  ['up', 'This Up runs detached (-d)'],
+  ['down', 'Containers and networks already removed will not be restored'],
+  ['stop', 'Containers already stopped stay stopped'],
+  ['pull', 'this action does not recreate or stop containers'],
+  ['update', 'The stack may be partially updated'],
+  ['gitdeploy', 'The stack may be partially deployed'],
+  ['unknown', 'Depending on the command, containers may be stopped'],
+]) {
+  test(`cancellation explains ${command} effects and batch scope without claiming phase knowledge`, async ({ page }) => {
+    let stopRequests = 0;
+    await page.route('http://terminal.test/**', async route => {
+      if (route.request().method() === 'GET') return route.fulfill({ contentType: 'text/html', body: markup });
+      if (new URLSearchParams(route.request().postData() || '').get('action') === 'stopTerminalSession') stopRequests++;
+      await route.fulfill({ json: { result: 'success', session: { state: 'running' } } });
+    });
+    await page.goto('http://terminal.test/');
+    await page.evaluate(command => Object.assign(window, {
+      composeTerminalSession: 'd'.repeat(32), composeTerminalCommand: command,
+      composeTerminalBulk: true, Shadowbox: { close() {} },
+    }), command);
+    await page.addScriptTag({ content: source });
+    const stop = page.getByRole('button', { name: 'Stop command' });
+    await expect(stop).toBeEnabled();
+    const dialogPromise = page.waitForEvent('dialog');
+    const clickPromise = stop.click();
+    const dialog = await dialogPromise;
+    const message = dialog.message();
+    await dialog.dismiss();
+    await clickPromise;
+    expect(message).toContain(effect);
+    expect(message).toContain('remaining queued actions are cancelled');
+    expect(message).toContain('exact execution phase is not tracked');
+    expect(message).toContain('Changes already made will not be undone');
+    expect(stopRequests).toBe(0);
+  });
+}
+
 test('continuing in background closes only the viewer and sends no stop request', async ({ page }) => {
   const actions: string[] = [];
   await page.route('http://terminal.test/**', async route => {

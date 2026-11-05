@@ -10,6 +10,19 @@
     var stopping = false;
     var disposed = false;
     var timer;
+    var stopEffects = {
+        up: 'This Up runs detached (-d). Cancelling interrupts preparation or startup; it does not run Stop or Down. Containers may already have been created or started and may remain running.',
+        down: 'This interrupts Down. Containers and networks already removed will not be restored; remaining resources may still exist.',
+        stop: 'This interrupts stopping the stack. Containers already stopped stay stopped; others may still be running.',
+        pull: 'This interrupts image downloads. Images already downloaded remain; this action does not recreate or stop containers.',
+        update: 'This interrupts the update. Images may already have been pulled or built, and containers may already have been stopped or recreated. The stack may be partially updated.',
+        gitdeploy: 'This interrupts the Git deployment. Repository files may already have changed, and containers may already have been stopped or recreated. The stack may be partially deployed.'
+    };
+    var stopWarning = 'Stop this command?\n\n' +
+        (stopEffects[window.composeTerminalCommand] ||
+            'Cancelling interrupts the current operation. Depending on the command, containers may be stopped or left partially changed.') +
+        (window.composeTerminalBulk ? '\n\nThis applies to the whole batch: the current action is interrupted and remaining queued actions are cancelled. Earlier actions are not undone.' : '') +
+        '\n\nThe exact execution phase is not tracked. Changes already made will not be undone. Check the stack state afterward.';
 
     function closeViewer() {
         window.top.Shadowbox.close();
@@ -65,7 +78,7 @@
     background.addEventListener('click', closeViewer);
     done.addEventListener('click', closeViewer);
     stop.addEventListener('click', async function () {
-        if (completed || stopping || !window.confirm('Stop this command? Changes already made will not be undone. This does not automatically stop containers that have already started.')) return;
+        if (completed || stopping || !window.confirm(stopWarning)) return;
         stopping = true;
         stop.disabled = true;
         status.textContent = 'Stopping command...';

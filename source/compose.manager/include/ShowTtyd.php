@@ -116,7 +116,11 @@ $themeSheetJson = json_encode("themes/{$themeFile}.css");
                 <button type="button" id="done-btn" hidden>Done</button>
             </span>
         </p>
-        <script>window.composeTerminalSession = <?= json_encode($terminalSession) ?>;</script>
+        <script>
+            window.composeTerminalSession = <?= json_encode($terminalSession) ?>;
+            window.composeTerminalCommand = <?= json_encode((string) ($_GET['command'] ?? ''), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+            window.composeTerminalBulk = <?= ($_GET['bulk'] ?? '') === '1' ? 'true' : 'false' ?>;
+        </script>
         <script src="<?php autov('/plugins/compose.manager/javascript/composeTerminal.js'); ?>"></script>
     <?php elseif ($showDone): ?>
         <p class="centered ui-dialog-buttonpane">
