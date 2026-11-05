@@ -60,6 +60,13 @@ npm test
 
 See `tests/e2e/README.md` for details and safety guardrails.
 
+The opt-in `npm run test:host` stabilization gate requires
+`E2E_HOST_TEST_ACK` matching the exact `E2E_BASE_URL` origin in addition to
+mutation permission. It creates only generated disposable stacks and does not
+deploy the plugin or alter global settings. See the E2E README for prerequisites,
+coverage and intentionally unautomated gates. Do not count configuration skips
+as live validation; these tests must be run separately on the installed candidate.
+
 ### Image Update State and Action Refresh
 
 Known image-check results replace older results, including `hasUpdate: false` and cleared digest fields. Unknown results can retain a previous check only for the same image reference; changing a tag must not inherit another tag's badge. Clearing the update cache removes update fields from the persistent container metadata without removing icons or runtime metadata.
