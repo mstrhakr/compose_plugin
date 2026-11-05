@@ -2533,6 +2533,11 @@ function sanitizeIconPreviewSrc(raw) {
 
 function loadPersistentContainerCache() {
     return new Promise(function(resolve) {
+        function failed(message) {
+            composeLogger('Failed to load persistent container cache', { message: message }, 'user', 'error', 'load-cache');
+            swal({ title: 'Container metadata unavailable', text: message + ' Existing metadata has been retained; refresh to retry or clear the update cache to recover damaged storage.', type: 'warning' });
+            resolve(persistentContainerCache);
+        }
         $.ajax({
             url: caURL,
             method: 'POST',
@@ -2542,14 +2547,16 @@ function loadPersistentContainerCache() {
             }
         })
             .done(function(response) {
+                if (!response || response.result !== 'success' || !response.cache || typeof response.cache !== 'object') {
+                    failed(response && response.message || 'The server returned invalid container metadata.');
+                    return;
+                }
                 composeLogger('Loaded persistent container cache', response, 'user', 'debug', 'load-cache');
                 persistentContainerCache = Object.assign(Object.create(null), response && response.cache);
                 resolve(persistentContainerCache);
             })
             .fail(function() {
-                composeLogger('Failed to load persistent container cache', null, 'user', 'error', 'load-cache');
-                persistentContainerCache = Object.create(null);
-                resolve(persistentContainerCache);
+                failed('The container metadata request failed.');
             });
     });
 }

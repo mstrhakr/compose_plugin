@@ -11,6 +11,7 @@ const hooks = [
   'checkStackUpdates', 'checkAllUpdates', 'loadSavedUpdateStatus', 'checkPendingRechecks',
   'processPendingUpdateCheckForStack', 'processPendingUpdateChecks', 'setStackActionInProgress',
   'purgeDeletedStackCaches',
+  'loadPersistentContainerCache',
 ].map(exact).join('\n');
 
 // Deterministic transport/timer adapter: all decisions run in the production coordinator.
@@ -76,6 +77,33 @@ async function run(page: Page, scenario: string) {
 }
 
 test.use({ storageState: { cookies: [], origins: [] } });
+
+for (const outcome of ['error', 'network', 'success', 'empty']) {
+  test(`presentation metadata ${outcome} preserves the response contract`, async ({ page }) => {
+    const result = await run(page, `
+      return (async function() {
+        persistentContainerCache = { existing: { app: {icon:'kept.png'} } };
+        var pending = loadPersistentContainerCache();
+        if (${JSON.stringify(outcome)} === 'network') fail(0);
+        else requests[0].success(${outcome === 'error'
+          ? "{result:'error', message:'Invalid container metadata.'}"
+          : outcome === 'empty'
+            ? "{result:'success', cache:[]}"
+            : "{result:'success', cache:{fresh:{app:{icon:'new.png'}}}}"});
+        await pending;
+        return {cache:persistentContainerCache, warnings};
+      })();
+    `);
+    if (outcome === 'error' || outcome === 'network') {
+      expect(result.cache.existing.app.icon).toBe('kept.png');
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings[0].title).toBe('Container metadata unavailable');
+    } else {
+      expect(result.warnings).toEqual([]);
+      expect(result.cache).toEqual(outcome === 'empty' ? {} : { fresh: { app: { icon: 'new.png' } } });
+    }
+  });
+}
 
 test('single after bulk owns only its project; bulk merges the other project', async ({ page }) => {
   const result = await run(page, `

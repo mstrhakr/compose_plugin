@@ -69,6 +69,27 @@ errors. Checks requested while a local action is busy remain queued. Failed
 acknowledgements warn explicitly and retain retryable pending state without
 calling the received image result a failure.
 
+`StackMutationGuard` coordinates checks with the canonical Compose project's
+existing operation lock. Checks take short shared locks to capture an epoch and
+pending identity, then release them before Docker/registry work. Publication
+reacquires shared locks and accepts only unchanged epochs; busy or changed
+projects are superseded without evidence or acknowledgement tokens. Full-check
+publication and metadata commits are batched, not repeated whole-store writes
+per project. Lock ordering costs O(P log P) for P projects, with O(P) temporary
+handles; all are released after the short publication transaction.
+
+The shared shell mutation path rotates epochs and renews pending identities at
+both locked boundaries, including failure/normal termination cleanup. Pull,
+Update, Git Deploy, and image-preparing Up create pending checks. Ordinary
+Up/down/stop only renew marks that already exist. Failed begin bookkeeping
+refuses execution; failed end bookkeeping fails the operation and its saved
+result while retaining the begin mark. Forced interruption still retains the
+begin epoch/mark. Folder keys and canonical runtime project names remain
+distinct. Acknowledgements take the operation lock and bind their token to the
+epoch, so a check published before a later mutation cannot consume its mark.
+This guarantee covers the shared shell operation path, not external Docker
+changes or source-editing paths that do not rotate mutation epochs.
+
 Stack-level image evidence has a separate server publication generation. Single
 and full checks reserve their project generations before Docker inspection or
 registry requests; only matching generations may commit. A newer failed check
@@ -86,9 +107,28 @@ O(P + S), plus existing container-evidence merge work. Single checks rejected at
 publication return `result: superseded` without image evidence or recheck tokens.
 Full responses retain `result: success`, containing only accepted `stacks` and an
 additive `superseded` project list. Superseded checks must not acknowledge pending
-marks. This does not serialize server image checks with stack mutations (including
-mutations in another tab), nor
-make the shared native image cache or presentation metadata cache transactional.
+marks.
+
+Compose's platform/config-digest checker does not read or write the native Docker
+image-update cache. Compose badges use saved per-container evidence; missing
+plugin evidence remains unchecked rather than falling back to native verdicts.
+Explicit clearing leaves native cache bytes untouched. There is no replacement
+plugin image cache: the existing stack evidence store remains authoritative.
+
+`ContainerMetadataCache` owns presentation metadata transactions and per-project
+collection generations. A collector reserves its generation before inspecting
+containers or resolving icons; only a still-owned scoped patch may merge.
+Image-check metadata additionally requires accepted check publication. Deletion
+invalidates the project generation, and explicit clearing invalidates all active
+collectors while preserving valid icons/runtime metadata. Both public metadata
+endpoints retain their project/service maps; the internal version-1 envelope has
+`projects` and `owners`. Legacy maps migrate on the first write. Corruption fails
+explicitly and remains intact until explicit clearing. Transactions are O(M + S)
+for M stored metadata entries and S requested changes; no Docker/network work
+holds the store lock.
+Detail collectors also verify the operation epoch before committing metadata.
+Metadata read errors warn in the browser without discarding the last loaded
+presentation snapshot.
 
 The main-page `composeUpdateChecks.js` coordinator owns single/bulk checks,
 saved-result hydration, pending retries, and acknowledgement callbacks. Existing

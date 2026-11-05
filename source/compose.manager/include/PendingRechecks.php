@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/Defines.php';
+require_once __DIR__ . '/StackMutationGuard.php';
 
 class PendingRechecks
 {
@@ -29,20 +30,41 @@ class PendingRechecks
         return array_map(static fn($entry): int => is_int($entry) ? $entry : $entry['timestamp'], self::access());
     }
 
-    public static function token(string $stack): ?string
+    public static function token(string $stack, ?string $project = null): ?string
     {
-        $entries = self::access();
-        return isset($entries[$stack]) ? self::entryToken($entries[$stack]) : null;
+        $snapshot = self::snapshot([$stack => $project ?? StackMutationGuard::projectForFolder($stack)]);
+        if (!array_key_exists($stack, $snapshot['tokens'])) throw new RuntimeException('A stack operation is in progress.');
+        return $snapshot['tokens'][$stack];
+    }
+
+    /** @param array<string|int, string> $projects Folder => canonical project
+     *  @return array{epochs: array<string|int, string>, tokens: array<string|int, string|null>}
+     */
+    public static function snapshot(array $projects): array
+    {
+        return StackMutationGuard::inspectMany(array_values($projects),
+            static function (array $current) use ($projects): array {
+                $entries = self::access();
+                $epochs = [];
+                $tokens = [];
+                foreach ($projects as $folder => $project) {
+                    if (!array_key_exists($project, $current)) continue;
+                    $epochs[$folder] = $current[$project];
+                    $tokens[$folder] = isset($entries[$folder]) ? self::entryToken($entries[$folder], $current[$project]) : null;
+                }
+                return ['epochs' => $epochs, 'tokens' => $tokens];
+            });
     }
 
     /** @param list<string> $stacks
      *  @return list<string|int>
      */
-    public static function mark(array $stacks): array
+    public static function mark(array $stacks, bool $create = true): array
     {
         $stacks = self::validateStacks($stacks);
-        $entries = self::access(static function (array $entries) use ($stacks): array {
+        $entries = self::access(static function (array $entries) use ($stacks, $create): array {
             foreach ($stacks as $stack) {
+                if (!$create && !isset($entries[$stack])) continue;
                 $entries[$stack] = ['timestamp' => time(), 'token' => bin2hex(random_bytes(16))];
             }
             return $entries;
@@ -65,14 +87,20 @@ class PendingRechecks
                 throw new InvalidArgumentException('Invalid or missing recheck token.');
             }
         }
-        return array_keys(self::access(static function (array $entries) use ($stacks, $tokens): array {
-            foreach ($stacks as $stack) {
-                if (isset($entries[$stack]) && self::entryToken($entries[$stack]) === $tokens[$stack]) {
-                    unset($entries[$stack]);
-                }
-            }
-            return $entries;
-        }));
+        $projects = [];
+        foreach ($stacks as $stack) $projects[$stack] = StackMutationGuard::projectForFolder($stack);
+        return StackMutationGuard::inspectMany(array_values($projects),
+            static function (array $epochs) use ($projects, $tokens): array {
+                return array_keys(self::access(static function (array $entries) use ($projects, $tokens, $epochs): array {
+                    foreach ($projects as $stack => $project) {
+                        if (array_key_exists($project, $epochs) && isset($entries[$stack])
+                            && self::entryToken($entries[$stack], $epochs[$project]) === $tokens[$stack]) {
+                            unset($entries[$stack]);
+                        }
+                    }
+                    return $entries;
+                }));
+            });
     }
 
     public static function remove(string $stack): bool
@@ -87,9 +115,9 @@ class PendingRechecks
     }
 
     /** @param int|array{timestamp:int,token:string} $entry */
-    private static function entryToken($entry): string
+    private static function entryToken($entry, string $epoch = ''): string
     {
-        return hash('sha256', is_int($entry) ? 'legacy:' . $entry : $entry['token']);
+        return hash('sha256', (is_int($entry) ? 'legacy:' . $entry : $entry['token']) . ':' . $epoch);
     }
 
     /** @param callable(array):array|null $change

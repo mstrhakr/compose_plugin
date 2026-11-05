@@ -21,6 +21,7 @@ test_setup() {
     export COMPOSE_NOTIFY_SCRIPT="$TEST_TEMP_DIR/bin/notify" NOTIFICATIONS="$TEST_TEMP_DIR/notifications"
     : > "$NOTIFICATIONS"
     export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    setup_mutation_php
 }
 
 run_update() {

@@ -8,6 +8,7 @@ require_once("/usr/local/emhttp/plugins/compose.manager/include/GitHubDeviceAuth
 require_once("/usr/local/emhttp/plugins/compose.manager/include/GitStackWebActions.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/StackUpdateService.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/PendingRechecks.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/ContainerMetadataCache.php");
 require_once("/usr/local/emhttp/plugins/dynamix/include/Wrappers.php");
 require_once('/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php');
 
@@ -95,51 +96,7 @@ if (!function_exists('resolveRequestedComposeFile')) {
 if (!function_exists('composeLoadPersistentContainerCache')) {
     function composeLoadPersistentContainerCache(): array
     {
-        $cacheFile = COMPOSE_CONTAINER_CACHE_FILE;
-        if (!is_file($cacheFile)) {
-            return [];
-        }
-        $decoded = json_decode(file_get_contents($cacheFile), true);
-        $cache = is_array($decoded) ? $decoded : [];
-        foreach ($cache as &$containers) {
-            if (!is_array($containers)) {
-                continue;
-            }
-            foreach ($containers as &$container) {
-                if (is_array($container)) {
-                    $container = ContainerInfo::fromDockerInspect($container)->toMetadataArray();
-                }
-            }
-            unset($container);
-        }
-        unset($containers);
-        return $cache;
-    }
-}
-
-if (!function_exists('composeSavePersistentContainerCache')) {
-    function composeSavePersistentContainerCache(array $cache): void
-    {
-        $cacheFile = COMPOSE_CONTAINER_CACHE_FILE;
-        file_put_contents($cacheFile, json_encode($cache, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-    }
-}
-
-if (!function_exists('composeCacheContainerMetadata')) {
-    function composeCacheContainerMetadata(array &$cache, ContainerInfo $update): void
-    {
-        if ($update->service === '') {
-            return;
-        }
-        $raw = $cache[$update->service] ?? [];
-        $raw['name'] = $update->name;
-        $raw['service'] = $update->service;
-        $raw['image'] = $update->image;
-        if ($update->icon !== '') {
-            $raw['icon'] = $update->icon;
-        }
-        $container = ContainerInfo::fromDockerInspect($raw);
-        $cache[$update->service] = $container->toMetadataArray();
+        return ContainerMetadataCache::read();
     }
 }
 
@@ -177,11 +134,10 @@ if (!function_exists('composePurgeDeletedStackCaches')) {
             'iconNormalizeOverride' => false,
         ];
 
-        $persistentContainerCache = composeLoadPersistentContainerCache();
-        if (isset($persistentContainerCache[$stackName])) {
-            unset($persistentContainerCache[$stackName]);
-            composeSavePersistentContainerCache($persistentContainerCache);
-            $purged['persistentContainerCache'] = true;
+        try {
+            $purged['persistentContainerCache'] = ContainerMetadataCache::remove($stackName);
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Unable to purge container metadata: ' . $e->getMessage(), ['stack' => $stackName], 'user', 'error', 'metadata');
         }
 
         if (defined('COMPOSE_ICON_NORMALIZE_DIR')) {
@@ -318,9 +274,11 @@ if (!function_exists('composeCheckStackUpdatesForUi')) {
      *
      * @param StackInfo[] $stacks
      * @param-out list<string> $superseded
+     * @param-out array<string|int, string|null> $recheckTokens
      */
-    function composeCheckStackUpdatesForUi(array $stacks, bool $replaceSavedStatus = false, ?array &$superseded = null): array
+    function composeCheckStackUpdatesForUi(array $stacks, bool $replaceSavedStatus = false, ?array &$superseded = null, ?array &$recheckTokens = null): array
     {
+        $metadataTokens = ContainerMetadataCache::begin(array_map(static fn(StackInfo $stack): string => $stack->projectFolder, $stacks));
         $cache = composeLoadPersistentContainerCache();
         $iconByService = [];
         $iconByName = [];
@@ -341,9 +299,9 @@ if (!function_exists('composeCheckStackUpdatesForUi')) {
             }
         }
         $inspectIconCache = [];
-        $dirty = false;
+        $patches = [];
         $enrich = static function (string $stackName, ContainerInfo $update) use (
-            &$cache, &$inspectIconCache, &$dirty, $iconByService, $iconByName
+            &$patches, &$inspectIconCache, $iconByService, $iconByName
         ): void {
             $update->icon = composeResolveContainerIcon(
                 $update->name, $update->service,
@@ -352,18 +310,19 @@ if (!function_exists('composeCheckStackUpdatesForUi')) {
             if ($update->icon !== '') {
                 compose_seed_docker_manager_icon(compose_fetch_icon_to_cache($update->icon), $update->name);
             }
-            if (!isset($cache[$stackName])) {
-                $cache[$stackName] = [];
+            if ($update->service !== '') {
+                $patch = ['name' => $update->name, 'service' => $update->service, 'image' => $update->image];
+                if ($update->icon !== '') $patch['icon'] = $update->icon;
+                $patches[$stackName][$update->service] = $patch;
             }
-            composeCacheContainerMetadata($cache[$stackName], $update);
-            $dirty = true;
         };
         $checker = new StackUpdateService();
-        $results = $checker->checkStacks($stacks, $enrich, $replaceSavedStatus);
+        $published = static function (array $accepted) use (&$patches, $metadataTokens): void {
+            ContainerMetadataCache::merge(array_intersect_key($patches, $accepted), $metadataTokens);
+        };
+        $results = $checker->checkStacks($stacks, $enrich, $replaceSavedStatus, $published);
         $superseded = $checker->superseded;
-        if ($dirty) {
-            composeSavePersistentContainerCache($cache);
-        }
+        $recheckTokens = $checker->recheckTokens;
         return $results;
     }
 }
@@ -439,7 +398,12 @@ switch ($_POST['action']) {
         echo json_encode(['result' => 'success', 'visibility' => $normalized]);
         break;
     case 'getPersistentContainerCache':
-        echo json_encode(['result' => 'success', 'cache' => composeLoadPersistentContainerCache()]);
+        try {
+            echo json_encode(['result' => 'success', 'cache' => composeLoadPersistentContainerCache()]);
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Unable to load container metadata: ' . $e->getMessage(), null, 'user', 'error', 'metadata');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
+        }
         break;
     case 'getComposeLoadSnapshot':
         $snapshotFile = '/tmp/compose_info_nchan.snapshot.json';
@@ -1050,29 +1014,12 @@ switch ($_POST['action']) {
             echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
             break;
         }
-        $containerCache = composeLoadPersistentContainerCache();
-        composeSavePersistentContainerCache($containerCache);
-        // Also clear entries from Unraid's update status that were created by compose manager
-        // by removing entries that don't correspond to running Docker containers
-        $unraidUpdateStatusFile = UNRAID_UPDATE_STATUS_FILE;
-        if (is_file($unraidUpdateStatusFile)) {
-            require_once("/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php");
-            $DockerClient = new DockerClient();
-            $runningImages = [];
-            foreach ($DockerClient->getDockerContainers() as $ct) {
-                $img = $ct['Image'] ?? '';
-                if ($img) {
-                    $runningImages[ContainerInfo::normalizeImageForUpdateCheck($img)] = true;
-                }
-            }
-            $updateStatus = DockerUtil::loadJSON($unraidUpdateStatusFile);
-            $cleaned = [];
-            foreach ($updateStatus as $key => $value) {
-                if (isset($runningImages[ContainerInfo::normalizeImageForUpdateCheck($key)])) {
-                    $cleaned[$key] = $value;
-                }
-            }
-            DockerUtil::saveJSON($unraidUpdateStatusFile, $cleaned);
+        try {
+            ContainerMetadataCache::clearEvidence();
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Unable to clear container metadata: ' . $e->getMessage(), null, 'user', 'error', 'metadata');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
+            break;
         }
         echo json_encode(['result' => 'success', 'message' => 'Update cache cleared']);
         break;
@@ -1939,6 +1886,14 @@ switch ($_POST['action']) {
 
         // Resolve stack identity and compose CLI arguments via StackInfo
         $stackInfo = StackInfo::fromProject($compose_root, $script);
+        try {
+            $metadataSnapshot = StackMutationGuard::inspect($stackInfo->projectName,
+                static fn(string $epoch): array => [$epoch, ContainerMetadataCache::begin([$stackInfo->projectFolder])]);
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Unable to reserve container metadata: ' . $e->getMessage(), null, 'user', 'error', 'metadata');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
+            break;
+        }
         // Get container details in JSON format (all states)
         $rows = $stackInfo->getContainerList();
         // Hard dependency on Docker manager: use shared helpers directly.
@@ -1957,16 +1912,6 @@ switch ($_POST['action']) {
         foreach ($savedUpdates as $update) {
             $updatesByName[$update['name']] = ContainerInfo::fromUpdateResponse($update);
         }
-        // Load update status once before the loop (static data, doesn't change per-container)
-        $updateStatusFile = UNRAID_UPDATE_STATUS_FILE;
-        $updateStatusData = [];
-        if (is_file($updateStatusFile)) {
-            $savedImageStatus = json_decode(file_get_contents($updateStatusFile), true) ?: [];
-            foreach ($savedImageStatus as $imageKey => $imageStatus) {
-                $updateStatusData[ContainerInfo::normalizeImageForUpdateCheck($imageKey)] = $imageStatus;
-            }
-        }
-
         // Get stack state via centralized StackInfo method
         $stackState = $stackInfo->getStackState();
 
@@ -2096,41 +2041,9 @@ switch ($_POST['action']) {
                             $rawContainer['WebUI'] = $resolvedURL;
                         }
 
-                        // Get update status from saved status file (read once before loop)
-                        $imageName = ContainerInfo::normalizeImageForUpdateCheck($rawContainer['Image']);
-
                         $rawContainer['updateStatus'] = 'unknown';
                         $rawContainer['localSha'] = '';
                         $rawContainer['remoteSha'] = '';
-
-                        $status = $updateStatusData[$imageName] ?? null;
-                        if (is_array($status)) {
-                            $localRaw = $status['local'] ?? '';
-                            $remoteRaw = $status['remote'] ?? '';
-                            // Native cache entries may contain manifest digests, not config IDs.
-                            $configDigest = $status['configDigest'] ?? '';
-                            $hasConfigDigest = $configDigest !== '' && $configDigest === $remoteRaw;
-                            if ($hasConfigDigest) {
-                                $localRaw = $inspect['Image'] ?? '';
-                                $rawContainer['updateReadiness'] = ComposeUpdateCheck::imageReadiness(
-                                    $localRaw, $status['local'] ?? '', $remoteRaw
-                                );
-                                $rawContainer['localImageSha'] = substr(str_replace('sha256:', '', $status['local'] ?? ''), 0, 12);
-                            }
-                            $rawContainer['localSha'] = substr(str_replace('sha256:', '', $localRaw), 0, 8);
-                            $rawContainer['remoteSha'] = substr(str_replace('sha256:', '', $remoteRaw), 0, 8);
-                            if ($localRaw !== '' && $remoteRaw !== '') {
-                                $statusValue = $status['status'] ?? null;
-                                $rawContainer['updateStatus'] = ($localRaw === $remoteRaw) ? 'up-to-date' : 'update-available';
-                                if (!$hasConfigDigest) {
-                                    if (in_array($statusValue, ['true', true], true)) {
-                                        $rawContainer['updateStatus'] = 'up-to-date';
-                                    } elseif (in_array($statusValue, ['false', false], true)) {
-                                        $rawContainer['updateStatus'] = 'update-available';
-                                    }
-                                }
-                            }
-                        }
                     }
                 }
             }
@@ -2151,20 +2064,31 @@ switch ($_POST['action']) {
         }
 
         // --- Persistent container metadata cache ---
-        $cache = composeLoadPersistentContainerCache();
         $stackKey = $stackInfo->projectFolder;
-        if (!isset($cache[$stackKey])) $cache[$stackKey] = [];
+        $metadata = [];
         foreach ($containers as &$ct) {
             if (ContainerInfo::isOneOff($ct)) {
                 continue;
             }
             $service = $ct['service'] ?? $ct['Name'] ?? '';
             if ($service) {
-                $cache[$stackKey][$service] = ContainerInfo::fromDockerInspect($ct)->toMetadataArray();
+                $metadata[$service] = ContainerInfo::fromDockerInspect($ct)->toMetadataArray();
             }
         }
         unset($ct);
-        composeSavePersistentContainerCache($cache);
+        try {
+            if ($metadataSnapshot !== null) {
+                StackMutationGuard::inspect($stackInfo->projectName, static function (string $epoch) use ($metadataSnapshot, $stackKey, $metadata): void {
+                    if ($epoch === $metadataSnapshot[0]) {
+                        ContainerMetadataCache::merge([$stackKey => $metadata], $metadataSnapshot[1]);
+                    }
+                });
+            }
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Unable to save container metadata: ' . $e->getMessage(), null, 'user', 'error', 'metadata');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
+            break;
+        }
 
         echo json_encode(['result' => 'success', 'containers' => $containers, 'stackState' => $stackState, 'projectName' => $stackInfo->projectFolder, 'startedAt' => $stackInfo->getStartedAt()]);
         composeLogger('getStackContainers done', [
@@ -2237,15 +2161,14 @@ switch ($_POST['action']) {
 
         try {
             $stackInfo = StackInfo::fromProject($compose_root, $script);
-            $recheckToken = PendingRechecks::token($stackInfo->projectFolder);
-            $results = composeCheckStackUpdatesForUi([$stackInfo]);
+            $results = composeCheckStackUpdatesForUi([$stackInfo], false, $superseded, $recheckTokens);
             if (!isset($results[$stackInfo->projectFolder])) {
                 echo json_encode(['result' => 'superseded', 'projectName' => $stackInfo->projectFolder]);
                 break;
             }
             $result = $results[$stackInfo->projectFolder];
             echo json_encode(['result' => 'success', 'updates' => $result['containers'], 'projectName' => $result['projectName'],
-                'recheckToken' => $recheckToken]);
+                'recheckToken' => $recheckTokens[$stackInfo->projectFolder]]);
         } catch (RuntimeException | JsonException | InvalidArgumentException $e) {
             composeLogger('Stack update check failed: ' . $e->getMessage(), null, 'user', 'error', 'update-check');
             echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);

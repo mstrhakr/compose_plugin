@@ -27,6 +27,22 @@ class ExecActionsTest extends TestCase
     /** @var string[] */
     private array $externalCleanupPaths = [];
 
+    private function mergeContainerMetadata(array &$cache, \ContainerInfo $update): void
+    {
+        $original = is_file(COMPOSE_CONTAINER_CACHE_FILE) ? file_get_contents(COMPOSE_CONTAINER_CACHE_FILE) : false;
+        try {
+            file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, json_encode(['stack' => $cache], JSON_THROW_ON_ERROR));
+            $tokens = \ContainerMetadataCache::begin(['stack']);
+            $patch = ['name' => $update->name, 'service' => $update->service, 'image' => $update->image];
+            if ($update->icon !== '') $patch['icon'] = $update->icon;
+            \ContainerMetadataCache::merge(['stack' => [$update->service => $patch]], $tokens);
+            $cache = \ContainerMetadataCache::read()['stack'];
+        } finally {
+            if ($original === false) @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+            else file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, $original);
+        }
+    }
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -236,7 +252,7 @@ class ExecActionsTest extends TestCase
             'localSha' => 'old-local',
             'remoteSha' => 'old-remote',
         ]];
-        \composeCacheContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
+        $this->mergeContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
             'container' => 'stack-db-1',
             'service' => 'db',
             'image' => 'postgres:18',
@@ -251,7 +267,7 @@ class ExecActionsTest extends TestCase
         $this->assertSame('running', $cache['db']['state']);
         $this->assertSame('/existing-icon.png', $cache['db']['icon']);
 
-        \composeCacheContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
+        $this->mergeContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
             'container' => 'stack-db-1',
             'service' => 'db',
             'image' => 'postgres:18',
@@ -260,7 +276,7 @@ class ExecActionsTest extends TestCase
         $this->assertArrayNotHasKey('updateStatus', $cache['db']);
         $this->assertArrayNotHasKey('remoteSha', $cache['db']);
 
-        \composeCacheContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
+        $this->mergeContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
             'container' => 'stack-db-1',
             'service' => 'db',
             'image' => 'postgres:19',
@@ -283,7 +299,7 @@ class ExecActionsTest extends TestCase
             'remoteSha' => 'old-remote',
         ]];
 
-        \composeCacheContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
+        $this->mergeContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
             'container' => 'stack-db-1',
             'service' => 'db',
             'image' => 'postgres:18',
@@ -295,7 +311,7 @@ class ExecActionsTest extends TestCase
         $this->assertArrayNotHasKey('remoteSha', $cache['db']);
 
         $cache['db']['image'] = 'postgres:18@sha256:' . str_repeat('a', 64);
-        \composeCacheContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
+        $this->mergeContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
             'container' => 'stack-db-1',
             'service' => 'db',
             'image' => 'postgres:18@sha256:' . str_repeat('b', 64),
@@ -307,7 +323,7 @@ class ExecActionsTest extends TestCase
         $this->assertArrayNotHasKey('remoteSha', $cache['db']);
     }
 
-    public function testLegacyMetadataCacheEvidenceIsNotReturnedAndIsRemovedOnSave(): void
+    public function testLegacyMetadataCacheEvidenceIsNotReturnedOrWrittenOnRead(): void
     {
         file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, json_encode(['stack' => ['app' => [
             'name' => 'app-1', 'service' => 'app', 'image' => 'app:latest',
@@ -315,15 +331,15 @@ class ExecActionsTest extends TestCase
             'hasUpdate' => true, 'updateStatus' => 'update-available', 'updateReadiness' => 'ready-to-apply',
         ]]]));
         try {
+            $originalBytes = file_get_contents(COMPOSE_CONTAINER_CACHE_FILE);
             $response = json_decode($this->executeAction('getPersistentContainerCache'), true);
             $container = $response['cache']['stack']['app'];
             $this->assertSame('running', $container['state']);
             $this->assertSame('/existing.png', $container['icon']);
             $this->assertArrayNotHasKey('hasUpdate', $container);
             $this->assertArrayNotHasKey('updateReadiness', $container);
-            \composeSavePersistentContainerCache($response['cache']);
-            $saved = json_decode(file_get_contents(COMPOSE_CONTAINER_CACHE_FILE), true);
-            $this->assertArrayNotHasKey('hasUpdate', $saved['stack']['app']);
+            $this->assertArrayNotHasKey('hasUpdate', \composeLoadPersistentContainerCache()['stack']['app']);
+            $this->assertSame($originalBytes, file_get_contents(COMPOSE_CONTAINER_CACHE_FILE));
         } finally {
             @unlink(COMPOSE_CONTAINER_CACHE_FILE);
         }
@@ -355,7 +371,7 @@ class ExecActionsTest extends TestCase
             'updateStatus' => 'up-to-date',
             'remoteSha' => 'new',
         ]];
-        \composeCacheContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
+        $this->mergeContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
             'container' => 'stack-db-2',
             'service' => 'db',
             'image' => 'postgres:18',
@@ -367,6 +383,8 @@ class ExecActionsTest extends TestCase
 
     public function testClearUpdateCacheRemovesUpdateFieldsButPreservesContainerMetadata(): void
     {
+        $nativeBytes = "{\n  \"postgres:18\": {\"local\":\"old\",\"remote\":\"new\",\"status\":\"false\"},\n  \"unused:latest\": {\"status\":\"true\"}\n}\n";
+        file_put_contents(UNRAID_UPDATE_STATUS_FILE, $nativeBytes);
         file_put_contents(COMPOSE_UPDATE_STATUS_FILE, '{"stack":{"hasUpdate":true}}');
         file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, json_encode(['stack' => ['db' => [
             'name' => 'stack-db-1',
@@ -383,7 +401,8 @@ class ExecActionsTest extends TestCase
 
             $this->assertSame('success', $response['result']);
             $this->assertSame([], \StackUpdateService::readSavedResults());
-            $cached = json_decode(file_get_contents(COMPOSE_CONTAINER_CACHE_FILE), true)['stack']['db'];
+            $this->assertSame($nativeBytes, file_get_contents(UNRAID_UPDATE_STATUS_FILE), 'Clearing plugin evidence must not prune or rewrite native Docker cache entries.');
+            $cached = \composeLoadPersistentContainerCache()['stack']['db'];
             $this->assertSame('stack-db-1', $cached['name']);
             $this->assertSame('running', $cached['state']);
             $this->assertSame('/existing-icon.png', $cached['icon']);
@@ -393,6 +412,7 @@ class ExecActionsTest extends TestCase
         } finally {
             @unlink(COMPOSE_UPDATE_STATUS_FILE);
             @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+            @unlink(UNRAID_UPDATE_STATUS_FILE);
         }
     }
 
@@ -575,13 +595,27 @@ class ExecActionsTest extends TestCase
     public function testCheckInvalidatedDuringDockerInspectionIsExplicitlySuperseded(): void
     {
         $this->createTestStack('superseded-stack');
+        require_once '/usr/local/emhttp/plugins/compose.manager/include/ContainerMetadataCache.php';
+        file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, json_encode(['superseded-stack' => ['app' => [
+            'name' => 'previous-app', 'service' => 'app', 'image' => 'previous:latest',
+            'icon' => '/previous.png', 'state' => 'running',
+        ]]]));
+        $previousMetadata = \ContainerMetadataCache::read();
         $directory = $this->createTempDir();
         $invalidate = $directory . '/invalidate.php';
         file_put_contents($invalidate, '<?php require ' . var_export(dirname(__DIR__) . '/bootstrap.php', true)
             . '; require "/usr/local/emhttp/plugins/compose.manager/include/StackUpdateService.php";'
             . 'StackUpdateService::removeSavedResult("superseded-stack");');
+        $row = [
+            'Names' => 'superseded-app-new', 'Image' => 'new-app@sha256:pinned',
+            'Labels' => 'com.docker.compose.project=superseded-stack,com.docker.compose.service=app',
+        ];
+        \DockerClient::setMockResponse('/containers/superseded-app-new/json', ['Image' => 'sha256:pinned']);
         file_put_contents($directory . '/docker', "#!/bin/sh\ncase \"\$1\" in\nps) "
-            . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($invalidate) . " ;;\n*) exit 0 ;;\nesac\n");
+            . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($invalidate) . "\n"
+            . "printf '%s\\n' " . escapeshellarg(json_encode($row)) . " ;;\n"
+            . "compose) echo '{\"services\":{\"app\":{\"image\":\"new-app@sha256:pinned\"}}}' ;;\n"
+            . "*) exit 0 ;;\nesac\n");
         chmod($directory . '/docker', 0755);
         $path = getenv('PATH');
         putenv('PATH=' . $directory . PATH_SEPARATOR . $path);
@@ -590,7 +624,7 @@ class ExecActionsTest extends TestCase
                 \StackInfo::clearCache();
                 $response = json_decode($this->executeAction($action, ['script' => 'superseded-stack']), true);
                 if ($action === 'checkStackUpdates') {
-                    $this->assertSame('superseded', $response['result']);
+                    $this->assertSame('superseded', $response['result'], json_encode($response));
                     $this->assertArrayNotHasKey('recheckToken', $response);
                     $this->assertArrayNotHasKey('updates', $response);
                 } else {
@@ -599,10 +633,12 @@ class ExecActionsTest extends TestCase
                     $this->assertArrayNotHasKey('superseded-stack', $response['stacks']);
                 }
                 $this->assertArrayNotHasKey('superseded-stack', \StackUpdateService::readSavedResults());
+                $this->assertSame($previousMetadata, \composeLoadPersistentContainerCache(), 'Superseded checks must not publish replacement container names, images, or icons.');
             }
         } finally {
             putenv('PATH=' . $path);
             @unlink(COMPOSE_UPDATE_STATUS_FILE);
+            @unlink(COMPOSE_CONTAINER_CACHE_FILE);
         }
     }
 
@@ -691,8 +727,8 @@ class ExecActionsTest extends TestCase
                 $this->assertFalse($container['hasUpdate']);
                 $this->assertSame('unknown', $container['updateStatus']);
                 $this->assertSame('', $container['remoteSha']);
-                $cache = json_decode(file_get_contents(COMPOSE_CONTAINER_CACHE_FILE), true);
-                $this->assertArrayNotHasKey('app', $cache['jobs'], 'A job must not replace service metadata.');
+                $cache = \composeLoadPersistentContainerCache();
+                $this->assertArrayNotHasKey('app', $cache['jobs'] ?? [], 'A job must not replace service metadata.');
             }
         } finally {
             putenv('PATH=' . $path);
@@ -742,7 +778,7 @@ class ExecActionsTest extends TestCase
                 $this->assertSame('success', $response['result']);
                 $this->assertSame(['rebuild-required', 'unknown', 'unknown'], array_column($response['containers'], 'updateReadiness'));
                 $this->assertSame([true, true, false], array_column($response['containers'], 'hasUpdate'));
-                $cache = json_decode(file_get_contents(COMPOSE_CONTAINER_CACHE_FILE), true);
+                $cache = \composeLoadPersistentContainerCache();
                 $this->assertArrayNotHasKey('hasUpdate', $cache['replicas']['app']);
                 $this->assertArrayNotHasKey('updateReadiness', $cache['replicas']['app']);
             }
@@ -922,20 +958,20 @@ class ExecActionsTest extends TestCase
     public static function cachedImageStatusCases(): array
     {
         return [
-            'tag prefix' => ['ghcr.io/example/app:v3.3.5', 'ghcr.io/example/app:v3', 'ghcr.io/example/app:v3.3.5', null, 'up-to-date'],
-            'official full reference' => ['docker.io/library/postgres:18', 'postgres:16', 'library/postgres:18', null, 'up-to-date'],
-            'official short reference' => ['redis:8', 'other/redis:8', 'docker.io/library/redis:8', null, 'up-to-date'],
+            'tag prefix' => ['ghcr.io/example/app:v3.3.5', 'ghcr.io/example/app:v3', 'ghcr.io/example/app:v3.3.5', null, 'unknown'],
+            'official full reference' => ['docker.io/library/postgres:18', 'postgres:16', 'library/postgres:18', null, 'unknown'],
+            'official short reference' => ['redis:8', 'other/redis:8', 'docker.io/library/redis:8', null, 'unknown'],
             'old tag only' => ['ghcr.io/example/app:v3.3.5', 'ghcr.io/example/app:v3', null, null, 'unknown'],
-            'already pulled but not recreated' => ['postgres:18', 'postgres:16', 'library/postgres:18', 'oldimage', 'update-available', true],
-            'native manifest digest is not a config ID' => ['postgres:18', 'postgres:16', 'library/postgres:18', 'oldimage', 'up-to-date', false],
-            'native writer replaced the remote digest' => ['postgres:18', 'postgres:16', 'library/postgres:18', 'oldimage', 'up-to-date', false, 'previous-config'],
+            'already pulled but not recreated' => ['postgres:18', 'postgres:16', 'library/postgres:18', 'oldimage', 'unknown', true],
+            'native manifest digest is not a config ID' => ['postgres:18', 'postgres:16', 'library/postgres:18', 'oldimage', 'unknown', false],
+            'native writer replaced the remote digest' => ['postgres:18', 'postgres:16', 'library/postgres:18', 'oldimage', 'unknown', false, 'previous-config'],
             'config digest needs actual container ID' => ['postgres:18', 'postgres:16', 'library/postgres:18', null, 'unknown', true],
-            'recreated container matches config digest' => ['postgres:18', 'postgres:16', 'library/postgres:18', 'current', 'up-to-date', true],
+            'recreated container matches config digest' => ['postgres:18', 'postgres:16', 'library/postgres:18', 'current', 'unknown', true],
         ];
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('cachedImageStatusCases')]
-    public function testContainerStatusUsesExactNormalizedImageInsteadOfOldTagPrefix(
+    public function testContainerDetailsIgnoreNativeImageEvidenceWithoutAcceptedPluginEvidence(
         string $image,
         string $oldImage,
         ?string $currentImage,
@@ -945,6 +981,7 @@ class ExecActionsTest extends TestCase
         ?string $previousConfigDigest = null
     ): void
     {
+        @unlink(COMPOSE_UPDATE_STATUS_FILE);
         $this->createTestStack('status-stack');
         $dockerDir = $this->createTempDir();
         $docker = $dockerDir . '/docker';
@@ -969,20 +1006,79 @@ class ExecActionsTest extends TestCase
                 $statuses[$currentImage]['configDigest'] = $previousConfigDigest;
             }
         }
-        file_put_contents(UNRAID_UPDATE_STATUS_FILE, json_encode($statuses));
+        $nativeBytes = json_encode($statuses, JSON_PRETTY_PRINT) . "\n";
+        file_put_contents(UNRAID_UPDATE_STATUS_FILE, $nativeBytes);
         try {
             $response = json_decode($this->executeAction('getStackContainers', ['script' => 'status-stack']), true);
             $this->assertSame('success', $response['result']);
             $this->assertCount(1, $response['containers']);
             $this->assertSame($expectedStatus === 'update-available', $response['containers'][0]['hasUpdate']);
             $this->assertSame($expectedStatus, $response['containers'][0]['updateStatus']);
-            $usesConfig = $currentImage !== null && isset($statuses[$currentImage]['configDigest'])
-                && $statuses[$currentImage]['configDigest'] === 'current';
-            $this->assertSame($usesConfig ? ($containerImageId ?? '') : ($currentImage !== null ? 'current' : ''), $response['containers'][0]['localSha']);
+            $this->assertSame('unknown', $response['containers'][0]['updateReadiness']);
+            $this->assertSame('', $response['containers'][0]['localSha']);
+            $this->assertSame('', $response['containers'][0]['remoteSha']);
+            $this->assertSame($nativeBytes, file_get_contents(UNRAID_UPDATE_STATUS_FILE), 'Details must not rewrite native Docker evidence.');
         } finally {
             putenv('PATH=' . $path);
             @unlink(UNRAID_UPDATE_STATUS_FILE);
             @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+        }
+    }
+
+    public function testBusyCanonicalProjectDefersEndpointWithoutAcknowledgementToken(): void
+    {
+        $this->createTestStack('Display Folder', ['project_name' => 'canonical-project']);
+        $this->executeAction('getPersistentContainerCache');
+        \PendingRechecks::mark(['Display Folder']);
+        $token = \PendingRechecks::token('Display Folder');
+        $lockDirectory = getenv('COMPOSE_LOCK_DIR');
+        $directory = $this->createTempDir();
+        putenv('COMPOSE_LOCK_DIR=' . $directory);
+        $lock = fopen($directory . '/canonical-project.lock', 'c+');
+        $this->assertTrue(flock($lock, LOCK_EX | LOCK_NB));
+        try {
+            $response = json_decode($this->executeAction('checkStackUpdates', ['script' => 'Display Folder']), true);
+            $this->assertSame('superseded', $response['result'], json_encode($response));
+            $this->assertArrayNotHasKey('recheckToken', $response);
+            $response = json_decode($this->executeAction('clearStackRecheck', [
+                'stacks' => json_encode(['Display Folder']),
+                'tokens' => json_encode(['Display Folder' => $token]),
+            ]), true);
+            $this->assertSame('success', $response['result'], json_encode($response));
+            $this->assertArrayHasKey('Display Folder', \PendingRechecks::timestamps());
+        } finally {
+            fclose($lock);
+            putenv($lockDirectory === false ? 'COMPOSE_LOCK_DIR' : 'COMPOSE_LOCK_DIR=' . $lockDirectory);
+            \PendingRechecks::remove('Display Folder');
+        }
+    }
+
+    public function testDetailCollectionSpanningMutationDoesNotPublishMetadata(): void
+    {
+        $this->createTestStack('details-race');
+        $directory = $this->createTempDir();
+        $path = getenv('PATH');
+        $lockDirectory = getenv('COMPOSE_LOCK_DIR');
+        putenv('COMPOSE_LOCK_DIR=' . $directory);
+        $row = json_encode(['Name' => 'new-app', 'Service' => 'app', 'Image' => 'alpine:latest', 'State' => 'running']);
+        file_put_contents($directory . '/docker', "#!/bin/sh\ncase \"\$1\" in\n"
+            . "compose) printf '%s' " . escapeshellarg(str_repeat('b', 32)) . ' > '
+            . escapeshellarg($directory . '/details-race.epoch') . "\n echo " . escapeshellarg($row) . " ;;\n"
+            . "inspect) echo '{}';;\nesac\n");
+        chmod($directory . '/docker', 0755);
+        putenv('PATH=' . $directory . PATH_SEPARATOR . $path);
+        $original = is_file(COMPOSE_CONTAINER_CACHE_FILE) ? file_get_contents(COMPOSE_CONTAINER_CACHE_FILE) : false;
+        file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, '{"details-race":{"app":{"name":"kept","service":"app","image":"kept:latest"}}}');
+        try {
+            $response = json_decode($this->executeAction('getStackContainers', ['script' => 'details-race']), true);
+            $this->assertSame('success', $response['result'], json_encode($response));
+            $this->assertSame('new-app', $response['containers'][0]['name']);
+            $this->assertSame('kept', \ContainerMetadataCache::read()['details-race']['app']['name']);
+        } finally {
+            putenv('PATH=' . $path);
+            putenv($lockDirectory === false ? 'COMPOSE_LOCK_DIR' : 'COMPOSE_LOCK_DIR=' . $lockDirectory);
+            if ($original === false) @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+            else file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, $original);
         }
     }
 

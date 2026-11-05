@@ -10,6 +10,26 @@
 BATS_SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 load "${BATS_SETUP_DIR}/framework/bats/setup"
 
+# Execute the real mutation bookkeeping against the same isolated PHP paths as
+# PHPUnit, without requiring the Unraid platform on the test host.
+setup_mutation_php() {
+    export TMPDIR="$TEST_TEMP_DIR"
+    export MUTATION_REAL_PHP
+    MUTATION_REAL_PHP="$(command -v php)"
+    export MUTATION_TEST_BOOTSTRAP="$BATS_SETUP_DIR/bootstrap.php"
+    export MUTATION_PHP_SHIM="$TEST_TEMP_DIR/mutation-bin"
+    mkdir -p "$MUTATION_PHP_SHIM"
+    cat > "$MUTATION_PHP_SHIM/php" <<'SHIM'
+#!/bin/bash
+if [[ "${1:-}" = */mutation_boundary.php ]]; then
+    exec "$MUTATION_REAL_PHP" -d "auto_prepend_file=$MUTATION_TEST_BOOTSTRAP" "$@"
+fi
+exec "$MUTATION_REAL_PHP" "$@"
+SHIM
+    chmod +x "$MUTATION_PHP_SHIM/php"
+    export PATH="$MUTATION_PHP_SHIM:$PATH"
+}
+
 # ============================================================
 # Compose Manager Helpers (override / extend framework defaults)
 # ============================================================

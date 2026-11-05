@@ -93,12 +93,27 @@ visible through repeated expansion, but cannot regain pending status from shared
 or saved evidence, overwrite service metadata, or contribute to browser update
 totals. Regular services retain their normal update behavior.
 
-Plugin-written shared-cache entries include `configDigest`, bound to the remote
-config digest value. Runtime refreshes compare the actual container image ID
-only when that value matches `remote`. Unmarked native/legacy entries retain
-their saved verdict instead of comparing manifest digests to config IDs. A native
-writer replacing `remote` invalidates the provenance marker. Run a fresh update
-check to establish config-digest provenance for older entries.
+Compose checks neither read nor write Unraid's native image-update cache.
+The plugin's saved per-container results are authoritative for Compose badges;
+without them, details remain unchecked. Clear Update Cache affects only plugin
+evidence. Regression tests preserve native cache bytes across checks, details,
+and clearing, including legacy native entries.
+
+Presentation metadata has its own transactional project/service store. Tests
+interleave unrelated publications, newer collectors, deletion/recreation, and
+explicit clearing; stale collectors cannot resurrect removed metadata. Readers
+and all writers wait on the same inode lock. Corrupt storage is preserved and
+reported until explicit clearing. Both metadata endpoints expose the existing
+project/service map, not the internal ownership envelope.
+
+Mutation regressions use real canonical-project locks and deterministic epoch
+changes: busy checks defer before Docker enumeration, checks spanning operations
+cannot publish evidence or metadata, and old acknowledgements cannot consume
+renewed marks. Shell cases cover success, failure, interruption, failed boundary
+bookkeeping, canonical/folder identity, and ordinary Up/down/stop preserving
+their no-new-mark contract. Detail collection spanning a mutation cannot commit
+stale presentation metadata. Browser tests cover visible metadata-load failures,
+retaining the previous snapshot, and successful empty-cache responses.
 
 Single-stack and Check All update checks use each stack's attached registry
 credential for that registry only, including Docker Hub aliases. Other

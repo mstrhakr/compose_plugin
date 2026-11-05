@@ -34,6 +34,9 @@ wait_timeout=""
 build_on_update=false
 prepare_images=false
 lock_fd=""
+mutation_started=false
+mutation_folder=""
+mutation_pending_policy=renew
 operation_exit_code=0
 credential_id=""
 docker_config_dir=""
@@ -103,6 +106,20 @@ release_lock() {
     fi
 }
 
+record_mutation_boundary() {
+    COMPOSE_LOCK_DIR="$LOCK_DIR" php "$script_directory/mutation_boundary.php" "$name" "$mutation_folder" "$mutation_pending_policy"
+}
+
+finish_mutation() {
+    if [ "$mutation_started" = true ]; then
+        mutation_started=false
+        if ! record_mutation_boundary; then
+            log_msg ERROR "Unable to renew pending recheck after operation for $name"
+            return 1
+        fi
+    fi
+}
+
 # Ensure lock is released and follow state is cleared on exit.
 cleanup_docker_config() {
   if [ -n "$docker_config_dir" ]; then
@@ -111,7 +128,18 @@ cleanup_docker_config() {
   fi
 }
 
-trap 'release_lock; clear_follow_pid; cleanup_docker_config' EXIT
+cleanup() {
+    local status=$?
+    if ! finish_mutation; then
+        status=1
+        save_result failed "$status" "$command"
+    fi
+    release_lock
+    clear_follow_pid
+    cleanup_docker_config
+    exit "$status"
+}
+trap cleanup EXIT
 
 # Save operation result to stack directory
 save_result() {
@@ -323,6 +351,17 @@ case $command in
     if ! acquire_lock "$lock_name"; then
       exit 1
     fi
+    mutation_folder="${stack_path%/}"
+    mutation_folder="${mutation_folder##*/}"
+    case "$command" in
+      pull|update|gitdeploy) mutation_pending_policy=create ;;
+      up) if [ "$prepare_images" = true ]; then mutation_pending_policy=create; fi ;;
+    esac
+    if ! record_mutation_boundary; then
+      log_msg ERROR "Unable to record mutation for $name; refusing operation"
+      exit 1
+    fi
+    mutation_started=true
     ;;
 esac
 

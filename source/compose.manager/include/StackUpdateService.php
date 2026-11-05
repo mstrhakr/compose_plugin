@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/UpdateCheck.php';
 require_once __DIR__ . '/ComposeCommandBuilder.php';
+require_once __DIR__ . '/StackMutationGuard.php';
+require_once __DIR__ . '/PendingRechecks.php';
 
 /**
  * Shared stack-level update workflow. Registry comparisons remain in ComposeUpdateCheck.
@@ -12,6 +14,9 @@ class StackUpdateService
 {
     /** @var list<string> */
     public array $superseded = [];
+
+    /** @var array<string|int, string|null> */
+    public array $recheckTokens = [];
 
     /** @param array<string, mixed> $cfg */
     public static function resolveBuildOnUpdate(string $stackPath, array $cfg): bool
@@ -66,18 +71,29 @@ class StackUpdateService
      *
      * @param StackInfo[] $stacks
      * @param callable(string, ContainerInfo): void|null $enrich
+     * @param callable(array): void|null $published Short batched metadata commit, under the operation locks
      * @return array<string, array{projectName: string, hasUpdate: bool, containers: array}>
      */
-    public function checkStacks(array $stacks, ?callable $enrich = null, bool $replaceSavedStatus = false): array
+    public function checkStacks(array $stacks, ?callable $enrich = null, bool $replaceSavedStatus = false, ?callable $published = null): array
     {
         $ownership = self::reserveChecks(array_map(static fn(StackInfo $stack): string => $stack->projectFolder, $stacks), $replaceSavedStatus);
         $this->superseded = [];
+        $this->recheckTokens = [];
+        $projects = [];
+        foreach ($stacks as $stack) $projects[$stack->projectFolder] = $stack->projectName;
+        foreach ($ownership as $folder => $_) {
+            $projects[$folder] ??= StackMutationGuard::projectForFolder((string) $folder);
+        }
+        $snapshot = PendingRechecks::snapshot($projects);
+        $epochs = $snapshot['epochs'];
+        $this->recheckTokens = $snapshot['tokens'];
+        $eligible = array_values(array_filter($stacks, static fn(StackInfo $stack): bool => isset($epochs[$stack->projectFolder])));
         $results = [];
         $checkers = [];
-        $runtime = $stacks ? StackInfo::containersByProject(
-            count($stacks) === 1 ? $stacks[0]->projectName : null, true
+        $runtime = $eligible ? StackInfo::containersByProject(
+            count($eligible) === 1 ? $eligible[0]->projectName : null, true
         ) : [];
-        foreach ($stacks as $stack) {
+        foreach ($eligible as $stack) {
             $rows = array_values(array_filter(
                 $runtime[$stack->projectName] ?? [],
                 static fn(array $row): bool => !ContainerInfo::isOneOff($row)
@@ -85,7 +101,7 @@ class StackUpdateService
             $checks = [];
             if ($rows) {
                 $credentialId = $stack->getCredentialId();
-                $checker = $checkers[$credentialId ?? ''] ??= new ComposeUpdateCheck(null, $credentialId);
+                $checker = $checkers[$credentialId ?? ''] ??= new ComposeUpdateCheck($credentialId);
                 $checks = $checker->checkContainers($rows, $stack->getBuildConfigs());
             }
             $updates = [];
@@ -122,8 +138,24 @@ class StackUpdateService
                 'containers' => $updates,
             ];
         }
-        $accepted = $this->saveResults($results, $replaceSavedStatus, $ownership);
-        $this->superseded = array_map('strval', array_keys(array_diff_key($results, $accepted)));
+        $accepted = StackMutationGuard::inspectMany(array_values($projects),
+            function (array $current) use ($projects, $epochs, $results, $replaceSavedStatus, $ownership, $published): array {
+                $valid = [];
+                foreach ($epochs as $folder => $epoch) {
+                    if (isset($current[$projects[$folder]]) && $current[$projects[$folder]] === $epoch) {
+                        $valid[$folder] = $ownership[$folder];
+                    }
+                }
+                if (!$valid) return [];
+                $accepted = $this->saveResults(array_intersect_key($results, $valid), $replaceSavedStatus, $valid);
+                if ($published !== null && $accepted) $published($accepted);
+                return $accepted;
+            });
+        $this->superseded = array_values(array_map(
+            static fn(StackInfo $stack): string => $stack->projectFolder,
+            array_filter($stacks, static fn(StackInfo $stack): bool => !isset($accepted[$stack->projectFolder]))
+        ));
+        $this->recheckTokens = array_intersect_key($this->recheckTokens, $accepted);
         return $accepted;
     }
 
