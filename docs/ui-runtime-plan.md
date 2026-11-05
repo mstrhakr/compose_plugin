@@ -48,6 +48,15 @@ reconciliation path rather than adding a second runtime-state writer.
 
 ## Contract
 
+`Pull/Build & Up` is a deployment action, not an alias for Update. It uses
+profile selection and the normal Up path, with shared image preparation from
+the update module under the same operation lock/receipt. It pulls published
+images and rebuilds buildable services (latest base images, with the existing
+local-base fallback), then starts default services and selected profiles,
+including undeployed services. Image-preparation failure prevents Up.
+Ordinary Update retains its existing-container/stopped-service safety policy.
+The deployment action does not use or change the manual Update inclusion default.
+
 Runtime state, operation progress, image-update results, and resource metrics are
 different kinds of information. A metrics message must not imply that a stack
 operation finished. An unknown image check must not imply an up-to-date image.

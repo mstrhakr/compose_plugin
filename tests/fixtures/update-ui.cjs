@@ -13,6 +13,7 @@ function harness(config = {}) {
         setTimeout: fn => fn(),
         getConfig: () => ({ then: fn => fn(config) }),
         composeEscapeHtml: value => value,
+        buildRemoveOrphansCheckboxHtml: () => '',
         basename: path => path.split('/').pop(),
         caURL: 'exec', compURL: 'compose',
         composeUpdateCheckState: {}, composeUpdateCheckRevision: {}, stackDetailsPrefetchCache: {},
@@ -46,8 +47,8 @@ function harness(config = {}) {
     }
     vm.createContext(context);
     vm.runInContext(fs.readFileSync(`${__dirname}/../../source/compose.manager/javascript/composeUpdateStatus.js`, 'utf8'), context);
-    for (const name of ['composeUpdateScopeOptionHtml', 'ForceUpdateStackConfirmed', 'UpdateStackConfirmed',
-        'renderStackActionDialog', 'composeUpdateDigestDetails', 'executeUpdateAllStacks', 'updateAllStacks', 'showProfileSelector',
+    for (const name of ['ComposeUpConfirmed', 'composeUpdateScopeOptionHtml', 'ForceUpdateStackConfirmed', 'UpdateStackConfirmed',
+        'renderStackActionDialog', 'showStackActionDialog', 'composeUpdateDigestDetails', 'executeUpdateAllStacks', 'updateAllStacks', 'showProfileSelector',
         'composeUpdateDetailsTable',
         'updateStackUpdateUI', 'showUpdateWarning', 'createContainerInfo', 'composeImageUpdateKey', 'mergeContainerUpdateStatus',
         'mergeStackUpdateStatus', 'mergeUpdateStatus', 'checkAllUpdates', 'composeUpdateCheckBadge',
@@ -58,6 +59,55 @@ function harness(config = {}) {
         vm.runInContext(match[0], context);
     }
     return { context, checked, events };
+}
+
+for (const disableWarnings of [false, true]) {
+    const { context, events } = harness({ DISABLE_ACTION_WARNINGS: String(disableWarnings) });
+    context.renderStackActionDialog('prepareUp', 'New stack', '/stacks/new', 'web,monitoring', [], true, false);
+    if (!disableWarnings) {
+        assert.match(events[0].dialog.title, /Pull\/Build & Up/);
+        assert.ok(!events[0].dialog.text.includes('swal-include-stopped'));
+        events[0].callback(true);
+    }
+    const request = events.at(-1);
+    assert.equal(request.payload.action, 'composeUp');
+    assert.equal(request.payload.prepareImages, '1');
+    assert.equal(request.payload.profile, 'web,monitoring');
+    assert.equal(request.payload.includeStopped, undefined);
+}
+for (const all of [false, true]) {
+    const { context, events, checked } = harness();
+    const dollar = context.$;
+    context.$ = selector => selector === '.profile_checkbox:checked'
+        ? { each(callback) { callback.call({ val: () => 'web' }); } }
+        : typeof selector === 'object' ? selector : dollar(selector);
+    checked['#profile_all_profiles'] = all;
+    let profile;
+    context.ComposePrepareUp = (path, selected) => { profile = selected; };
+    context.showProfileSelector('prepareUp', '/stacks/new', ['web', 'jobs'], '', '');
+    assert.equal(events[0].dialog.title, 'Select Profiles');
+    events[0].callback(true);
+    assert.equal(profile, all ? '*' : 'web');
+}
+for (const response of ['bad JSON', '{"result":"error"}', '{"result":"success","services":[]}', '{"result":"success","services":"web"}']) {
+    const { context, events } = harness();
+    const dollar = context.$;
+    context.$ = selector => selector.startsWith('#compose_stacks') ? { length: 0 } : dollar(selector);
+    context.$.post = (url, payload, callback) => {
+        assert.equal(payload.action, 'getProfileServices');
+        assert.equal(payload.profiles, 'web');
+        callback(response);
+        return { fail() {} };
+    };
+    context.composeLogger = () => {};
+    context.showStackActionDialog('prepareUp', '/stacks/new', 'web');
+    assert.equal(events.at(-1).dialog.title, 'Deployment scope unavailable');
+    assert.equal(events.length, 1, 'Invalid scope never dispatches Up');
+}
+{
+    const { context, events } = harness();
+    context.ComposeUpConfirmed('/stacks/new', { profile: 'web' });
+    assert.equal(events[0].payload.prepareImages, '0', 'Ordinary Up does not prepare images');
 }
 
 for (const kind of ['image', 'build-base']) {

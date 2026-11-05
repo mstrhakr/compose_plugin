@@ -65,6 +65,13 @@ assert.ok(!menus.at(-1).find(option => option.text === 'Logs').disabled);
 delete context.composeStackActionInProgress.app;
 context.addComposeContainerContext('container-1');
 assert.equal(menus.at(-1).find(option => option.text === 'Stop').disabled, false);
+icon.data('isup', '0');
+row.data('profiles', ['web']);
+context.addComposeStackContext('stack-1');
+let selectedAction;
+context.showProfileSelector = action => { selectedAction = action; };
+menus.at(-1).find(option => option.text === 'Pull/Build & Up').action({ preventDefault() {} });
+assert.equal(selectedAction, 'prepareUp', 'Stopped deployment selects profiles instead of invoking Update');
 
 let writes = 0, health = 'starting', label = 'starting', iconClass = '';
 function cell() {

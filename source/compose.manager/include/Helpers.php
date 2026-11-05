@@ -343,6 +343,9 @@ function echoComposeCommand($action, array $options = [])
             if ($action === 'up' && $followLogs) {
                 $composeCommand[] = "--follow-logs";
             }
+            if ($action === 'up' && !empty($options['prepareImages'])) {
+                $composeCommand[] = '--prepare-images';
+            }
         }
 
         if ($action === 'up' && $waitForHealthy) {

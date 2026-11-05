@@ -4774,7 +4774,8 @@ function ComposeUpConfirmed(path, opts) {
             path: path,
             profile: opts.profile || '',
             removeOrphans: !!opts.removeOrphans,
-            followLogs: !!opts.followLogs
+            followLogs: !!opts.followLogs,
+            prepareImages: opts.prepareImages ? '1' : '0'
         },
         background: !!opts.background,
         suppressBackgroundNotification: !!opts.suppressBackgroundNotification,
@@ -4794,6 +4795,10 @@ function ComposeRecreateConfirmed(path, profile = "") {
 
 function ComposeUp(path, profile = "") {
     showStackActionDialog('up', path, profile);
+}
+
+function ComposePrepareUp(path, profile = "") {
+    showStackActionDialog('prepareUp', path, profile);
 }
 
 function ComposeDownConfirmed(path, opts) {
@@ -5855,6 +5860,10 @@ function showStackActionDialog(action, path, profile, showDetails) {
                 data
             }, 'user', 'error', 'showStackActionDialog');
         }
+        if (action === 'prepareUp' && (!response || response.result !== 'success' || !Array.isArray(profileServices) || !profileServices.length)) {
+            swal({ title: 'Deployment scope unavailable', text: 'Could not resolve services for the selected profiles. No deployment was started.', type: 'error' });
+            return;
+        }
 
         // Build a lookup of running containers by service name
         var containersByService = {};
@@ -5898,6 +5907,11 @@ function showStackActionDialog(action, path, profile, showDetails) {
             renderStackActionDialog(action, displayName, path, profile, containers, hasBuild, detectedMismatch);
         });
     }).fail(function(xhr, status, error) {
+        if (action === 'prepareUp') {
+            composeLogger('Deployment profile resolution failed', { project: project, status: status, error: error }, 'user', 'error', 'stack-action');
+            swal({ title: 'Deployment scope unavailable', text: 'Could not resolve services for the selected profiles. No deployment was started.', type: 'error' });
+            return;
+        }
         // Fallback: if profile resolution fails, show cached container metadata
         composeLogger('getProfileServices AJAX fail', {
             xhr,
@@ -5981,6 +5995,18 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             warningIcon: 'info-circle',
             warningColor: window.getComputedStyle(document.documentElement).getPropertyValue('--dynamix-ui-dropdownchecklist-color'),
             confirmText: 'Compose Up',
+            showUpdateReadiness: false,
+            showRemoveOrphans: true,
+            confirmedFn: ComposeUpConfirmed
+        },
+        'prepareUp': {
+            title: 'Pull/Build & Up: ' + composeEscapeHtml(displayName),
+            description: 'Prepare fresh images, then create and start the selected services in <b>' + composeEscapeHtml(displayName) + '</b>.',
+            listTitle: 'SERVICES',
+            warning: 'Published images will be pulled and buildable services rebuilt with latest available base images. Selected profiles and default services will be started, including services without containers.',
+            warningIcon: 'exclamation-triangle',
+            warningColor: window.getComputedStyle(document.documentElement).getPropertyValue('--brand-orange'),
+            confirmText: 'Pull/Build & Up',
             showUpdateReadiness: false,
             showRemoveOrphans: true,
             confirmedFn: ComposeUpConfirmed
@@ -6152,7 +6178,8 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
                 background: bgDefault,
                 suppressBackgroundNotification: bgDefault,
                 removeOrphans: removeOrphansDefault,
-                includeStopped: includeStoppedDefault
+                includeStopped: includeStoppedDefault,
+                prepareImages: action === 'prepareUp'
             });
             return;
         }
@@ -6183,7 +6210,8 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
                     suppressBackgroundNotification: runInBackground,
                     removeOrphans: removeOrphans,
                     followLogs: followLogs,
-                    includeStopped: isUpdate && $('#swal-include-stopped').is(':checked')
+                    includeStopped: isUpdate && $('#swal-include-stopped').is(':checked'),
+                    prepareImages: action === 'prepareUp'
                 });
             }
         });
@@ -6501,6 +6529,7 @@ function showProfileSelector(action, path, profiles, runningProfile, defaultProf
     }
     var actionNames = {
         'up': 'Compose Up',
+        'prepareUp': 'Pull/Build & Up',
         'down': 'Compose Down',
         'stop': 'Compose Stop',
         'restart': 'Compose Restart',
@@ -6583,6 +6612,9 @@ function showProfileSelector(action, path, profiles, runningProfile, defaultProf
                 switch (action) {
                     case 'up':
                         ComposeUp(path, profileStr);
+                        break;
+                    case 'prepareUp':
+                        ComposePrepareUp(path, profileStr);
                         break;
                     case 'down':
                         ComposeDown(path, profileStr);
@@ -10261,16 +10293,16 @@ function addComposeStackContext(elementId) {
         });
 
         // Update (pull/build and start)
-        var updateLabel = hasBuild ? 'Build & Up' : 'Pull & Up';
+        var updateLabel = 'Pull/Build & Up';
         opts.push({
             text: updateLabel,
             icon: 'fa-cloud-download',
             action: function(e) {
                 e.preventDefault();
                 if (profiles.length > 0) {
-                    showProfileSelector('update', path, profiles, runningProfile, defaultProfile);
+                    showProfileSelector('prepareUp', path, profiles, runningProfile, defaultProfile);
                 } else {
-                    UpdateStack(path);
+                    ComposePrepareUp(path);
                 }
             }
         });

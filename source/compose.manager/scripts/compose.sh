@@ -14,7 +14,7 @@ LOCK_TIMEOUT=${COMPOSE_LOCK_TIMEOUT:-30}
 LOCK_DIR=${COMPOSE_LOCK_DIR:-/var/run/compose.manager}
 
 SHORT=e:,c:,f:,p:,d:,o:,g:,s:,w:
-LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:,follow-logs,wait,wait-timeout:,build,credential-id:,git-commit:,save-local-changes,automatic-deploy-from:,automatic-update,update-outcome-file:,include-stopped
+LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:,follow-logs,wait,wait-timeout:,build,credential-id:,git-commit:,save-local-changes,automatic-deploy-from:,automatic-update,update-outcome-file:,include-stopped,prepare-images
 OPTS=$(getopt -a -n compose --options $SHORT --longoptions $LONG -- "$@")
 
 eval set -- "$OPTS"
@@ -32,6 +32,7 @@ follow_logs=false
 wait_for_healthy=false
 wait_timeout=""
 build_on_update=false
+prepare_images=false
 lock_fd=""
 operation_exit_code=0
 credential_id=""
@@ -230,6 +231,10 @@ do
       build_on_update=true
       shift;
       ;;
+    --prepare-images )
+      prepare_images=true
+      shift;
+      ;;
     --automatic-update )
       automatic_update=true
       shift;
@@ -338,6 +343,24 @@ case $command in
       log_msg "ERROR" "Follow logs and wait-for-healthy cannot be used together for the same compose up command"
       echo "✗ Follow stack logs and wait-for-healthy cannot be enabled at the same time."
       exit 1
+    fi
+
+    if [ "$prepare_images" = true ]; then
+      # Use deployment profiles from compose_base, not Update's runtime scope.
+      update_profile_args=()
+      rebuild=false
+      build_on_update=true
+      # shellcheck source=source/compose.manager/scripts/compose_update.sh
+      . "$script_directory/compose_update.sh"
+      prepare_stack_images
+      preparation_exit=$?
+      if [ "$preparation_exit" -ne 0 ]; then
+        save_result failed "$preparation_exit" up
+        log_msg ERROR "Image preparation failed for $name; containers were not started"
+        echo "Image preparation failed; containers were not started."
+        exit "$preparation_exit"
+      fi
+      cmd_args+=(--pull never --no-build)
     fi
 
     if [ "$wait_for_healthy" = true ]; then

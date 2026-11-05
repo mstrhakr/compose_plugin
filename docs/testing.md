@@ -229,6 +229,12 @@ prefetch waiters invalidated by actions.
 
 ### UI stabilization live-testing checkpoint
 
+For `Pull/Build & Up`, verify a never-created stack and an entirely stopped
+stack, default-only and selected/all profiles, mixed published/build-only
+services, registry credentials, foreground/background receipts, and configured
+wait-for-health. Failed pull/build must not start containers. Compare ordinary
+Compose Up and Update to confirm their existing scopes are unchanged.
+
 Run all isolated UI stabilization regressions together:
 
 ```bash

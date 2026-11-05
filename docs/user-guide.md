@@ -36,6 +36,7 @@ Each stack supports the following actions:
 | Action | Description |
 |--------|-------------|
 | **Compose Up** | Start all services in the stack |
+| **Pull/Build & Up** | Prepare fresh images, then create/start default services and selected profiles, including services with no existing containers |
 | **Compose Down** | Stop and remove all containers |
 | **Update Stack** | Pull latest images and recreate containers |
 | **Edit Stack** | Open the stack editor |

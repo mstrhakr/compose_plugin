@@ -33,6 +33,43 @@ run_auto_adapter() {
         -cupdate -pstack -s "$TEST_TEMP_DIR/stack" "$@"
 }
 
+@test "prepare images and up deploys selected profiles without existing containers" {
+    export STOPPED=true
+    run bash "$COMPOSE_SCRIPT" -c up -p stack -s "$TEST_TEMP_DIR/stack" --prepare-images -g web -g monitoring
+    assert_success
+    grep -F 'compose --profile web --profile monitoring -p stack pull --ignore-buildable' "$CALLS"
+    grep -F 'compose --profile web --profile monitoring -p stack build --pull' "$CALLS"
+    grep -F 'compose --profile web --profile monitoring -p stack up --pull never --no-build -d' "$CALLS"
+    ! grep -F -- '--profile *' "$CALLS"
+    [ "$(cat "$TEST_TEMP_DIR/stack/running_profiles")" = 'web,monitoring' ]
+    grep -F '"result":"success"' "$TEST_TEMP_DIR/stack/last_result.json"
+}
+
+@test "prepare images and up aborts after pull or build failure" {
+    export PULL_EXIT=7
+    run bash "$COMPOSE_SCRIPT" -c up -p stack -s "$TEST_TEMP_DIR/stack" --prepare-images
+    [ "$status" = 7 ]
+    ! grep -E ' (build|up)( |$)' "$CALLS"
+    : > "$CALLS"
+    export PULL_EXIT=0 BUILD_PULL_EXIT=1 BUILD_EXIT=8
+    run bash "$COMPOSE_SCRIPT" -c up -p stack -s "$TEST_TEMP_DIR/stack" --prepare-images
+    [ "$status" = 8 ]
+    ! grep -E ' up( |$)' "$CALLS"
+    [ ! -f "$TEST_TEMP_DIR/stack/started_at" ]
+}
+
+@test "prepare images and up retains local base fallback and ordinary up stays unchanged" {
+    export BUILD_PULL_EXIT=1
+    run bash "$COMPOSE_SCRIPT" -c up -p stack --prepare-images
+    assert_success
+    grep -F 'compose -p stack build' "$CALLS"
+    : > "$CALLS"
+    run bash "$COMPOSE_SCRIPT" -c up -p stack
+    assert_success
+    ! grep -E ' (pull|build)( |$)' "$CALLS"
+    grep -F 'compose -p stack up -d' "$CALLS"
+}
+
 @test "automatic notification adapter delegates to the same locked update engine" {
     export CHANGE=false BUILD_CHANGE=true
     run_auto_adapter --build -g dev

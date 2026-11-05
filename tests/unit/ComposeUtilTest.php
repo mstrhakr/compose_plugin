@@ -283,6 +283,7 @@ class ComposeUtilTest extends TestCase
         // Set POST data with profile
         $_POST['path'] = $stackDir;
         $_POST['profile'] = 'dev';
+        $GLOBALS['composeLoggerMessages'] = [];
         
         // Capture output
         ob_start();
@@ -291,6 +292,17 @@ class ComposeUtilTest extends TestCase
         
         // Should return ttyd viewer URL
         $this->assertSame('/plugins/compose.manager/include/ShowTtyd.php?done=1', $output);
+        $this->assertStringNotContainsString('--prepare-images', implode("\n", $GLOBALS['composeLoggerMessages']));
+
+        $GLOBALS['composeLoggerMessages'] = [];
+        ob_start();
+        echoComposeCommand('up', ['prepareImages' => true]);
+        $preparedOutput = ob_get_clean();
+        $this->assertSame($output, $preparedOutput);
+        $commands = implode("\n", $GLOBALS['composeLoggerMessages']);
+        $this->assertStringContainsString("'--prepare-images'", $commands);
+        $this->assertStringContainsString("'-gdev'", $commands);
+        $this->assertStringContainsString("'-cup'", $commands);
         
         // Cleanup
         unlink("$varIniDir/var.ini");
