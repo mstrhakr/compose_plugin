@@ -246,6 +246,12 @@ both parent state and expanded container details from the same fresh snapshot.
 These tests control browser callbacks; they do not prove real Docker or ttyd
 completion.
 
+The navigation Node fixture also exercises Dashboard early close followed by
+receipt completion through both native and fallback modals, rejected/malformed
+dispatches, missing tracking evidence, transport failure, and nonzero exits.
+Both Dashboard and Compose load the shared completion poller before their page
+adapter. Verify this script ordering and final Dashboard reconciliation on Unraid.
+
 The backend receipt regressions execute the actual shell wrapper with synthetic
 commands, verify per-dispatch/per-stack isolation and exit status, test the receipt
 endpoint, and verify opt-in foreground dispatch preserves legacy URL responses:

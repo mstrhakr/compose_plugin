@@ -123,8 +123,13 @@ Nonzero exits are reported explicitly. Missing, malformed, or unavailable receip
 remain uncertain, retry within the existing 30-minute bound, and then produce a
 warning rather than claiming success. Superseded polls cannot finish newer actions.
 
-Tracking is opt-in (`trackOperation=1`). Existing dashboard/terminal clients keep
-their response contract and are not silently migrated. Receipts are private
+Tracking is opt-in (`trackOperation=1`). Main-view and Dashboard finite actions
+request receipts and use the same `composePollOperation` completion poller.
+Dashboard close only refreshes presentation; queued/running receipt polling
+continues after early close and refreshes again on completion. Refused,
+malformed, failed and unconfirmed dispatches report errors without opening an
+invalid terminal. Nonzero exits remain visible in Dashboard status after refresh.
+Other terminal clients keep their response contract. Receipts are private
 transient files, scoped to project folder and random dispatch ID, and expired
 after a day during subsequent dispatches. They contain no credentials.
 
@@ -136,8 +141,9 @@ This is a live-testing checkpoint, not a completed lifecycle migration:
   behavior. It is not a finite command, so this slice does not keep a completion
   spinner waiting for the log stream to end or change how Compose attaches.
   Its lifecycle remains an explicit follow-up before declaring all modes aligned.
-- Dashboard lifecycle alignment remains a separate audit. Main-view git deploys
-  opt into the same receipts; scheduled/CLI deployments keep existing behavior.
+- Main-view git deploys opt into the same receipts; scheduled/CLI deployments
+  keep existing behavior. Dashboard rendering remains page-specific even though
+  finite-action completion now shares the receipt contract.
 
 ## Stage 4: transport recovery and observability
 

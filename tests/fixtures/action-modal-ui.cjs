@@ -3,9 +3,11 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const main = fs.readFileSync(`${__dirname}/../../source/compose.manager/javascript/composeManagerMain.js`, 'utf8');
 const dashboard = fs.readFileSync(`${__dirname}/../../source/compose.manager/javascript/composeDashboard.js`, 'utf8');
+const operations = fs.readFileSync(`${__dirname}/../../source/compose.manager/javascript/composeOperations.js`, 'utf8');
 
 function load(context, source, names, indent = '') {
     vm.createContext(context);
+    vm.runInContext(operations, context);
     for (const name of names) {
         const match = source.match(new RegExp(`^${indent}function ${name}\\([^]*?\\n${indent}\\}`, 'm'));
         assert.ok(match, `Missing ${name}`);
@@ -177,16 +179,32 @@ for (const name of ['executeStartAllStacks', 'executeStopAllStacks']) {
 
 for (const native of [true, false]) {
     const events = [];
+    let receipt = { state: 'running' };
     const context = {
-        window: {}, stackContainerCache: { stale: true },
+        window: {}, stackContainerCache: { stale: true }, caURL: 'exec',
+        stackOperations: {}, stackActionErrors: {},
+        console: { error: (...args) => events.push(['error', ...args]) },
         loadComposeStacks: () => events.push(['reload']),
         setTimeout: fn => events.push(['timer', fn]),
         Shadowbox: { open: opts => events.push(['fallback', opts]) },
         $: () => ({ text: () => {} }),
     };
     if (native) context.openBox = (...args) => events.push(['modal', ...args]);
-    context.$.post = (url, payload, callback) => callback('/terminal.php');
-    load(context, dashboard, ['composeDashboardActionBoxClosed', 'stackAction'], '    ');
+    const ajax = options => ({
+        done(callback) {
+            if (options.data.action !== 'getUiOperation') {
+                assert.equal(options.data.trackOperation, '1');
+            }
+            callback(options.data.action === 'getUiOperation' ? { result: 'success', operation: receipt } : {
+                url: '/plugins/compose.manager/include/ShowTtyd.php', operations: { one: 'receipt-one' },
+            });
+            return this;
+        },
+        fail() { return this; },
+        always(callback) { callback(); return this; },
+    });
+    context.$.ajax = ajax;
+    load(context, dashboard, ['composeDashboardActionBoxClosed', 'dashboardActionError', 'stackAction'], '    ');
     const exportLine = dashboard.match(/^    window\.composeDashboardActionBoxClosed = .*;$/m);
     assert.ok(exportLine);
     vm.runInContext(exportLine[0], context);
@@ -200,8 +218,47 @@ for (const native of [true, false]) {
     }
     assert.ok(events.some(event => event[0] === 'reload'));
     assert.equal(Object.keys(context.stackContainerCache).length, 0);
-    // The existing delayed refresh still runs independently of modal close.
-    assert.ok(events.some(event => event[0] === 'timer'));
+    assert.ok(context.stackOperations.one, 'Early close does not complete the operation');
+    const runTimer = () => {
+        const index = events.findIndex(event => event[0] === 'timer');
+        assert.ok(index >= 0);
+        events.splice(index, 1)[0][1]();
+    };
+    runTimer();
+    assert.ok(context.stackOperations.one, 'Running receipt schedules another completion check');
+    const reloads = events.filter(event => event[0] === 'reload').length;
+    receipt = { state: 'completed', exitCode: 0 };
+    runTimer();
+    assert.equal(context.stackOperations.one, undefined);
+    assert.equal(events.filter(event => event[0] === 'reload').length, reloads + 1,
+        'Completion refresh occurs even when the terminal was closed early');
+    const opened = events.filter(event => ['modal', 'fallback'].includes(event[0])).length;
+    for (const response of ['{', { error: 'identity', message: 'Identity blocked' }, {
+        url: '/plugins/compose.manager/include/ShowTtyd.php',
+    }]) {
+        context.$.ajax = () => ({
+            done(callback) { callback(response); return this; },
+            fail() { return this; },
+        });
+        context.stackAction('one', 'start');
+        assert.ok(context.stackActionErrors.one, 'Refusals and missing tracking evidence are reported');
+        assert.equal(context.stackOperations.one, undefined);
+    }
+    assert.equal(events.filter(event => ['modal', 'fallback'].includes(event[0])).length, opened,
+        'Invalid dispatches never open a terminal');
+    context.$.ajax = () => ({
+        done() { return this; },
+        fail(callback) { callback({}, 'error', 'network'); return this; },
+    });
+    context.stackAction('one', 'start');
+    assert.match(context.stackActionErrors.one, /request failed/);
+    assert.equal(context.stackOperations.one, undefined);
+    context.$.ajax = ajax;
+    receipt = { state: 'completed', exitCode: 7 };
+    context.stackAction('one', 'restart');
+    runTimer();
+    assert.match(context.stackActionErrors.one, /code 7/);
+    assert.equal(context.stackOperations.one, undefined);
 }
 
 assert.ok(!/openBox\(/.test(main.replace(/function openComposeActionBox\([^]*?\n\}/, '')),

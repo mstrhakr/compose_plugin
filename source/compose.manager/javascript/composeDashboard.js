@@ -2,6 +2,8 @@
     var caURL = '/plugins/compose.manager/include/Exec.php';
     var expandedStacks = {};
     var stackContainerCache = {};
+    var stackOperations = {};
+    var stackActionErrors = {};
 
     // Debug logging function - respects plugin debug setting
     function debugLog() {
@@ -131,6 +133,12 @@
 
     window.composeDashboardActionBoxClosed = composeDashboardActionBoxClosed;
 
+    function dashboardActionError(stackName, message) {
+        stackActionErrors[stackName] = message;
+        console.error('[ComposeDash] ' + stackName + ': ' + message);
+        $('#compose_stacks_status').text(stackName + ': ' + message);
+    }
+
     function stackAction(stackName, action) {
         var actionMap = {
             'start': 'composeUp',
@@ -141,18 +149,64 @@
         var actionTitle = action.charAt(0).toUpperCase() + action.slice(1);
         var $status = $('#compose_stacks_status');
         $status.text(actionTitle + 'ing ' + stackName + '...');
+        var operation = {};
+        stackOperations[stackName] = operation;
+        delete stackActionErrors[stackName];
 
-        $.post('/plugins/compose.manager/include/ComposeUtil.php', {
-            action: apiAction,
-            path: '/boot/config/plugins/compose.manager/projects/' + stackName
-        }, function(data) {
-            if (data) {
+        $.ajax({
+            url: '/plugins/compose.manager/include/ComposeUtil.php',
+            method: 'POST',
+            timeout: 30000,
+            data: {
+                action: apiAction,
+                path: '/boot/config/plugins/compose.manager/projects/' + stackName,
+                trackOperation: '1'
+            }
+        }).done(function(data) {
+            if (stackOperations[stackName] !== operation) return;
+            var response;
+            try {
+                response = typeof data === 'string' ? JSON.parse(data) : data;
+            } catch (error) {
+                delete stackOperations[stackName];
+                dashboardActionError(stackName, 'Invalid action response. Refresh to check whether the operation started.');
+                return;
+            }
+            if (!response || response.error || !response.operations || !response.operations[stackName] ||
+                !(response.background === true || typeof response.url === 'string' &&
+                /^\/plugins\/compose\.manager\/include\/ShowTtyd\.php(?:\?|$)/.test(response.url))) {
+                delete stackOperations[stackName];
+                dashboardActionError(stackName, response && response.message || 'The server did not confirm operation tracking. Refresh to check its status.');
+                return;
+            }
+            composePollOperation({
+                endpoint: caURL,
+                project: stackName,
+                operationId: response.operations[stackName],
+                isCurrent: function() { return stackOperations[stackName] === operation; },
+                onComplete: function(exitCode) {
+                    delete stackOperations[stackName];
+                    if (exitCode !== 0) {
+                        dashboardActionError(stackName, 'Action exited with code ' + exitCode + '. Check its command log.');
+                    }
+                    composeDashboardActionBoxClosed();
+                },
+                onError: function(message, details) {
+                    console.error('[ComposeDash] ' + message, details);
+                },
+                onTimeout: function() {
+                    delete stackOperations[stackName];
+                    dashboardActionError(stackName, 'Unable to confirm completion. The operation may still be running.');
+                    composeDashboardActionBoxClosed();
+                }
+            });
+            if (response.background !== true) {
                 if (typeof openBox === 'function') {
-                    openBox(data, actionTitle + ' Stack ' + stackName, 800, 1200, true,
+                    openBox(response.url, actionTitle + ' Stack ' + stackName, 800, 1200, true,
                         'composeDashboardActionBoxClosed', encodeURIComponent(stackName));
                 } else {
                     Shadowbox.open({
-                        content: data, player: 'iframe', title: actionTitle + ' Stack ' + stackName,
+                        content: response.url, player: 'iframe', title: actionTitle + ' Stack ' + stackName,
                         height: 800, width: 1200,
                         options: { onClose: function() {
                             composeDashboardActionBoxClosed(encodeURIComponent(stackName));
@@ -160,7 +214,10 @@
                     });
                 }
             }
-            setTimeout(function() { stackContainerCache = {}; loadComposeStacks(); }, 3000);
+        }).fail(function(xhr, status, error) {
+            if (stackOperations[stackName] !== operation) return;
+            delete stackOperations[stackName];
+            dashboardActionError(stackName, 'Action request failed. Refresh to check whether it started.');
         });
     }
 
@@ -366,6 +423,9 @@
         $.post('/plugins/compose.manager/include/DashboardStacks.php', function(data) {
             var statusText = 'Stacks -- Started: ' + data.started + ', Stopped: ' + data.stopped;
             if (data.partial > 0) statusText += ', Partial: ' + data.partial;
+            Object.keys(stackActionErrors).forEach(function(project) {
+                statusText += ' | ' + project + ': ' + stackActionErrors[project];
+            });
             $('#compose_stacks_status').text(statusText);
 
             if (window.hideDockerComposeContainers && data.composeContainerNames && data.composeContainerNames.length > 0) {

@@ -151,7 +151,8 @@ test.describe('Compose update state regressions', () => {
   });
 
   test('background completion polling retries transport and malformed responses', async ({ page }) => {
-    const poll = functionSource('pollBackgroundCompletion', 'composeActionStateText');
+    const poll = readFileSync(resolve(__dirname, '../../../source/compose.manager/javascript/composeOperations.js'), 'utf8') +
+      functionSource('pollBackgroundCompletion', 'composeActionStateText');
     const parse = functionSource('tryParseJson', 'syncComposeStackRowStriping');
     const result = await page.evaluate(({ poll, parse }) => {
       const timers: Array<() => void> = [];

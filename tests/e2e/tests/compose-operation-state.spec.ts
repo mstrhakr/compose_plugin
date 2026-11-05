@@ -8,7 +8,8 @@ function fn(name: string, next: string): string {
 }
 const state = fn('setStackActionInProgress', 'UpdateStackConfirmed');
 const dispatch = `function openComposeActionBox(url) { openBox(url); }\n` + fn('performComposeAction', 'confirmedComposeAction');
-const poll = fn('pollBackgroundCompletion', 'composeActionStateText');
+const poll = readFileSync(resolve(__dirname, '../../../source/compose.manager/javascript/composeOperations.js'), 'utf8') +
+  fn('pollBackgroundCompletion', 'composeActionStateText');
 
 test.describe('Operation state ownership', () => {
   test.use({ storageState: { cookies: [], origins: [] } });

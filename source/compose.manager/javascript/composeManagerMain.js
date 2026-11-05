@@ -4359,94 +4359,35 @@ function queuePendingComposeReloads(stackNames, delayMs) {
 // Tracked dispatches use receipts; older action paths retain lock polling.
 function pollBackgroundCompletion(stackName, refreshDelayMs = 0, operation) {
     operation = operation || composeStackActionInProgress[stackName];
-    // Poll with adaptive frequency to handle both fast and slow operations:
-    //   0–60s:   every 2s   (30 checks)
-    //   60s–5m:  every 5s   (48 checks)
-    //   5m–30m:  every 15s  (100 checks)
-    // Total coverage: ~30 minutes before giving up
-    var elapsed = 0; // seconds
-    var startedAt = Date.now();
-
-    function getInterval() {
-        if (elapsed < 60) return 2000;
-        if (elapsed < 300) return 5000;
-        return 15000;
-    }
-
-    function check() {
-        if (operation && composeStackActionInProgress[stackName] !== operation) return;
-        var completed = false;
-        $.ajax({
-            url: caURL,
-            method: 'POST',
-            timeout: 30000,
-            data: {
-                action: operation && operation.receipt ? 'getUiOperation' : 'checkStackLock',
-                script: stackName,
-                operationId: operation && operation.receipt
+    composePollOperation({
+        endpoint: caURL,
+        project: stackName,
+        operationId: operation && operation.receipt,
+        isCurrent: function() {
+            return !operation || composeStackActionInProgress[stackName] === operation;
+        },
+        onComplete: function(exitCode) {
+            setStackActionInProgress(stackName, false, null, operation);
+            if (exitCode !== 0) {
+                composeLogger('Compose operation failed', { stack: stackName, exitCode: exitCode }, 'user', 'error', 'stack-action');
+                swal({ title: 'Compose Action Failed', text: 'The operation for ' + stackName + ' exited with code ' + exitCode + '. Check its command log for details.', type: 'error' });
             }
-        }).done(function(response) {
-            if (operation && composeStackActionInProgress[stackName] !== operation) {
-                completed = true;
-                return;
-            }
-            try {
-                var parsed = typeof response === 'string' ? tryParseJson(response) : response;
-                var receipt = operation && operation.receipt && parsed && parsed.operation;
-                var receiptComplete = receipt && receipt.state === 'completed' && Number.isInteger(receipt.exitCode);
-                var lockComplete = !(operation && operation.receipt) && parsed && parsed.locked === false;
-                if (parsed && parsed.result === 'success' && (receiptComplete || lockComplete)) {
-                    completed = true;
-                    // Clear progress before reconciling authoritative runtime state.
-                    setStackActionInProgress(stackName, false, null, operation);
-                    if (receiptComplete && receipt.exitCode !== 0) {
-                        composeLogger('Compose operation failed', { stack: stackName, exitCode: receipt.exitCode }, 'user', 'error', 'stack-action');
-                        swal({ title: 'Compose Action Failed', text: 'The operation for ' + stackName + ' exited with code ' + receipt.exitCode + '. Check its command log for details.', type: 'error' });
-                    }
-                    setTimeout(function() {
-                        if (composeStackActionInProgress[stackName]) return;
-                        refreshStackByProject(stackName);
-                        // Sync from server pending file (authoritative). This
-                        // populates the queue and sweeps any already-rendered rows.
-                        checkPendingRechecks();
-                    }, refreshDelayMs);
-                    return; // stop scheduling
-                }
-                var validReceipt = receipt && (receipt.state === 'queued' || receipt.state === 'running');
-                if (!parsed || parsed.result !== 'success' || (operation && operation.receipt ? !validReceipt : typeof parsed.locked !== 'boolean')) {
-                    composeLogger('Completion check failed', parsed, 'user', 'error', 'poll');
-                }
-            } catch (e) {
-                composeLogger('Parse error', e, 'user', 'error', 'poll');
-            }
-        }).fail(function(xhr, status, error) {
-            composeLogger('Completion check request failed', {
-                stack: stackName,
-                status: status,
-                error: error
-            }, 'user', 'error', 'poll');
-        }).always(function() {
-            if (completed) return;
-            if (operation && composeStackActionInProgress[stackName] !== operation) return;
-            elapsed = (Date.now() - startedAt) / 1000;
-            // Schedule next check if still within timeout (30 minutes)
-            var interval = getInterval();
-            if (elapsed < 1800) {
-                setTimeout(check, interval);
-            } else {
-                composeLogger('Timeout after 30m', {
-                    stack: stackName
-                }, 'user', 'warn', 'poll');
-                setStackActionInProgress(stackName, false, null, operation);
+            setTimeout(function() {
+                if (composeStackActionInProgress[stackName]) return;
                 refreshStackByProject(stackName);
-                swal({ title: 'Unable to confirm completion', text: 'The operation may still be running. Refresh the stack to check its status.', type: 'warning' });
-            }
-        });
-    }
-
-    // Start first check after 2 seconds
-    elapsed += 2;
-    setTimeout(check, 2000);
+                checkPendingRechecks();
+            }, refreshDelayMs);
+        },
+        onError: function(message, details) {
+            composeLogger(message, details, 'user', 'error', 'poll');
+        },
+        onTimeout: function() {
+            composeLogger('Timeout after 30m', { stack: stackName }, 'user', 'warn', 'poll');
+            setStackActionInProgress(stackName, false, null, operation);
+            refreshStackByProject(stackName);
+            swal({ title: 'Unable to confirm completion', text: 'The operation may still be running. Refresh the stack to check its status.', type: 'warning' });
+        }
+    });
 }
 
 function composeActionStateText(actionName) {
