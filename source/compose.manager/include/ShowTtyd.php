@@ -192,7 +192,8 @@ $themeSheetJson = json_encode("themes/{$themeFile}.css");
                             var xhr = new XMLHttpRequest();
                             xhr.open('POST', '/plugins/compose.manager/include/ComposeUtil.php', true);
                             xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
-                            xhr.send('action=composeDetachFollow&path=' + encodeURIComponent(stackPath));
+                            xhr.send('action=composeDetachFollow&path=' + encodeURIComponent(stackPath) +
+                                '&csrf_token=' + encodeURIComponent(top.csrf_token));
                         }
                     } catch (e) {}
                     try {

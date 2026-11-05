@@ -120,8 +120,10 @@ export async function waitForStackContainersRemoved(page: Page, project: string)
         if (!stack.response.ok() || !stack.json || stack.json.result !== 'success') {
           return -1;
         }
-        const containers = Array.isArray(stack.json.containers) ? stack.json.containers : [];
-        return containers.length;
+        if (!Array.isArray(stack.json.containers)) {
+          throw new Error('Container removal snapshot must contain a containers array.');
+        }
+        return stack.json.containers.length;
       },
       { timeout: 120_000 }
     )

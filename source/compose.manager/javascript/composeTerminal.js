@@ -32,10 +32,12 @@
         var controller = new AbortController();
         var timeout = setTimeout(function () { controller.abort(); }, 10000);
         try {
+            var token = window.top.csrf_token;
+            if (typeof token !== 'string' || !token) throw new Error('The page CSRF token is unavailable. Reload the Compose page.');
             var response = await fetch('/plugins/compose.manager/include/Exec.php', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: new URLSearchParams({ action: action, session: session }),
+                body: new URLSearchParams({ action: action, session: session, csrf_token: token }),
                 signal: controller.signal
             });
             if (!response.ok) throw new Error('HTTP ' + response.status);

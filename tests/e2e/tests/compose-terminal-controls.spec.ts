@@ -10,6 +10,11 @@ const markup = `
   <button id="done-btn" hidden>Done</button>`;
 
 test.use({ storageState: { cookies: [], origins: [] } });
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.assign(window, { csrf_token: 'synthetic-terminal-csrf' });
+  });
+});
 
 for (const [command, effect] of [
   ['up', 'This Up runs detached (-d)'],
@@ -24,6 +29,7 @@ for (const [command, effect] of [
     let stopRequests = 0;
     await page.route('http://terminal.test/**', async route => {
       if (route.request().method() === 'GET') return route.fulfill({ contentType: 'text/html', body: markup });
+      expect(new URLSearchParams(route.request().postData() || '').get('csrf_token')).toBe('synthetic-terminal-csrf');
       if (new URLSearchParams(route.request().postData() || '').get('action') === 'stopTerminalSession') stopRequests++;
       await route.fulfill({ json: { result: 'success', session: { state: 'running' } } });
     });
@@ -53,6 +59,7 @@ test('continuing in background closes only the viewer and sends no stop request'
   const actions: string[] = [];
   await page.route('http://terminal.test/**', async route => {
     if (route.request().method() === 'GET') return route.fulfill({ contentType: 'text/html', body: markup });
+    expect(new URLSearchParams(route.request().postData() || '').get('csrf_token')).toBe('synthetic-terminal-csrf');
     actions.push(new URLSearchParams(route.request().postData() || '').get('action') || '');
     await route.fulfill({ json: { result: 'success', session: { state: 'running' } } });
   });
@@ -77,6 +84,7 @@ test('stop requires confirmation, reports cancellation, then exposes only Done',
   let stopped = false;
   await page.route('http://terminal.test/**', async route => {
     if (route.request().method() === 'GET') return route.fulfill({ contentType: 'text/html', body: markup });
+    expect(new URLSearchParams(route.request().postData() || '').get('csrf_token')).toBe('synthetic-terminal-csrf');
     const action = new URLSearchParams(route.request().postData() || '').get('action');
     if (action === 'stopTerminalSession') stopped = true;
     await route.fulfill({ json: { result: 'success', session: stopped
@@ -104,6 +112,7 @@ test('status failures remain visible and retry without presenting false completi
   let stage = 0;
   await page.route('http://terminal.test/**', async route => {
     if (route.request().method() === 'GET') return route.fulfill({ contentType: 'text/html', body: markup });
+    expect(new URLSearchParams(route.request().postData() || '').get('csrf_token')).toBe('synthetic-terminal-csrf');
     const responses = [
       { result: 'error', message: 'Receipt unavailable' },
       { result: 'success', session: { state: 'completed' } },
