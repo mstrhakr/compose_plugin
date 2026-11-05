@@ -296,6 +296,19 @@ The navigation recheck fixture checks stale responses after a newer action,
 newer-check ownership, busy deferral, and observable read/acknowledgement errors.
 No live Docker calls are needed for these regressions.
 
+Publication-generation tests force newer-success, newer-failure, deletion,
+clear, and same-name recreation between reservation and commit. Full-check tests
+verify conditional pruning and preservation of unrelated newer results, including
+empty scopes and prototype/numeric names. Endpoint tests invalidate a reservation
+during fake Docker inspection and require an explicit superseded response.
+Legacy evidence remains visible through the public reader after storage migration.
+
+The guarded host suite additionally checks token renewal/acknowledgement on an
+unstarted disposable stack and delays a browser-only saved snapshot while a real
+scoped image check completes. It never runs Check All, clears global caches, or
+checks existing application stacks. Candidate installation and rollback backup
+require explicit permission before live validation.
+
 The backend receipt regressions execute the actual shell wrapper with synthetic
 commands, verify per-dispatch/per-stack isolation and exit status, test the receipt
 endpoint, and verify opt-in foreground dispatch preserves legacy URL responses:

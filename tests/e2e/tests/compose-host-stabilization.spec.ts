@@ -1,4 +1,4 @@
-import { expect, test as base, type Page } from '@playwright/test';
+import { expect, test as base, type Page, type Route } from '@playwright/test';
 import {
   buildStackName, composeDownAndWait, deleteStackWithRetries, postForm,
   type PostFormResult, waitForOperation,
@@ -12,6 +12,12 @@ const enabled = !!process.env.E2E_BASE_URL
   && process.env.E2E_HOST_TEST_ACK === new URL(process.env.E2E_BASE_URL!).origin;
 
 type Snapshot = { service?: string; name?: string; id?: string; state?: string; health?: string };
+interface UpdateCheckWindow extends Window {
+  loadSavedUpdateStatus(): void;
+  checkStackUpdates(project: string): void;
+  composeUpdateCheckState: Record<string, string | undefined>;
+  stackUpdateStatus: Record<string, unknown>;
+}
 type HostStack = {
   project: string;
   path: string;
@@ -76,6 +82,15 @@ const test = base.extend<{ stack: HostStack }>({
         'getDescription', 'getGitStackStatus', 'getYml', 'getEnvPath', 'getEnv', 'getOverride',
       ]);
       if (request.method() === 'GET' || readOnly.has(action)) {
+        await route.continue();
+        return;
+      }
+      if (action === 'checkStackUpdates' && project && params.get('script') === project) {
+        await route.continue();
+        return;
+      }
+      if (['markStackForRecheck', 'clearStackRecheck'].includes(action) && project
+        && params.get('stacks') === JSON.stringify([project])) {
         await route.continue();
         return;
       }
@@ -185,6 +200,79 @@ async function start(page: Page, stack: HostStack, extra: Record<string, string>
   const response = await stack.action('composeUp', extra);
   await waitForOperation(page, stack.project, response);
 }
+
+test('scoped image checks acknowledge only the captured pending generation', async ({ page, stack }) => {
+  const mark = async () => {
+    const result = await postForm(page, exec, { action: 'markStackForRecheck', stacks: JSON.stringify([stack.project]) });
+    expect(result.json?.result, result.body).toBe('success');
+  };
+  const check = async () => {
+    const result = await postForm(page, exec, { action: 'checkStackUpdates', script: stack.project });
+    expect(result.json?.result, result.body).toBe('success');
+    expect(result.json?.recheckToken).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.json?.updates).toEqual([]);
+    return String(result.json!.recheckToken);
+  };
+  const acknowledge = async (token: string) => {
+    const result = await postForm(page, exec, {
+      action: 'clearStackRecheck', stacks: JSON.stringify([stack.project]),
+      tokens: JSON.stringify({ [stack.project]: token }),
+    });
+    expect(result.json?.result, result.body).toBe('success');
+    return result.json!.remaining;
+  };
+  await mark();
+  const old = await check();
+  await mark();
+  expect(await acknowledge(old)).toContain(stack.project);
+  const fresh = await check();
+  expect(fresh).not.toBe(old);
+  expect(await acknowledge(fresh)).not.toContain(stack.project);
+});
+
+test('late saved evidence cannot replace a fresh scoped image check', async ({ page, stack }) => {
+  await stack.refresh();
+  let release!: () => void;
+  let intercepted!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const seen = new Promise<void>(resolve => { intercepted = resolve; });
+  const stale = JSON.stringify({
+    result: 'success', stacks: {
+      [stack.project]: { projectName: stack.project, lastChecked: 1, hasUpdate: false, containers: [] },
+    },
+  });
+  const delaySaved = async (route: Route) => {
+    const params = new URLSearchParams(route.request().postData() || '');
+    if (params.get('action') !== 'getSavedUpdateStatus') {
+      await route.fallback();
+      return;
+    }
+    intercepted();
+    await blocked;
+    await route.fulfill({ contentType: 'application/json', body: stale });
+  };
+  await page.route(/\/Exec\.php(?:\?|$)/, delaySaved);
+  try {
+    await page.evaluate(() => (window as typeof window & UpdateCheckWindow).loadSavedUpdateStatus());
+    await seen;
+    await page.evaluate(project => (window as typeof window & UpdateCheckWindow).checkStackUpdates(project), stack.project);
+    await expect.poll(() => page.evaluate(project => {
+      const state = window as typeof window & UpdateCheckWindow;
+      return !state.composeUpdateCheckState[project] && !!state.stackUpdateStatus[project];
+    }, stack.project)).toBe(true);
+    const before = await page.evaluate(project => JSON.stringify((window as typeof window & UpdateCheckWindow).stackUpdateStatus[project]), stack.project);
+    const response = page.waitForResponse(response => {
+      const params = new URLSearchParams(response.request().postData() || '');
+      return response.url().includes('/Exec.php') && params.get('action') === 'getSavedUpdateStatus';
+    });
+    release();
+    await response;
+    await expect.poll(() => page.evaluate(project => JSON.stringify((window as typeof window & UpdateCheckWindow).stackUpdateStatus[project]), stack.project)).toBe(before);
+  } finally {
+    release();
+    await page.unroute(/\/Exec\.php(?:\?|$)/, delaySaved);
+  }
+});
 
 test('Pull/Build & Up creates only default and selected-profile services, then redeploys stopped services', async ({ page, stack }) => {
   await stack.refresh();
