@@ -257,6 +257,13 @@ assert.equal(healthWrites, 1, 'Changed health still updates');
     exists = false;
     requests[3].fail({}, 'timeout'); requests[3].always();
     assert.equal(timers.size, 0, 'Deleted rows never restart health polling');
+    exists = true;
+    ctx.refreshStackRow('1', 'app');
+    ctx.refreshStackRow('1', 'app');
+    requests[4].fail({}, 'timeout'); requests[4].always();
+    assert.equal(timers.size, 0, 'Superseded failures cannot schedule retries');
+    requests[5].fail({}, 'timeout'); requests[5].always();
+    assert.equal(timers.size, 1, 'Only the current failed request owns the next retry');
     assert.equal(ctx.pendingComposeRefreshCount, 0);
 }
 {

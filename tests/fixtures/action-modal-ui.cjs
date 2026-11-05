@@ -327,6 +327,27 @@ for (const native of [true, false]) {
     assert.equal(timers.size, 0, 'Fallback polling terminates after its bounded window');
 }
 
+{
+    const tiles = [{ name: 'current', hidden: false }, { name: 'removed', hidden: true }];
+    let counts = 0;
+    const context = {
+        composeContainerNameSet: { current: true }, debugLog() {},
+        extractContainerName: tile => tile.name,
+        updateDockerTileCounts() { counts++; }, setDockerViewVisibility() {},
+        $: selector => typeof selector === 'string'
+            ? { length: 1, find: () => ({ each(callback) { tiles.forEach(tile => callback.call(tile)); } }) }
+            : { name: selector.name, hasClass: () => selector.hidden,
+                toggleClass(name, hidden) { selector.hidden = hidden; } },
+    };
+    load(context, dashboard, ['doHideContainers'], '    ');
+    context.doHideContainers();
+    assert.deepEqual(tiles.map(tile => tile.hidden), [true, false], 'Latest membership hides current containers and unhides removed ones');
+    context.composeContainerNameSet = {};
+    context.doHideContainers();
+    assert.deepEqual(tiles.map(tile => tile.hidden), [false, false], 'Empty membership unhides all previous Compose containers');
+    assert.equal(counts, 2, 'Counts update once per changed pass, not once per tile');
+}
+
 assert.ok(!/openBox\(/.test(main.replace(/function openComposeActionBox\([^]*?\n\}/, '')),
     'All main-page action terminals must use the no-navigation wrapper');
 
