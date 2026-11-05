@@ -141,19 +141,22 @@ test.describe('Runtime reconciliation', () => {
   test('deletion invalidates an active progressive load before scheduling a fresh list', async ({ page }) => {
     const remove = fn('removeStackFromUiByProject', 'toggleStackDetails');
     const result = await page.evaluate(remove => new Function(`
-      var cancelled = 0, composeListGeneration = 3, scheduled = [], purged = [];
+      var cancelled = 0, composeListGeneration = 3, scheduled = [], purged = [], events = [];
       var cancelComposeListLoad = () => cancelled++;
       function hideComposeSpinner() {}
       function composeLoadlist() {}
       function setTimeout(callback) { scheduled.push(callback === composeLoadlist); }
       function purgeDeletedStackCaches(project) { purged.push(project); }
-      var $ = () => ({ length: 0 });
+      var $ = () => ({ length: 0, trigger(name, projects) { events.push([name, projects]); } });
       ${remove}
       removeStackFromUiByProject('stack');
-      return { cancelled, generation: composeListGeneration, scheduled, purged,
+      return { cancelled, generation: composeListGeneration, scheduled, purged, events,
         pending: !!cancelComposeListLoad };
     `)(), remove);
-    expect(result).toEqual({ cancelled: 1, generation: 4, scheduled: [true], purged: ['stack'], pending: false });
+    expect(result).toEqual({
+      cancelled: 1, generation: 4, scheduled: [true], purged: ['stack'], pending: false,
+      events: [['compose-stack-removed', ['stack']]],
+    });
   });
 
   test('a delayed prefetch waiter cannot start a request after action invalidation', async ({ page }) => {

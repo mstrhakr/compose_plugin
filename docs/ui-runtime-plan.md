@@ -15,6 +15,11 @@ Preserve update-check revisions independently of runtime generations: a runtime
 response must not restore image-update evidence superseded by a fresh check.
 Accepted runtime snapshots also synchronize DOM/jQuery container membership and
 continue targeted health refreshes while checks are starting.
+Deleting a stack cancels its health timer and emits `compose-stack-removed` so
+Docker visibility can refresh managed membership even if stopped containers
+remain. Docker-table mutations reapply cached filtering; only changed container
+names, table replacement, or explicit list/removal invalidation fetch membership.
+Routine metrics text updates do not enumerate Docker or saved stacks again.
 
 Review the bottom action controls during this UI work, especially the scope of
 the autostart-only checkbox and the grouping of affected actions. Agree on the

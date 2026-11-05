@@ -46,7 +46,8 @@ for (const header of [false, true]) {
       const dollar = (selector: string | Element | Document | (() => void)) => {
         if (typeof selector === 'function') { selector(); return; }
         if (selector === document) {
-          return { on: (name: string, callback: EventListener) => document.addEventListener(name, callback) };
+          return { on: (names: string, callback: EventListener) =>
+            names.split(' ').forEach(name => document.addEventListener(name, callback)) };
         }
         return new Elements(typeof selector === 'string'
           ? Array.from(document.querySelectorAll(selector)) : [selector as Element]);
@@ -87,7 +88,7 @@ for (const header of [false, true]) {
     await expect(page.locator('#app')).toBeHidden();
     await page.evaluate(() => {
       (window as typeof window & { filterNames: string[] }).filterNames = [];
-      document.dispatchEvent(new Event('compose-list-loaded'));
+      document.dispatchEvent(new Event('compose-stack-removed'));
     });
     await expect(page.locator('#app')).toBeVisible();
     await expect(page.locator('#stopped')).toBeVisible();

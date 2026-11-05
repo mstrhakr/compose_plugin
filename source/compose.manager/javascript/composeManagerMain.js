@@ -8997,6 +8997,8 @@ function purgeDeletedStackCaches(project, stackId) {
     }
 
     delete composeStackActionInProgress[project];
+    clearTimeout(composeHealthRefreshTimers[project]);
+    delete composeHealthRefreshTimers[project];
     beginStackRuntimeRequest(project);
     delete stackDetailsPrefetchCache[project];
     delete stackDetailsPrefetchPromises[project];
@@ -9030,6 +9032,7 @@ function removeStackFromUiByProject(project) {
     }
 
     purgeDeletedStackCaches(project, stackId);
+    $(document).trigger('compose-stack-removed', [project]);
 
     if ($stackRow.length === 0) {
         return;

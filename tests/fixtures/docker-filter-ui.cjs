@@ -11,8 +11,9 @@ function harness(initialTable = true) {
     const requests = [];
     const errors = [];
     const rows = ['app', 'stopped', 'native', 'App'].map(name => ({ name, classes: new Set(['other-plugin']) }));
+    const table = {};
     const context = {
-        document: { body: {}, getElementById: () => hasTable ? {} : null },
+        document: { body: {}, getElementById: () => hasTable ? table : null },
         console: { error: (...args) => errors.push(args) },
         MutationObserver: function(callback) {
             observer = callback;
@@ -23,7 +24,9 @@ function harness(initialTable = true) {
         $: selector => {
             if (typeof selector === 'function') { selector(); return; }
             if (selector === context.document) {
-                return { on: (name, callback) => { handlers[name] = callback; } };
+                return { on: (names, callback) => {
+                    names.split(' ').forEach(name => { handlers[name] = callback; });
+                } };
             }
             if (selector === '#docker_list tr.sortable') {
                 return { each: callback => rows.forEach(row => callback.call(row)) };
@@ -73,12 +76,20 @@ for (const initialTable of [true, false]) {
     h.finish(JSON.stringify({ result: 'success', names: ['app', 'stopped'] }));
     assert.deepEqual(h.rows.map(row => row.classes.has('compose-manager-hidden')), [true, true, false, false]);
     assert.ok(h.rows.every(row => row.classes.has('other-plugin')), 'Other visibility rules remain untouched');
-    h.handlers['compose-list-loaded']();
+    h.handlers['compose-stack-removed']();
     h.flush();
     h.finish({ result: 'success', names: [] });
     assert.ok(h.rows.every(row => !row.classes.has('compose-manager-hidden')), 'Removed stacks become visible again');
+    for (let batch = 0; batch < 20; batch++) {
+        h.observe([{ target: { inTable: true }, addedNodes: [] }]);
+        h.flush();
+    }
+    assert.equal(h.requests.length, 2, 'Text/row replacement updates use cached membership');
+    h.rows.push({ name: 'new-container', classes: new Set() });
     h.observe([{ target: { inTable: true }, addedNodes: [] }]);
     h.flush();
+    h.flush();
+    assert.equal(h.requests.length, 3, 'Changed container names invalidate membership');
     h.handlers['compose-list-loaded']();
     h.flush();
     assert.equal(h.requests.length, 3, 'Coalesces changes while a request is pending');
