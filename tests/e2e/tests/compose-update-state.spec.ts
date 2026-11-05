@@ -233,7 +233,7 @@ test.describe('Compose update state regressions', () => {
         const run = new Function('$', 'composeEscapeAttr', 'composeLogger', `
           var caURL = '/exec';
           var stackUpdateStatus = {};
-          var pendingUpdateCheckStacks = [];
+          var pendingUpdateCheckStacks = new Set();
           var composeUpdateCheckState = {};
           function updateStackUpdateUI() {}
           function updateUpdateAllButton() {}

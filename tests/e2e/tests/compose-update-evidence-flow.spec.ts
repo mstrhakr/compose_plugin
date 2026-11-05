@@ -66,7 +66,7 @@ for (const kind of ['image', 'build-base']) {
           };
           var caURL = '/exec', stackUpdateStatus = {}, stackContainersCache = {},
             composeUpdateCheckState = {}, composeUpdateCheckRevision = {}, stackDetailsPrefetchCache = {},
-            pendingUpdateCheckStacks = [];
+            pendingUpdateCheckStacks = new Set();
           function composeEscapeAttr(value) { return value; }
           function composeLogger() {}
           function updateUpdateAllButton() {}

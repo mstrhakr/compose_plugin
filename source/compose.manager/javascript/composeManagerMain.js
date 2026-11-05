@@ -2287,9 +2287,7 @@ function checkPendingRechecks(callback) {
                         // each row lands. For rows already committed before this
                         // async POST returned, sweep them now so they aren't stranded.
                         pendingStacks.forEach(function(stackName) {
-                            if (pendingUpdateCheckStacks.indexOf(stackName) === -1) {
-                                pendingUpdateCheckStacks.push(stackName);
-                            }
+                            pendingUpdateCheckStacks.add(stackName);
                         });
                         pendingStacks.slice().forEach(function(stackName) {
                             if ($('#compose_stacks tr.compose-sortable[data-project="' + stackName + '"]').length > 0) {
@@ -2660,9 +2658,7 @@ function updateStackUpdateUI(stackName, stackInfo, freshCheck) {
 function checkStackUpdates(stackName) {
     var $stackRow = $('#compose_stacks tr.compose-sortable[data-project="' + stackName + '"]');
     if ($stackRow.length === 0) {
-        if (pendingUpdateCheckStacks.indexOf(stackName) === -1) {
-            pendingUpdateCheckStacks.push(stackName);
-        }
+        pendingUpdateCheckStacks.add(stackName);
         return;
     }
 
@@ -5011,26 +5007,18 @@ showConfirmButton: false
 }
 
 // Track stacks that need update check after operation completes
-// Using array to support Update All Stacks operation
-var pendingUpdateCheckStacks = [];
+var pendingUpdateCheckStacks = new Set();
 
 function processPendingUpdateCheckForStack(stackName) {
-    if (!stackName || !pendingUpdateCheckStacks || pendingUpdateCheckStacks.length === 0) {
-        return;
-    }
-
-    var pendingIndex = pendingUpdateCheckStacks.indexOf(stackName);
-    if (pendingIndex === -1) {
+    if (!stackName || !pendingUpdateCheckStacks.has(stackName)) {
         return;
     }
     if (composeStackActionInProgress[stackName]) return;
 
-    pendingUpdateCheckStacks.splice(pendingIndex, 1);
+    pendingUpdateCheckStacks.delete(stackName);
     setTimeout(function() {
         if (composeStackActionInProgress[stackName]) {
-            if (pendingUpdateCheckStacks.indexOf(stackName) === -1) {
-                pendingUpdateCheckStacks.push(stackName);
-            }
+            pendingUpdateCheckStacks.add(stackName);
             return;
         }
         checkStackUpdates(stackName);
@@ -5040,11 +5028,11 @@ function processPendingUpdateCheckForStack(stackName) {
 // Process the queued stacks from pending update checks.
 // This is called from refreshStackRow and processPendingComposeReloads.
 function processPendingUpdateChecks() {
-    if (!pendingUpdateCheckStacks || pendingUpdateCheckStacks.length === 0) {
+    if (pendingUpdateCheckStacks.size === 0) {
         return;
     }
 
-    pendingUpdateCheckStacks.slice().forEach(processPendingUpdateCheckForStack);
+    Array.from(pendingUpdateCheckStacks).forEach(processPendingUpdateCheckForStack);
 }
 
 // >0 while refreshStackRow AJAX calls are in-flight; the loadlist
@@ -9002,9 +8990,7 @@ function purgeDeletedStackCaches(project, stackId) {
     delete persistentContainerCache[project];
     delete stackUpdateStatus[project];
 
-    pendingUpdateCheckStacks = (pendingUpdateCheckStacks || []).filter(function(stackName) {
-        return stackName !== project;
-    });
+    pendingUpdateCheckStacks.delete(project);
     pendingComposeReloadStacks = (pendingComposeReloadStacks || []).filter(function(stackName) {
         return stackName !== project;
     });

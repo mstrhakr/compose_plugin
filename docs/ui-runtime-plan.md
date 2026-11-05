@@ -51,6 +51,9 @@ rather than claiming a saved change.
 Pending post-update checks use one busy-aware drain for both progressive rows
 and completed runtime refreshes; queued/running operations keep their pending
 checks until completion, including an action started before a deferred drain.
+The internal pending queue is an insertion-ordered Set: membership/removal is
+constant-time on average and a complete drain is O(P) for P pending stacks.
+This changes no endpoint payloads or persisted recheck format.
 Preserve update-check revisions independently of runtime generations: a runtime
 response must not restore image-update evidence superseded by a fresh check.
 Accepted runtime snapshots also synchronize DOM/jQuery container membership and

@@ -154,7 +154,7 @@ for (const name of ['executeStartAllStacks', 'executeStopAllStacks']) {
 {
     const checked = [], timers = [];
     const context = {
-        pendingUpdateCheckStacks: ['queued', 'running'],
+        pendingUpdateCheckStacks: new Set(['queued', 'running']),
         composeStackActionInProgress: { queued: {}, running: {} },
         checkStackUpdates: project => checked.push(project),
         setTimeout: fn => timers.push(fn),
@@ -175,6 +175,22 @@ for (const name of ['executeStartAllStacks', 'executeStopAllStacks']) {
     timers.shift()();
     assert.deepEqual(checked, ['running']);
     assert.deepEqual(Array.from(context.pendingUpdateCheckStacks), ['queued']);
+}
+
+for (const size of [100, 200]) {
+    let lookups = 0;
+    const pending = new Set(Array.from({ length: size }, (_, i) => 'busy-' + i));
+    const originalHas = pending.has.bind(pending);
+    pending.has = project => { lookups++; return originalHas(project); };
+    const context = {
+        pendingUpdateCheckStacks: pending,
+        composeStackActionInProgress: Object.fromEntries(Array.from(pending, project => [project, {}])),
+        setTimeout() { throw new Error('Busy operations must not schedule image checks'); },
+    };
+    load(context, main, ['processPendingUpdateCheckForStack', 'processPendingUpdateChecks']);
+    context.processPendingUpdateChecks();
+    assert.equal(lookups, size, 'A complete busy-queue drain performs one constant-time membership lookup per stack');
+    assert.equal(pending.size, size, 'Busy stacks retain all pending checks');
 }
 
 for (const native of [true, false]) {
