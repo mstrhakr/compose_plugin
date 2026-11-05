@@ -10,6 +10,37 @@ require_once '/usr/local/emhttp/plugins/compose.manager/include/StackUpdateServi
 
 class StackUpdateServiceTest extends TestCase
 {
+    public function testCorruptEvidenceOrOwnershipRequiresExplicitClear(): void
+    {
+        $reserve = new \ReflectionMethod(\StackUpdateService::class, 'reserveChecks');
+        $save = new \ReflectionMethod(\StackUpdateService::class, 'saveResults');
+        try {
+            foreach (['broken', '17', '{"version":1,"stacks":{}}',
+                '{"version":1,"stacks":{},"generations":{"app":"invalid"}}'] as $raw) {
+                file_put_contents(COMPOSE_UPDATE_STATUS_FILE, '{}');
+                $ownership = $reserve->invoke(null, ['app'], true);
+                file_put_contents(COMPOSE_UPDATE_STATUS_FILE, $raw);
+                foreach ([
+                    static fn() => \StackUpdateService::readSavedResults(),
+                    static fn() => $reserve->invoke(null, ['app'], true),
+                    static fn() => $save->invoke(new \StackUpdateService(), ['app' => ['containers' => []]], true, $ownership),
+                ] as $operation) {
+                    try {
+                        $operation();
+                        $this->fail('Corrupt evidence must not be reset by a check.');
+                    } catch (\JsonException | \RuntimeException $e) {
+                        $this->assertNotSame('', $e->getMessage());
+                    }
+                    $this->assertSame($raw, file_get_contents(COMPOSE_UPDATE_STATUS_FILE));
+                }
+                \StackUpdateService::clearSavedResults();
+                $this->assertSame([], \StackUpdateService::readSavedResults());
+            }
+        } finally {
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+        }
+    }
+
     public function testPublicationOwnershipSurvivesCompetingChecksDeletionAndClear(): void
     {
         $reserve = new \ReflectionMethod(\StackUpdateService::class, 'reserveChecks');

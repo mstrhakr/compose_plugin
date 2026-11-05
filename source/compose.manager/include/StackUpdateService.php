@@ -140,7 +140,7 @@ class StackUpdateService
                 $ownership[$name] = $generations[$name] = bin2hex(random_bytes(16));
             }
             return $saved;
-        }, $full);
+        });
         return $ownership;
     }
 
@@ -190,7 +190,7 @@ class StackUpdateService
                 $next[$name] = $result + ['lastChecked' => $now];
             }
             return $next;
-        }, $replaceSavedStatus);
+        });
         return array_intersect_key($saved, $accepted);
     }
 
@@ -239,7 +239,7 @@ class StackUpdateService
     }
 
     /** @param callable(array, array&): array|null $change */
-    private static function accessSavedResults(?callable $change = null, bool $replace = false): array
+    private static function accessSavedResults(?callable $change = null, bool $clear = false): array
     {
         if ($change === null && !is_file(COMPOSE_UPDATE_STATUS_FILE)) {
             return [];
@@ -257,21 +257,14 @@ class StackUpdateService
             if ($raw === false) {
                 throw new RuntimeException('Unable to read stack update status.');
             }
-            try {
-                $saved = $raw !== '' ? json_decode($raw, true, 512, JSON_THROW_ON_ERROR) : [];
-            } catch (JsonException $e) {
-                if (!$replace) {
-                    throw $e;
-                }
-                composeLogger('Replacing corrupt saved stack update status: ' . $e->getMessage(), null, 'user', 'warning', 'update-check');
+            if ($clear) {
+                composeLogger('Explicitly clearing saved stack update status and check ownership.', null, 'user', 'info', 'update-check');
                 $saved = [];
-            }
-            if (!is_array($saved)) {
-                if (!$replace) {
+            } else {
+                $saved = $raw !== '' ? json_decode($raw, true, 512, JSON_THROW_ON_ERROR) : [];
+                if (!is_array($saved)) {
                     throw new RuntimeException('Invalid saved stack update status.');
                 }
-                composeLogger('Replacing invalid saved stack update status.', null, 'user', 'warning', 'update-check');
-                $saved = [];
             }
             $generations = [];
             if (($saved['version'] ?? null) === 1) {

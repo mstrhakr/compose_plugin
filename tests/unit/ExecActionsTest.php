@@ -878,10 +878,14 @@ class ExecActionsTest extends TestCase
         $this->createTestStack('empty-stack');
         file_put_contents(COMPOSE_UPDATE_STATUS_FILE, 'not json');
         try {
-            $response = json_decode($this->executeAction('checkStackUpdates', ['script' => 'empty-stack']), true);
-            $this->assertSame('error', $response['result']);
-            $this->assertNotEmpty($response['message']);
-            $this->assertSame('not json', file_get_contents(COMPOSE_UPDATE_STATUS_FILE));
+            foreach (['checkStackUpdates', 'checkAllStacksUpdates'] as $action) {
+                $response = json_decode($this->executeAction($action, ['script' => 'empty-stack']), true);
+                $this->assertSame('error', $response['result']);
+                $this->assertNotEmpty($response['message']);
+                $this->assertSame('not json', file_get_contents(COMPOSE_UPDATE_STATUS_FILE));
+            }
+            \StackUpdateService::clearSavedResults();
+            $this->assertSame([], \StackUpdateService::readSavedResults());
             $this->assertStringContainsString(
                 'Stack update check failed:',
                 implode("\n", $GLOBALS['composeLoggerMessages'])
