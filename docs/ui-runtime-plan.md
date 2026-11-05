@@ -86,7 +86,8 @@ O(P + S), plus existing container-evidence merge work. Single checks rejected at
 publication return `result: superseded` without image evidence or recheck tokens.
 Full responses retain `result: success`, containing only accepted `stacks` and an
 additive `superseded` project list. Superseded checks must not acknowledge pending
-marks. This does not serialize image checks with mutations in another tab, nor
+marks. This does not serialize server image checks with stack mutations (including
+mutations in another tab), nor
 make the shared native image cache or presentation metadata cache transactional.
 
 The main-page `composeUpdateChecks.js` coordinator owns single/bulk checks,
