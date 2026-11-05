@@ -180,11 +180,15 @@ test('Pull/Build & Up creates only default and selected-profile services, then r
     const params = new URLSearchParams(response.request().postData() || '');
     return response.url().endsWith('/ComposeUtil.php')
       && params.get('action') === 'composeUp' && params.get('path') === stack.path;
-  }).then(response => { dispatchSeen = true; return response; });
+  }, { timeout: 30_000 }).then(response => { dispatchSeen = true; return response; });
+  // Keep the rejection owned while the SweetAlert transition is in flight.
+  void dispatchPromise.catch(() => {});
+  await page.waitForTimeout(800);
   await page.locator('.sweet-alert:visible button.confirm').click();
   const confirmation = page.locator('.sweet-alert:visible h2').filter({ hasText: 'Pull/Build & Up:' });
   await expect.poll(async () => dispatchSeen || await confirmation.isVisible()).toBe(true);
   if (await confirmation.isVisible()) {
+    await page.waitForTimeout(800);
     await page.locator('#swal-run-bg-checkbox').check({ force: true });
     await page.locator('.sweet-alert:visible button.confirm').click();
   }
@@ -249,7 +253,18 @@ test('foreground terminal close does not navigate or cancel tracked completion',
   const response = await responsePromise;
   const body = await response.text();
   const dispatch = { response, body, json: JSON.parse(body) };
-  await expect(page.locator('iframe[src*="ShowTtyd.php"]')).toBeVisible();
+  await expect(page.locator('#sb-container iframe')).toBeVisible();
+  // ttyd starts its command only after the terminal connects, not when the
+  // outer Shadowbox iframe becomes visible.
+  await expect.poll(async () => {
+    const result = await postForm(page, exec, {
+      action: 'getUiOperation', script: stack.project,
+      operationId: dispatch.json.operations[stack.project],
+    });
+    const operation = result.json?.operation as Record<string, unknown> | undefined;
+    expect(result.json?.result, result.body).toBe('success');
+    return operation?.state === 'running' || operation?.state === 'completed';
+  }, { timeout: 30_000 }).toBe(true);
   await page.evaluate(() => {
     (window as unknown as { Shadowbox: { close(): void } }).Shadowbox.close();
   });
@@ -267,13 +282,13 @@ test('actual container restart clears unchanged detail indicators and restores m
     const row = document.querySelector(`[data-project="${project}"].compose-sortable`);
     const id = row?.id.replace('stack-row-', '');
     if (!id) throw new Error('Generated row missing');
-    return (window as unknown as { loadStackContainerDetails(id: string, project: string): Promise<void> })
-      .loadStackContainerDetails(id, project);
+    (window as unknown as { toggleStackDetails(id: string): void }).toggleStackDetails(id);
   }, stack.project);
   // Resolve the exact generated container name from the authoritative snapshot.
   const container = (await stack.containers()).find(ct => ct.service === 'app');
   expect(container?.name).toBeTruthy();
   const row = page.locator(`tr[data-container="${container!.name}"]`);
+  await expect(row).toBeVisible();
   await expect(row.locator('.state')).toHaveText('started');
   const iconId = await row.locator('.hand[data-name]').getAttribute('id');
   expect(iconId).toBeTruthy();
@@ -372,10 +387,15 @@ test('Dashboard action completion rejects an older real host snapshot', async ({
       const params = new URLSearchParams(response.request().postData() || '');
       return response.url().endsWith('/ComposeUtil.php')
         && params.get('action') === 'composeUp' && params.get('path') === stack.path;
-    });
+    }, { timeout: 30_000 });
+    void dispatchPromise.catch(() => {});
     await icon.click();
-    const menu = page.locator('.dropdown-context:visible');
-    await menu.getByText('Start', { exact: true }).click();
+    const iconId = await icon.getAttribute('id');
+    const menu = page.locator(`#dropdown-${iconId}`);
+    // Dashboard attaches its menu on the first click; the host delegated
+    // opener can require a second click once that binding exists.
+    if (!await menu.isVisible()) await icon.click();
+    await menu.getByText('Start', { exact: true }).click({ timeout: 10_000 });
     const dispatchResponse = await dispatchPromise;
     const body = await dispatchResponse.text();
     await waitForOperation(page, stack.project, {
