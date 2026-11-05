@@ -3,6 +3,7 @@
     var expandedStacks = {};
     var stackContainerCache = {};
     var stackOperations = {};
+    var stackPaths = Object.create(null);
     var stackActionErrors = {};
     var stackListGeneration = 0;
     var stackDetailGeneration = {};
@@ -141,8 +142,19 @@
         $('#compose_stacks_status').text(stackName + ': ' + message);
     }
 
+    function dashboardStackPath(stackName) {
+        var path = stackPaths[stackName];
+        if (typeof path !== 'string' || path.charAt(0) !== '/') {
+            dashboardActionError(stackName, 'Stack path is unavailable. Refresh the Dashboard before retrying.');
+            return null;
+        }
+        return path;
+    }
+
     function stackAction(stackName, action) {
         if (stackOperations[stackName]) return;
+        var projectPath = dashboardStackPath(stackName);
+        if (!projectPath) return;
         var actionMap = {
             'start': 'composeUp',
             'stop': 'composeStop',
@@ -162,7 +174,7 @@
             timeout: 30000,
             data: {
                 action: apiAction,
-                path: '/boot/config/plugins/compose.manager/projects/' + stackName,
+                path: projectPath,
                 trackOperation: '1'
             }
         }).done(function(data) {
@@ -228,7 +240,8 @@
     }
 
     function openStackLogs(stackName) {
-        var projectPath = '/boot/config/plugins/compose.manager/projects/' + stackName;
+        var projectPath = dashboardStackPath(stackName);
+        if (!projectPath) return;
         $.post('/plugins/compose.manager/include/ComposeUtil.php', {
             action: 'composeLogs',
             path: projectPath
@@ -465,12 +478,14 @@
             }
 
             stackContainerCache = {};
+            stackPaths = Object.create(null);
 
             var html = '';
             if (data.stacks.length === 0) {
                 html = '<div class="compose-dash-loading">No compose stacks defined</div>';
             } else {
                 data.stacks.forEach(function(stack, idx) {
+                    stackPaths[stack.folder] = stack.path;
                     var stackId = 'stack-' + stack.folder.replace(/[^a-zA-Z0-9_-]/g, '_');
                     var state = stack.state;
                     var stateIcon = state === 'started' ? 'fa-play' :

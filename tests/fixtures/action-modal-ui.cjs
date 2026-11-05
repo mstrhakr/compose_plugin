@@ -180,9 +180,12 @@ for (const name of ['executeStartAllStacks', 'executeStopAllStacks']) {
 for (const native of [true, false]) {
     const events = [];
     let receipt = { state: 'running' };
+    let actionResponse = {
+        url: '/plugins/compose.manager/include/ShowTtyd.php', operations: { one: 'receipt-one' },
+    };
     const context = {
         window: {}, stackContainerCache: { stale: true }, caURL: 'exec',
-        stackOperations: {}, stackActionErrors: {},
+        stackOperations: {}, stackActionErrors: {}, stackPaths: { one: '/configured/projects/one' },
         console: { error: (...args) => events.push(['error', ...args]) },
         loadComposeStacks: () => events.push(['reload']),
         setTimeout: fn => events.push(['timer', fn]),
@@ -194,17 +197,16 @@ for (const native of [true, false]) {
         done(callback) {
             if (options.data.action !== 'getUiOperation') {
                 assert.equal(options.data.trackOperation, '1');
+                assert.equal(options.data.path, '/configured/projects/one');
             }
-            callback(options.data.action === 'getUiOperation' ? { result: 'success', operation: receipt } : {
-                url: '/plugins/compose.manager/include/ShowTtyd.php', operations: { one: 'receipt-one' },
-            });
+            callback(options.data.action === 'getUiOperation' ? { result: 'success', operation: receipt } : actionResponse);
             return this;
         },
         fail() { return this; },
         always(callback) { callback(); return this; },
     });
     context.$.ajax = ajax;
-    load(context, dashboard, ['composeDashboardActionBoxClosed', 'dashboardActionError', 'stackAction'], '    ');
+    load(context, dashboard, ['composeDashboardActionBoxClosed', 'dashboardActionError', 'dashboardStackPath', 'stackAction', 'openStackLogs'], '    ');
     const exportLine = dashboard.match(/^    window\.composeDashboardActionBoxClosed = .*;$/m);
     assert.ok(exportLine);
     vm.runInContext(exportLine[0], context);
@@ -262,6 +264,26 @@ for (const native of [true, false]) {
     runTimer();
     assert.match(context.stackActionErrors.one, /code 7/);
     assert.equal(context.stackOperations.one, undefined);
+    actionResponse = { background: true, warning: true, message: 'Viewer unavailable', operations: { one: 'receipt-one' } };
+    receipt = { state: 'running' };
+    context.stackAction('one', 'start');
+    assert.ok(context.stackOperations.one, 'Viewer failure preserves Dashboard receipt ownership');
+    assert.match(context.stackActionErrors.one, /Viewer unavailable/);
+    runTimer();
+    assert.ok(context.stackOperations.one, 'Viewer failure keeps polling until actual completion');
+    receipt = { state: 'completed', exitCode: 0 };
+    runTimer();
+    assert.equal(context.stackOperations.one, undefined);
+    const logRequests = [];
+    context.$.post = (url, data) => logRequests.push(data);
+    context.openStackLogs('one');
+    assert.equal(logRequests[0].path, '/configured/projects/one', 'Logs use the same configured metadata path as actions');
+    delete context.stackPaths.one;
+    context.$.ajax = () => { throw new Error('Missing paths must never dispatch'); };
+    context.stackAction('one', 'start');
+    context.openStackLogs('one');
+    assert.match(context.stackActionErrors.one, /Stack path is unavailable/);
+    assert.equal(logRequests.length, 1, 'Missing paths cannot fall back to the default root');
 }
 
 {
@@ -273,7 +295,10 @@ for (const native of [true, false]) {
     };
     const context = {
         window: {}, caURL: 'exec', stackListGeneration: 0, stackDetailGeneration: {},
-        stackContainerCache: {}, stackActionErrors: {}, expandedStacks: {},
+        stackContainerCache: {}, stackActionErrors: {}, expandedStacks: {}, stackPaths: {},
+        composeIconSrc: () => '', composeStackUpdatePresentation: () => ({}),
+        composeUpdatePresentationBadge: () => '', formatUptime: () => '',
+        composeEscapeAttr: value => value,
         console, debugLog() {}, noStacks() {}, $: () => element,
     };
     context.$.ajax = options => {
@@ -288,12 +313,16 @@ for (const native of [true, false]) {
     context.loadComposeStacks();
     context.loadStackContainers('one', 'app');
     context.loadComposeStacks();
-    requests[2].done({ started: 1, stopped: 0, stacks: [] });
+    requests[2].done({ started: 1, stopped: 0, stacks: [
+        { name: 'one', folder: 'one', path: '/configured/projects/one', state: 'started', running: 1, total: 1 },
+    ] });
+    assert.equal(context.stackPaths.one, '/configured/projects/one', 'Accepted snapshots own the configured action path');
     const acceptedWrites = writes.length;
     requests[0].done({ started: 0, stopped: 1, stacks: [] });
     requests[0].fail();
     requests[1].done('{"result":"success","containers":[]}');
     requests[1].fail();
+    assert.equal(context.stackPaths.one, '/configured/projects/one', 'Stale snapshots cannot replace the configured action path');
     assert.equal(writes.length, acceptedWrites, 'Old list/detail successes and failures cannot mutate the latest view');
     context.loadStackContainers('one', 'app');
     context.loadStackContainers('one', 'app');
@@ -302,6 +331,9 @@ for (const native of [true, false]) {
     requests[3].done('{"result":"success","containers":[]}');
     assert.equal(writes.length, currentWrites, 'Only the latest detail request may render');
     assert.ok(requests.every(request => request.options.timeout === 30000));
+    context.loadComposeStacks();
+    requests.at(-1).done({ started: 0, stopped: 0, stacks: [] });
+    assert.deepEqual(Object.keys(context.stackPaths), [], 'Fresh snapshots discard paths of removed stacks');
 }
 
 {

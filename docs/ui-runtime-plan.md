@@ -54,6 +54,9 @@ Docker visibility can refresh managed membership even if stopped containers
 remain. Docker-table mutations reapply cached filtering; only changed container
 names, table replacement, or explicit list/removal invalidation fetch membership.
 Routine metrics text updates do not enumerate Docker or saved stacks again.
+Dashboard actions and stack logs use the metadata path from the latest accepted
+stack snapshot, including a nondefault projects root. Missing paths fail visibly
+instead of falling back to the default root; removed stacks lose their cached path.
 Runtime/health refreshes do not rebuild whole-list description widgets or
 re-evaluate column-layout subscriptions; list initialization and layout changes
 own those enhancements. Container membership changes still notify metrics.
