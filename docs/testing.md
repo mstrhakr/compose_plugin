@@ -264,6 +264,15 @@ All preparation, and malformed/empty/failed container responses. They also cover
 queued/running/completed receipts, malformed or missing completion evidence,
 foreground single/bulk dispatches, explicit nonzero exits, and completion updating
 both parent state and expanded container details from the same fresh snapshot.
+The isolated `compose-terminal-controls.spec.ts` exercises the production
+terminal controller in both browsers: continuing without a stop request,
+confirmed cancellation, completion-only Done, and failed-status retry.
+`TerminalSessionTest.php` executes real disposable process sessions locally:
+viewer termination leaves a command alive, nonzero exits and output are
+preserved, cancellation stops nested commands and queued bulk receipts, and
+altered process identity refuses signalling. It does not invoke Docker or ttyd.
+The host stabilization gate separately covers the installed terminal controls.
+
 These tests control browser callbacks; they do not prove real Docker or ttyd
 completion.
 

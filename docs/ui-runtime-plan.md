@@ -8,6 +8,21 @@ operation progress, failure recovery, and existing metrics connections.
 
 The no-reload action-terminal work and this runtime unification ship together.
 Terminal close callbacks refresh presentation but do not establish completion.
+Tracked finite actions (single stack, Git deploy, and bulk) run in an owned
+process session independently of ttyd. The terminal is an output viewer:
+**Continue in background** closes only that viewer; closing the window has the
+same non-cancelling behavior. **Stop command** asks for confirmation and signals
+only that session's process group, not the stack's containers. Already-applied
+changes are not rolled back. Stop also cancels undispatched bulk receipts.
+Once the session completes, these controls become **Done**, with a visible
+nonzero exit status when applicable. Existing run-in-background dispatch and
+its notification behavior are unchanged. Legacy untracked terminals retain
+their existing behavior.
+
+Attached Up/log-following with safe detach and reconnect is deferred beyond
+this beta in [feature request #197](https://github.com/mstrhakr/compose_plugin/issues/197).
+The new finite-action controls do not implement that long-running lifecycle.
+
 Pending post-update checks use one busy-aware drain for both progressive rows
 and completed runtime refreshes; queued/running operations keep their pending
 checks until completion, including an action started before a deferred drain.

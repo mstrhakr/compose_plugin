@@ -51,12 +51,16 @@ class ComposeUtilTest extends TestCase
         $before = glob('/tmp/compose_multi_*.sh') ?: [];
         $_POST['trackOperation'] = '1';
         $files = [];
+        $sessionFiles = [];
         $scripts = [];
         try {
             ob_start();
             echoComposeCommandMultiple('up', ['paths' => $paths]);
             $response = json_decode((string) ob_get_clean(), true);
-            $this->assertSame('/plugins/compose.manager/include/ShowTtyd.php?done=1', $response['url']);
+            $this->assertStringStartsWith('/plugins/compose.manager/include/ShowTtyd.php?done=1&socket=compose_action_', $response['url']);
+            parse_str(parse_url($response['url'], PHP_URL_QUERY), $query);
+            $sessionFiles[] = \composeUiOperationFile('terminal-session', $query['session']) . '.log';
+            $sessionFiles[] = \composeUiOperationFile('terminal-session', $query['session']);
             $this->assertSame(['receipt-first', 'receipt-second'], array_keys($response['operations']));
             foreach ($response['operations'] as $project => $id) {
                 $file = \composeUiOperationFile($project, $id);
@@ -73,7 +77,7 @@ class ComposeUtilTest extends TestCase
                 $this->assertStringContainsString(escapeshellarg($file), $script);
             }
         } finally {
-            foreach (array_merge($files, $scripts) as $file) {
+            foreach (array_merge($files, $sessionFiles, $scripts) as $file) {
                 @unlink($file);
             }
             unset($_POST['trackOperation']);
@@ -173,7 +177,11 @@ class ComposeUtilTest extends TestCase
         ob_start();
         echoComposeCommand('up');
         $tracked = json_decode((string) ob_get_clean(), true);
-        $this->assertSame('/plugins/compose.manager/include/ShowTtyd.php?done=1', $tracked['url']);
+        $this->assertStringStartsWith('/plugins/compose.manager/include/ShowTtyd.php?done=1&socket=compose_action_', $tracked['url']);
+        parse_str(parse_url($tracked['url'], PHP_URL_QUERY), $query);
+        $sessionFile = \composeUiOperationFile('terminal-session', $query['session']);
+        unlink($sessionFile . '.log');
+        unlink($sessionFile);
         $receipt = \composeUiOperationFile($stackName, $tracked['operations'][$stackName]);
         $this->assertSame(['state' => 'queued'], json_decode((string) file_get_contents($receipt), true));
         unlink($receipt);

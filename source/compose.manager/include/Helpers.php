@@ -11,6 +11,7 @@ require_once("/usr/local/emhttp/plugins/compose.manager/include/Defines.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Util.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/StackUpdateService.php");
 require_once __DIR__ . '/UiOperation.php';
+require_once __DIR__ . '/TerminalSession.php';
 require_once("/usr/local/emhttp/plugins/dynamix/include/Wrappers.php");
 
 /**
@@ -381,6 +382,10 @@ function echoComposeCommand($action, array $options = [])
                 return escapeshellarg($item);
             }, $composeCommand);
             $composeCommandStr = join(" ", $composeCommandEscaped);
+            if ($operations && !$followLogs) {
+                composeEchoTerminalSession($composeCommandStr, $operations, $debug, $logFile);
+                return;
+            }
             // Use a per-stack socket for logs so viewing logs doesn't conflict
             // with action operations (up/update/pull) that share the default socket.
             $logsSocket = '';
@@ -583,9 +588,13 @@ function echoGitDeployCommand(array $options = []): void
     $operations = [];
     $composeCommand = composeTrackUiCommand($composeCommand, $stack->projectFolder, $operations);
     $composeCommandString = implode(' ', array_map('escapeshellarg', $composeCommand));
+    if ($operations) {
+        composeEchoTerminalSession($composeCommandString, $operations, $debug, getLastCmdLogFileForComposeAction('gitdeploy', $stack->path));
+        return;
+    }
     execComposeCommandInTTY($composeCommandString, $debug, getLastCmdLogFileForComposeAction('gitdeploy', $stack->path));
     $url = "/plugins/compose.manager/include/ShowTtyd.php?done=1";
-    echo $operations ? json_encode(['url' => $url, 'operations' => $operations]) : $url;
+    echo $url;
 }
 
 /**
@@ -744,6 +753,8 @@ function echoComposeCommandMultiple($action, array $options = [])
     $tmpScript = "/tmp/compose_multi_" . uniqid() . ".sh";
     $scriptContent = "#!/bin/bash\n";
     $scriptContent .= "# Multi-stack compose script (ttyd) - auto-generated\n\n";
+    $scriptContent .= 'trap ' . escapeshellarg('rm -f ' . escapeshellarg($tmpScript)) . " EXIT\n";
+    $scriptContent .= "result=0\n";
 
     foreach ($blockedStacks as $blocked) {
         $blockedTitle = str_replace(['\\', '"'], ['\\\\', '\\"'], $blocked);
@@ -762,6 +773,7 @@ function echoComposeCommandMultiple($action, array $options = [])
         $scriptContent .= $cmdStr . "\n";
         $scriptContent .= "rc=$?\n";
         $scriptContent .= "if [ \$rc -ne 0 ]; then\n";
+        $scriptContent .= "  result=\$rc\n";
         $scriptContent .= "  echo \"X Stack " . $stackTitle . " failed to " . strtolower($actionLabel) . " (exit code: \$rc)\"\n";
         $scriptContent .= "fi\n";
         $scriptContent .= "echo \"\"\n";
@@ -770,14 +782,18 @@ function echoComposeCommandMultiple($action, array $options = [])
     $scriptContent .= "echo \"========================================\"\n";
     $scriptContent .= "echo \"=== All operations complete ===\"\n";
     $scriptContent .= "echo \"========================================\"\n";
-    $scriptContent .= "rm -f " . escapeshellarg($tmpScript) . "\n";
+    $scriptContent .= "exit \$result\n";
 
     file_put_contents($tmpScript, $scriptContent);
     chmod($tmpScript, 0755);
 
     $ttydCommand = "bash " . escapeshellarg($tmpScript);
+    if ($operations) {
+        composeEchoTerminalSession($ttydCommand, $operations, $debug);
+        return;
+    }
     execComposeCommandInTTY($ttydCommand, $debug);
     composeLogger("Multi-stack script created: " . $tmpScript, null, 'user', 'debug', 'compose-multi');
     $url = "/plugins/compose.manager/include/ShowTtyd.php?done=1";
-    echo $operations ? json_encode(['url' => $url, 'operations' => $operations]) : $url;
+    echo $url;
 }

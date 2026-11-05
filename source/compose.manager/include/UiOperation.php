@@ -10,16 +10,8 @@ function composeUiOperationFile(string $project, string $id): string
     return sys_get_temp_dir() . '/compose-manager-ui-operations/' . hash('sha256', $project) . '-' . $id . '.json';
 }
 
-/**
- * @param string[] $command
- * @param array<string, string> $operations
- * @return string[]
- */
-function composeTrackUiCommand(array $command, string $project, array &$operations): array
+function composeCreateUiOperation(string $project): string
 {
-    if (($_POST['trackOperation'] ?? '') !== '1') {
-        return $command;
-    }
     $id = bin2hex(random_bytes(16));
     $file = composeUiOperationFile($project, $id);
     $directory = dirname($file);
@@ -36,10 +28,28 @@ function composeTrackUiCommand(array $command, string $project, array &$operatio
         if (filemtime($oldFile) < time() - 86400 && !unlink($oldFile)) {
             throw new RuntimeException('Unable to expire operation receipt.');
         }
+        if (!is_file($oldFile) && is_file($oldFile . '.log') && !unlink($oldFile . '.log')) {
+            throw new RuntimeException('Unable to expire terminal output log.');
+        }
     }
     if (file_put_contents($file, '{"state":"queued"}', LOCK_EX) === false) {
         throw new RuntimeException('Unable to queue operation receipt.');
     }
+    return $id;
+}
+
+/**
+ * @param string[] $command
+ * @param array<string, string> $operations
+ * @return string[]
+ */
+function composeTrackUiCommand(array $command, string $project, array &$operations): array
+{
+    if (($_POST['trackOperation'] ?? '') !== '1') {
+        return $command;
+    }
+    $id = composeCreateUiOperation($project);
+    $file = composeUiOperationFile($project, $id);
     $operations[$project] = $id;
     return array_merge(['sh', __DIR__ . '/../scripts/compose_ui_operation.sh', $file], $command);
 }

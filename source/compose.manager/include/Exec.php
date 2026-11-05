@@ -2354,6 +2354,21 @@ switch ($_POST['action']) {
         echo json_encode(['result' => 'success', 'log' => $logContent]);
         break;
 
+    case 'getTerminalSession':
+    case 'stopTerminalSession':
+        require_once __DIR__ . '/TerminalSession.php';
+        try {
+            $id = (string) ($_POST['session'] ?? '');
+            if ($_POST['action'] === 'stopTerminalSession') {
+                composeStopTerminalSession($id);
+            }
+            echo json_encode(['result' => 'success', 'session' => composeReadTerminalSession($id)]);
+        } catch (RuntimeException | InvalidArgumentException $error) {
+            composeLogger('Unable to control terminal session', ['message' => $error->getMessage()], 'user', 'error', 'operation');
+            echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);
+        }
+        break;
+
     case 'getUiOperation':
         require_once __DIR__ . '/UiOperation.php';
         $script = getPostScript();
