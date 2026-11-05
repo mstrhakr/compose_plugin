@@ -20,6 +20,9 @@ Docker visibility can refresh managed membership even if stopped containers
 remain. Docker-table mutations reapply cached filtering; only changed container
 names, table replacement, or explicit list/removal invalidation fetch membership.
 Routine metrics text updates do not enumerate Docker or saved stacks again.
+Runtime/health refreshes do not rebuild whole-list description widgets or
+re-evaluate column-layout subscriptions; list initialization and layout changes
+own those enhancements. Container membership changes still notify metrics.
 
 Review the bottom action controls during this UI work, especially the scope of
 the autostart-only checkbox and the grouping of affected actions. Agree on the

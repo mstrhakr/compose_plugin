@@ -9703,8 +9703,6 @@ function updateParentStackFromContainers(stackId, project) {
             $healthCell.html(composeRenderHealthBadge(healthStatus, anyRunning ? 'running' : 'exited'));
         } catch (e) {}
 
-        // Re-apply list helpers after row updates.
-        applyListEnhancements();
     } catch (e) {
         composeLogger('updateParentStackFromContainers error', {
             err: e.toString(),

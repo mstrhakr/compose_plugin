@@ -302,7 +302,7 @@ test.describe('Compose update state regressions', () => {
         var stackUpdateStatus = {}, composeStackActionInProgress = {}, stackStartedAtCache = {};
         function buildStackInfoFromCache() { return createStackInfo('stack', [{ name: 'app', state: 'running' }]); }
         function deriveStackState() { return { label: 'started', state: 'started', runningCount: 1, totalCount: 1, colorClass: 'green-text' }; }
-        function applyListEnhancements() {}
+        function applyListEnhancements() { throw new Error('Runtime refresh must not rebuild whole-list helpers'); }
         function reconcileStackRuntimeMetadata() {}
         ${refresh}
         updateParentStackFromContainers('1', 'stack');
