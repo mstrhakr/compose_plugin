@@ -7,6 +7,9 @@ set -u
 finish() {
     file="$1"
     code="$2"
+    if [ -n "${COMPOSE_TERMINAL_CANCEL_FILE:-}" ] && [ -f "$COMPOSE_TERMINAL_CANCEL_FILE" ]; then
+        return
+    fi
     temporary="${file}.$$"
     printf '{"state":"completed","exitCode":%s}\n' "$code" > "$temporary" &&
         mv -f "$temporary" "$file"

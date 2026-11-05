@@ -131,6 +131,28 @@ class TerminalSessionTest extends TestCase
         }
     }
 
+    public function testLoggedCancellationWaitsForDescendantBeforeCompletingReceipts(): void
+    {
+        $script = $this->directory . '/delayed-stop.sh';
+        file_put_contents($script, "#!/bin/bash\ntrap '' TERM\necho ready > " .
+            escapeshellarg($this->directory . '/ready') . "\nsleep 1\necho done > " .
+            escapeshellarg($this->directory . '/cleaned') . "\n");
+        $operations = [];
+        $command = \composeTrackUiCommand(['bash', $script], 'delayed-stop', $operations);
+        $operation = \composeUiOperationFile('delayed-stop', $operations['delayed-stop']);
+        $this->operationFiles[] = $operation;
+        $this->launch(implode(' ', array_map('escapeshellarg', $command)), [$operation], $this->directory . '/last_cmd.log');
+        $this->waitFor(fn() => is_file($this->directory . '/ready'));
+        \composeStopTerminalSession($this->id);
+        usleep(100000);
+        $this->assertSame('running', \composeReadTerminalSession($this->id)['state']);
+        $this->assertSame('running', json_decode((string) file_get_contents($operation), true)['state']);
+        $this->waitFor(fn() => \composeReadTerminalSession($this->id)['state'] === 'completed');
+        $this->assertFileExists($this->directory . '/cleaned');
+        $this->assertSame(143, \composeReadTerminalSession($this->id)['exitCode']);
+        $this->assertSame(143, json_decode((string) file_get_contents($operation), true)['exitCode']);
+    }
+
     public function testStopRefusesQueuedSession(): void
     {
         $this->expectException(\RuntimeException::class);

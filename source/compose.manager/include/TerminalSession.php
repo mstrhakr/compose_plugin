@@ -41,7 +41,7 @@ function composeStopTerminalSession(string $id): void
         || !in_array(composeUiOperationFile('terminal-session', $id), $arguments, true)) {
         throw new RuntimeException('Terminal process identity changed; refusing to signal it.');
     }
-    exec('/bin/kill -TERM -- -' . $pid . ' 2>&1', $output, $code);
+    exec('/bin/kill -TERM -- ' . $pid . ' 2>&1', $output, $code);
     if ($code !== 0) {
         throw new RuntimeException('Unable to stop terminal command: ' . implode("\n", $output));
     }
