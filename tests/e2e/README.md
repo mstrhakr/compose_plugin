@@ -43,17 +43,23 @@ there is deliberately **no image prune or global cleanup**.
 
 Coverage includes selected/default/excluded profiles for stopped/uncreated
 Pull/Build & Up; successful inline build and failed preparation; exact operation
-receipt/exit status; foreground close without navigation; unchanged restart
+receipt/exit status; foreground Continue in background, explicit Stop command,
+and completion-only Done without navigation; unchanged restart
 indicator/menu recovery; a deliberately aborted health request; and a delayed
 real Dashboard snapshot arriving after action completion. Recreate checks verify
 that fresh container IDs reach the live row without a page reload; they do not
 claim that Nchan delivers fresh metric samples.
 
 Browser endpoint writes are allowlisted to the generated stack/container.
+Terminal status/stop requests additionally require an exact session ID returned
+by that stack's tracked dispatch; an arbitrary terminal cannot be stopped.
 Unrelated automatic browser actions (including global checks and publisher
 startup) are blocked and listed in a test attachment. API requests use fixed,
 scoped helper payloads; browser route guards do not intercept APIRequestContext.
 Tests override wait-for-health **per request**, not in server settings.
+Terminal-control cases explicitly wait up to 30 seconds for a disposable
+service's delayed readiness, so the controls are exercised during an active
+command rather than after a fast detached Up has already finished.
 No global preferences, autostart, scheduled updates, existing stacks, or
 publisher processes are changed. Cleanup waits for the exact Down receipt and
 container removal before deleting metadata; failures are explicit and leave

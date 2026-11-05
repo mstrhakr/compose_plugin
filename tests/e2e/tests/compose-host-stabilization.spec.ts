@@ -60,6 +60,7 @@ const test = base.extend<{ stack: HostStack }>({
     let project = '';
     let path = '';
     const containerNames = new Set<string>();
+    const terminalSessions = new Set<string>();
     const blocked: string[] = [];
     // Browser-originated mutations are restricted to this test's exact project.
     // APIRequestContext calls below have their own fixed, scoped payloads.
@@ -78,10 +79,30 @@ const test = base.extend<{ stack: HostStack }>({
         await route.continue();
         return;
       }
+      if (['getTerminalSession', 'stopTerminalSession'].includes(action)
+        && terminalSessions.has(params.get('session') || '')) {
+        await route.continue();
+        return;
+      }
       if (['composeUp', 'composeStop', 'composeDown', 'composeUpRecreate'].includes(action)
         && project && params.get('path') === path && params.get('trackOperation') === '1') {
-        params.set('waitForHealthy', '0');
-        await route.continue({ postData: params.toString() });
+        // Only the terminal cases explicitly wait, bounded to this disposable stack.
+        if (params.get('waitForHealthy') !== '1' || params.get('waitTimeout') !== '30') {
+          params.set('waitForHealthy', '0');
+        }
+        const response = await route.fetch({ postData: params.toString() });
+        const result = await response.json();
+        if (typeof result.url === 'string') {
+          const url = new URL(result.url, page.url());
+          const session = url.searchParams.get('session') || '';
+          if (url.origin === new URL(page.url()).origin
+            && url.pathname === '/plugins/compose.manager/include/ShowTtyd.php'
+            && /^[a-f0-9]{32}$/.test(session)
+            && url.searchParams.get('socket') === 'compose_action_' + session) {
+            terminalSessions.add(session);
+          }
+        }
+        await route.fulfill({ response });
         return;
       }
       if (action === 'containerAction' && containerNames.has(params.get('container') || '')
@@ -238,7 +259,11 @@ test('build-only deployment builds successfully and a later build failure preven
   }
 });
 
-test('foreground terminal close does not navigate or cancel tracked completion', async ({ page, stack }) => {
+for (const control of ['background', 'stop', 'done'] as const) {
+test(`foreground terminal ${control} preserves explicit command lifecycle`, async ({ page, stack }) => {
+  await stack.save(yaml
+    .replace('sleep 600', 'sleep 10; touch /tmp/ready; sleep 600')
+    .replace('["CMD", "true"]', '["CMD", "test", "-f", "/tmp/ready"]'));
   await stack.refresh();
   const responsePromise = page.waitForResponse(response => {
     if (!response.url().endsWith('/ComposeUtil.php')) return false;
@@ -246,33 +271,44 @@ test('foreground terminal close does not navigate or cancel tracked completion',
     return data.get('path') === stack.path && data.get('action') === 'composeUp';
   });
   const originalURL = page.url();
-  await page.evaluate(path => {
-    (window as unknown as { ComposeUpConfirmed(path: string, opts: { background: boolean }): void })
-      .ComposeUpConfirmed(path, { background: false });
-  }, stack.path);
+  await page.evaluate(({ path, project }) => {
+    (window as unknown as { performComposeAction(options: Record<string, unknown>): void })
+      .performComposeAction({
+        stackName: project, actionName: 'up', background: false,
+        payload: { action: 'composeUp', path, waitForHealthy: '1', waitTimeout: '30' },
+      });
+  }, { path: stack.path, project: stack.project });
   const response = await responsePromise;
   const body = await response.text();
   const dispatch = { response, body, json: JSON.parse(body) };
   await expect(page.locator('#sb-container iframe')).toBeVisible();
-  // ttyd starts its command only after the terminal connects, not when the
-  // outer Shadowbox iframe becomes visible.
-  await expect.poll(async () => {
-    const result = await postForm(page, exec, {
-      action: 'getUiOperation', script: stack.project,
-      operationId: dispatch.json.operations[stack.project],
-    });
-    const operation = result.json?.operation as Record<string, unknown> | undefined;
-    expect(result.json?.result, result.body).toBe('success');
-    return operation?.state === 'running' || operation?.state === 'completed';
-  }, { timeout: 30_000 }).toBe(true);
-  await page.evaluate(() => {
-    (window as unknown as { Shadowbox: { close(): void } }).Shadowbox.close();
-  });
-  await waitForOperation(page, stack.project, dispatch);
+  const terminal = page.frameLocator('#sb-container iframe');
+  if (control === 'done') {
+    await waitForOperation(page, stack.project, dispatch);
+    await expect(terminal.getByRole('button', { name: 'Stop command' })).toBeHidden();
+    await terminal.getByRole('button', { name: 'Done', exact: true }).click();
+  } else {
+    await expect(terminal.getByRole('button', { name: 'Stop command' })).toBeEnabled();
+    await expect(terminal.getByRole('button', { name: 'Done', exact: true })).toBeHidden();
+    if (control === 'stop') {
+      page.once('dialog', dialog => dialog.accept());
+      await terminal.getByRole('button', { name: 'Stop command' }).click();
+      await waitForOperation(page, stack.project, dispatch, 'nonzero');
+      await expect(terminal.getByRole('status')).toContainText('exit code 143');
+      await terminal.getByRole('button', { name: 'Done', exact: true }).click();
+    } else {
+      await terminal.getByRole('button', { name: 'Continue in background' }).click();
+      await waitForOperation(page, stack.project, dispatch);
+    }
+  }
+  await expect(page.locator('#sb-container iframe')).toBeHidden();
   await expect(page).toHaveURL(originalURL);
-  const row = page.locator(`[data-project="${stack.project}"].compose-sortable`);
-  await expect(row.locator('.state').first()).toHaveText(/started/);
+  if (control !== 'stop') {
+    const row = page.locator(`[data-project="${stack.project}"].compose-sortable`);
+    await expect(row.locator('.state').first()).toHaveText(/started/);
+  }
 });
+}
 
 test('actual container restart clears unchanged detail indicators and restores menu actions', async ({ page, stack }) => {
   await stack.save(yaml.replace(/    healthcheck:[\s\S]*?  selected:/, '  selected:'));
