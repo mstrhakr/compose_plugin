@@ -52,13 +52,21 @@ function composeStopTerminalSession(string $id): void
  */
 function composeEchoTerminalSession(string $command, array $operations, bool $debug, string $logFile = '', string $action = ''): void
 {
+    $accepted = false;
     try {
-        $url = composeStartTerminalSession($command, $operations, $debug, $logFile);
+        $url = composeStartTerminalSession($command, $operations, $debug, $logFile, $accepted);
         $url .= '&command=' . rawurlencode($action) . '&bulk=' . (count($operations) > 1 ? '1' : '0');
         echo json_encode(['url' => $url, 'operations' => $operations]);
     } catch (RuntimeException $error) {
         composeLogger('Unable to open managed terminal', ['message' => $error->getMessage()], 'user', 'error', 'operation');
-        echo json_encode(['error' => 'terminal', 'message' => $error->getMessage(), 'operations' => $operations]);
+        if ($accepted) {
+            echo json_encode(['background' => true, 'warning' => true, 'message' => $error->getMessage(), 'operations' => $operations]);
+        } else {
+            foreach ($operations as $project => $id) {
+                composeFailQueuedUiOperation(composeUiOperationFile($project, $id));
+            }
+            echo json_encode(['error' => 'terminal', 'message' => $error->getMessage(), 'operations' => $operations]);
+        }
     }
 }
 
@@ -67,13 +75,14 @@ function composeEchoTerminalSession(string $command, array $operations, bool $de
  *
  * @param array<string, string> $operations
  */
-function composeStartTerminalSession(string $command, array $operations, bool $debug, string $logFile = ''): string
+function composeStartTerminalSession(string $command, array $operations, bool $debug, string $logFile = '', bool &$accepted = false): string
 {
     // Use the same private directory and unguessable identifiers as operation receipts.
     $id = composeCreateUiOperation('terminal-session');
     $file = composeUiOperationFile('terminal-session', $id);
     $output = $file . '.log';
     if (file_put_contents($output, '') === false || !chmod($output, 0600)) {
+        composeFailQueuedUiOperation($file);
         throw new RuntimeException('Unable to create terminal output log.');
     }
     $args = ['setsid', 'bash', dirname(__DIR__) . '/scripts/compose_terminal_session.sh', $file, $command, $logFile];
@@ -86,7 +95,13 @@ function composeStartTerminalSession(string $command, array $operations, bool $d
         composeLogger('Skipping managed terminal execution in test mode: ' . $launch, null, 'user', 'debug', 'ttyd');
         return $url;
     }
-    exec($launch . ' < /dev/null > ' . escapeshellarg($output) . ' 2>&1 &');
+    exec($launch . ' < /dev/null > /dev/null 2>' . escapeshellarg($file . '.stderr') . ' & echo $!', $launchOutput, $launchCode);
+    $pid = (int) ($launchOutput[0] ?? 0);
+    if ($launchCode !== 0 || $pid < 2) {
+        composeFailQueuedUiOperation($file);
+        throw new RuntimeException('Unable to launch terminal command.');
+    }
+    $accepted = true;
     $session = [];
     for ($attempt = 0; $attempt < 100; $attempt++) {
         $session = composeReadTerminalSession($id);
@@ -96,13 +111,20 @@ function composeStartTerminalSession(string $command, array $operations, bool $d
         usleep(20000);
     }
     if ($session['state'] === 'queued') {
+        exec('/bin/kill -0 ' . $pid . ' 2>/dev/null', $unused, $alive);
+        if ($alive !== 0) {
+            $accepted = false;
+            composeFailQueuedUiOperation($file);
+            throw new RuntimeException('Terminal command exited before confirming startup. Check the server command prerequisites.');
+        }
         throw new RuntimeException('Terminal command did not confirm startup. Check its operation status before retrying.');
     }
-    $viewer = 'cat ' . escapeshellarg($output);
-    if ($session['state'] === 'running') {
-        $viewer = 'tail --pid=' . (int) $session['pid'] . ' -n +1 -F ' . escapeshellarg($output);
+    $socket = rtrim(COMPOSE_TTYD_SOCKET_DIR, '/') . '/compose_action_' . $id . '.sock';
+    $viewer = ['bash', dirname(__DIR__) . '/scripts/compose_terminal_viewer.sh', $socket, $output,
+        (string) ($session['state'] === 'running' ? $session['pid'] : 0)];
+    exec(implode(' ', array_map('escapeshellarg', $viewer)) . ' < /dev/null > /dev/null 2>>' . escapeshellarg($file . '.stderr') . ' &');
+    if (!waitForTtydSocket('compose_action_' . $id)) {
+        throw new RuntimeException('The command was launched but its terminal viewer is unavailable. Check operation status.');
     }
-    // Each viewer has its own socket; opening another stack cannot kill this viewer.
-    execComposeCommandInTTY($viewer, $debug, '', 'compose_action_' . $id);
     return $url;
 }

@@ -270,7 +270,12 @@ confirmed cancellation, completion-only Done, and failed-status retry.
 `TerminalSessionTest.php` executes real disposable process sessions locally:
 viewer termination leaves a command alive, nonzero exits and output are
 preserved, cancellation stops nested commands and queued bulk receipts, and
-altered process identity refuses signalling. It does not invoke Docker or ttyd.
+altered process identity refuses signalling. It also checks the 1 MiB live-spool
+limit against a byte-complete stack log, output-write failures, refused launches,
+and accepted commands whose viewer cannot start. `terminal_session.bats` uses
+a fake ttyd to test connected cleanup and the real 30-second connection deadline.
+`UiOperationTest.php` verifies output/receipt retention and throttled housekeeping.
+These local tests do not invoke Docker or real ttyd.
 The host stabilization gate separately covers the installed terminal controls.
 
 These tests control browser callbacks; they do not prove real Docker or ttyd

@@ -4637,7 +4637,9 @@ function performComposeAction(opts) {
             return;
         }
         if (parsed && parsed.background === true) {
-            if (!suppressBackgroundNotification) {
+            if (parsed.warning) {
+                swal({ title: title, text: parsed.message || 'The command may be running without a terminal. Completion tracking will continue.', type: 'warning' });
+            } else if (!suppressBackgroundNotification) {
                 notifyBackgroundStarted(title, true);
             }
             if (stackName) {

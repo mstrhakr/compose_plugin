@@ -97,6 +97,33 @@ test.describe('Operation state ownership', () => {
     expect(result.tracking).toEqual(['1', '1']);
   });
 
+  test('viewer startup warnings preserve single and bulk receipt tracking', async ({ page }) => {
+    const result = await page.evaluate(({ state, dispatch }) => new Function(`
+      var composeStackActionInProgress = {}, requests = [], polls = [], notices = [], compURL = '/compose';
+      var $ = () => ({ length: 0 });
+      $.ajax = options => {
+        var request = { options }; requests.push(request);
+        return { done(callback) { request.done = callback; return this; }, fail() { return this; } };
+      };
+      function composeLogger() {}
+      function beginStackRuntimeRequest() {}
+      function composeActionStateText() { return 'working'; }
+      function pollBackgroundCompletion(project, delay, operation) { polls.push([project, operation.receipt]); }
+      function swal(value) { notices.push(value); }
+      function openBox() { throw new Error('Unavailable viewer must not open'); }
+      ${state}
+      ${dispatch}
+      performComposeAction({ stackName: 'single', actionName: 'up' });
+      requests[0].done({ background: true, warning: true, message: 'Viewer unavailable', operations: { single: 'receipt' } });
+      performMultipleComposeAction([{ project: 'bulk' }], { actionName: 'up' });
+      requests[1].done({ background: true, warning: true, message: 'Startup uncertain', operations: { bulk: 'bulk-receipt' } });
+      return { active: Object.keys(composeStackActionInProgress), polls, notices };
+    `)(), { state, dispatch });
+    expect(result.active).toEqual(['single', 'bulk']);
+    expect(result.polls).toEqual([['single', 'receipt'], ['bulk', 'bulk-receipt']]);
+    expect(result.notices.map((notice: { type: string }) => notice.type)).toEqual(['warning', 'warning']);
+  });
+
   test('receipt completion reconciles parent and expanded containers from the same fresh snapshot', async ({ page }) => {
     const runtime = `var composeUpdateCheckRevision = {};
 ${fn('composeCheckedContainers', 'composeContainerUpdateBadge')}

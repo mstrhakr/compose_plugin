@@ -23,6 +23,21 @@ nonzero exit status when applicable. Existing run-in-background dispatch and
 its notification behavior are unchanged. Legacy untracked terminals retain
 their existing behavior.
 
+Managed viewers send the parent page's CSRF token for status and stop requests.
+Cancellation is owned by the supervisor: receipts remain running until its
+descendants have exited, with forced termination after a 10-second grace period.
+The live output spool is capped at 1 MiB and explicitly marks omitted earlier
+output; a single stack's command log retains the complete output. A viewer that
+never connects releases its listener and socket after 30 seconds. Closing an
+already-connected viewer also releases its listener without stopping the action.
+Completed output spools and diagnostics expire after one hour, and receipts
+after 24 hours; running receipts and output are preserved. Cleanup is
+activity-driven and scans at most once per minute across dispatch requests,
+so a bulk dispatch does not rescan all receipts for every stack.
+If command launch succeeds but the viewer fails, the response explicitly warns
+that execution continues and retains receipt polling. A confirmed launch failure
+instead completes only still-queued receipts as failed.
+
 Attached Up/log-following with safe detach and reconnect is deferred beyond
 this beta in [feature request #197](https://github.com/mstrhakr/compose_plugin/issues/197).
 The new finite-action controls do not implement that long-running lifecycle.

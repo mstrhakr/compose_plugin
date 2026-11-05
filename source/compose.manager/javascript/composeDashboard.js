@@ -203,6 +203,9 @@
                     composeDashboardActionBoxClosed();
                 }
             });
+            if (response.warning) {
+                dashboardActionError(stackName, response.message || 'The command is being tracked without a terminal viewer.');
+            }
             if (response.background !== true) {
                 if (typeof openBox === 'function') {
                     openBox(response.url, actionTitle + ' Stack ' + stackName, 800, 1200, true,

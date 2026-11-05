@@ -69,7 +69,7 @@ class TerminalSessionTest extends TestCase
         $this->waitFor(fn() => \composeReadTerminalSession($this->id)['state'] === 'completed');
         $this->assertSame(7, \composeReadTerminalSession($this->id)['exitCode']);
         $this->assertSame("started\nfinished\n", file_get_contents($this->directory . '/last_cmd.log'));
-        $this->assertSame("started\nfinished\n", stream_get_contents($this->pipes[1]));
+        $this->assertSame("started\nfinished\n", file_get_contents($this->file . '.log'));
     }
 
     public function testStopCancelsRunningAndQueuedBulkReceiptsWithoutRunningNextCommand(): void
@@ -160,6 +160,80 @@ class TerminalSessionTest extends TestCase
         \composeStopTerminalSession($this->id);
     }
 
+    public function testLiveSpoolIsBoundedWhileFullStackLogIsPreserved(): void
+    {
+        $log = $this->directory . '/last_cmd.log';
+        $this->launch('head -c 3145728 /dev/zero; printf final-output', [], $log);
+        $this->waitFor(fn() => \composeReadTerminalSession($this->id)['state'] === 'completed');
+        $this->assertSame(0, \composeReadTerminalSession($this->id)['exitCode']);
+        $this->assertLessThanOrEqual(1048576, filesize($this->file . '.log'));
+        $this->assertSame(3145740, filesize($log));
+        $this->assertStringEndsWith('final-output', (string) file_get_contents($this->file . '.log'));
+        $this->assertStringContainsString('Earlier output omitted', (string) file_get_contents($this->file . '.log'));
+    }
+
+    public function testOutputFailureCannotReportSuccessfulSession(): void
+    {
+        $this->launch('printf output', [], $this->directory);
+        $this->waitFor(fn() => \composeReadTerminalSession($this->id)['state'] === 'completed');
+        $this->assertNotSame(0, \composeReadTerminalSession($this->id)['exitCode']);
+        $this->assertStringContainsString('Unable to open terminal output files', stream_get_contents($this->pipes[2]));
+    }
+
+    public function testAcceptedCommandKeepsTrackingWhenViewerCannotStart(): void
+    {
+        $this->assertStartupResponse(false);
+    }
+
+    public function testFailedLauncherCompletesQueuedOperationWithoutExecutingCommand(): void
+    {
+        $this->assertStartupResponse(true);
+    }
+
+    private function assertStartupResponse(bool $failLauncher): void
+    {
+        $bin = $this->directory . '/bin';
+        mkdir($bin);
+        file_put_contents($bin . '/ttyd', "#!/bin/sh\nexit 1\n");
+        chmod($bin . '/ttyd', 0700);
+        if ($failLauncher) {
+            file_put_contents($bin . '/setsid', "#!/bin/sh\nexit 1\n");
+            chmod($bin . '/setsid', 0700);
+        }
+        $before = glob(dirname($this->file) . '/*.json');
+        $code = 'define("COMPOSE_SKIP_TTYD_EXEC", false); require ' . var_export(dirname(__DIR__) . '/bootstrap.php', true) . ';'
+            . 'function waitForTtydSocket($socket) { return false; }'
+            . 'require ' . var_export(dirname(__DIR__, 2) . '/source/compose.manager/include/TerminalSession.php', true) . ';'
+            . '$_POST["trackOperation"] = "1"; $operations = [];'
+            . '$command = composeTrackUiCommand(["sh", "-c", ' . var_export('sleep 0.1; touch ' . escapeshellarg($this->directory . '/executed'), true) . '], "startup-test", $operations);'
+            . 'composeEchoTerminalSession(implode(" ", array_map("escapeshellarg", $command)), $operations, false);';
+        $process = proc_open([PHP_BINARY, '-r', $code], [
+            0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w'],
+        ], $pipes, null, array_merge(getenv(), ['PATH' => $bin . ':' . getenv('PATH')]));
+        $this->assertIsResource($process);
+        fclose($pipes[0]);
+        $response = json_decode(stream_get_contents($pipes[1]), true);
+        fclose($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[2]);
+        $this->assertSame(0, proc_close($process), $stderr);
+        $newFiles = array_diff(glob(dirname($this->file) . '/*.json'), $before);
+        foreach ($newFiles as $file) $this->operationFiles[] = $file;
+        $this->assertIsArray($response);
+        $operation = \composeUiOperationFile('startup-test', $response['operations']['startup-test']);
+        $this->waitFor(fn() => (json_decode((string) file_get_contents($operation), true)['state'] ?? '') === 'completed');
+        if ($failLauncher) {
+            $this->assertSame('terminal', $response['error']);
+            $this->assertSame(1, json_decode((string) file_get_contents($operation), true)['exitCode']);
+            $this->assertFileDoesNotExist($this->directory . '/executed');
+        } else {
+            $this->assertTrue($response['background']);
+            $this->assertTrue($response['warning']);
+            $this->assertSame(0, json_decode((string) file_get_contents($operation), true)['exitCode']);
+            $this->assertFileExists($this->directory . '/executed');
+        }
+    }
+
     public function testSessionIdentifiersCannotEscapeReceiptDirectory(): void
     {
         $this->expectException(\InvalidArgumentException::class);
@@ -178,6 +252,8 @@ class TerminalSessionTest extends TestCase
         }
         foreach (array_merge([$this->file], $this->operationFiles) as $file) {
             @unlink($file);
+            @unlink($file . '.log');
+            @unlink($file . '.stderr');
         }
         unset($_POST['trackOperation']);
         parent::tearDown();

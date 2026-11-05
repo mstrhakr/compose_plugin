@@ -67,4 +67,43 @@ class UiOperationTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
         \composeUiOperationFile('stack', '../outside');
     }
+
+    public function testDispatchFailureOnlyCompletesUnstartedReceipts(): void
+    {
+        $id = \composeCreateUiOperation('failed-dispatch');
+        $file = \composeUiOperationFile('failed-dispatch', $id);
+        try {
+            \composeFailQueuedUiOperation($file);
+            $this->assertSame(['state' => 'completed', 'exitCode' => 1], json_decode((string) file_get_contents($file), true));
+            file_put_contents($file, '{"state":"running"}');
+            \composeFailQueuedUiOperation($file);
+            $this->assertSame(['state' => 'running'], json_decode((string) file_get_contents($file), true));
+        } finally {
+            unlink($file);
+        }
+    }
+
+    public function testHousekeepingIsThrottledAndKeepsActiveOutput(): void
+    {
+        $directory = $this->createTempDir();
+        $completed = $directory . '/completed.json';
+        $active = $directory . '/active.json';
+        $old = $directory . '/old.json';
+        foreach ([$completed, $active, $old] as $file) {
+            file_put_contents($file, $file === $active ? '{"state":"running"}' : '{"state":"completed","exitCode":0}');
+            file_put_contents($file . '.log', 'log');
+            touch($file, time() - ($file === $old || $file === $active ? 90000 : 4000));
+        }
+        \composeExpireUiOperations($directory);
+        $this->assertFileExists($completed);
+        $this->assertFileDoesNotExist($completed . '.log');
+        $this->assertFileDoesNotExist($old);
+        $this->assertFileDoesNotExist($old . '.log');
+        $this->assertFileExists($active);
+        $this->assertFileExists($active . '.log');
+        file_put_contents($old, '{"state":"completed","exitCode":0}');
+        touch($old, time() - 90000);
+        \composeExpireUiOperations($directory);
+        $this->assertFileExists($old, 'Repeated receipt creation must not rescan the directory within the housekeeping interval.');
+    }
 }

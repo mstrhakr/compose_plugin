@@ -23,19 +23,59 @@ function composeCreateUiOperation(string $project): string
         || (fileperms($directory) & 0077) !== 0) {
         throw new RuntimeException('Operation receipt directory is not private.');
     }
-    // Receipts are transient and may be abandoned by disconnected browsers.
-    foreach (glob($directory . '/*.json') ?: [] as $oldFile) {
-        if (filemtime($oldFile) < time() - 86400 && !unlink($oldFile)) {
-            throw new RuntimeException('Unable to expire operation receipt.');
-        }
-        if (!is_file($oldFile) && is_file($oldFile . '.log') && !unlink($oldFile . '.log')) {
-            throw new RuntimeException('Unable to expire terminal output log.');
-        }
-    }
+    composeExpireUiOperations($directory);
     if (file_put_contents($file, '{"state":"queued"}', LOCK_EX) === false) {
         throw new RuntimeException('Unable to queue operation receipt.');
     }
     return $id;
+}
+
+function composeExpireUiOperations(string $directory): void
+{
+    $lock = fopen($directory . '/.housekeeping', 'c+');
+    if ($lock === false) throw new RuntimeException('Unable to open operation housekeeping lock.');
+    try {
+        if (!flock($lock, LOCK_EX | LOCK_NB)) return;
+        $lastRun = (int) stream_get_contents($lock);
+        if ($lastRun > time() - 60) return;
+        // Once per minute across requests, not once per stack in a bulk dispatch.
+        $files = glob($directory . '/*.json');
+        if ($files === false) throw new RuntimeException('Unable to enumerate operation receipts.');
+        foreach ($files as $file) {
+            $contents = file_get_contents($file);
+            $modified = filemtime($file);
+            if ($contents === false || $modified === false) {
+                throw new RuntimeException('Unable to inspect operation receipt.');
+            }
+            $receipt = json_decode($contents, true);
+            if (($receipt['state'] ?? '') === 'running') continue;
+            if ($modified < time() - 3600) {
+                foreach (['.log', '.stderr'] as $suffix) {
+                    if (is_file($file . $suffix) && !unlink($file . $suffix)) {
+                        throw new RuntimeException('Unable to expire terminal output.');
+                    }
+                }
+            }
+            if ($modified < time() - 86400 && !unlink($file)) {
+                throw new RuntimeException('Unable to expire operation receipt.');
+            }
+        }
+        if (!ftruncate($lock, 0) || fseek($lock, 0) !== 0 || fwrite($lock, (string) time()) === false) {
+            throw new RuntimeException('Unable to record operation housekeeping.');
+        }
+    } finally {
+        fclose($lock);
+    }
+}
+
+function composeFailQueuedUiOperation(string $file): void
+{
+    $receipt = json_decode((string) file_get_contents($file), true);
+    if (($receipt['state'] ?? '') !== 'queued') return;
+    $temporary = $file . '.failed-' . getmypid();
+    if (file_put_contents($temporary, '{"state":"completed","exitCode":1}') === false || !rename($temporary, $file)) {
+        throw new RuntimeException('Unable to record dispatch failure.');
+    }
 }
 
 /**
