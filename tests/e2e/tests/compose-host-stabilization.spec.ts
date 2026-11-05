@@ -230,6 +230,44 @@ test('scoped image checks acknowledge only the captured pending generation', asy
   expect(await acknowledge(fresh)).not.toContain(stack.project);
 });
 
+test('active scoped deployment defers image checks and invalidates earlier acknowledgements', async ({ page, stack }) => {
+  await stack.save(yaml.replace('test: ["CMD", "true"]', 'test: ["CMD", "false"]'));
+  const mark = await postForm(page, exec, { action: 'markStackForRecheck', stacks: JSON.stringify([stack.project]) });
+  expect(mark.json?.result, mark.body).toBe('success');
+  const before = await postForm(page, exec, { action: 'checkStackUpdates', script: stack.project });
+  expect(before.json?.result, before.body).toBe('success');
+  const old = String(before.json!.recheckToken);
+  expect(old).toMatch(/^[a-f0-9]{64}$/);
+  const deployment = await postForm(page, util, {
+    action: 'composeUp', path: stack.path, background: '1', trackOperation: '1',
+    waitForHealthy: '1', waitTimeout: '30',
+  });
+  const acknowledge = async (token: string) => {
+    const result = await postForm(page, exec, {
+      action: 'clearStackRecheck', stacks: JSON.stringify([stack.project]),
+      tokens: JSON.stringify({ [stack.project]: token }),
+    });
+    expect(result.json?.result, result.body).toBe('success');
+    return result.json!.remaining;
+  };
+  await expect.poll(async () => {
+    const result = await postForm(page, exec, { action: 'checkStackUpdates', script: stack.project });
+    if (result.json?.result === 'superseded') {
+      expect(result.json).not.toHaveProperty('recheckToken');
+    }
+    return result.json?.result;
+  }, { timeout: 20_000 }).toBe('superseded');
+  expect(await acknowledge(old)).toContain(stack.project);
+  await waitForOperation(page, stack.project, deployment, 'nonzero');
+  expect(await acknowledge(old)).toContain(stack.project);
+  const fresh = await postForm(page, exec, { action: 'checkStackUpdates', script: stack.project });
+  expect(fresh.json?.result, fresh.body).toBe('success');
+  const token = String(fresh.json!.recheckToken);
+  expect(token).toMatch(/^[a-f0-9]{64}$/);
+  expect(token).not.toBe(old);
+  expect(await acknowledge(token)).not.toContain(stack.project);
+});
+
 test('late saved evidence cannot replace a fresh scoped image check', async ({ page, stack }) => {
   await stack.refresh();
   let release!: () => void;
