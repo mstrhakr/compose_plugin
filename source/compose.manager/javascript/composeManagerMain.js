@@ -5186,6 +5186,9 @@ function renderStackActionProgress(stackName) {
     var inProgress = !!operation;
     var $stackRow = $('#compose_stacks tr.compose-sortable[data-project="' + stackName + '"]');
     if ($stackRow.length === 0) return;
+    $stackRow.find('span[data-stackid]').each(function() {
+        addComposeStackContext(this.id);
+    });
     $stackRow.data('action-in-progress', inProgress ? true : null);
     if (!inProgress) {
         $stackRow.removeData('action-in-progress');
@@ -9457,7 +9460,9 @@ function renderContainerDetails(stackId, containers, project) {
 
     html += '</tbody></table>';
 
+    if ($container.data('runtime-html') === html && $container.find('.compose-ct-table').length) return;
     $container.html(html);
+    $container.data('runtime-html', html);
 
     if (window.composeColCustomizer && typeof window.composeColCustomizer.reapply === 'function') {
         window.composeColCustomizer.reapply();
@@ -9606,7 +9611,7 @@ function updateParentStackFromContainers(stackId, project) {
         var totalCount = stateInfo.totalCount;
         var anyRunning = runningCount > 0;
         var newState = stateInfo.state;
-        $stateEl.text(stateInfo.label);
+        if ($stateEl.text() !== stateInfo.label) $stateEl.text(stateInfo.label);
         $stateEl.removeData('orig-text');
         if (!isChecking) {
             updateStackUpdateUI(project, stackInfo);
@@ -9625,19 +9630,8 @@ function updateParentStackFromContainers(stackId, project) {
             var shape = stateInfo.shape;
             var colorClass = stateInfo.colorClass;
 
-            // Remove spinner / temporary classes and any previous fa-<name> classes
-            $icon.removeClass('fa-refresh fa-spin compose-status-spinner');
-            // Use a regex that matches the full fa-<name> (including hyphens) to ensure
-            // icons like fa-exclamation-circle are removed completely.
-            $icon.removeClass(function(i, cls) {
-                return (cls.match(/fa-[^\s]+/g) || []).join(' ');
-            });
-
-            // Remove any previous color classes
-            $icon.removeClass('green-text orange-text grey-text cyan-text');
-
-            // Apply the new shape and color
-            $icon.addClass('fa fa-' + shape + ' ' + colorClass + ' compose-status-icon');
+            var iconClass = 'fa fa-' + shape + ' ' + colorClass + ' compose-status-icon';
+            if ($icon.attr('class') !== iconClass) $icon.attr('class', iconClass);
 
             // Clear any saved orig-class since we've now applied the new state
             if ($icon.data('orig-class')) {
@@ -9700,7 +9694,8 @@ function updateParentStackFromContainers(stackId, project) {
         try {
             var $healthCell = $stackRow.find('td.col-health');
             var healthStatus = composeAggregateStackHealth(stackInfo.containers);
-            $healthCell.html(composeRenderHealthBadge(healthStatus, anyRunning ? 'running' : 'exited'));
+            var healthHtml = composeRenderHealthBadge(healthStatus, anyRunning ? 'running' : 'exited');
+            if ($healthCell.html() !== healthHtml) $healthCell.html(healthHtml);
         } catch (e) {}
 
     } catch (e) {
@@ -9849,6 +9844,13 @@ function addComposeContainerContext(elementId) {
         }
     });
 
+    var project = $('#stack-row-' + stackId).data('project');
+    opts.forEach(function(option) {
+        if (['Start', 'Stop', 'Pause', 'Resume', 'Restart'].indexOf(option.text) !== -1) {
+            option.disabled = !!composeStackActionInProgress[project];
+        }
+    });
+
     // Ensure stale menu bindings don't persist across state transitions
     $el.off('contextmenu');
     context.attach('#' + elementId, opts);
@@ -9859,6 +9861,10 @@ function containerAction(containerName, action, stackId) {
     var $iconWrap = $('[data-name="' + containerName + '"]').first();
     if (stackId === undefined) stackId = $iconWrap.data('stackid');
     var actionProject = $('#stack-row-' + stackId).data('project');
+    if (composeStackActionInProgress[actionProject]) {
+        swal({ title: 'Stack action in progress', text: 'Wait for the current operation to finish before changing its containers.', type: 'info' });
+        return;
+    }
     var operation = actionProject ? setStackActionInProgress(actionProject, true, composeActionStateText(action)) : null;
     // Show spinner by replacing the status icon (play/stop) in-place
     // The status icon lives in the sibling '.inner' span next to the '.hand' wrapper
@@ -10048,6 +10054,12 @@ function addComposeStackContext(elementId) {
     if (stackUpdateStatus[project] && stackUpdateStatus[project].hasUpdate) {
         hasUpdates = true;
     }
+
+    var busy = !!composeStackActionInProgress[project];
+    var menuState = JSON.stringify([stackId, project, projectName, isUp, path, profiles,
+        runningProfile, defaultProfile, webuiUrl, hasBuild, isGitStack,
+        gitDeployFailed, canComposeDownStopped, hasUpdates, busy]);
+    if ($el.data('compose-menu-state') === menuState) return;
 
     var opts = [];
     context.settings({
@@ -10347,8 +10359,23 @@ function addComposeStackContext(elementId) {
         });
     }
 
+    var readOnlyActions = ['WebUI', 'View Logs', 'View Last Cmd Log', 'Check for Changes'];
+    opts.forEach(function(option) {
+        if (!option.action || readOnlyActions.indexOf(option.text) !== -1) return;
+        var action = option.action;
+        option.disabled = !!option.disabled || busy;
+        option.action = function(e) {
+            if (composeStackActionInProgress[project]) {
+                e.preventDefault();
+                swal({ title: 'Stack action in progress', text: 'Wait for the current operation to finish before changing this stack.', type: 'info' });
+                return;
+            }
+            action(e);
+        };
+    });
     context.destroy('#' + elementId);
     context.attach('#' + elementId, opts);
+    $el.data('compose-menu-state', menuState);
     fixContextDropdownOverflow(elementId);
 }
 

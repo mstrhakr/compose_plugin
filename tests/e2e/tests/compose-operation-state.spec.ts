@@ -263,7 +263,7 @@ ${fn('beginStackRuntimeRequest', 'prefetchStackDetailsInBackground')}`;
       }
       function makeRow() {
         var row = element('', ''), icon = element('', 'fa fa-play green-text'), label = element('started', '');
-        row.find = selector => selector === '.state' ? label : icon;
+        row.find = selector => selector === 'span[data-stackid]' ? { each() {} } : selector === '.state' ? label : icon;
         return { row, icon, label };
       }
       var current = makeRow();

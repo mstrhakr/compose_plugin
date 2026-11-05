@@ -23,6 +23,13 @@ Routine metrics text updates do not enumerate Docker or saved stacks again.
 Runtime/health refreshes do not rebuild whole-list description widgets or
 re-evaluate column-layout subscriptions; list initialization and layout changes
 own those enhancements. Container membership changes still notify metrics.
+Unchanged snapshots preserve health badge/status animation DOM and expanded
+details. Stack context menus are rebound only when their inputs change, not on
+every health poll. Queued/running tracked operations disable conflicting stack
+menu actions, editing and update checks; logs/WebUI remain accessible. Health
+`starting` by itself does not disable actions. Stale menu callbacks and container
+actions also check current operation ownership before dispatch; backend locks
+remain authoritative for operations from other clients.
 
 Review the bottom action controls during this UI work, especially the scope of
 the autostart-only checkbox and the grouping of affected actions. Agree on the
