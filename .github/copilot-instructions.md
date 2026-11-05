@@ -50,6 +50,17 @@ for project setup and architecture.
   Preserve it and test related entry points; ask before changing semantics.
 - Report confirmed defects separately from design concerns, with locations,
   concrete fixes, and regression evidence. Commit fixes in validated slices.
+- For asynchronous or persisted state, first state the end-to-end invariant and
+  enumerate every reader, publisher, invalidator, and acknowledgement path,
+  including CLI, scheduled work, other tabs, and external owners.
+- Trace ownership through server publication and cleanup, not just browser
+  callback rejection. Test deterministic interleavings across checks, mutations,
+  failure, deletion/recreation, and acknowledgement boundaries.
+- Before adding another local guard, check whether ownership belongs in a shared
+  boundary. A lock coordinates only participants that actually use it.
+- Distinguish reproduced guarantees from assumptions and residual limitations.
+  Recheck the whole invariant after tightening one path so incremental fixes do
+  not leave sibling paths with incompatible contracts.
 
 ## Before each code commit
 
