@@ -738,7 +738,7 @@ function mergeStackUpdateStatus(stackInfo, prevStatus, freshCheck) {
 
     // Merge container-level update data
     if (prevStatus.containers && stackInfo.containers) {
-        var previousByName = {};
+        var previousByName = Object.create(null);
         prevStatus.containers.forEach(function(pc) {
             var prev = createContainerInfo(pc);
             previousByName[prev.name] = prev;
@@ -759,8 +759,8 @@ function mergeStackUpdateStatus(stackInfo, prevStatus, freshCheck) {
 // ═══════════════════════════════════════════════════════════════════
 
 // Timers for async operations (plugin-specific to avoid collision with Unraid's global timers)
-var composeTimers = {};
-var composeHealthRefreshTimers = {};
+var composeTimers = Object.create(null);
+var composeHealthRefreshTimers = Object.create(null);
 var composeListRefreshedDebounceTimer = null;
 
 function triggerComposeListRefreshedDebounced(delayMs) {
@@ -2093,7 +2093,7 @@ function updateTabModifiedState() {
 // composeEscapeHtml / composeEscapeAttr are provided by common.js
 
 // Update status cache per stack
-var stackUpdateStatus = {};
+var stackUpdateStatus = Object.create(null);
 var savedUpdateStatusLoaded = false;
 
 var composeDefaultExpandSettings = null;
@@ -2206,7 +2206,7 @@ function loadSavedUpdateStatus() {
                     Object.keys(response.stacks).forEach(function(project) {
                         mergeStackUpdateStatus(response.stacks[project], stackUpdateStatus[project], true);
                     });
-                    stackUpdateStatus = response.stacks;
+                    stackUpdateStatus = Object.assign(Object.create(null), response.stacks);
                     if (response.dockerVersionsInstalled) dockerVersionsInstalled = true;
 
                     // Mark as loaded only after successful callback
@@ -2337,8 +2337,8 @@ function checkAutoUpdateIfNeeded(stacks) {
 }
 
 // Check for updates for all stacks
-var composeUpdateCheckState = {};
-var composeUpdateCheckRevision = {};
+var composeUpdateCheckState = Object.create(null);
+var composeUpdateCheckRevision = Object.create(null);
 
 function composeUpdateCheckBadge(project) {
     var state = composeUpdateCheckState[project];
@@ -2408,7 +2408,7 @@ function checkAllUpdates() {
                     Object.keys(response.stacks).forEach(function(project) {
                         mergeStackUpdateStatus(response.stacks[project], stackUpdateStatus[project], true);
                     });
-                    stackUpdateStatus = response.stacks;
+                    stackUpdateStatus = Object.assign(Object.create(null), response.stacks);
 
                     // Update the UI for each stack
                     for (var stackName in response.stacks) {
@@ -2559,7 +2559,7 @@ function executeUpdateAllStacks(stacks, background, suppressBackgroundNotificati
     // Server-side markStackForRecheck is authoritative; do NOT push into
     // pendingUpdateCheckStacks at action start (drains would fire mid-action).
     var stackNames = [];
-    var operations = {};
+    var operations = Object.create(null);
     stacks.forEach(function(s) {
         var stackName = s.project;
         stackNames.push(stackName);
@@ -2775,12 +2775,12 @@ function loadPersistentContainerCache() {
         })
             .done(function(response) {
                 composeLogger('Loaded persistent container cache', response, 'user', 'debug', 'load-cache');
-                persistentContainerCache = (response && response.cache) ? response.cache : {};
+                persistentContainerCache = Object.assign(Object.create(null), response && response.cache);
                 resolve(persistentContainerCache);
             })
             .fail(function() {
                 composeLogger('Failed to load persistent container cache', null, 'user', 'error', 'load-cache');
-                persistentContainerCache = {};
+                persistentContainerCache = Object.create(null);
                 resolve(persistentContainerCache);
             });
     });
@@ -2840,8 +2840,9 @@ function ensureComposeInfoPublisherRunning() {
 }
 
 function getPersistentContainerInfo(project, service) {
-    if (!project || !service || !persistentContainerCache[project]) return null;
-    return persistentContainerCache[project][service] || null;
+    if (!project || !service || !Object.prototype.hasOwnProperty.call(persistentContainerCache, project)) return null;
+    var services = persistentContainerCache[project];
+    return services && Object.prototype.hasOwnProperty.call(services, service) ? services[service] : null;
 }
 
 // Process WebUI URL placeholders for stack-level WebUI (where no container context exists)
@@ -4702,7 +4703,7 @@ function performComposeAction(opts) {
 }
 
 function performMultipleComposeAction(stacks, opts, operations) {
-    operations = operations || {};
+    operations = operations || Object.create(null);
     opts.stackNames = stacks.map(function(stack) { return stack.project; });
     stacks.forEach(function(stack) {
         if (!operations[stack.project]) {
@@ -5058,7 +5059,7 @@ var skipNextComposeLoadlist = false;
 // Track stacks that need a full compose list reload after start/stop operations
 var pendingComposeReloadStacks = [];
 // Track stacks currently in progress (e.g. background start/stop/update)
-var composeStackActionInProgress = {};
+var composeStackActionInProgress = Object.create(null);
 // Timer for batching compose reloads to avoid duplicate refreshes
 var pendingComposeReloadTimer = null;
 
@@ -6334,17 +6335,17 @@ function ComposeLogs(pathOrProject, profile = "") {
 // Stack Actions Menu Functions
 // ============================================
 var currentStackId = null;
-var expandedStacks = {};
-var stackContainersCache = {};
-var persistentContainerCache = {}; // Persistent cache loaded from disk
-var stackStartedAtCache = {}; // Cache for stack-level started_at timestamps
+var expandedStacks = Object.create(null);
+var stackContainersCache = Object.create(null);
+var persistentContainerCache = Object.create(null); // Persistent cache loaded from disk
+var stackStartedAtCache = Object.create(null); // Cache for stack-level started_at timestamps
 // Track stacks currently loading details to prevent concurrent reloads
-var stackDetailsLoading = {};
-var stackDetailsLoadPromises = {};
-var stackDetailsReloadRequested = {};
-var stackDetailsPrefetchPromises = {};
-var stackDetailsPrefetchCache = {};
-var stackRuntimeGeneration = {};
+var stackDetailsLoading = Object.create(null);
+var stackDetailsLoadPromises = Object.create(null);
+var stackDetailsReloadRequested = Object.create(null);
+var stackDetailsPrefetchPromises = Object.create(null);
+var stackDetailsPrefetchCache = Object.create(null);
+var stackRuntimeGeneration = Object.create(null);
 
 function beginStackRuntimeRequest(project) {
     stackRuntimeGeneration[project] = (stackRuntimeGeneration[project] || 0) + 1;
@@ -6369,9 +6370,9 @@ function reconcileStackRuntime(project, response, generation) {
 }
 
 // Suppress immediate refresh after a render to avoid loops
-var stackDetailsJustRendered = {};
+var stackDetailsJustRendered = Object.create(null);
 // Track user intent during async loads so late responses do not reopen collapsed rows.
-var stackDetailsDesiredExpanded = {};
+var stackDetailsDesiredExpanded = Object.create(null);
 // Batch/safeguard toggle-all updates under rapid clicking.
 var stackToggleAllBatching = false;
 var stackToggleAllBusy = false;

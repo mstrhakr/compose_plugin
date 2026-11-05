@@ -1,12 +1,12 @@
 (function() {
     var caURL = '/plugins/compose.manager/include/Exec.php';
-    var expandedStacks = {};
-    var stackContainerCache = {};
-    var stackOperations = {};
+    var expandedStacks = Object.create(null);
+    var stackContainerCache = Object.create(null);
+    var stackOperations = Object.create(null);
     var stackPaths = Object.create(null);
-    var stackActionErrors = {};
+    var stackActionErrors = Object.create(null);
     var stackListGeneration = 0;
-    var stackDetailGeneration = {};
+    var stackDetailGeneration = Object.create(null);
 
     // Debug logging function - respects plugin debug setting
     function debugLog() {
@@ -130,7 +130,7 @@
     }
 
     function composeDashboardActionBoxClosed() {
-        stackContainerCache = {};
+        stackContainerCache = Object.create(null);
         loadComposeStacks();
     }
 
@@ -456,7 +456,7 @@
 
     function loadComposeStacks() {
         var generation = ++stackListGeneration;
-        stackDetailGeneration = {};
+        stackDetailGeneration = Object.create(null);
         $.ajax({ url: '/plugins/compose.manager/include/DashboardStacks.php',
             method: 'POST', dataType: 'json', timeout: 30000
         }).done(function(data) {
@@ -477,7 +477,7 @@
                 scheduleComposeContainerHiding(data.composeContainerNames);
             }
 
-            stackContainerCache = {};
+            stackContainerCache = Object.create(null);
             stackPaths = Object.create(null);
 
             var html = '';
@@ -660,7 +660,7 @@
 
         debugLog('Setting up compose container hiding for:', containerNames);
 
-        composeContainerNameSet = {};
+        composeContainerNameSet = Object.create(null);
         containerNames.forEach(function(n) { composeContainerNameSet[n.toLowerCase()] = true; });
 
         if (!$('#compose-hide-style').length) {
@@ -776,7 +776,7 @@
                     originalLoadlist.apply(this, arguments);
                     clearTimeout(composeRefreshTimer);
                     composeRefreshTimer = setTimeout(function() {
-                        stackContainerCache = {};
+                        stackContainerCache = Object.create(null);
                         loadComposeStacks();
                     }, 2000);
                 };

@@ -63,6 +63,10 @@ Routine metrics text updates do not enumerate Docker or saved stacks again.
 Dashboard actions and stack logs use the metadata path from the latest accepted
 stack snapshot, including a nondefault projects root. Missing paths fail visibly
 instead of falling back to the default root; removed stacks lose their cached path.
+Project-keyed runtime, operation, update, and cache registries have no inherited
+keys. Valid names such as `constructor` are not mistaken for active operations,
+request generations, or cached promises. Saved status/cache loading preserves
+that dictionary behavior.
 Runtime/health refreshes do not rebuild whole-list description widgets or
 re-evaluate column-layout subscriptions; list initialization and layout changes
 own those enhancements. Container membership changes still notify metrics.

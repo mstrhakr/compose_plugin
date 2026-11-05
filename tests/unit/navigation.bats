@@ -7,6 +7,11 @@ load '../bats_setup.bash'
     [ "$status" -eq 0 ]
 }
 
+@test "prototype-named projects retain runtime and action ownership semantics" {
+    run node "$BATS_TEST_DIRNAME/../fixtures/keyed-runtime-ui.cjs"
+    [ "$status" -eq 0 ]
+}
+
 @test "Docker filtering works without inline Compose UI and keeps header settings independent" {
     run node "$BATS_TEST_DIRNAME/../fixtures/docker-filter-ui.cjs"
     [ "$status" -eq 0 ]
