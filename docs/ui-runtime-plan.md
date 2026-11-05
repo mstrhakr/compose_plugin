@@ -69,6 +69,26 @@ errors. Checks requested while a local action is busy remain queued. Failed
 acknowledgements warn explicitly and retain retryable pending state without
 calling the received image result a failure.
 
+Stack-level image evidence has a separate server publication generation. Single
+and full checks reserve their project generations before Docker inspection or
+registry requests; only matching generations may commit. A newer failed check
+does not revive an older publisher. Deletion removes the generation and clearing
+resets all generations, so late checks cannot restore removed evidence. Full
+checks prune only originally observed, still-owned entries absent from their
+scope; they do not erase unrelated newer results.
+
+Saved update storage migrates legacy project maps to a version-1 envelope with
+`stacks` and `generations`. Both are read and written under the existing single
+inode lock; public saved-result maps remain unchanged. Missing generation
+metadata is safe for legacy evidence because new checks reserve random tokens.
+No network operation holds the persistence lock. Ownership transactions cost
+O(P + S), plus existing container-evidence merge work. Single checks rejected at
+publication return `result: superseded` without image evidence or recheck tokens.
+Full responses retain `result: success`, containing only accepted `stacks` and an
+additive `superseded` project list. Superseded checks must not acknowledge pending
+marks. This does not serialize image checks with mutations in another tab, nor
+make the shared native image cache or presentation metadata cache transactional.
+
 Pending post-update checks use one busy-aware drain for both progressive rows
 and completed runtime refreshes; queued/running operations keep their pending
 checks until completion, including an action started before a deferred drain.

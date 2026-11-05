@@ -317,8 +317,9 @@ if (!function_exists('composeCheckStackUpdatesForUi')) {
      * Add UI icons and update the presentation cache around the shared check workflow.
      *
      * @param StackInfo[] $stacks
+     * @param-out list<string> $superseded
      */
-    function composeCheckStackUpdatesForUi(array $stacks, bool $replaceSavedStatus = false): array
+    function composeCheckStackUpdatesForUi(array $stacks, bool $replaceSavedStatus = false, ?array &$superseded = null): array
     {
         $cache = composeLoadPersistentContainerCache();
         $iconByService = [];
@@ -357,7 +358,9 @@ if (!function_exists('composeCheckStackUpdatesForUi')) {
             composeCacheContainerMetadata($cache[$stackName], $update);
             $dirty = true;
         };
-        $results = (new StackUpdateService())->checkStacks($stacks, $enrich, $replaceSavedStatus);
+        $checker = new StackUpdateService();
+        $results = $checker->checkStacks($stacks, $enrich, $replaceSavedStatus);
+        $superseded = $checker->superseded;
         if ($dirty) {
             composeSavePersistentContainerCache($cache);
         }
@@ -2236,6 +2239,10 @@ switch ($_POST['action']) {
             $stackInfo = StackInfo::fromProject($compose_root, $script);
             $recheckToken = PendingRechecks::token($stackInfo->projectFolder);
             $results = composeCheckStackUpdatesForUi([$stackInfo]);
+            if (!isset($results[$stackInfo->projectFolder])) {
+                echo json_encode(['result' => 'superseded', 'projectName' => $stackInfo->projectFolder]);
+                break;
+            }
             $result = $results[$stackInfo->projectFolder];
             echo json_encode(['result' => 'success', 'updates' => $result['containers'], 'projectName' => $result['projectName'],
                 'recheckToken' => $recheckToken]);
@@ -2247,11 +2254,11 @@ switch ($_POST['action']) {
     case 'checkAllStacksUpdates':
         composeLogger('Starting update check for all stacks', null, 'user', 'debug', 'update-check');
         try {
-            $allUpdates = composeCheckStackUpdatesForUi(StackInfo::allFromRoot($compose_root, true), true);
+            $allUpdates = composeCheckStackUpdatesForUi(StackInfo::allFromRoot($compose_root, true), true, $superseded);
             $totalStacks = count($allUpdates);
             $updatesFound = count(array_filter($allUpdates, static fn(array $stack): bool => $stack['hasUpdate']));
             composeLogger("Completed: $totalStacks stacks checked, $updatesFound with updates", null, 'user', 'debug', 'update-check');
-            echo json_encode(['result' => 'success', 'stacks' => $allUpdates]);
+            echo json_encode(['result' => 'success', 'stacks' => $allUpdates, 'superseded' => $superseded]);
         } catch (RuntimeException | JsonException $e) {
             composeLogger('Stack update check failed: ' . $e->getMessage(), null, 'user', 'error', 'update-check');
             echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);

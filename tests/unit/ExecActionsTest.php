@@ -453,7 +453,7 @@ class ExecActionsTest extends TestCase
                 } else {
                     $this->assertSame($singleUpdates, $updates);
                 }
-                $saved = json_decode(file_get_contents(COMPOSE_UPDATE_STATUS_FILE), true);
+                $saved = \StackUpdateService::readSavedResults();
                 $this->assertSame($updates, $saved['private-stack']['containers']);
                 $this->assertIsInt($saved['private-stack']['lastChecked']);
                 $this->assertSame($action === 'checkStackUpdates', isset($saved['other-stack']));
@@ -544,7 +544,7 @@ class ExecActionsTest extends TestCase
                 $updates = $action === 'checkStackUpdates'
                     ? $response['updates'] : $response['stacks']['empty-stack']['containers'];
                 $this->assertSame([], $updates);
-                $saved = json_decode(file_get_contents(COMPOSE_UPDATE_STATUS_FILE), true);
+                $saved = \StackUpdateService::readSavedResults();
                 $this->assertFalse($saved['empty-stack']['hasUpdate']);
                 $this->assertSame('empty-stack', $saved['empty-stack']['projectName']);
             }
@@ -572,6 +572,40 @@ class ExecActionsTest extends TestCase
         ];
     }
 
+    public function testCheckInvalidatedDuringDockerInspectionIsExplicitlySuperseded(): void
+    {
+        $this->createTestStack('superseded-stack');
+        $directory = $this->createTempDir();
+        $invalidate = $directory . '/invalidate.php';
+        file_put_contents($invalidate, '<?php require ' . var_export(dirname(__DIR__) . '/bootstrap.php', true)
+            . '; require "/usr/local/emhttp/plugins/compose.manager/include/StackUpdateService.php";'
+            . 'StackUpdateService::removeSavedResult("superseded-stack");');
+        file_put_contents($directory . '/docker', "#!/bin/sh\ncase \"\$1\" in\nps) "
+            . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($invalidate) . " ;;\n*) exit 0 ;;\nesac\n");
+        chmod($directory . '/docker', 0755);
+        $path = getenv('PATH');
+        putenv('PATH=' . $directory . PATH_SEPARATOR . $path);
+        try {
+            foreach (['checkStackUpdates', 'checkAllStacksUpdates'] as $action) {
+                \StackInfo::clearCache();
+                $response = json_decode($this->executeAction($action, ['script' => 'superseded-stack']), true);
+                if ($action === 'checkStackUpdates') {
+                    $this->assertSame('superseded', $response['result']);
+                    $this->assertArrayNotHasKey('recheckToken', $response);
+                    $this->assertArrayNotHasKey('updates', $response);
+                } else {
+                    $this->assertSame('success', $response['result']);
+                    $this->assertContains('superseded-stack', $response['superseded']);
+                    $this->assertArrayNotHasKey('superseded-stack', $response['stacks']);
+                }
+                $this->assertArrayNotHasKey('superseded-stack', \StackUpdateService::readSavedResults());
+            }
+        } finally {
+            putenv('PATH=' . $path);
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+        }
+    }
+
     #[\PHPUnit\Framework\Attributes\DataProvider('invalidUpdateSnapshots')]
     public function testFailedUpdateEnumerationPreservesSavedEvidence(string $command, string $message): void
     {
@@ -594,7 +628,9 @@ class ExecActionsTest extends TestCase
                 $response = json_decode($this->executeAction($action, ['script' => 'failed-stack']), true);
                 $this->assertSame('error', $response['result']);
                 $this->assertStringContainsString($message, $response['message']);
-                $this->assertSame($saved, file_get_contents(COMPOSE_UPDATE_STATUS_FILE));
+                $stored = json_decode(file_get_contents(COMPOSE_UPDATE_STATUS_FILE), true);
+                $this->assertSame(json_decode($saved, true), $stored['stacks']);
+                $this->assertSame(1, $stored['version']);
             }
         } finally {
             putenv('PATH=' . $path);
@@ -803,9 +839,10 @@ class ExecActionsTest extends TestCase
             'updateReadiness' => $result['updateReadiness'],
         ])->toUpdateArray();
         $save = new \ReflectionMethod(\StackUpdateService::class, 'saveResults');
+        $ownership = (new \ReflectionMethod(\StackUpdateService::class, 'reserveChecks'))->invoke(null, ['build-only'], false);
         $save->invoke(new \StackUpdateService(), [
             'build-only' => ['projectName' => 'build-only', 'containers' => [$update]],
-        ], false);
+        ], false, $ownership);
         $bin = $this->createTempDir();
         file_put_contents($bin . '/docker', "#!/bin/sh\ncase \"\$1\" in\n"
             . "inspect) printf '%s\\n' " . escapeshellarg(json_encode($inspect)) . " ;;\n"

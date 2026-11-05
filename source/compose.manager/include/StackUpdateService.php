@@ -10,6 +10,9 @@ require_once __DIR__ . '/ComposeCommandBuilder.php';
  */
 class StackUpdateService
 {
+    /** @var list<string> */
+    public array $superseded = [];
+
     /** @param array<string, mixed> $cfg */
     public static function resolveBuildOnUpdate(string $stackPath, array $cfg): bool
     {
@@ -67,6 +70,8 @@ class StackUpdateService
      */
     public function checkStacks(array $stacks, ?callable $enrich = null, bool $replaceSavedStatus = false): array
     {
+        $ownership = self::reserveChecks(array_map(static fn(StackInfo $stack): string => $stack->projectFolder, $stacks), $replaceSavedStatus);
+        $this->superseded = [];
         $results = [];
         $checkers = [];
         $runtime = $stacks ? StackInfo::containersByProject(
@@ -117,7 +122,26 @@ class StackUpdateService
                 'containers' => $updates,
             ];
         }
-        return $this->saveResults($results, $replaceSavedStatus);
+        $accepted = $this->saveResults($results, $replaceSavedStatus, $ownership);
+        $this->superseded = array_map('strval', array_keys(array_diff_key($results, $accepted)));
+        return $accepted;
+    }
+
+    /** @param list<string> $projects
+     *  @return array<string|int, string>
+     */
+    private static function reserveChecks(array $projects, bool $full): array
+    {
+        $ownership = [];
+        self::accessSavedResults(static function (array $saved, array &$generations) use ($projects, $full, &$ownership): array {
+            $names = array_fill_keys($projects, true);
+            if ($full) $names += array_fill_keys(array_keys($saved), true);
+            foreach ($names as $name => $_) {
+                $ownership[$name] = $generations[$name] = bin2hex(random_bytes(16));
+            }
+            return $saved;
+        }, $full);
+        return $ownership;
     }
 
     private function shortDigest(string $digest): string
@@ -125,12 +149,23 @@ class StackUpdateService
         return str_starts_with($digest, 'sha256:') ? substr($digest, 7, 12) : $digest;
     }
 
-    private function saveResults(array $results, bool $replaceSavedStatus): array
+    /** @param array<string|int, string> $ownership */
+    private function saveResults(array $results, bool $replaceSavedStatus, array $ownership): array
     {
-        $saved = self::accessSavedResults(static function (array $saved) use ($results, $replaceSavedStatus): array {
+        $accepted = [];
+        $saved = self::accessSavedResults(static function (array $saved, array &$generations) use ($results, $replaceSavedStatus, $ownership, &$accepted): array {
             $now = time();
-            $next = $replaceSavedStatus ? [] : $saved;
+            $next = $saved;
+            if ($replaceSavedStatus) {
+                foreach ($ownership as $name => $token) {
+                    if (!array_key_exists($name, $results) && ($generations[$name] ?? null) === $token) {
+                        unset($next[$name], $generations[$name]);
+                    }
+                }
+            }
             foreach ($results as $name => $result) {
+                if (!isset($ownership[$name]) || ($generations[$name] ?? null) !== $ownership[$name]) continue;
+                $accepted[$name] = true;
                 $previous = [];
                 foreach ($saved[$name]['containers'] ?? [] as $container) {
                     $previous[$container['name']] = ContainerInfo::fromUpdateResponse($container);
@@ -156,7 +191,7 @@ class StackUpdateService
             }
             return $next;
         }, $replaceSavedStatus);
-        return array_intersect_key($saved, $results);
+        return array_intersect_key($saved, $accepted);
     }
 
     public static function readSavedResults(): array
@@ -186,21 +221,24 @@ class StackUpdateService
 
     public static function clearSavedResults(): void
     {
-        self::accessSavedResults(static fn(array $saved): array => [], true);
+        self::accessSavedResults(static function (array $saved, array &$generations): array {
+            $generations = [];
+            return [];
+        }, true);
     }
 
     public static function removeSavedResult(string $stackName): bool
     {
         $removed = false;
-        self::accessSavedResults(static function (array $saved) use ($stackName, &$removed): array {
+        self::accessSavedResults(static function (array $saved, array &$generations) use ($stackName, &$removed): array {
             $removed = array_key_exists($stackName, $saved);
-            unset($saved[$stackName]);
+            unset($saved[$stackName], $generations[$stackName]);
             return $saved;
         });
         return $removed;
     }
 
-    /** @param callable(array): array|null $change */
+    /** @param callable(array, array&): array|null $change */
     private static function accessSavedResults(?callable $change = null, bool $replace = false): array
     {
         if ($change === null && !is_file(COMPOSE_UPDATE_STATUS_FILE)) {
@@ -235,11 +273,24 @@ class StackUpdateService
                 composeLogger('Replacing invalid saved stack update status.', null, 'user', 'warning', 'update-check');
                 $saved = [];
             }
+            $generations = [];
+            if (($saved['version'] ?? null) === 1) {
+                if (!is_array($saved['stacks'] ?? null) || !is_array($saved['generations'] ?? null)) {
+                    throw new RuntimeException('Invalid saved update ownership.');
+                }
+                $generations = $saved['generations'];
+                foreach ($generations as $token) {
+                    if (!is_string($token) || preg_match('/^[a-f0-9]{32}$/D', $token) !== 1) {
+                        throw new RuntimeException('Invalid saved update generation.');
+                    }
+                }
+                $saved = $saved['stacks'];
+            }
             if ($change === null) {
                 return $saved;
             }
-            $saved = $change($saved);
-            $json = json_encode($saved, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR);
+            $saved = $change($saved, $generations);
+            $json = json_encode(['version' => 1, 'stacks' => $saved, 'generations' => $generations], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR);
             if (!ftruncate($handle, 0) || !rewind($handle)
                 || fwrite($handle, $json) !== strlen($json) || !fflush($handle)) {
                 throw new RuntimeException('Unable to save stack update status.');
