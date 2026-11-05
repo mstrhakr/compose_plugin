@@ -8,6 +8,9 @@ operation progress, failure recovery, and existing metrics connections.
 
 The no-reload action-terminal work and this runtime unification ship together.
 Terminal close callbacks refresh presentation but do not establish completion.
+Pending post-update checks use one busy-aware drain for both progressive rows
+and completed runtime refreshes; queued/running operations keep their pending
+checks until completion, including an action started before a deferred drain.
 Preserve update-check revisions independently of runtime generations: a runtime
 response must not restore image-update evidence superseded by a fresh check.
 Accepted runtime snapshots also synchronize DOM/jQuery container membership and

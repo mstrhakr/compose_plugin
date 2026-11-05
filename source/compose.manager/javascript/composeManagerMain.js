@@ -4621,7 +4621,6 @@ function composeActionBoxClosed(projects) {
     (projects || '').split(',').filter(Boolean).forEach(function(project) {
         refreshStackByProject(decodeURIComponent(project));
     });
-    checkPendingRechecks();
 }
 
 function openComposeActionBox(url, title, stackNames) {
@@ -5060,9 +5059,16 @@ function processPendingUpdateCheckForStack(stackName) {
     if (pendingIndex === -1) {
         return;
     }
+    if (composeStackActionInProgress[stackName]) return;
 
     pendingUpdateCheckStacks.splice(pendingIndex, 1);
     setTimeout(function() {
+        if (composeStackActionInProgress[stackName]) {
+            if (pendingUpdateCheckStacks.indexOf(stackName) === -1) {
+                pendingUpdateCheckStacks.push(stackName);
+            }
+            return;
+        }
         checkStackUpdates(stackName);
     }, 0);
 }
@@ -5074,32 +5080,7 @@ function processPendingUpdateChecks() {
         return;
     }
 
-    var stacksToCheck = pendingUpdateCheckStacks.slice();
-    pendingUpdateCheckStacks = [];
-    var deferredStacks = [];
-
-    // Delay slightly to let the UI settle after row refresh
-    setTimeout(function() {
-        composeLogger('Processing pending update checks', {
-            stacks: stacksToCheck
-        }, 'user', 'debug', 'update-check');
-
-        stacksToCheck.forEach(function(stackName) {
-            if (composeStackActionInProgress[stackName]) {
-                // Update action still in progress; defer until completion.
-                deferredStacks.push(stackName);
-                composeLogger('Deferring pending update check while action is in progress', {
-                    stack: stackName
-                }, 'user', 'debug', 'update-check');
-            } else {
-                checkStackUpdates(stackName);
-            }
-        });
-
-        if (deferredStacks.length > 0) {
-            pendingUpdateCheckStacks = pendingUpdateCheckStacks.concat(deferredStacks);
-        }
-    }, 1000);
+    pendingUpdateCheckStacks.slice().forEach(processPendingUpdateCheckForStack);
 }
 
 // >0 while refreshStackRow AJAX calls are in-flight; the loadlist

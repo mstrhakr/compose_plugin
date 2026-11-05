@@ -64,7 +64,7 @@ function harness(response) {
     assert.ok(!events.some(event => event[0] === 'busy' && event[2] === false));
     const before = events.length;
     context[modal[6]](modal[7]);
-    assert.deepEqual(events.slice(before), [['refresh', project], ['rechecks']]);
+    assert.deepEqual(events.slice(before), [['refresh', project]]);
     // Closing before completion does not clear busy state or cancel the independent poll.
     assert.ok(!events.some(event => event[0] === 'busy' && event[2] === false));
 }
@@ -147,6 +147,32 @@ for (const name of ['executeStartAllStacks', 'executeStopAllStacks']) {
     context.executeUpdateAllStacks([{ project: 'one', path: '/one', isRunning: true },
         { project: 'two', path: '/two', isRunning: true }], false);
     assert.deepEqual(events.filter(event => event[0] === 'poll'), [['poll', 'one'], ['poll', 'two']]);
+}
+
+{
+    const checked = [], timers = [];
+    const context = {
+        pendingUpdateCheckStacks: ['queued', 'running'],
+        composeStackActionInProgress: { queued: {}, running: {} },
+        checkStackUpdates: project => checked.push(project),
+        setTimeout: fn => timers.push(fn),
+    };
+    load(context, main, ['processPendingUpdateCheckForStack', 'processPendingUpdateChecks']);
+    context.processPendingUpdateChecks();
+    assert.equal(timers.length, 0, 'Queued and running operations retain pending rechecks');
+    assert.deepEqual(Array.from(context.pendingUpdateCheckStacks), ['queued', 'running']);
+    delete context.composeStackActionInProgress.running;
+    context.processPendingUpdateChecks();
+    context.processPendingUpdateChecks();
+    assert.equal(timers.length, 1, 'Multiple drains schedule one check for the finished stack');
+    context.composeStackActionInProgress.running = {};
+    timers.shift()();
+    assert.deepEqual(checked, [], 'An operation starting before the deferred drain blocks its check');
+    delete context.composeStackActionInProgress.running;
+    context.processPendingUpdateChecks();
+    timers.shift()();
+    assert.deepEqual(checked, ['running']);
+    assert.deepEqual(Array.from(context.pendingUpdateCheckStacks), ['queued']);
 }
 
 for (const native of [true, false]) {
