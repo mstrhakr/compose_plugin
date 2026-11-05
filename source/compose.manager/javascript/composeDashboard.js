@@ -4,6 +4,8 @@
     var stackContainerCache = {};
     var stackOperations = {};
     var stackActionErrors = {};
+    var stackListGeneration = 0;
+    var stackDetailGeneration = {};
 
     // Debug logging function - respects plugin debug setting
     function debugLog() {
@@ -140,6 +142,7 @@
     }
 
     function stackAction(stackName, action) {
+        if (stackOperations[stackName]) return;
         var actionMap = {
             'start': 'composeUp',
             'stop': 'composeStop',
@@ -351,12 +354,24 @@
     }
 
     function loadStackContainers(stackId, stackName) {
+        var listGeneration = stackListGeneration;
+        var generation = (stackDetailGeneration[stackId] || 0) + 1;
+        stackDetailGeneration[stackId] = generation;
         var $container = $('#compose-dash-ct-' + stackId);
         $container.html('<div class="compose-dash-loading"><i class="fa fa-spinner fa-spin"></i> Loading...</div>');
 
-        $.post(caURL, {action: 'getStackContainers', script: stackName}, function(data) {
+        function isCurrent() {
+            return listGeneration === stackListGeneration && generation === stackDetailGeneration[stackId];
+        }
+        $.ajax({ url: caURL, method: 'POST', timeout: 30000,
+            data: {action: 'getStackContainers', script: stackName}
+        }).done(function(data) {
+            if (!isCurrent()) return;
             try {
-                var response = JSON.parse(data);
+                var response = typeof data === 'string' ? JSON.parse(data) : data;
+                if (!response || response.result !== 'success' || !Array.isArray(response.containers)) {
+                    throw new Error('Invalid container snapshot');
+                }
                 if (response.containers && response.containers.length > 0) {
                     var html = '';
                     response.containers.forEach(function(ct) {
@@ -416,11 +431,25 @@
                 console.error('Error parsing containers:', e);
                 $container.html('<div class="compose-dash-loading">Error loading containers</div>');
             }
+        }).fail(function() {
+            if (!isCurrent()) return;
+            console.error('[ComposeDash] Failed to load containers for ' + stackName);
+            $container.html('<div class="compose-dash-loading red-text">Failed to load containers. Collapse and expand to retry.</div>');
         });
     }
 
     function loadComposeStacks() {
-        $.post('/plugins/compose.manager/include/DashboardStacks.php', function(data) {
+        var generation = ++stackListGeneration;
+        stackDetailGeneration = {};
+        $.ajax({ url: '/plugins/compose.manager/include/DashboardStacks.php',
+            method: 'POST', dataType: 'json', timeout: 30000
+        }).done(function(data) {
+            if (generation !== stackListGeneration) return;
+            if (!data || !Array.isArray(data.stacks)) {
+                console.error('[ComposeDash] Invalid stack snapshot', data);
+                $('#compose_stacks_status').text('Stacks -- Invalid response; refresh to retry');
+                return;
+            }
             var statusText = 'Stacks -- Started: ' + data.started + ', Stopped: ' + data.stopped;
             if (data.partial > 0) statusText += ', Partial: ' + data.partial;
             Object.keys(stackActionErrors).forEach(function(project) {
@@ -513,7 +542,8 @@
             noStacks();
 
             debugLog('Loaded', data.stacks.length, 'stacks, context menus attached via onclick');
-        }, 'json').fail(function() {
+        }).fail(function() {
+            if (generation !== stackListGeneration) return;
             $('#compose_stacks_status').text('Stacks -- Error loading');
             $('#compose_dash_content').html('<div class="compose-dash-loading red-text">Failed to load stacks</div>');
         });

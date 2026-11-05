@@ -219,6 +219,9 @@ for (const native of [true, false]) {
     assert.ok(events.some(event => event[0] === 'reload'));
     assert.equal(Object.keys(context.stackContainerCache).length, 0);
     assert.ok(context.stackOperations.one, 'Early close does not complete the operation');
+    const owner = context.stackOperations.one;
+    context.stackAction('one', 'stop');
+    assert.equal(context.stackOperations.one, owner, 'Repeated actions preserve the accepted operation owner');
     const runTimer = () => {
         const index = events.findIndex(event => event[0] === 'timer');
         assert.ok(index >= 0);
@@ -259,6 +262,46 @@ for (const native of [true, false]) {
     runTimer();
     assert.match(context.stackActionErrors.one, /code 7/);
     assert.equal(context.stackOperations.one, undefined);
+}
+
+{
+    const requests = [], writes = [];
+    const element = {
+        length: 1, text(value) { writes.push(value); return this; },
+        html(value) { writes.push(value); return this; },
+        off() { return this; }, on() { return this; },
+    };
+    const context = {
+        window: {}, caURL: 'exec', stackListGeneration: 0, stackDetailGeneration: {},
+        stackContainerCache: {}, stackActionErrors: {}, expandedStacks: {},
+        console, debugLog() {}, noStacks() {}, $: () => element,
+    };
+    context.$.ajax = options => {
+        const request = { options };
+        requests.push(request);
+        return {
+            done(callback) { request.done = callback; return this; },
+            fail(callback) { request.fail = callback; return this; },
+        };
+    };
+    load(context, dashboard, ['loadComposeStacks', 'loadStackContainers'], '    ');
+    context.loadComposeStacks();
+    context.loadStackContainers('one', 'app');
+    context.loadComposeStacks();
+    requests[2].done({ started: 1, stopped: 0, stacks: [] });
+    const acceptedWrites = writes.length;
+    requests[0].done({ started: 0, stopped: 1, stacks: [] });
+    requests[0].fail();
+    requests[1].done('{"result":"success","containers":[]}');
+    requests[1].fail();
+    assert.equal(writes.length, acceptedWrites, 'Old list/detail successes and failures cannot mutate the latest view');
+    context.loadStackContainers('one', 'app');
+    context.loadStackContainers('one', 'app');
+    requests[4].done('{"result":"success","containers":[]}');
+    const currentWrites = writes.length;
+    requests[3].done('{"result":"success","containers":[]}');
+    assert.equal(writes.length, currentWrites, 'Only the latest detail request may render');
+    assert.ok(requests.every(request => request.options.timeout === 30000));
 }
 
 assert.ok(!/openBox\(/.test(main.replace(/function openComposeActionBox\([^]*?\n\}/, '')),
