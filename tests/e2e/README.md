@@ -45,7 +45,9 @@ Coverage includes selected/default/excluded profiles for stopped/uncreated
 Pull/Build & Up; successful inline build and failed preparation; exact operation
 receipt/exit status; foreground close without navigation; unchanged restart
 indicator/menu recovery; a deliberately aborted health request; and a delayed
-real Dashboard snapshot arriving after action completion.
+real Dashboard snapshot arriving after action completion. Recreate checks verify
+that fresh container IDs reach the live row without a page reload; they do not
+claim that Nchan delivers fresh metric samples.
 
 Browser endpoint writes are allowlisted to the generated stack/container.
 Unrelated automatic browser actions (including global checks and publisher
@@ -160,9 +162,10 @@ cd /code/compose_plugin
 
 ## Current Scope
 
-- Compose page loads for authenticated user
-- Key table elements render
-- Basic row interaction remains read-only
+- Read-only smoke: authenticated page loads, table rendering, basic interaction.
+- Deterministic regressions: isolated production-function behavior and layouts.
+- Opt-in generated-stack lifecycle, Git, and host stabilization cases as
+  documented above. Enabling one suite does not establish coverage for another.
 
 ## Next Safe Expansions
 

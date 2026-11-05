@@ -44,6 +44,9 @@ const yaml = [
   '    profiles: [selected]',
   '  excluded:',
   '    image: alpine:3.20',
+  '    mem_limit: 32m',
+  '    cpus: 0.10',
+  '    pids_limit: 32',
   '    command: ["sh", "-c", "exit 97"]',
   '    profiles: [excluded]',
   '',
@@ -120,7 +123,11 @@ const test = base.extend<{ stack: HostStack }>({
           expect(result.json?.result, result.body).toBe('success');
           expect(Array.isArray(result.json?.containers), result.body).toBe(true);
           const containers = result.json!.containers as Snapshot[];
-          containers.forEach(ct => { if (ct.name) containerNames.add(ct.name); });
+          containers.forEach(ct => {
+            expect(ct.name?.startsWith(project + '-') || ct.name?.startsWith(project + '_'),
+              'Refuse container actions outside the generated project namespace.').toBe(true);
+            containerNames.add(ct.name!);
+          });
           return containers;
         },
         async refresh() {
@@ -311,6 +318,24 @@ test('starting-health polling recovers after a real browser snapshot is aborted'
   await expect.poll(() => aborted).toBe(true);
   await expect(page.locator(`[data-project="${stack.project}"].compose-sortable td.col-health`))
     .toContainText('healthy', { timeout: 60_000 });
+});
+
+test('recreated container identities reach the live row without a page reload', async ({ page, stack }) => {
+  await start(page, stack);
+  await stack.refresh();
+  const before = (await stack.containers()).find(ct => ct.service === 'app')?.id;
+  expect(before).toBeTruthy();
+  await waitForOperation(page, stack.project, await stack.action('composeUpRecreate'));
+  const after = (await stack.containers()).find(ct => ct.service === 'app')?.id;
+  expect(after).toBeTruthy();
+  expect(after).not.toBe(before);
+  const originalURL = page.url();
+  await page.evaluate(project => {
+    (window as unknown as { refreshStackByProject(project: string): void }).refreshStackByProject(project);
+  }, stack.project);
+  const row = page.locator(`[data-project="${stack.project}"].compose-sortable`);
+  await expect(row).toHaveAttribute('data-ctids', after!.replace(/^sha256:/, '').slice(0, 12));
+  await expect(page).toHaveURL(originalURL);
 });
 
 test('Dashboard action completion rejects an older real host snapshot', async ({ page, stack }) => {
