@@ -262,7 +262,8 @@ test.describe('Runtime reconciliation', () => {
   });
 
   test('action invalidation rejects old responses and missing rows', async ({ page }) => {
-    const actionState = 'var composeUpdateCheckRequests = Object.create(null);\n' + fn('setStackActionInProgress', 'UpdateStackConfirmed');
+    const actionState = readFileSync(resolve(__dirname, '../../../source/compose.manager/javascript/composeUpdateChecks.js'), 'utf8') +
+      fn('setStackActionInProgress', 'UpdateStackConfirmed');
     const result = await page.evaluate(({ runtime, actionState }) => new Function(`
       var stackRuntimeGeneration = {}, stackDetailsPrefetchCache = {}, composeStackActionInProgress = {};
       var $ = () => ({ length: 0 });

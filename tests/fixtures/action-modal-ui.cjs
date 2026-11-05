@@ -154,15 +154,23 @@ for (const name of ['executeStartAllStacks', 'executeStopAllStacks']) {
 {
     const checked = [], timers = [];
     const context = {
-        pendingUpdateCheckStacks: new Set(['queued', 'running']),
         composeStackActionInProgress: { queued: {}, running: {} },
-        checkStackUpdates: project => checked.push(project),
+        caURL: 'exec',
+        $: () => ({ length: 1 }),
+        renderComposeUpdateCheckState() {},
         setTimeout: fn => timers.push(fn),
     };
-    load(context, main, ['processPendingUpdateCheckForStack', 'processPendingUpdateChecks']);
+    context.$.post = (url, data, callback) => {
+        if (data.action === 'getPendingRecheckStacks') callback({ result: 'success', pending: { queued: 1, running: 1 } });
+        else checked.push(data.script);
+        return { fail() {} };
+    };
+    vm.createContext(context);
+    vm.runInContext(fs.readFileSync(`${__dirname}/../../source/compose.manager/javascript/composeUpdateChecks.js`, 'utf8'), context);
+    load(context, main, ['processPendingUpdateCheckForStack', 'processPendingUpdateChecks', 'checkPendingRechecks']);
+    context.checkPendingRechecks();
     context.processPendingUpdateChecks();
     assert.equal(timers.length, 0, 'Queued and running operations retain pending rechecks');
-    assert.deepEqual(Array.from(context.pendingUpdateCheckStacks), ['queued', 'running']);
     delete context.composeStackActionInProgress.running;
     context.processPendingUpdateChecks();
     context.processPendingUpdateChecks();
@@ -174,23 +182,35 @@ for (const name of ['executeStartAllStacks', 'executeStopAllStacks']) {
     context.processPendingUpdateChecks();
     timers.shift()();
     assert.deepEqual(checked, ['running']);
-    assert.deepEqual(Array.from(context.pendingUpdateCheckStacks), ['queued']);
+    context.processPendingUpdateChecks();
+    assert.equal(timers.length, 0, 'Busy and already checking stacks do not duplicate checks');
 }
 
 for (const size of [100, 200]) {
     let lookups = 0;
-    const pending = new Set(Array.from({ length: size }, (_, i) => 'busy-' + i));
-    const originalHas = pending.has.bind(pending);
-    pending.has = project => { lookups++; return originalHas(project); };
+    const projects = Array.from({ length: size }, (_, i) => 'busy-' + i);
     const context = {
-        pendingUpdateCheckStacks: pending,
-        composeStackActionInProgress: Object.fromEntries(Array.from(pending, project => [project, {}])),
+        caURL: 'exec',
+        composeStackActionInProgress: Object.fromEntries(projects.map(project => [project, {}])),
+        Set: class extends Set {
+            has(value) { lookups++; return super.has(value); }
+        },
+        $: () => ({ length: 1 }),
         setTimeout() { throw new Error('Busy operations must not schedule image checks'); },
     };
-    load(context, main, ['processPendingUpdateCheckForStack', 'processPendingUpdateChecks']);
+    context.$.post = (url, data, callback) => {
+        callback({ result: 'success', pending: Object.fromEntries(projects.map(project => [project, 1])) });
+        return { fail() {} };
+    };
+    vm.createContext(context);
+    vm.runInContext(fs.readFileSync(`${__dirname}/../../source/compose.manager/javascript/composeUpdateChecks.js`, 'utf8'), context);
+    load(context, main, ['processPendingUpdateCheckForStack', 'processPendingUpdateChecks', 'checkPendingRechecks']);
+    context.checkPendingRechecks();
+    lookups = 0;
     context.processPendingUpdateChecks();
-    assert.equal(lookups, size, 'A complete busy-queue drain performs one constant-time membership lookup per stack');
-    assert.equal(pending.size, size, 'Busy stacks retain all pending checks');
+    assert.equal(lookups, 2 * size, 'A busy-queue drain performs constant-time pending/scheduled lookups per stack');
+    context.processPendingUpdateChecks();
+    assert.equal(lookups, 4 * size, 'Busy stacks retain all pending checks for the next drain');
 }
 
 for (const native of [true, false]) {

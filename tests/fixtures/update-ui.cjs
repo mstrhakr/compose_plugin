@@ -13,16 +13,18 @@ function harness(config = {}) {
         setTimeout: fn => fn(),
         getConfig: () => ({ then: fn => fn(config) }),
         composeEscapeHtml: value => value,
+        composeEscapeAttr: value => value,
         buildRemoveOrphansCheckboxHtml: () => '',
         basename: path => path.split('/').pop(),
         caURL: 'exec', compURL: 'compose',
-        composeUpdateCheckState: {}, composeUpdateCheckRevision: {}, stackDetailsPrefetchCache: {},
-        composeUpdateCheckRequests: {}, composeStackActionInProgress: {},
+        stackUpdateStatus: Object.create(null), stackDetailsPrefetchCache: {},
+        composeStackActionInProgress: Object.create(null),
         confirmedComposeAction: (path, options) => events.push({ path, ...options }),
         performComposeAction: options => events.push(options),
         performMultipleComposeAction: (stacks, options) => events.push(options),
         setStackActionInProgress: () => {},
         composeActionStateText: () => 'updating',
+        updateUpdateAllButton() {},
         swal: (options, callback) => {
             checked['#swal-include-stopped'] = /id="swal-include-stopped" checked/.test(options.text || '');
             events.push({ dialog: options, callback });
@@ -47,13 +49,14 @@ function harness(config = {}) {
         context[name] = () => {};
     }
     vm.createContext(context);
+    vm.runInContext(fs.readFileSync(`${__dirname}/../../source/compose.manager/javascript/composeUpdateChecks.js`, 'utf8'), context);
     vm.runInContext(fs.readFileSync(`${__dirname}/../../source/compose.manager/javascript/composeUpdateStatus.js`, 'utf8'), context);
     for (const name of ['ComposeUpConfirmed', 'composeUpdateScopeOptionHtml', 'ForceUpdateStackConfirmed', 'UpdateStackConfirmed',
         'renderStackActionDialog', 'showStackActionDialog', 'composeUpdateDigestDetails', 'executeUpdateAllStacks', 'updateAllStacks', 'showProfileSelector',
         'composeUpdateDetailsTable', 'prepareStackRechecks',
         'updateStackUpdateUI', 'showUpdateWarning', 'createContainerInfo', 'composeImageUpdateKey', 'mergeContainerUpdateStatus',
         'mergeStackUpdateStatus', 'mergeUpdateStatus', 'checkAllUpdates', 'composeUpdateCheckBadge',
-        'setComposeUpdateCheckState', 'composeCheckedContainers', 'composeContainerUpdateBadge',
+        'renderComposeUpdateCheckState', 'composeCheckedContainers', 'composeContainerUpdateBadge',
         'checkStackUpdates', 'createStackInfo']) {
         const match = source.match(new RegExp(`^function ${name}\\([^]*?\\n\\}`, 'm'));
         assert.ok(match, `Missing function ${name}`);
@@ -482,7 +485,7 @@ for (const response of ['', 'not json', JSON.stringify({ result: 'error', messag
 
     context.checkStackUpdates('test');
     complete(JSON.stringify({ result: 'error', message: 'Registry unavailable' }));
-    assert.match(containerHtml, /Check failed/);
+    assert.match(containerHtml, /check failed/i);
     assert.doesNotMatch(containerHtml, /Rebuild/);
     context.checkAllUpdates();
     assert.match(stackHtml, /Checking/);

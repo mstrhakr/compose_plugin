@@ -5,11 +5,12 @@ import { resolve } from 'node:path';
 const root = resolve(__dirname, '../../../source/compose.manager/javascript');
 const source = readFileSync(`${root}/composeManagerMain.js`, 'utf8');
 const status = readFileSync(`${root}/composeUpdateStatus.js`, 'utf8');
+const checks = readFileSync(`${root}/composeUpdateChecks.js`, 'utf8');
 const functions = [
   'createContainerInfo', 'composeImageUpdateKey', 'mergeContainerUpdateStatus',
   'createStackInfo', 'mergeStackUpdateStatus', 'mergeUpdateStatus',
   'composeCheckedContainers', 'composeContainerUpdateBadge', 'composeUpdateCheckBadge',
-  'setComposeUpdateCheckState', 'updateStackUpdateUI', 'checkStackUpdates',
+  'renderComposeUpdateCheckState', 'updateStackUpdateUI', 'checkStackUpdates',
 ].map(name => source.match(new RegExp(`^function ${name}\\([^]*?\\n\\}`, 'm'))![0]).join('\n');
 
 test.use({ storageState: { cookies: [], origins: [] } });
@@ -72,14 +73,13 @@ for (const kind of ['image', 'build-base']) {
             return request;
           };
           var caURL = '/exec', stackUpdateStatus = {}, stackContainersCache = {},
-            composeUpdateCheckState = {}, composeUpdateCheckRevision = {}, stackDetailsPrefetchCache = {},
-            composeUpdateCheckRequests = {}, composeStackActionInProgress = {},
-            pendingUpdateCheckStacks = new Set();
+            stackDetailsPrefetchCache = {}, composeStackActionInProgress = {};
           function composeEscapeAttr(value) { return value; }
           function composeLogger() {}
           function updateUpdateAllButton() {}
           function isValidIconSrc() { return true; }
           ${status}
+          ${checks}
           ${functions}
           stackUpdateStatus.test = {containers: ${JSON.stringify(checked ? [pending] : [])}};
           updateStackUpdateUI('test', stackUpdateStatus.test);

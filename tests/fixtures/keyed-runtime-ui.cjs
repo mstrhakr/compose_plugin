@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const main = fs.readFileSync(`${__dirname}/../../source/compose.manager/javascript/composeManagerMain.js`, 'utf8');
 const dashboard = fs.readFileSync(`${__dirname}/../../source/compose.manager/javascript/composeDashboard.js`, 'utf8');
+const updateChecks = fs.readFileSync(`${__dirname}/../../source/compose.manager/javascript/composeUpdateChecks.js`, 'utf8');
 
 function load(source, names, context, indent = '') {
     vm.createContext(context);
@@ -34,6 +35,7 @@ for (const project of ['constructor', '__proto__', 'ordinary']) {
         };
     };
     vm.createContext(context);
+    vm.runInContext(updateChecks, context);
     for (const source of [main, dashboard]) {
         const declarations = source.match(/^\s*(?:var )?(?:composeStackActionInProgress|composeUpdateCheckRequests|stackRuntimeGeneration|stackDetailsPrefetchCache|stackDetailsPrefetchPromises|composeUpdateCheckRevision|stackOperations|stackPaths|stackActionErrors) = .*;$/gm);
         assert.ok(declarations);

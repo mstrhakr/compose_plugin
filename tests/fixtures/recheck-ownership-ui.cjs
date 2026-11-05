@@ -2,18 +2,19 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(`${__dirname}/../../source/compose.manager/javascript/composeManagerMain.js`, 'utf8');
+const updateChecks = fs.readFileSync(`${__dirname}/../../source/compose.manager/javascript/composeUpdateChecks.js`, 'utf8');
 
 function harness() {
-    const checks = [], acknowledgements = [], writes = [], notices = [], logs = [];
+    const checks = [], acknowledgements = [], writes = [], notices = [], logs = [], timers = [];
     const cell = { html(value) { writes.push(value); } };
     const context = {
-        caURL: 'exec', composeUpdateCheckRequests: Object.create(null),
-        composeUpdateCheckState: Object.create(null), composeStackActionInProgress: Object.create(null),
-        stackUpdateStatus: Object.create(null), pendingUpdateCheckStacks: new Set(),
+        caURL: 'exec', composeStackActionInProgress: Object.create(null),
+        stackUpdateStatus: Object.create(null), stackDetailsPrefetchCache: Object.create(null),
+        setTimeout: callback => timers.push(callback),
         createStackInfo: (name, updates) => ({ containers: updates }),
         mergeStackUpdateStatus() {}, updateUpdateAllButton() {}, beginStackRuntimeRequest() {},
         renderStackActionProgress() {}, composeEscapeAttr: value => value,
-        setComposeUpdateCheckState(name, state) { context.composeUpdateCheckState[name] = state; },
+        renderComposeUpdateCheckState() {},
         updateStackUpdateUI(name, value) { writes.push(value); },
         tryParseJson(value) { try { return JSON.parse(value); } catch { return null; } },
         composeLogger: (...args) => logs.push(args), swal: value => notices.push(value),
@@ -33,10 +34,11 @@ function harness() {
         };
     };
     vm.createContext(context);
-    for (const name of ['checkStackUpdates', 'setStackActionInProgress', 'checkPendingRechecks']) {
+    vm.runInContext(updateChecks, context);
+    for (const name of ['checkStackUpdates', 'setStackActionInProgress', 'checkPendingRechecks', 'processPendingUpdateChecks']) {
         vm.runInContext(source.match(new RegExp(`^function ${name}\\([^]*?\\n\\}`, 'm'))[0], context);
     }
-    return { context, checks, acknowledgements, writes, notices, logs };
+    return { context, checks, acknowledgements, writes, notices, logs, timers };
 }
 const result = token => JSON.stringify({ result: 'success', updates: [{ image: 'current' }], recheckToken: token });
 for (const token of [null, 'a'.repeat(64)]) {
@@ -54,7 +56,8 @@ for (const token of [null, 'a'.repeat(64)]) {
             result: mode === 'refused' ? 'error' : 'success',
             remaining: mode === 'renewed' ? ['constructor'] : [],
         });
-        assert.equal(h.context.pendingUpdateCheckStacks.has('constructor'), mode !== 'success');
+        h.context.processPendingUpdateChecks();
+        assert.equal(h.timers.length, mode !== 'success' ? 1 : 0, 'Unacknowledged results remain retryable');
         assert.equal(h.notices.length, ['network', 'malformed', 'refused'].includes(mode) ? 1 : 0);
     }
 }
@@ -63,7 +66,9 @@ for (const token of [null, 'a'.repeat(64)]) {
     h.context.composeStackActionInProgress.app = {};
     h.context.checkStackUpdates('app');
     assert.equal(h.checks.length, 0, 'Checks requested during a local action wait instead of leaving an obsolete spinner');
-    assert.ok(h.context.pendingUpdateCheckStacks.has('app'));
+    delete h.context.composeStackActionInProgress.app;
+    h.context.processPendingUpdateChecks();
+    assert.equal(h.timers.length, 1, 'Deferred checks remain queued until the action finishes');
 }
 {
     const h = harness();
@@ -72,8 +77,11 @@ for (const token of [null, 'a'.repeat(64)]) {
     h.context.setStackActionInProgress('app', false, null, owner);
     h.checks[0].done(result('a'.repeat(64)));
     assert.equal(h.acknowledgements.length, 0, 'Pre-action check cannot acknowledge after the newer action finishes');
-    assert.equal(h.writes.length, 0, 'Pre-action evidence cannot overwrite the newer runtime');
-    assert.equal(h.context.composeUpdateCheckState.app, 'failed', 'Invalidation must replace the obsolete checking state');
+    assert.equal(h.writes.length, 1, 'Only action invalidation repaints existing evidence, never the stale result');
+    assert.equal(h.writes[0].containers.length, 0);
+    assert.equal(h.context.composeUpdateCheckState.app, undefined, 'Invalidation removes the obsolete checking state');
+    h.context.processPendingUpdateChecks();
+    assert.equal(h.timers.length, 1, 'Invalidation retains a deferred retry');
 }
 {
     const h = harness();

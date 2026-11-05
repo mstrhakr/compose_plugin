@@ -9,6 +9,9 @@ const factories = source.slice(source.indexOf('function createContainerInfo('), 
 const statusSource = readFileSync(
   resolve(__dirname, '../../../source/compose.manager/javascript/composeUpdateStatus.js'), 'utf8'
 );
+const checks = readFileSync(
+  resolve(__dirname, '../../../source/compose.manager/javascript/composeUpdateChecks.js'), 'utf8'
+);
 
 function exactFunction(name: string): string {
   return source.match(new RegExp(`^function ${name}\\([^]*?\\n\\}`, 'm'))![0];
@@ -208,8 +211,8 @@ test.describe('Compose update state regressions', () => {
 
   test('failed update-check requests replace the checking spinner with a retry link', async ({ page }) => {
     const check = functionSource('checkStackUpdates', 'isValidWebUIUrl');
-    const checkState = exactFunction('setComposeUpdateCheckState') + exactFunction('composeUpdateCheckBadge');
-    const results = await page.evaluate(({ check, factories, checkState }) => {
+    const checkState = exactFunction('renderComposeUpdateCheckState') + exactFunction('composeUpdateCheckBadge');
+    const results = await page.evaluate(({ check, factories, checkState, checks }) => {
       return ['network', 'malformed', 'server', 'empty', 'incomplete'].map((mode) => {
         let html = '';
         const messages: string[] = [];
@@ -233,20 +236,19 @@ test.describe('Compose update state regressions', () => {
         const run = new Function('$', 'composeEscapeAttr', 'composeLogger', `
           var caURL = '/exec';
           var stackUpdateStatus = {};
-          var pendingUpdateCheckStacks = new Set();
-          var composeUpdateCheckState = {};
-          var composeUpdateCheckRequests = {}, composeStackActionInProgress = {};
+          var composeStackActionInProgress = {};
           function updateStackUpdateUI() {}
           function updateUpdateAllButton() {}
           ${factories}
           ${checkState}
+          ${checks}
           ${check}
           checkStackUpdates('stack');
         `);
         run($, (value: string) => value, (message: string) => messages.push(message));
         return { html, messages };
       });
-    }, { check, factories, checkState });
+    }, { check, factories, checkState, checks });
     for (const result of results) {
       expect(result.html).toContain('check failed');
       expect(result.html).toContain("checkStackUpdates('stack')");

@@ -89,6 +89,19 @@ additive `superseded` project list. Superseded checks must not acknowledge pendi
 marks. This does not serialize image checks with mutations in another tab, nor
 make the shared native image cache or presentation metadata cache transactional.
 
+The main-page `composeUpdateChecks.js` coordinator owns single/bulk checks,
+saved-result hydration, pending retries, and acknowledgement callbacks. Existing
+page entry points delegate to it; row/badge rendering and command dispatch remain
+in the page layer. Actions and deletion explicitly invalidate project ownership.
+Bulk success and failure apply only to still-owned projects, merging accepted
+entries instead of replacing all evidence. Cached hydration never supersedes a
+fresh check, including one that has already completed. Unreadable pending storage
+is reported and suppresses automatic Check All rather than acting like an empty
+queue. Presentation helpers remain in the Dashboard-shared `composeUpdateStatus.js`.
+Both single and full checks preserve corrupt saved storage and fail explicitly;
+Check All no longer implicitly repairs it while reserving ownership. Use explicit
+Clear Update Cache to recover, so a failed inspection cannot erase damaged evidence.
+
 Pending post-update checks use one busy-aware drain for both progressive rows
 and completed runtime refreshes; queued/running operations keep their pending
 checks until completion, including an action started before a deferred drain.
