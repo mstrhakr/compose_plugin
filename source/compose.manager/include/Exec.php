@@ -7,6 +7,7 @@ require_once("/usr/local/emhttp/plugins/compose.manager/include/CredentialVault.
 require_once("/usr/local/emhttp/plugins/compose.manager/include/GitHubDeviceAuth.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/GitStackWebActions.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/StackUpdateService.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/PendingRechecks.php");
 require_once("/usr/local/emhttp/plugins/dynamix/include/Wrappers.php");
 require_once('/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php');
 
@@ -199,13 +200,12 @@ if (!function_exists('composePurgeDeletedStackCaches')) {
             ], 'user', 'error', 'update-check');
         }
 
-        if (defined('PENDING_RECHECK_FILE') && is_file(PENDING_RECHECK_FILE)) {
-            $pending = json_decode((string)file_get_contents(PENDING_RECHECK_FILE), true);
-            if (is_array($pending) && isset($pending[$stackName])) {
-                unset($pending[$stackName]);
-                file_put_contents(PENDING_RECHECK_FILE, json_encode($pending, JSON_PRETTY_PRINT));
-                $purged['pendingRecheck'] = true;
-            }
+        try {
+            $purged['pendingRecheck'] = PendingRechecks::remove($stackName);
+        } catch (RuntimeException | JsonException | InvalidArgumentException $e) {
+            composeLogger('Unable to purge pending stack recheck: ' . $e->getMessage(), [
+                'stack' => $stackName,
+            ], 'user', 'error', 'update-check');
         }
 
         return $purged;
@@ -2234,10 +2234,12 @@ switch ($_POST['action']) {
 
         try {
             $stackInfo = StackInfo::fromProject($compose_root, $script);
+            $recheckToken = PendingRechecks::token($stackInfo->projectFolder);
             $results = composeCheckStackUpdatesForUi([$stackInfo]);
             $result = $results[$stackInfo->projectFolder];
-            echo json_encode(['result' => 'success', 'updates' => $result['containers'], 'projectName' => $result['projectName']]);
-        } catch (RuntimeException | JsonException $e) {
+            echo json_encode(['result' => 'success', 'updates' => $result['containers'], 'projectName' => $result['projectName'],
+                'recheckToken' => $recheckToken]);
+        } catch (RuntimeException | JsonException | InvalidArgumentException $e) {
             composeLogger('Stack update check failed: ' . $e->getMessage(), null, 'user', 'error', 'update-check');
             echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
         }
@@ -2435,76 +2437,29 @@ switch ($_POST['action']) {
         break;
 
     case 'markStackForRecheck':
-        // Mark one or more stacks for recheck after update
-        // This persists across page reloads so the recheck happens even if page refreshes
-        $stacks = isset($_POST['stacks']) ? $_POST['stacks'] : "";
-        if (is_string($stacks)) {
-            $stacks = json_decode($stacks, true);
-        }
-        if (!is_array($stacks) || empty($stacks)) {
-            echo json_encode(['result' => 'error', 'message' => 'No stacks specified.']);
-            break;
-        }
-
-        $pendingRecheckFile = PENDING_RECHECK_FILE;
-        $pending = [];
-        if (is_file($pendingRecheckFile)) {
-            $pending = json_decode(file_get_contents($pendingRecheckFile), true) ?: [];
-        }
-
-        // Add stacks to pending list with timestamp
-        foreach ($stacks as $stackName) {
-            $pending[$stackName] = time();
-        }
-
-        $contents = json_encode($pending, JSON_PRETTY_PRINT);
-        if ($contents === false || @file_put_contents($pendingRecheckFile, $contents, LOCK_EX) !== strlen($contents)) {
-            composeLogger('Unable to persist pending update rechecks', null, 'user', 'error', 'update-check');
-            echo json_encode(['result' => 'error', 'message' => 'Unable to persist pending update rechecks.']);
-            break;
-        }
-        echo json_encode(['result' => 'success', 'pending' => array_keys($pending)]);
-        break;
-
     case 'getPendingRecheckStacks':
-        // Get list of stacks that need recheck
-        $pendingRecheckFile = PENDING_RECHECK_FILE;
-        $pending = [];
-        if (is_file($pendingRecheckFile)) {
-            $pending = json_decode(file_get_contents($pendingRecheckFile), true) ?: [];
-        }
-        echo json_encode(['result' => 'success', 'pending' => $pending]);
-        break;
-
     case 'clearStackRecheck':
-        // Clear recheck flag for one or more stacks
-        $stacks = isset($_POST['stacks']) ? $_POST['stacks'] : "";
-        if (is_string($stacks)) {
-            $stacks = json_decode($stacks, true);
+        try {
+            if ($_POST['action'] === 'getPendingRecheckStacks') {
+                echo json_encode(['result' => 'success', 'pending' => PendingRechecks::timestamps()]);
+                break;
+            }
+            $stacks = $_POST['stacks'] ?? null;
+            if (is_string($stacks)) $stacks = json_decode($stacks, true, 512, JSON_THROW_ON_ERROR);
+            $stacks = PendingRechecks::validateStacks($stacks);
+            if ($_POST['action'] === 'markStackForRecheck') {
+                echo json_encode(['result' => 'success', 'pending' => PendingRechecks::mark($stacks)]);
+            } else {
+                $tokens = $_POST['tokens'] ?? null;
+                if (is_string($tokens)) $tokens = json_decode($tokens, true, 512, JSON_THROW_ON_ERROR);
+                echo json_encode(['result' => 'success', 'remaining' => PendingRechecks::acknowledge($stacks, $tokens)]);
+            }
+        } catch (RuntimeException | JsonException | InvalidArgumentException $e) {
+            composeLogger('Pending recheck request failed: ' . $e->getMessage(), [
+                'action' => $_POST['action'],
+            ], 'user', 'error', 'update-check');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
         }
-        if (!is_array($stacks) || empty($stacks)) {
-            echo json_encode(['result' => 'error', 'message' => 'No stacks specified.']);
-            break;
-        }
-
-        $pendingRecheckFile = PENDING_RECHECK_FILE;
-        $pending = [];
-        if (is_file($pendingRecheckFile)) {
-            $pending = json_decode(file_get_contents($pendingRecheckFile), true) ?: [];
-        }
-
-        // Remove stacks from pending list
-        foreach ($stacks as $stackName) {
-            unset($pending[$stackName]);
-        }
-
-        $contents = json_encode($pending, JSON_PRETTY_PRINT);
-        if ($contents === false || @file_put_contents($pendingRecheckFile, $contents, LOCK_EX) !== strlen($contents)) {
-            composeLogger('Unable to clear pending update rechecks', null, 'user', 'error', 'update-check');
-            echo json_encode(['result' => 'error', 'message' => 'Unable to clear pending update rechecks.']);
-            break;
-        }
-        echo json_encode(['result' => 'success', 'remaining' => array_keys($pending)]);
         break;
 
     case 'createBackup':

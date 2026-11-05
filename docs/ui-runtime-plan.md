@@ -48,6 +48,22 @@ preparation step. Empty, malformed, refused, or failed preparation prevents
 dispatch with an explicit error. Mark/clear endpoints report persistence failure
 rather than claiming a saved change.
 
+`PendingRechecks` owns every pending-store read and mutation, including deletion.
+Readers take a shared lock; writers hold an exclusive lock across validation,
+read-modify-write, and flush. Missing storage is empty; malformed, invalid,
+unreadable, or unexpectedly empty storage fails explicitly without being reset.
+Operations use O(P + S) work for P persisted entries and S requested stacks.
+
+The public pending map still contains timestamps. New stored entries also carry
+random identities; legacy integer entries remain readable and acknowledgeable.
+Each single-stack image check captures its current identity before checking and
+returns an opaque `recheckToken` (null when no mark existed). `clearStackRecheck`
+requires a JSON `tokens` map containing that value for each requested stack and
+clears only matching marks. A null token cannot consume a subsequently created
+mark. Renewals have distinct identities even within one second. Missing/malformed
+tokens are explicit errors: old browser tabs must refresh after deployment.
+Deletion deliberately removes its stack's entry, rather than acknowledging it.
+
 Pending post-update checks use one busy-aware drain for both progressive rows
 and completed runtime refreshes; queued/running operations keep their pending
 checks until completion, including an action started before a deferred drain.

@@ -120,18 +120,83 @@ class ExecActionsTest extends TestCase
             $this->assertSame('success', $marked['result']);
             $this->assertSame(['existing', 'constructor', 'app'], $marked['pending']);
             $saved = json_decode((string) file_get_contents(PENDING_RECHECK_FILE), true);
-            $this->assertIsInt($saved['app']);
-            $cleared = json_decode($this->executeAction('clearStackRecheck', ['stacks' => '["app"]']), true);
+            $this->assertIsInt($saved['app']['timestamp']);
+            $token = \PendingRechecks::token('app');
+            $cleared = json_decode($this->executeAction('clearStackRecheck', [
+                'stacks' => '["app"]', 'tokens' => json_encode(['app' => $token]),
+            ]), true);
             $this->assertSame(['result' => 'success', 'remaining' => ['existing', 'constructor']], $cleared);
             unlink(PENDING_RECHECK_FILE);
             mkdir(PENDING_RECHECK_FILE);
             foreach (['markStackForRecheck', 'clearStackRecheck'] as $action) {
-                $response = json_decode($this->executeAction($action, ['stacks' => '["app"]']), true);
+                $response = json_decode($this->executeAction($action, [
+                    'stacks' => '["app"]', 'tokens' => '{"app":null}',
+                ]), true);
                 $this->assertSame('error', $response['result']);
                 $this->assertNotEmpty($response['message']);
             }
         } finally {
             if (is_dir(PENDING_RECHECK_FILE)) rmdir(PENDING_RECHECK_FILE);
+            if ($original !== null) file_put_contents(PENDING_RECHECK_FILE, $original);
+            else @unlink(PENDING_RECHECK_FILE);
+        }
+    }
+
+    public function testRecheckEndpointsRejectInvalidListsAndUnownedAcknowledgements(): void
+    {
+        $original = is_file(PENDING_RECHECK_FILE) ? file_get_contents(PENDING_RECHECK_FILE) : null;
+        try {
+            file_put_contents(PENDING_RECHECK_FILE, '{"app":1}');
+            foreach (['[["app"]]', '[12]', '{"app":"app"}', 'not json'] as $stacks) {
+                foreach (['markStackForRecheck', 'clearStackRecheck'] as $action) {
+                    $result = json_decode($this->executeAction($action, ['stacks' => $stacks]), true);
+                    $this->assertSame('error', $result['result']);
+                    $this->assertSame('{"app":1}', file_get_contents(PENDING_RECHECK_FILE));
+                }
+            }
+            $missing = json_decode($this->executeAction('clearStackRecheck', ['stacks' => '["app"]']), true);
+            $this->assertSame('error', $missing['result']);
+            foreach (['broken', '"scalar"', '{"app":"bad"}', ''] as $raw) {
+                file_put_contents(PENDING_RECHECK_FILE, $raw);
+                foreach (['markStackForRecheck', 'clearStackRecheck', 'getPendingRecheckStacks'] as $action) {
+                    $result = json_decode($this->executeAction($action, [
+                        'stacks' => '["app"]', 'tokens' => '{"app":null}',
+                    ]), true);
+                    $this->assertSame('error', $result['result']);
+                    $this->assertSame($raw, file_get_contents(PENDING_RECHECK_FILE));
+                }
+            }
+        } finally {
+            if ($original !== null) file_put_contents(PENDING_RECHECK_FILE, $original);
+            else @unlink(PENDING_RECHECK_FILE);
+        }
+    }
+
+    public function testImageCheckReturnsOwnedTokenWhilePublicPendingValuesRemainTimestamps(): void
+    {
+        $original = is_file(PENDING_RECHECK_FILE) ? file_get_contents(PENDING_RECHECK_FILE) : null;
+        $this->createTestStack('token-stack');
+        $bin = $this->createTempDir();
+        file_put_contents($bin . '/docker', "#!/bin/sh\nexit 0\n");
+        chmod($bin . '/docker', 0700);
+        $path = getenv('PATH');
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        try {
+            file_put_contents(PENDING_RECHECK_FILE, '{"token-stack":12}');
+            $response = json_decode($this->executeAction('checkStackUpdates', ['script' => 'token-stack']), true);
+            $this->assertSame('success', $response['result']);
+            $this->assertSame(\PendingRechecks::token('token-stack'), $response['recheckToken']);
+            $token = $response['recheckToken'];
+            $this->executeAction('markStackForRecheck', ['stacks' => '["token-stack"]']);
+            $pending = json_decode($this->executeAction('getPendingRecheckStacks'), true);
+            $this->assertIsInt($pending['pending']['token-stack']);
+            $cleared = json_decode($this->executeAction('clearStackRecheck', [
+                'stacks' => '["token-stack"]', 'tokens' => json_encode(['token-stack' => $token]),
+            ]), true);
+            $this->assertContains('token-stack', $cleared['remaining']);
+        } finally {
+            putenv('PATH=' . $path);
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
             if ($original !== null) file_put_contents(PENDING_RECHECK_FILE, $original);
             else @unlink(PENDING_RECHECK_FILE);
         }
