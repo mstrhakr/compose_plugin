@@ -43,9 +43,9 @@ class TerminalSessionTest extends TestCase
         $this->waitFor(fn() => \composeReadTerminalSession($this->id)['state'] !== 'queued');
     }
 
-    private function waitFor(callable $condition): void
+    private function waitFor(callable $condition, int $attempts = 300): void
     {
-        for ($i = 0; $i < 300; $i++) {
+        for ($i = 0; $i < $attempts; $i++) {
             if ($condition()) {
                 return;
             }
@@ -158,6 +158,44 @@ class TerminalSessionTest extends TestCase
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('not started yet');
         \composeStopTerminalSession($this->id);
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('timeoutCancellationModes')]
+    public function testCancellationDrainsTimeoutProcessGroupsBeforeCompleting(bool $ignoreTerm): void
+    {
+        $script = $this->directory . '/timeout-child.sh';
+        $pidFile = $this->directory . '/timeout-child.pid';
+        $cleaned = $this->directory . '/timeout-cleaned';
+        file_put_contents($script, "#!/bin/bash\n"
+            . ($ignoreTerm ? "trap '' TERM\n" : "trap 'sleep 1; touch " . escapeshellarg($cleaned) . "; exit 0' TERM\n")
+            . "echo \$\$ > " . escapeshellarg($pidFile) . "\nwhile true; do sleep 0.1; done\n");
+        $operations = [];
+        $command = \composeTrackUiCommand(['timeout', '30', 'bash', $script], 'timeout-stop', $operations);
+        $operation = \composeUiOperationFile('timeout-stop', $operations['timeout-stop']);
+        $this->operationFiles[] = $operation;
+        $this->launch(implode(' ', array_map('escapeshellarg', $command)), [$operation]);
+        $this->waitFor(fn() => is_file($pidFile));
+        $pid = trim(file_get_contents($pidFile));
+        $session = \composeReadTerminalSession($this->id);
+        $stat = file_get_contents("/proc/$pid/stat");
+        $fields = explode(' ', substr($stat, strrpos($stat, ')') + 2));
+        $this->assertNotSame((string) $session['pid'], $fields[2], 'GNU timeout must create a separate process group.');
+        $this->assertSame((string) $session['pid'], $fields[3]);
+        \composeStopTerminalSession($this->id);
+        usleep(100000);
+        $this->assertSame('running', \composeReadTerminalSession($this->id)['state']);
+        $this->assertSame('running', json_decode(file_get_contents($operation), true)['state']);
+        $this->waitFor(fn() => \composeReadTerminalSession($this->id)['state'] === 'completed', 1500);
+        $stat = @file_get_contents("/proc/$pid/stat");
+        $this->assertTrue($stat === false || str_contains($stat, ') Z '));
+        $this->assertSame(143, \composeReadTerminalSession($this->id)['exitCode']);
+        $this->assertSame(143, json_decode(file_get_contents($operation), true)['exitCode']);
+        if (!$ignoreTerm) $this->assertFileExists($cleaned);
+    }
+
+    public static function timeoutCancellationModes(): array
+    {
+        return [[false], [true]];
     }
 
     public function testLiveSpoolIsBoundedWhileFullStackLogIsPreserved(): void

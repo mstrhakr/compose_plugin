@@ -12,7 +12,7 @@ cancelled=false
 
 # Invoked only during cancellation.
 # shellcheck disable=SC2317
-group_members() {
+session_members() {
     members=()
     local file pid stat rest
     local -a fields
@@ -21,7 +21,7 @@ group_members() {
         pid=${stat%% *}
         rest=${stat##*) }
         read -r -a fields <<< "$rest"
-        if [ "$pid" != "$$" ] && [ "${fields[2]}" = "$$" ] &&
+        if [ "$pid" != "$$" ] && [ "${fields[3]}" = "$$" ] &&
             [ "${fields[0]}" != Z ] && [ "${fields[0]}" != X ]; then
             members+=("$pid")
         fi
@@ -57,11 +57,19 @@ stop() {
         echo "Unable to register terminal cancellation" >&2
         exit 1
     fi
-    # Signal the entire owned session group, including nested Compose/build processes.
+    local pid
+    local -A signalled=()
+    # Other process groups (for example GNU timeout) can belong to this session.
     kill -TERM -- "-$$"
     for ((attempt=0; ; attempt++)); do
-        group_members
+        session_members
         if [ "${#members[@]}" -eq 0 ]; then break; fi
+        for pid in "${members[@]}"; do
+            if [ -z "${signalled[$pid]:-}" ]; then
+                kill -TERM -- "$pid" 2>/dev/null || true
+                signalled[$pid]=true
+            fi
+        done
         if [ "$attempt" -ge 100 ]; then
             echo "Command did not stop within 10 seconds; terminating remaining session processes." >&2
             # The supervisor must remain alive to finalize receipts.
