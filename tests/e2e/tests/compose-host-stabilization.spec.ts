@@ -472,6 +472,7 @@ test(`foreground terminal ${control} preserves explicit command lifecycle`, asyn
   const response = await responsePromise;
   const body = await response.text();
   const dispatch = { response, body, json: JSON.parse(body) };
+  await test.info().attach('scoped-terminal-dispatch', { body, contentType: 'application/json' });
   await expect(page.locator('#sb-container iframe')).toBeVisible();
   const terminal = page.frameLocator('#sb-container iframe');
   if (control === 'done') {
