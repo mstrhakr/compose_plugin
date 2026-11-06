@@ -64,6 +64,22 @@ class ContainerMetadataCache
     /** @param callable(array, array&):array|null $change */
     private static function access(?callable $change = null, bool $recover = false): array
     {
+        $lock = @fopen(COMPOSE_CONTAINER_CACHE_FILE . '.lock', 'c+');
+        if ($lock === false) throw new RuntimeException('Unable to open container metadata initialization lock.');
+        try {
+            if (!flock($lock, $change === null ? LOCK_SH : LOCK_EX)) {
+                throw new RuntimeException('Unable to lock container metadata initialization.');
+            }
+            clearstatcache(true, COMPOSE_CONTAINER_CACHE_FILE);
+            return self::accessLocked($change, $recover);
+        } finally {
+            fclose($lock);
+        }
+    }
+
+    /** @param callable(array, array&):array|null $change */
+    private static function accessLocked(?callable $change, bool $recover): array
+    {
         if ($change === null && !is_file(COMPOSE_CONTAINER_CACHE_FILE)) return [];
         $created = false;
         if ($change !== null && !is_file(COMPOSE_CONTAINER_CACHE_FILE)) {

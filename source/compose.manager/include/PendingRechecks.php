@@ -125,6 +125,24 @@ class PendingRechecks
      */
     private static function access(?callable $change = null): array
     {
+        $lock = @fopen(PENDING_RECHECK_FILE . '.lock', 'c+');
+        if ($lock === false) throw new RuntimeException('Unable to open pending recheck initialization lock.');
+        try {
+            if (!flock($lock, $change === null ? LOCK_SH : LOCK_EX)) {
+                throw new RuntimeException('Unable to lock pending recheck initialization.');
+            }
+            clearstatcache(true, PENDING_RECHECK_FILE);
+            return self::accessLocked($change);
+        } finally {
+            fclose($lock);
+        }
+    }
+
+    /** @param callable(array):array|null $change
+     *  @return array<string|int, int|array{timestamp:int,token:string}>
+     */
+    private static function accessLocked(?callable $change): array
+    {
         if (!file_exists(PENDING_RECHECK_FILE) && $change === null) return [];
         // All readers and writers lock this inode; never unlink or replace it.
         $created = false;

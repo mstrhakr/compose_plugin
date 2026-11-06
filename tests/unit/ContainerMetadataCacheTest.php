@@ -124,6 +124,40 @@ class ContainerMetadataCacheTest extends TestCase
                 flock($handle, LOCK_UN);
                 fclose($handle);
             }
+
+        }
+    }
+
+    public function testReadersAndWritersWaitUntilFirstUseInitializationFinishes(): void
+    {
+        foreach (['read()', 'begin(["new"])'] as $operation) {
+            $lock = fopen(COMPOSE_CONTAINER_CACHE_FILE . '.lock', 'c+');
+            flock($lock, LOCK_EX);
+            file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, '');
+            $code = 'require ' . var_export(dirname(__DIR__) . '/bootstrap.php', true) . ';'
+                . 'require "/usr/local/emhttp/plugins/compose.manager/include/ContainerMetadataCache.php";'
+                . 'echo "waiting\n"; flush(); ContainerMetadataCache::' . $operation . '; echo "done";';
+            $process = proc_open([PHP_BINARY, '-r', $code], [
+                0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w'],
+            ], $pipes);
+            fclose($pipes[0]);
+            try {
+                stream_set_timeout($pipes[1], 5);
+                $this->assertSame("waiting\n", fgets($pipes[1]));
+                stream_set_blocking($pipes[1], false);
+                usleep(100000);
+                $this->assertSame('', stream_get_contents($pipes[1]));
+                file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, '{"initialized":{}}');
+                flock($lock, LOCK_UN);
+                stream_set_blocking($pipes[1], true);
+                $this->assertSame('done', stream_get_contents($pipes[1]));
+                $errors = stream_get_contents($pipes[2]);
+                fclose($pipes[1]); fclose($pipes[2]);
+                $this->assertSame(0, proc_close($process), $errors);
+                $this->assertArrayHasKey('initialized', \ContainerMetadataCache::read());
+            } finally {
+                fclose($lock);
+            }
         }
     }
 }

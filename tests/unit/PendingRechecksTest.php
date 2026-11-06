@@ -132,7 +132,7 @@ class PendingRechecksTest extends TestCase
 
     public function testConcurrentMarksPreserveEverySuccessfulRequest(): void
     {
-        file_put_contents(PENDING_RECHECK_FILE, '{}');
+        $this->assertFileDoesNotExist(PENDING_RECHECK_FILE);
         $processes = [];
         for ($i = 0; $i < 8; $i++) {
             $code = 'require ' . var_export(dirname(__DIR__) . '/bootstrap.php', true) . ';'
@@ -153,5 +153,38 @@ class PendingRechecksTest extends TestCase
         $pending = \PendingRechecks::timestamps();
         $this->assertCount(8, $pending);
         for ($i = 0; $i < 8; $i++) $this->assertArrayHasKey('stack-' . $i, $pending);
+    }
+
+    public function testReadersAndWritersWaitUntilFirstUseInitializationFinishes(): void
+    {
+        foreach (['timestamps()', 'mark(["new"])'] as $operation) {
+            $lock = fopen(PENDING_RECHECK_FILE . '.lock', 'c+');
+            flock($lock, LOCK_EX);
+            file_put_contents(PENDING_RECHECK_FILE, '');
+            $code = 'require ' . var_export(dirname(__DIR__) . '/bootstrap.php', true) . ';'
+                . 'require "/usr/local/emhttp/plugins/compose.manager/include/PendingRechecks.php";'
+                . 'echo "waiting\n"; flush(); PendingRechecks::' . $operation . '; echo "done";';
+            $process = proc_open([PHP_BINARY, '-r', $code], [
+                0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w'],
+            ], $pipes);
+            fclose($pipes[0]);
+            try {
+                stream_set_timeout($pipes[1], 5);
+                $this->assertSame("waiting\n", fgets($pipes[1]));
+                stream_set_blocking($pipes[1], false);
+                usleep(100000);
+                $this->assertSame('', stream_get_contents($pipes[1]));
+                file_put_contents(PENDING_RECHECK_FILE, '{"initialized":1}');
+                flock($lock, LOCK_UN);
+                stream_set_blocking($pipes[1], true);
+                $this->assertSame('done', stream_get_contents($pipes[1]));
+                $errors = stream_get_contents($pipes[2]);
+                fclose($pipes[1]); fclose($pipes[2]);
+                $this->assertSame(0, proc_close($process), $errors);
+                $this->assertSame(1, \PendingRechecks::timestamps()['initialized']);
+            } finally {
+                fclose($lock);
+            }
+        }
     }
 }
