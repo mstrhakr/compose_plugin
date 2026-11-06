@@ -23,7 +23,24 @@ nonzero exit status when applicable. Existing run-in-background dispatch and
 its notification behavior are unchanged. Legacy untracked terminals retain
 their existing behavior.
 
-Managed viewers send the parent page's CSRF token for status and stop requests.
+Managed viewers send the parent page's CSRF token for status, output, connection,
+and stop requests. The control dialog opens after command acceptance, before
+viewer readiness. Its connection endpoint waits up to 10 seconds for a socket,
+including a final deadline check. The browser confirms attachment separately,
+with up to three automatic viewer-only attempts; no retry redispatches the command.
+If connection fails, the dialog says it could not connect to the live terminal
+and shows saved output instead. Actual command status remains separate.
+**Retry live connection** starts another bounded series without restarting work.
+**Continue in background** and **Stop command** remain available during recovery.
+Completed sessions retain a connection acknowledgement so a short-lived viewer
+is not mistaken for a failed connection between status polls.
+
+Saved-output requests read at most 64 KiB from the specific validated session's
+1 MiB spool. Byte cursors and a rotation generation prevent duplicate or skipped
+output across truncation; shared/exclusive spool locks coordinate readers with
+the writer. The browser incrementally decodes bytes, displays output as text,
+removes terminal control sequences, and bounds its retained output. This is a
+plain-text fallback, not a second interactive terminal.
 Cancellation is owned by the supervisor: receipts remain running until live
 members of its session have exited, including separate process groups created
 by GNU `timeout` and descendant PTY sessions, with forced termination after a
@@ -38,9 +55,9 @@ Completed output spools and diagnostics expire after one hour, and receipts
 after 24 hours; running receipts and output are preserved. Cleanup is
 activity-driven and scans at most once per minute across dispatch requests,
 so a bulk dispatch does not rescan all receipts for every stack.
-If command launch succeeds but the viewer fails, the response explicitly warns
-that execution continues and retains receipt polling. A confirmed launch failure
-instead completes only still-queued receipts as failed.
+Viewer connection failures never cancel accepted work; receipt polling continues
+independently. A confirmed command-launch failure instead completes only
+still-queued receipts as failed.
 
 Attached Up/log-following with safe detach and reconnect is deferred beyond
 this beta in [feature request #197](https://github.com/mstrhakr/compose_plugin/issues/197).

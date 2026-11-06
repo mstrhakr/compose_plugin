@@ -26,13 +26,19 @@ function waitForTtydSocket($socketName, $timeoutMs = 2000, $intervalMs = 100, $t
 {
 
     $socketPath = rtrim($tmpDir, '/') . "/$socketName.sock";
-    $attempts = max(1, (int) ceil($timeoutMs / $intervalMs));
-    for ($i = 0; $i < $attempts; $i++) {
+    if ($timeoutMs < 0 || $intervalMs <= 0) {
+        throw new InvalidArgumentException('Invalid terminal readiness timeout.');
+    }
+    $deadline = hrtime(true) + $timeoutMs * 1000000;
+    for ($i = 0; ; $i++) {
+        clearstatcache(true, $socketPath);
         if (file_exists($socketPath)) {
             composeLogger("ttyd socket ready: $socketPath", ['socket' => $socketPath, 'attempt' => $i], 'user', 'debug', 'ttyd');
             return true;
         }
-        usleep($intervalMs * 1000);
+        $remaining = $deadline - hrtime(true);
+        if ($remaining <= 0) break;
+        usleep((int) min($intervalMs * 1000, max(1, ceil($remaining / 1000))));
     }
     composeLogger("ttyd socket timeout: $socketPath", ['socket' => $socketPath, 'timeoutMs' => $timeoutMs], 'user', 'warning', 'ttyd');
     return false;

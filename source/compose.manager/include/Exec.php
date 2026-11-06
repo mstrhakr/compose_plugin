@@ -2316,13 +2316,27 @@ switch ($_POST['action']) {
 
     case 'getTerminalSession':
     case 'stopTerminalSession':
+    case 'connectTerminalViewer':
+    case 'getTerminalOutput':
         require_once __DIR__ . '/TerminalSession.php';
         try {
             $id = (string) ($_POST['session'] ?? '');
             if ($_POST['action'] === 'stopTerminalSession') {
                 composeStopTerminalSession($id);
             }
-            echo json_encode(['result' => 'success', 'session' => composeReadTerminalSession($id)]);
+            $response = ['result' => 'success', 'session' => composeReadTerminalSession($id)];
+            $response['session']['viewerConnected'] = is_file(composeUiOperationFile('terminal-session', $id) . '.log.connected');
+            $response['session']['viewerViewed'] = is_file(composeUiOperationFile('terminal-session', $id) . '.log.viewed');
+            if ($_POST['action'] === 'connectTerminalViewer') {
+                $response['viewer'] = composeConnectTerminalViewer($id, ($_POST['retry'] ?? '') === '1');
+            }
+            if ($_POST['action'] === 'getTerminalOutput') {
+                $offset = filter_var($_POST['offset'] ?? '0', FILTER_VALIDATE_INT);
+                $generation = filter_var($_POST['generation'] ?? '0', FILTER_VALIDATE_INT);
+                if ($offset === false || $generation === false) throw new InvalidArgumentException('Invalid terminal output cursor.');
+                $response['output'] = composeReadTerminalOutput($id, $offset, $generation);
+            }
+            echo json_encode($response);
         } catch (RuntimeException | InvalidArgumentException $error) {
             composeLogger('Unable to control terminal session', ['message' => $error->getMessage()], 'user', 'error', 'operation');
             echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);

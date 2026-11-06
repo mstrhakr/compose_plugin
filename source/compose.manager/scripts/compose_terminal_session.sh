@@ -125,7 +125,7 @@ read -r -a fields <<< "$rest"
 printf '{"state":"running","pid":%s,"started":"%s"}\n' "$$" "${fields[19]}" > "$receipt.$$" &&
     mv -f "$receipt.$$" "$receipt" || exit 1
 # No interactive stdin is promised for managed compose actions.
-(TERM="${TERM:-xterm-256color}" script -qefc "$command" /dev/null < /dev/null |
+(SHELL=/bin/bash TERM=xterm-256color script -qefc "$command" /dev/null < /dev/null |
     (trap '' TERM; exec php "$(dirname "$0")/compose_terminal_output.php" "$receipt.log" "$log")) &
 child=$!
 wait "$child"

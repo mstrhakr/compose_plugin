@@ -9,6 +9,7 @@ if ($spool === false || $log === false) {
     exit(1);
 }
 $size = 0;
+$generation = 0;
 while (!feof(STDIN)) {
     $chunk = fread(STDIN, 8192);
     if ($chunk === false) {
@@ -19,6 +20,10 @@ while (!feof(STDIN)) {
         fwrite(STDERR, "Unable to save stack command log.\n");
         exit(1);
     }
+    if (!flock($spool, LOCK_EX)) {
+        fwrite(STDERR, "Unable to lock terminal output.\n");
+        exit(1);
+    }
     if ($size + strlen($chunk) > 1048576) {
         if (!ftruncate($spool, 0) || fseek($spool, 0) !== 0) {
             fwrite(STDERR, "Unable to rotate terminal output.\n");
@@ -26,12 +31,17 @@ while (!feof(STDIN)) {
         }
         $chunk = "[Earlier output omitted from live viewer; see the stack command log.]\n" . $chunk;
         $size = 0;
+        if (file_put_contents($argv[1] . '.generation', (string) ++$generation) === false) {
+            fwrite(STDERR, "Unable to save terminal output generation.\n");
+            exit(1);
+        }
     }
     if (fwrite($spool, $chunk) !== strlen($chunk) || !fflush($spool)) {
         fwrite(STDERR, "Unable to save command output.\n");
         exit(1);
     }
     $size += strlen($chunk);
+    flock($spool, LOCK_UN);
 }
 fclose($spool);
 if ($log !== null) fclose($log);

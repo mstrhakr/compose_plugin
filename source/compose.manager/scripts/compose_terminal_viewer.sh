@@ -1,7 +1,7 @@
 #!/bin/bash
 set -u
 if [ "$1" = --follow ]; then
-    touch "$4" || exit 1
+    touch "$4" "$2.viewed" || exit 1
     if [ "$3" -gt 1 ]; then
         exec tail --pid="$3" -n +1 -F "$2"
     fi

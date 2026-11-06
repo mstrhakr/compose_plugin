@@ -38,4 +38,5 @@ EOF
     [ "$output" = "completed output" ]
     [ ! -e "$TEST_TEMP_DIR/viewer.sock" ]
     [ ! -e "$TEST_TEMP_DIR/output.connected" ]
+    [ -e "$TEST_TEMP_DIR/output.viewed" ]
 }

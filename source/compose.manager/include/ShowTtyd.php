@@ -81,7 +81,9 @@ $themeSheetJson = json_encode("themes/{$themeFile}.css");
 
         body {
             display: flex;
-            flex-direction: column
+            flex-direction: column;
+            font-family: var(--font-sans, clear-sans, sans-serif);
+            font-size: 14px;
         }
 
         #ttyd-frame {
@@ -102,22 +104,61 @@ $themeSheetJson = json_encode("themes/{$themeFile}.css");
         button[hidden] {
             display: none !important
         }
+
+        #terminal-output {
+            flex: 1;
+            min-height: 0;
+            overflow: auto;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            margin: 0;
+            padding: 12px;
+            font-family: var(--font-bitstream, monospace);
+        }
+
+        #ttyd-frame[hidden], #terminal-output[hidden] {
+            display: none
+        }
+
+        #terminal-connection {
+            margin: 0;
+            padding: 8px 12px;
+            text-align: center;
+        }
+
+        .ui-dialog-buttonset {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .ui-dialog-buttonset button {
+            font-family: inherit;
+            font-size: inherit;
+            text-transform: none;
+            letter-spacing: normal;
+        }
     </style>
 </head>
 
 <body>
-    <iframe id="ttyd-frame" src="<?= $url ?>"></iframe>
+    <iframe id="ttyd-frame" <?= $terminalSession !== '' ? 'hidden' : 'src="' . htmlspecialchars($url, ENT_QUOTES, 'UTF-8') . '"' ?>></iframe>
     <?php if ($terminalSession !== ''): ?>
+        <p id="terminal-connection" role="status" aria-live="polite">Connecting to live terminal...</p>
+        <pre id="terminal-output" hidden aria-label="Saved command output"></pre>
         <p id="terminal-status" class="centered" role="status" aria-live="polite">Checking command status...</p>
         <p class="centered ui-dialog-buttonpane">
             <span class="ui-dialog-buttonset">
                 <button type="button" id="terminal-background">Continue in background</button>
                 <button type="button" id="terminal-stop" disabled>Stop command</button>
+                <button type="button" id="terminal-retry" hidden>Retry live connection</button>
                 <button type="button" id="done-btn" hidden>Done</button>
             </span>
         </p>
         <script>
             window.composeTerminalSession = <?= json_encode($terminalSession) ?>;
+            window.composeTerminalUrl = <?= json_encode($url) ?>;
             window.composeTerminalCommand = <?= json_encode((string) ($_GET['command'] ?? ''), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
             window.composeTerminalBulk = <?= ($_GET['bulk'] ?? '') === '1' ? 'true' : 'false' ?>;
         </script>

@@ -310,13 +310,21 @@ foreground single/bulk dispatches, explicit nonzero exits, and completion updati
 both parent state and expanded container details from the same fresh snapshot.
 The isolated `compose-terminal-controls.spec.ts` exercises the production
 terminal controller in both browsers: continuing without a stop request,
-confirmed cancellation, completion-only Done, and failed-status retry.
+confirmed cancellation, completion-only Done, failed-status retry, three bounded
+viewer connection attempts, manual retry without command redispatch, safe
+saved-output fallback, late-response disposal, fast-viewer acknowledgement,
+and button font inheritance.
 `TerminalSessionTest.php` executes real disposable process sessions locally:
 viewer termination leaves a command alive, nonzero exits and output are
 preserved, cancellation stops nested commands and queued bulk receipts, and
 altered process identity refuses signalling. It also checks the 1 MiB live-spool
 limit against a byte-complete stack log, output-write failures, refused launches,
-and accepted commands whose viewer cannot start. `terminal_session.bats` uses
+and accepted commands whose viewer cannot start. PTY regressions check actual
+stdout/stderr terminal detection, Bash semantics and TERM, preserved ANSI colour
+and carriage-return bytes, and output arriving before command completion.
+Additional regressions cover the final socket polling interval, 10-second viewer
+readiness, owned-listener replacement, bounded incremental output and rotation.
+`terminal_session.bats` uses
 a fake ttyd to test connected cleanup and the real 30-second connection deadline.
 `UiOperationTest.php` verifies output/receipt retention and throttled housekeeping.
 These local tests do not invoke Docker or real ttyd.
