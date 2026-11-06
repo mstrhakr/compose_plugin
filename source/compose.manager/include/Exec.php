@@ -278,8 +278,9 @@ if (!function_exists('composeCheckStackUpdatesForUi')) {
      * @param StackInfo[] $stacks
      * @param-out list<string> $superseded
      * @param-out array<string|int, string|null> $recheckTokens
+     * @param-out array<string, string> $failures
      */
-    function composeCheckStackUpdatesForUi(array $stacks, bool $replaceSavedStatus = false, ?array &$superseded = null, ?array &$recheckTokens = null): array
+    function composeCheckStackUpdatesForUi(array $stacks, bool $replaceSavedStatus = false, ?array &$superseded = null, ?array &$recheckTokens = null, ?array &$failures = null): array
     {
         $metadataTokens = ContainerMetadataCache::begin(array_map(static fn(StackInfo $stack): string => $stack->projectFolder, $stacks));
         $cache = composeLoadPersistentContainerCache();
@@ -326,6 +327,7 @@ if (!function_exists('composeCheckStackUpdatesForUi')) {
         $results = $checker->checkStacks($stacks, $enrich, $replaceSavedStatus, $published);
         $superseded = $checker->superseded;
         $recheckTokens = $checker->recheckTokens;
+        $failures = $checker->failures;
         return $results;
     }
 }
@@ -2201,11 +2203,13 @@ switch ($_POST['action']) {
     case 'checkAllStacksUpdates':
         composeLogger('Starting update check for all stacks', null, 'user', 'debug', 'update-check');
         try {
-            $allUpdates = composeCheckStackUpdatesForUi(StackInfo::allFromRoot($compose_root, true), true, $superseded);
+            $allUpdates = composeCheckStackUpdatesForUi(StackInfo::allFromRoot($compose_root, true), true, $superseded, $recheckTokens, $failures);
             $totalStacks = count($allUpdates);
             $updatesFound = count(array_filter($allUpdates, static fn(array $stack): bool => $stack['hasUpdate']));
-            composeLogger("Completed: $totalStacks stacks checked, $updatesFound with updates", null, 'user', 'debug', 'update-check');
-            echo json_encode(['result' => 'success', 'stacks' => $allUpdates, 'superseded' => $superseded]);
+            $failedStacks = count($failures);
+            composeLogger("Completed: $totalStacks stacks checked, $updatesFound with updates, $failedStacks failed", null, 'user', 'debug', 'update-check');
+            echo json_encode(['result' => $failures ? 'partial' : 'success', 'stacks' => $allUpdates,
+                'superseded' => $superseded, 'failures' => (object) $failures]);
         } catch (RuntimeException | JsonException $e) {
             composeLogger('Stack update check failed: ' . $e->getMessage(), null, 'user', 'error', 'update-check');
             echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);

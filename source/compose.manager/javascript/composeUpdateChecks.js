@@ -169,10 +169,22 @@ var composeUpdateChecks = (function() {
         $.post(caURL, { action: 'checkAllStacksUpdates' }, function(data) {
             try {
                 var response = parse(data);
-                if (!response || response.result !== 'success' || !response.stacks || typeof response.stacks !== 'object') {
+                if (!response || (response.result !== 'success' && response.result !== 'partial')
+                    || !response.stacks || typeof response.stacks !== 'object'
+                    || (response.result === 'partial' && (!response.failures || typeof response.failures !== 'object'
+                        || Array.isArray(response.failures) || Object.keys(response.failures).length === 0))) {
                     failed(response && response.message || 'The server did not return update results.');
                     return;
                 }
+                var failures = response.failures || {};
+                var hasFailure = false;
+                Object.keys(failures).forEach(function(project) {
+                    var owner = ownerFor(project);
+                    if (owner && current(project, owner)) {
+                        hasFailure = true;
+                        failure(project, owner, failures[project]);
+                    }
+                });
                 var superseded = new Set(Array.isArray(response.superseded) ? response.superseded.map(String) : []);
                 superseded.forEach(function(project) {
                     var owner = ownerFor(project);
@@ -180,14 +192,16 @@ var composeUpdateChecks = (function() {
                 });
                 Object.keys(response.stacks).forEach(function(project) {
                     var owner = ownerFor(project);
-                    if (owner && !superseded.has(project) && current(project, owner)) apply(project, response.stacks[project], true);
+                    if (owner && !Object.prototype.hasOwnProperty.call(failures, project)
+                        && !superseded.has(project) && current(project, owner)) apply(project, response.stacks[project], true);
                 });
                 Object.keys(requests).forEach(function(project) {
-                    if (!Object.prototype.hasOwnProperty.call(response.stacks, project) && !superseded.has(project)) {
+                    if (!Object.prototype.hasOwnProperty.call(response.stacks, project)
+                        && !Object.prototype.hasOwnProperty.call(failures, project) && !superseded.has(project)) {
                         retry(project, requests[project]);
                     }
                 });
-                finish();
+                finish(hasFailure);
             } catch (e) { failed(String(e)); }
         }).fail(function() { failed('The update check request failed.'); });
     }

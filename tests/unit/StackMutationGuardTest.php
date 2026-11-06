@@ -265,6 +265,57 @@ final class StackMutationGuardTest extends TestCase
         }
     }
 
+    public function testFullCheckPreservesFailedStackEvidenceAndPublishesHealthyStacks(): void
+    {
+        $root = $GLOBALS['compose_root'];
+        mkdir($root . '/broken');
+        file_put_contents($root . '/broken/compose.yaml', "services: {}\n");
+        file_put_contents($root . '/broken/project_name', 'broken');
+        $healthy = $this->stack();
+        $broken = \StackInfo::fromProject($root, 'broken');
+        $rows = [];
+        foreach ([$this->project => 'app', 'broken' => 'broken-app'] as $project => $name) {
+            $rows[] = json_encode(['Names' => $name, 'Image' => 'alpine@sha256:pinned',
+                'Labels' => 'com.docker.compose.project=' . $project . ',com.docker.compose.service=app']);
+        }
+        file_put_contents($this->directory . '/bin/docker', "#!/bin/sh\ncase \"\$1\" in\n"
+            . "ps) printf '%s\\n' " . implode(' ', array_map('escapeshellarg', $rows)) . ";;\n"
+            . "compose) case \" \$* \" in *' -p broken '*) echo broken-config >&2; exit 7;; "
+            . "*) printf '%s\\n' '{\"services\":{}}';; esac;;\nesac\n");
+        foreach ([[$broken, $healthy], [$healthy, $broken]] as $stacks) {
+            file_put_contents(COMPOSE_UPDATE_STATUS_FILE, json_encode([
+                'broken' => ['containers' => [], 'lastChecked' => 17],
+                'removed' => ['containers' => []],
+            ]));
+            \PendingRechecks::mark(['broken']);
+            $pending = \PendingRechecks::token('broken');
+            $service = new \StackUpdateService();
+            $published = [];
+            $results = $service->checkStacks($stacks, null, true, static function (array $accepted) use (&$published): void {
+                $published = array_keys($accepted);
+            });
+            $this->assertSame([$this->folder], array_keys($results));
+            $this->assertSame([$this->folder], $published);
+            $this->assertSame(['broken'], array_keys($service->failures));
+            $this->assertStringContainsString('broken-config', $service->failures['broken']);
+            $this->assertSame([], $service->superseded);
+            $this->assertArrayNotHasKey('broken', $service->recheckTokens);
+            $saved = \StackUpdateService::readSavedResults();
+            $this->assertSame(17, $saved['broken']['lastChecked']);
+            $this->assertArrayNotHasKey('removed', $saved);
+            $this->assertSame($pending, \PendingRechecks::token('broken'));
+        }
+        $allFailed = new \StackUpdateService();
+        $this->assertSame([], $allFailed->checkStacks([$broken], null, true));
+        $this->assertSame(['broken'], array_keys($allFailed->failures));
+        $this->assertSame([], $allFailed->superseded);
+        $this->assertSame([], $allFailed->recheckTokens);
+        $this->assertSame(17, \StackUpdateService::readSavedResults()['broken']['lastChecked']);
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('broken-config');
+        (new \StackUpdateService())->checkStacks([$broken]);
+    }
+
     public function testCliLegacyMappingResolvesConfiguredRootWhenGlobalIsAbsent(): void
     {
         $this->stack();

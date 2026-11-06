@@ -166,6 +166,11 @@ This is read-only inspection, not permission to deploy conflicting profiles;
 deployment retains normal Compose validation. Parse/resolution failures still
 fail explicitly. `GitStackInfoTest` covers this distinction.
 
+Check All isolates per-stack build-configuration failures: its `partial`
+response carries successful `stacks` and a stack-keyed `failures` map. Failed
+stacks retain saved evidence and pending rechecks; only their rows show failure.
+Shared runtime-enumeration and persistence failures still abort the request.
+
 Run the update browser suites together, without a live host or saved credentials:
 
 ```bash

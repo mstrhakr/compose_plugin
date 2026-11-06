@@ -134,6 +134,39 @@ test('bulk after single rejects the late single success without acknowledging', 
   expect(result.revision.a).toBe(1);
 });
 
+test('partial bulk failure preserves failed evidence and publishes only healthy results', async ({ page }) => {
+  const result = await run(page, `
+    stackUpdateStatus.a = info(17);
+    checkAllUpdates();
+    respond(0, {result:'partial', stacks:{b:info(2)}, superseded:[], failures:{a:'broken-config'}});
+    return snapshot();
+  `);
+  expect(result.evidence.a.lastChecked).toBe(17);
+  expect(result.evidence.b.lastChecked).toBe(2);
+  expect(result.state.a).toBe('failed');
+  expect(result.state.b).toBeUndefined();
+  expect(result.revision.a).toBeUndefined();
+  expect(result.revision.b).toBe(1);
+  expect(result.notices).toEqual(['Update check failed']);
+  expect(result.buttons['#checkUpdatesBtn:disabled']).toBe(false);
+  expect(result.buttons['#updateAllBtn:disabled']).toBe(true);
+});
+
+test('late partial bulk failure cannot replace a newer single result', async ({ page }) => {
+  const result = await run(page, `
+    checkAllUpdates();
+    checkStackUpdates('a');
+    respond(1, singleResult());
+    respond(0, {result:'partial', stacks:{b:info(2)}, superseded:[], failures:{a:'broken-config'}});
+    return snapshot();
+  `);
+  expect(result.evidence.a.hasUpdate).toBe(true);
+  expect(result.evidence.b.lastChecked).toBe(2);
+  expect(result.state.a).toBeUndefined();
+  expect(result.notices).toEqual([]);
+  expect(result.acks).toBe(1);
+});
+
 for (const late of ['transport', 'malformed', 'server']) {
   test(`late ${late} bulk failure cannot fail a newer single`, async ({ page }) => {
     const result = await run(page, `

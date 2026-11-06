@@ -15,6 +15,9 @@ class StackUpdateService
     /** @var list<string> */
     public array $superseded = [];
 
+    /** @var array<string, string> */
+    public array $failures = [];
+
     /** @var array<string|int, string|null> */
     public array $recheckTokens = [];
 
@@ -78,6 +81,7 @@ class StackUpdateService
     {
         $ownership = self::reserveChecks(array_map(static fn(StackInfo $stack): string => $stack->projectFolder, $stacks), $replaceSavedStatus);
         $this->superseded = [];
+        $this->failures = [];
         $this->recheckTokens = [];
         $projects = [];
         foreach ($stacks as $stack) $projects[$stack->projectFolder] = $stack->projectName;
@@ -100,9 +104,18 @@ class StackUpdateService
             ));
             $checks = [];
             if ($rows) {
+                try {
+                    $builds = $stack->getBuildConfigs();
+                } catch (RuntimeException | JsonException | InvalidArgumentException $error) {
+                    if (!$replaceSavedStatus) throw $error;
+                    $this->failures[$stack->projectFolder] = $error->getMessage();
+                    composeLogger('Stack update check failed: ' . $error->getMessage(),
+                        ['stackName' => $stack->projectFolder], 'user', 'error', 'update-check');
+                    continue;
+                }
                 $credentialId = $stack->getCredentialId();
                 $checker = $checkers[$credentialId ?? ''] ??= new ComposeUpdateCheck($credentialId);
-                $checks = $checker->checkContainers($rows, $stack->getBuildConfigs());
+                $checks = $checker->checkContainers($rows, $builds);
             }
             $updates = [];
             foreach ($rows as $row) {
@@ -142,7 +155,7 @@ class StackUpdateService
             function (array $current) use ($projects, $epochs, $results, $replaceSavedStatus, $ownership, $published): array {
                 $valid = [];
                 foreach ($epochs as $folder => $epoch) {
-                    if (isset($current[$projects[$folder]]) && $current[$projects[$folder]] === $epoch) {
+                    if (!isset($this->failures[$folder]) && isset($current[$projects[$folder]]) && $current[$projects[$folder]] === $epoch) {
                         $valid[$folder] = $ownership[$folder];
                     }
                 }
@@ -153,7 +166,7 @@ class StackUpdateService
             });
         $this->superseded = array_values(array_map(
             static fn(StackInfo $stack): string => $stack->projectFolder,
-            array_filter($stacks, static fn(StackInfo $stack): bool => !isset($accepted[$stack->projectFolder]))
+            array_filter($stacks, fn(StackInfo $stack): bool => !isset($accepted[$stack->projectFolder]) && !isset($this->failures[$stack->projectFolder]))
         ));
         $this->recheckTokens = array_intersect_key($this->recheckTokens, $accepted);
         return $accepted;

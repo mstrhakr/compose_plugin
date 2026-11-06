@@ -444,7 +444,7 @@ class ExecActionsTest extends TestCase
             'Labels' => 'com.docker.compose.project=private-stack,com.docker.compose.service=app,com.docker.compose.oneoff=True',
         ];
         file_put_contents($docker, "#!/bin/sh\ncase \"\$*\" in\n"
-            . "*'config --format json'*) printf '%s\\n' '{\"services\":{}}'; exit 0 ;;\nesac\ncase \"\$1\" in\n"
+            . "*'config --no-consistency --format json'*) printf '%s\\n' '{\"services\":{}}'; exit 0 ;;\nesac\ncase \"\$1\" in\n"
             . "compose) printf '%s\\n' " . escapeshellarg(json_encode(array_diff_key($row, ['Labels' => true])))
             . ' ' . escapeshellarg(json_encode(array_diff_key($stopped, ['Labels' => true])))
             . ' ' . escapeshellarg(json_encode(array_diff_key($job, ['Labels' => true]))) . " ;;\n"
@@ -488,6 +488,42 @@ class ExecActionsTest extends TestCase
             @unlink(UNRAID_UPDATE_STATUS_FILE);
             @unlink(COMPOSE_UPDATE_STATUS_FILE);
             @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+        }
+    }
+
+    public function testCheckAllReturnsScopedConfigFailureAndHealthyResults(): void
+    {
+        $this->createTestStack('broken');
+        $this->createTestStack('healthy');
+        $bin = $this->createTempDir();
+        $row = json_encode(['Names' => 'broken-app', 'Image' => 'alpine',
+            'Labels' => 'com.docker.compose.project=broken,com.docker.compose.service=app']);
+        file_put_contents($bin . '/docker', "#!/bin/sh\ncase \"\$1\" in\n"
+            . "ps) printf '%s\\n' " . escapeshellarg($row) . ";;\n"
+            . "compose) echo broken-config >&2; exit 7;;\nesac\n");
+        chmod($bin . '/docker', 0755);
+        $path = getenv('PATH');
+        $saved = is_file(COMPOSE_UPDATE_STATUS_FILE) ? file_get_contents(COMPOSE_UPDATE_STATUS_FILE) : false;
+        $pending = is_file(PENDING_RECHECK_FILE) ? file_get_contents(PENDING_RECHECK_FILE) : false;
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        try {
+            file_put_contents(COMPOSE_UPDATE_STATUS_FILE, json_encode(['broken' => ['containers' => [], 'lastChecked' => 17]]));
+            $response = json_decode($this->executeAction('checkAllStacksUpdates'), true);
+            $this->assertSame('partial', $response['result']);
+            $this->assertSame(['healthy'], array_keys($response['stacks']));
+            $this->assertSame(['broken'], array_keys($response['failures']));
+            $this->assertStringContainsString('broken-config', $response['failures']['broken']);
+            $this->assertSame([], $response['superseded']);
+            $this->assertSame(17, \StackUpdateService::readSavedResults()['broken']['lastChecked']);
+            $single = json_decode($this->executeAction('checkStackUpdates', ['script' => 'broken']), true);
+            $this->assertSame('error', $single['result']);
+            $this->assertStringContainsString('broken-config', $single['message']);
+        } finally {
+            putenv('PATH=' . $path);
+            if ($saved === false) @unlink(COMPOSE_UPDATE_STATUS_FILE);
+            else file_put_contents(COMPOSE_UPDATE_STATUS_FILE, $saved);
+            if ($pending === false) @unlink(PENDING_RECHECK_FILE);
+            else file_put_contents(PENDING_RECHECK_FILE, $pending);
         }
     }
 
@@ -804,7 +840,7 @@ class ExecActionsTest extends TestCase
         $inspect = ['Image' => $imageId, 'Config' => ['Image' => 'build-only-app'], 'State' => []];
         $config = ['services' => ['app' => ['build' => ['context' => $context]]]];
         file_put_contents($bin . '/docker', "#!/bin/sh\ncase \"\$*\" in\n"
-            . "*'config --format json'*) printf '%s\\n' " . escapeshellarg(json_encode($config)) . " ;;\n"
+            . "*'config --no-consistency --format json'*) printf '%s\\n' " . escapeshellarg(json_encode($config)) . " ;;\n"
             . "inspect*) printf '%s\\n' " . escapeshellarg(json_encode($inspect)) . " ;;\n"
             . "*) printf '%s\\n' " . escapeshellarg(json_encode($row)) . " ;;\nesac\n");
         chmod($bin . '/docker', 0755);
