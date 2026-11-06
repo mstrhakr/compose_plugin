@@ -306,18 +306,42 @@
     }
     window.addContainerContext = addContainerContext;
 
+    var containerActionsPending = Object.create(null);
     function dockerAction(ctName, action) {
+        if (containerActionsPending[ctName]) return;
+        containerActionsPending[ctName] = true;
         debugLog('dockerAction:', ctName, action);
-        $.post(caURL, {
-            action: 'containerAction',
-            container: ctName,
-            containerAction: action
-        }, function() {
+        function showError(message) {
+            swal({ title: 'Container Action Failed', text: message, type: 'error' });
+        }
+        $.ajax({
+            url: caURL,
+            method: 'POST',
+            timeout: 30000,
+            data: { action: 'containerAction', container: ctName, containerAction: action }
+        }).done(function(data) {
+            var response;
+            try {
+                response = typeof data === 'string' ? JSON.parse(data) : data;
+            } catch (_error) {
+                showError('Invalid server response. Refresh before retrying.');
+                return;
+            }
+            if (!response || response.result !== 'success') {
+                showError(response && response.message || 'Container action failed.');
+                return;
+            }
             if (!window.hideDockerComposeContainers && typeof window.loadlist === 'function') {
                 window.loadlist();
             } else {
                 loadComposeStacks();
             }
+        }).fail(function(_xhr, status) {
+            showError(status === 'timeout'
+                ? 'The request timed out. Refresh to check the container state before retrying.'
+                : 'Unable to complete the container action. Refresh before retrying.');
+        }).always(function() {
+            delete containerActionsPending[ctName];
         });
     }
 

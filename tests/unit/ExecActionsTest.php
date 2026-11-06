@@ -1451,6 +1451,81 @@ class ExecActionsTest extends TestCase
         $this->assertStringContainsString('saved', $output);
     }
 
+    public function testSourceWritersRespectCanonicalLockAndInvalidateOldAcknowledgements(): void
+    {
+        $path = $this->createTestStack('source-owner');
+        $stack = \StackInfo::fromProject($this->testComposeRoot, 'source-owner');
+        $originalPending = is_file(PENDING_RECHECK_FILE) ? file_get_contents(PENDING_RECHECK_FILE) : false;
+        $oldLockDirectory = getenv('COMPOSE_LOCK_DIR');
+        $lockDirectory = $this->createTempDir();
+        putenv('COMPOSE_LOCK_DIR=' . $lockDirectory);
+        try {
+            file_put_contents(PENDING_RECHECK_FILE, '{}');
+            $actions = [
+                'saveYml' => ['scriptContents' => "services:\n  app:\n    image: alpine\n"],
+                'saveEnv' => ['scriptContents' => "A=1\n"],
+                'saveOverride' => ['managed' => '1', 'scriptContents' => "services: {}\n"],
+                'createEnvTemplate' => [],
+                'createOverrideTemplate' => [],
+                'setEnvPath' => ['envPath' => ''],
+                'setStackSettings' => ['extraComposeFiles' => ''],
+            ];
+            foreach ($actions as $action => $data) {
+                $lock = \StackMutationGuard::tryExclusive($stack->projectName);
+                $this->assertIsResource($lock);
+                try {
+                    $result = json_decode($this->executeAction($action, ['script' => 'source-owner'] + $data), true);
+                    $this->assertSame('error', $result['result'], $action);
+                    $this->assertStringContainsString('operation is in progress', $result['message'], $action);
+                } finally {
+                    fclose($lock);
+                }
+                \PendingRechecks::mark(['source-owner']);
+                $token = \PendingRechecks::token('source-owner');
+                $epoch = \StackMutationGuard::epoch($stack->projectName);
+                $output = $this->executeAction($action, ['script' => 'source-owner'] + $data);
+                $this->assertTrue(str_contains($output, 'saved') || (json_decode($output, true)['result'] ?? '') === 'success', $output);
+                $this->assertNotSame($epoch, \StackMutationGuard::epoch($stack->projectName), $action);
+                $this->assertSame(['source-owner'], \PendingRechecks::acknowledge(['source-owner'], ['source-owner' => $token]), $action);
+                \PendingRechecks::acknowledge(['source-owner'], ['source-owner' => \PendingRechecks::token('source-owner')]);
+                $this->executeAction($action, ['script' => 'source-owner'] + $data);
+                $this->assertSame([], \PendingRechecks::timestamps(), $action . ' must not create automatic checks.');
+            }
+            $this->assertFileExists($path . '/.env');
+        } finally {
+            putenv($oldLockDirectory === false ? 'COMPOSE_LOCK_DIR' : 'COMPOSE_LOCK_DIR=' . $oldLockDirectory);
+            if ($originalPending === false) @unlink(PENDING_RECHECK_FILE);
+            else file_put_contents(PENDING_RECHECK_FILE, $originalPending);
+        }
+    }
+
+    public function testFailedComposeSaveDoesNotMigrateOverrideAndReportsFailure(): void
+    {
+        $path = $this->createTestStack('save-failure');
+        $main = $path . '/' . COMPOSE_FILE_NAMES[0];
+        unlink($main);
+        mkdir($main);
+        $override = "services:\n  old:\n    labels:\n      example: keep\n";
+        file_put_contents($path . '/compose.override.yaml', $override);
+        $result = json_decode($this->executeAction('saveYml', [
+            'script' => 'save-failure', 'scriptContents' => "services:\n  renamed:\n    image: alpine\n",
+        ]), true);
+        $this->assertSame('error', $result['result']);
+        $this->assertSame($override, file_get_contents($path . '/compose.override.yaml'));
+    }
+
+    public function testSourceSettingsWriteFailureIsNotReportedAsSuccess(): void
+    {
+        $path = $this->createTestStack('settings-failure');
+        mkdir($path . '/extra_compose_files');
+        file_put_contents($path . '/other.yaml', "services: {}\n");
+        $result = json_decode($this->executeAction('setStackSettings', [
+            'script' => 'settings-failure', 'extraComposeFiles' => 'other.yaml',
+        ]), true);
+        $this->assertSame('error', $result['result']);
+        $this->assertStringContainsString('not a file', $result['message']);
+    }
+
     // ===========================================
     // getEnv Action Tests
     // ===========================================

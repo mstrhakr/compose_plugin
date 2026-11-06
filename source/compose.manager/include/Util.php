@@ -1754,7 +1754,9 @@ class OverrideInfo
         }
 
         if (!empty($result['migrations'])) {
-            file_put_contents($overridePath, $newOverrideContent);
+            if (@file_put_contents($overridePath, $newOverrideContent) !== strlen($newOverrideContent)) {
+                throw new RuntimeException('Unable to save migrated override ' . $overridePath . '.');
+            }
             $result['migrated'] = true;
 
             $migrationLog = array_map(fn($m) => "{$m['from']} -> {$m['to']}", $result['migrations']);

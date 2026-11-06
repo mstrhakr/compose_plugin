@@ -78,6 +78,23 @@ publication and metadata commits are batched, not repeated whole-store writes
 per project. Lock ordering costs O(P log P) for P projects, with O(P) temporary
 handles; all are released after the short publication transaction.
 
+Source writers use the same exclusive project lock: Compose/env/override saves,
+template creation, source settings, and Git conversion/dry-run/reclone rotate
+epochs at both boundaries, including failed mutations. They renew existing
+pending checks without introducing automatic checks for ordinary edits.
+Editor paths are resolved again under the lock; busy projects return explicit
+errors. Compose rename migration and multi-file settings restore previous bytes
+on a reported write failure; restoration failures are also surfaced. Writes
+remain in-place to preserve symlink targets and existing mounted file inodes;
+this is failure recovery, not crash-atomic storage.
+
+Individual container actions resolve the actual Compose project label, acquire
+its lock, and execute against the inspected immutable container ID. Native
+containers retain their no-project behavior. Docker exit failures and bounded
+execution timeouts are errors, not completion. Dashboard actions reject duplicate
+requests per container and display server, malformed-response, and network
+failures without refreshing as if the action succeeded.
+
 The shared shell mutation path rotates epochs and renews pending identities at
 both locked boundaries, including failure/normal termination cleanup. Pull,
 Update, Git Deploy, and image-preparing Up create pending checks. Ordinary

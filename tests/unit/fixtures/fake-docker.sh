@@ -85,6 +85,15 @@ case "$1" in
     cat "$here/running.ids" 2>/dev/null
     exit 0
     ;;
+  inspect)
+    name="${*: -1}"
+    if [ -f "$here/containers/$name.json" ]; then
+      cat "$here/containers/$name.json"
+      exit 0
+    fi
+    echo "Error: No such container: $name" >&2
+    exit 1
+    ;;
   container)
     # container inspect -- <name or ids...>
     shift 3
