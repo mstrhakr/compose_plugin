@@ -4041,7 +4041,9 @@ class StackInfo
         if (isset($args['envFilePath'])) {
             array_push($command, '--env-file', $args['envFilePath']);
         }
-        array_push($command, '-p', $args['projectName'], '--profile', '*', 'config', '--format', 'json');
+        // Mutually exclusive profiles can share container names; this inspects
+        // build metadata, not the validity of deploying every profile together.
+        array_push($command, '-p', $args['projectName'], '--profile', '*', 'config', '--no-consistency', '--format', 'json');
         $result = ProcessRunner::run($command, $args['projectDirectory'], getenv(), 60);
         if (!$result->succeeded()) {
             throw new RuntimeException("Unable to resolve build configuration for {$this->projectFolder}: " . $result->errorSummary());

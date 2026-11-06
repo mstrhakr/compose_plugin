@@ -160,6 +160,12 @@ The browser regressions cover known/unknown merges, image changes, incomplete-ch
 
 ### Update UI Pre-PR and Integration Gates
 
+Build-metadata inspection enables all profiles with `config --no-consistency`
+because mutually exclusive profiles may legitimately reuse container names.
+This is read-only inspection, not permission to deploy conflicting profiles;
+deployment retains normal Compose validation. Parse/resolution failures still
+fail explicitly. `GitStackInfoTest` covers this distinction.
+
 Run the update browser suites together, without a live host or saved credentials:
 
 ```bash
