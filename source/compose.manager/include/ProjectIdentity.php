@@ -411,27 +411,38 @@ final class ProjectIdentity
             if (is_resource($registry)) {
                 fclose($registry);
             }
-            return;
+            throw new \RuntimeException('Could not lock Compose input registration.');
         }
         try {
             if (!flock($lock, LOCK_EX)) {
-                return;
+                throw new \RuntimeException('Could not lock Compose input registration.');
             }
             if (self::readPinned($stackPath) !== $this->projectName) {
-                return;
+                throw new \RuntimeException('Project identity changed while registering the Compose input.');
             }
             $stateFile = rtrim($stackPath, '/') . '/' . self::STATE_FILE;
             $raw = @file_get_contents($stateFile);
             $state = is_string($raw) ? json_decode($raw, true) : null;
-            if (!is_array($state) || ($state['projectName'] ?? null) !== $this->projectName
-                || !array_key_exists('composeFiles', $state) || !is_array($state['composeFiles'])
-                || in_array($file, $state['composeFiles'], true)) {
+            if ($raw === false && !file_exists($stateFile)) {
                 return;
+            }
+            if (!is_array($state) || ($state['projectName'] ?? null) !== $this->projectName) {
+                throw new \RuntimeException('Compose input registration receipt is unavailable or invalid.');
+            }
+            if (!array_key_exists('composeFiles', $state)) {
+                return;
+            }
+            self::validateComposeFiles($state['composeFiles']);
+            if (in_array($file, $state['composeFiles'], true)) {
+                return;
+            }
+            if (!is_file($file) || !is_readable($file)) {
+                throw new \RuntimeException('Cannot register an unavailable Compose input.');
             }
             $state['composeFiles'][] = $file;
             $encoded = json_encode($state, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
-            if (is_string($encoded)) {
-                self::atomicWrite($stateFile, $encoded . "\n");
+            if (!is_string($encoded) || !self::atomicWrite($stateFile, $encoded . "\n")) {
+                throw new \RuntimeException('Could not save Compose input registration.');
             }
         } finally {
             flock($lock, LOCK_UN);
@@ -460,7 +471,6 @@ final class ProjectIdentity
     public function auditAgainstRuntime(string $stackPath): array
     {
         $result = $this->toArray();
-        self::clearProbeCache();
         $probe = self::probe();
         if ($probe === null) {
             $result['auditStatus'] = 'unavailable';
@@ -840,17 +850,17 @@ final class ProjectIdentity
      */
     public static function probe(): ?array
     {
-        if (self::$probeOverride !== null) {
-            $result = (self::$probeOverride)();
-            return is_array($result) ? $result : null;
-        }
-
         if (self::$probeCached) {
             return self::$probeCache;
         }
 
         self::$probeCached = true;
         self::$probeCache = null;
+        if (self::$probeOverride !== null) {
+            $result = (self::$probeOverride)();
+            self::$probeCache = is_array($result) ? $result : null;
+            return self::$probeCache;
+        }
 
         $label = 'com.docker.compose.project';
         $containerFormat = 'containers {"project":{{json (.Label "com.docker.compose.project")}},"workingDir":{{json (.Label "com.docker.compose.project.working_dir")}},"configFiles":{{json (.Label "com.docker.compose.project.config_files")}}}';

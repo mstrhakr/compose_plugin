@@ -30,6 +30,10 @@ Working-directory labels can be absent, particularly when only volumes or networ
 
 The explicit identity report also checks existing pins for competing stack claims and contradictory container working-directory labels, including configured indirect sources. These conflicts are report-only: they do not rewrite saved pins or alter normal action resolution.
 
+Each explicit audit request refreshes Docker evidence once and shares that snapshot
+across its stacks. Override saves register new frozen inputs only after writing the
+file; registration failures restore the source and return an editor error.
+
 The archived indirect wrapper used filesystem enumeration order. Runtime labels now preserve its historical ordered inputs when available. A live multi-file stack with missing/contradictory order evidence is blocked. Without any labelled resources, current archived-style discovery is pinned once; lost historical configuration cannot be reconstructed from absent evidence. When only volumes remain and multiple files could have contributed, restore the historical inputs/evidence before attempting migration.
 
 Back up configuration/project metadata before installing a test build. The per-pin backup is not a backup of application data, all stack metadata or external Compose directories. Do not delete conflicting Docker resources merely to make migration proceed.

@@ -2665,6 +2665,7 @@ switch ($_POST['action']) {
         // runtime project, and whether owner input is required. Unlike normal
         // action dispatch, this explicitly probes Docker for already-pinned
         // identities, so an old bad pin from #183 can still be recovered.
+        ProjectIdentity::clearProbeCache();
         $identities = [];
         foreach (StackInfo::allFromRoot($compose_root, true) as $stackInfo) {
             $identity = $stackInfo->identity->auditAgainstRuntime($stackInfo->path);

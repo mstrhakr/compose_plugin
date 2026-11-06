@@ -1989,6 +1989,66 @@ class ExecActionsTest extends TestCase
         $this->assertEquals($overrideContent, file_get_contents($stackPath . '/compose.override.yaml'));
     }
 
+    public function testFailedOverrideRegistrationRestoresSourceAndRetainsRevision(): void
+    {
+        $path = $this->createTestStack('test-stack');
+        file_put_contents($path . '/project_name', 'test-stack');
+        $state = json_encode(['projectName' => 'test-stack', 'composeFiles' => [$path . '/compose.yaml']]);
+        file_put_contents($path . '/project_identity.json', $state);
+        $override = $path . '/compose.override.yaml';
+        file_put_contents($override, "services:\n  app: {}\n");
+        $before = file_get_contents($override);
+        mkdir($path . '/project_identity.lock');
+        $revision = \StackSourceEditor::revision($before, true);
+        $output = $this->executeAction('saveOverride', ['script' => 'test-stack',
+            'scriptContents' => "services: {}\n", 'expectedRevision' => $revision]);
+        $result = json_decode($output, true);
+        $this->assertSame('error', $result['result']);
+        $this->assertStringContainsString('registration', $result['message']);
+        $this->assertSame($before, file_get_contents($override));
+        $this->assertSame($revision, \StackSourceEditor::revision(file_get_contents($override), true));
+        $this->assertSame($state, file_get_contents($path . '/project_identity.json'));
+    }
+
+    public function testFailedTemplateRegistrationRemovesNewOverride(): void
+    {
+        $path = $this->createTestStack('test-stack');
+        file_put_contents($path . '/project_name', 'test-stack');
+        $state = json_encode(['projectName' => 'test-stack', 'composeFiles' => [$path . '/compose.yaml']]);
+        file_put_contents($path . '/project_identity.json', $state);
+        @unlink($path . '/compose.override.yaml');
+        mkdir($path . '/project_identity.lock');
+        $output = $this->executeAction('createOverrideTemplate', ['script' => 'test-stack']);
+        $this->assertSame('error', json_decode($output, true)['result']);
+        $this->assertFileDoesNotExist($path . '/compose.override.yaml');
+        $this->assertSame($state, file_get_contents($path . '/project_identity.json'));
+    }
+
+    public function testIdentityAuditUsesOneFreshSnapshotPerRequest(): void
+    {
+        foreach (['first', 'second'] as $project) {
+            $path = $this->createTestStack($project);
+            file_put_contents($path . '/project_name', $project);
+        }
+        $calls = 0;
+        \ProjectIdentity::setProbe(static function () use (&$calls): array {
+            $calls++;
+            return [];
+        });
+        try {
+            \ProjectIdentity::probe();
+            $this->assertSame(1, $calls);
+            foreach ([2, 3] as $expected) {
+                $result = json_decode($this->executeAction('getProjectIdentities', []), true);
+                $this->assertCount(2, $result['identities']);
+                $this->assertSame($expected, $calls);
+                $this->assertSame(['no-evidence', 'no-evidence'], array_column($result['identities'], 'auditStatus'));
+            }
+        } finally {
+            \ProjectIdentity::setProbe(null);
+        }
+    }
+
     // ===========================================
     // setEnvPath Action Tests  
     // ===========================================

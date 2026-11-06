@@ -527,6 +527,38 @@ class ProjectIdentityTest extends TestCase
         $this->assertContains($overridePath, $state['composeFiles']);
     }
 
+    public function testComposeRegistrationPreservesLegitimateNoOps(): void
+    {
+        $path = $this->makeStack('folder', 'folder');
+        file_put_contents($path . '/project_name', 'folder');
+        $identity = \ProjectIdentity::resolve($path, 'folder', 'folder');
+        $identity->registerComposeFile($path, $path . '/missing.override.yaml');
+        $this->assertFileDoesNotExist($path . '/project_identity.json');
+        $state = json_encode(['projectName' => 'folder', 'source' => 'owner']);
+        file_put_contents($path . '/project_identity.json', $state);
+        $identity->registerComposeFile($path, $path . '/missing.override.yaml');
+        $this->assertSame($state, file_get_contents($path . '/project_identity.json'));
+        $state = json_encode(['projectName' => 'folder', 'composeFiles' => [$path . '/docker-compose.yml']]);
+        file_put_contents($path . '/project_identity.json', $state);
+        $identity->registerComposeFile($path, $path . '/docker-compose.yml');
+        $this->assertSame($state, file_get_contents($path . '/project_identity.json'));
+    }
+
+    public function testRegistrationRejectsInvalidReceiptWithoutChangingIt(): void
+    {
+        $path = $this->makeStack('folder', 'folder');
+        file_put_contents($path . '/project_name', 'folder');
+        file_put_contents($path . '/project_identity.json', '{invalid');
+        $identity = \ProjectIdentity::resolve($path, 'folder', 'folder');
+        try {
+            $identity->registerComposeFile($path, $path . '/docker-compose.yml');
+            $this->fail('Invalid receipts must not be reported as registered.');
+        } catch (\RuntimeException $error) {
+            $this->assertStringContainsString('receipt', $error->getMessage());
+            $this->assertSame('{invalid', file_get_contents($path . '/project_identity.json'));
+        }
+    }
+
     public function testConflictingRuntimeComposeOrdersBlockMutation(): void
     {
         [$path, $files] = $this->makeOrderedIndirectImport();
