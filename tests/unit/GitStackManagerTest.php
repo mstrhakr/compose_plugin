@@ -156,8 +156,10 @@ final class GitStackManagerTest extends TestCase
         file_put_contents($stackDir . '/.env', "TZ=Europe/London\n");
         file_put_contents($stackDir . '/compose.override.yaml', "services:\n  whoami:\n    labels:\n      net.unraid.docker.icon: x\n");
         $oldCompose = (string) file_get_contents($stackDir . '/compose.yaml');
+        $oldEpoch = \StackMutationGuard::epoch($stack->projectName);
 
         $backup = $this->manager->convert($stack->projectFolder, $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $this->assertNotSame($oldEpoch, \StackMutationGuard::epoch($stack->projectName));
 
         $this->assertSame($oldCompose, file_get_contents($backup . '/compose.yaml'));
         $this->assertFileDoesNotExist($stackDir . '/compose.yaml');
@@ -376,7 +378,10 @@ final class GitStackManagerTest extends TestCase
             $first = $this->upstreamHead();
             $this->writeAndPush(['whoami/compose.yaml' => "services:\n  whoami:\n    image: traefik/whoami:v2\n"], 'bump');
 
+            $project = \StackInfo::fromProject($this->composeRoot, $folder)->projectName;
+            $before = \StackMutationGuard::epoch($project);
             [$exit, $output] = $this->runCliCapturingOutput(['compose-git', 'deploy', $folder, '--dry-run']);
+            $this->assertNotSame($before, \StackMutationGuard::epoch($project));
 
             $this->assertSame(0, $exit);
             $short = substr($first, 0, 12);
@@ -867,7 +872,10 @@ final class GitStackManagerTest extends TestCase
         file_put_contents($settings->cloneDir . '/whoami/data.db', "keep me\n");
         $this->writeAndPush(['whoami/compose.yaml' => "services: {}\n"], 'newer');
 
+        $project = \StackInfo::fromProject($this->composeRoot, $folder)->projectName;
+        $before = \StackMutationGuard::epoch($project);
         $movedTo = $this->manager->reclone($folder);
+        $this->assertNotSame($before, \StackMutationGuard::epoch($project));
 
         $this->assertNotNull($movedTo);
         $this->assertSame("keep me\n", file_get_contents($movedTo . '/whoami/data.db'));

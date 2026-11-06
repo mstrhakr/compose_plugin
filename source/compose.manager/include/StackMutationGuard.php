@@ -73,6 +73,54 @@ class StackMutationGuard
         return $epoch;
     }
 
+    /** @return resource|null */
+    public static function tryExclusive(string $project)
+    {
+        self::validateProject($project);
+        $directory = self::directory();
+        if (!is_dir($directory) && !@mkdir($directory, 0755, true) && !is_dir($directory)) {
+            throw new RuntimeException('Unable to create stack operation lock directory.');
+        }
+        $handle = @fopen($directory . '/' . $project . '.lock', 'c+');
+        if ($handle === false) throw new RuntimeException('Unable to open stack operation lock.');
+        if (!flock($handle, LOCK_EX | LOCK_NB)) {
+            fclose($handle);
+            return null;
+        }
+        return $handle;
+    }
+
+    /** @template T
+     *  @param callable(): T $work
+     *  @return T
+     */
+    public static function mutate(string $project, string $folder, callable $work): mixed
+    {
+        $handle = self::tryExclusive($project);
+        if ($handle === null) throw new RuntimeException('Another operation is in progress. Try again when it has finished.');
+        try {
+            return self::duringMutation($project, $folder, $work);
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
+    }
+
+    /** The caller must own the exclusive operation lock.
+     *  @template T
+     *  @param callable(): T $work
+     *  @return T
+     */
+    public static function duringMutation(string $project, string $folder, callable $work): mixed
+    {
+        self::mutationBoundary($project, $folder, false);
+        try {
+            return $work();
+        } finally {
+            self::mutationBoundary($project, $folder, false);
+        }
+    }
+
     /** Called only while the mutation owns compose.sh's exclusive operation lock. */
     public static function mutationBoundary(string $project, string $folder, bool $createPending = true): void
     {

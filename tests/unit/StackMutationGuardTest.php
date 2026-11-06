@@ -70,6 +70,30 @@ final class StackMutationGuardTest extends TestCase
         return \StackInfo::fromProject($GLOBALS['compose_root'], $this->folder);
     }
 
+    public function testPhpMutationInvalidatesChecksAtBothBoundariesAndReleasesOnFailure(): void
+    {
+        $this->stack();
+        \PendingRechecks::mark([$this->folder]);
+        $old = \PendingRechecks::token($this->folder);
+        $during = null;
+        try {
+            \StackMutationGuard::mutate($this->project, $this->folder, function () use (&$during): void {
+                $during = \StackMutationGuard::epoch($this->project);
+                $this->assertMatchesRegularExpression('/^[a-f0-9]{32}$/', $during);
+                $this->assertNull(\StackMutationGuard::inspect($this->project, static fn() => true));
+                throw new \RuntimeException('Source mutation failed.');
+            });
+            $this->fail('The original failure must propagate.');
+        } catch (\RuntimeException $error) {
+            $this->assertSame('Source mutation failed.', $error->getMessage());
+        }
+        $this->assertNotSame($during, \StackMutationGuard::epoch($this->project));
+        $this->assertSame([$this->folder], \PendingRechecks::acknowledge([$this->folder], [$this->folder => $old]));
+        $lock = \StackMutationGuard::tryExclusive($this->project);
+        $this->assertIsResource($lock);
+        fclose($lock);
+    }
+
     /** @return resource */
     private function mutationLock()
     {
