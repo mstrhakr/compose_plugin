@@ -6,6 +6,9 @@ const source = readFileSync(resolve(__dirname, '../../../source/compose.manager/
 const main = readFileSync(resolve(__dirname, '../../../source/compose.manager/javascript/composeManagerMain.js'), 'utf8');
 const parseSave = main.match(/^function parseSaveResponse\([^]*?\n\}/m)![0];
 const loadFiles = main.match(/^function loadEditorFiles\([^]*?\n\}/m)![0];
+const iconSanitizer = main.match(/^function sanitizeIconPreviewSrc\([^]*?\n\}/m)![0];
+const iconHelpers = readFileSync(resolve(__dirname, '../../../source/compose.manager/javascript/composeIcons.js'), 'utf8');
+const iconPreview = main.match(/\$input\.data\('iconDebounce', setTimeout\(function\(\) \{([^]*?)\n\s*\}, 300\)\);/)![1];
 interface Harness extends Window {
   postEditorSourceSave(payload: Record<string, string | undefined>): { done(fn: (body: string) => void): void };
   loadEditorSharedSources(project: string): void;
@@ -171,4 +174,41 @@ test('failed source reads show errors and do not hydrate save revisions', async 
   });
   expect(state.messages).toEqual(['Compose file is unreadable.', 'Environment file is unreadable.']);
   expect(state.revisions).toEqual({ '/source': 'loaded' });
+});
+
+test('icon preview uses exact service IDs and never retargets another element', async ({ page }) => {
+  await page.route('**/*', route => route.abort());
+  await page.addScriptTag({ content: iconHelpers + '\n' + iconSanitizer });
+  const result = await page.evaluate(({ callback }) => {
+    const update = new Function('$input', callback);
+    const cases = ['foo.bar', '123', 'web, #other-frame'];
+    const iframe = document.createElement('iframe');
+    iframe.id = 'other-frame';
+    document.body.appendChild(iframe);
+    const sources = cases.map(service => {
+      const image = document.createElement('img');
+      image.id = 'label-icon-preview-' + service;
+      const input = document.createElement('input');
+      input.setAttribute('data-service', service);
+      document.body.appendChild(image);
+      update({ 0: input, val: () => '/plugins/compose.manager/images/question.png' });
+      return image.getAttribute('src');
+    });
+    const nonImage = document.createElement('div');
+    nonImage.id = 'label-icon-preview-not-image';
+    document.body.appendChild(nonImage);
+    const input = document.createElement('input');
+    input.setAttribute('data-service', 'not-image');
+    update({ 0: input, val: () => '/ignored.png' });
+    input.setAttribute('data-service', 'missing');
+    update({ 0: input, val: () => '/ignored.png' });
+    input.setAttribute('data-service', 'foo.bar');
+    update({ 0: input, val: () => 'javascript:alert(1)' });
+    return { sources, iframeSource: iframe.getAttribute('src'), nonImageSource: nonImage.getAttribute('src'),
+      rejectedSource: document.getElementById('label-icon-preview-foo.bar')?.getAttribute('src') };
+  }, { callback: iconPreview });
+  expect(result.sources).toEqual(Array(3).fill('/plugins/compose.manager/images/question.png'));
+  expect(result.iframeSource).toBeNull();
+  expect(result.nonImageSource).toBeNull();
+  expect(result.rejectedSource).toBe('/plugins/compose.manager/images/question.png');
 });

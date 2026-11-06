@@ -7721,8 +7721,10 @@ function renderLabelsUI(mainDoc, overrideDoc) {
             clearTimeout($input.data('iconDebounce'));
             $input.data('iconDebounce', setTimeout(function() {
                 var iconUrl = $input.val().trim();
-                var $preview = $('#label-icon-preview-' + service);
-                $preview.attr('src', sanitizeIconPreviewSrc(iconUrl));
+                var preview = document.getElementById('label-icon-preview-' + $input[0].getAttribute('data-service'));
+                if (preview instanceof HTMLImageElement) {
+                    preview.src = sanitizeIconPreviewSrc(iconUrl);
+                }
             }, 300));
         }
 
