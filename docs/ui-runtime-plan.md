@@ -88,6 +88,14 @@ on a reported write failure; restoration failures are also surfaced. Writes
 remain in-place to preserve symlink targets and existing mounted file inodes;
 this is failure recovery, not crash-atomic storage.
 
+The stack editor reports shared Compose/env/override sources, including symlink
+and hard-link aliases and missing template targets. Saves of known shared files
+require confirmation against a freshly computed sharing list. A persistent
+per-stack "Don't show again" preference suppresses both the opening notice and
+save confirmations; the editor exposes the same checkbox to re-enable them.
+Incomplete inspection is reported rather than represented as exclusive
+ownership. These notices are advisory, not cross-project mutation coordination.
+
 Individual container actions resolve the actual Compose project label, acquire
 its lock, and execute against the inspected immutable container ID. Native
 containers retain their no-project behavior. Docker exit failures and bounded

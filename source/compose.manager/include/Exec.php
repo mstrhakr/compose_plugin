@@ -11,6 +11,7 @@ require_once("/usr/local/emhttp/plugins/compose.manager/include/PendingRechecks.
 require_once("/usr/local/emhttp/plugins/compose.manager/include/ContainerMetadataCache.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/StackSourceEditor.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/ContainerActions.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/SharedStackSources.php");
 require_once("/usr/local/emhttp/plugins/dynamix/include/Wrappers.php");
 require_once('/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php');
 
@@ -667,6 +668,32 @@ switch ($_POST['action']) {
         $fileContents = str_replace("\r", "", $fileContents);
         echo json_encode(['result' => 'success', 'content' => $fileContents]);
         break;
+    case 'getSharedStackSources':
+    case 'setSharedSourceWarning':
+        $script = getPostScript();
+        try {
+            if ($script === '') throw new InvalidArgumentException('Stack not specified.');
+            $stack = StackInfo::fromProject($compose_root, $script);
+            if ($_POST['action'] === 'setSharedSourceWarning') {
+                if (!in_array($_POST['dismissed'] ?? null, ['0', '1'], true)) throw new InvalidArgumentException('Invalid warning preference.');
+                $lock = StackMutationGuard::tryExclusive($stack->projectName);
+                if ($lock === null) throw new RuntimeException('Another operation is in progress. Try again when it has finished.');
+                try {
+                    $preference = $stack->path . '/shared_source_warning_dismissed';
+                    if ($_POST['dismissed'] === '1') StackSourceEditor::write($preference, 'true');
+                    else StackSourceEditor::remove($preference);
+                } finally {
+                    fclose($lock);
+                }
+                echo json_encode(['result' => 'success', 'dismissed' => $_POST['dismissed'] === '1']);
+            } else {
+                echo json_encode(['result' => 'success'] + SharedStackSources::inspect($compose_root, $stack));
+            }
+        } catch (RuntimeException | InvalidArgumentException | JsonException $error) {
+            composeLogger('Shared-source warning failed: ' . $error->getMessage(), ['stack' => $script], 'user', 'error', 'editor');
+            echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);
+        }
+        break;
     case 'getYml':
         $script = getPostScript();
         // Resolve compose file path via StackInfo
@@ -770,6 +797,14 @@ switch ($_POST['action']) {
                     }
                     if (rejectStaleClientPath($path, $label)) return null;
                     if ($path === null) throw new RuntimeException('Unable to resolve ' . $label . ' path.');
+                    if (is_dir($path)) throw new RuntimeException('Target path is a directory.');
+                    $sharing = SharedStackSources::inspect($compose_root, $stack, $path);
+                    if (!$sharing['dismissed'] && $sharing['shared'] !== []
+                        && ($_POST['sharedConfirmation'] ?? '') !== $sharing['confirmation']) {
+                        echo json_encode(['result' => 'error', 'errorCode' => 'shared_source_confirmation',
+                            'message' => 'Review shared source files before saving.'] + $sharing);
+                        return null;
+                    }
                     $template = $action === 'createEnvTemplate' || $action === 'createOverrideTemplate';
                     if ($action === 'saveYml') {
                         StackSourceEditor::saveCompose($stack, $path, $contents, $migrate);

@@ -3193,7 +3193,16 @@ class StackInfo
         return $files;
     }
 
-    private function getComposeFilePaths(): array
+    public function getSourceFilePaths(): array
+    {
+        $paths = $this->getComposeFilePaths(false);
+        $paths[] = $this->getEffectiveEnvFilePath() ?? ($this->getEnvFilePath() ?? $this->composeSource . '/.env');
+        $paths[] = $this->getPreferredOverridePath();
+        $paths[] = $this->overrideInfo->getProjectOverridePath();
+        return array_values(array_unique(array_filter($paths, 'is_string')));
+    }
+
+    private function getComposeFilePaths(bool $includeDerived = true): array
     {
         if ($this->inputMigrationError !== null) {
             return array_values(array_filter($this->legacyComposeCandidates, 'is_file'));
@@ -3209,7 +3218,7 @@ class StackInfo
             // itself (see registerComposeFile()); this only adds the
             // generated icon-normalization layer, which is derived content
             // rather than a Compose input and so is never part of that list.
-            $iconNormalizePath = $this->getIconNormalizationOverridePath();
+            $iconNormalizePath = $includeDerived ? $this->getIconNormalizationOverridePath() : null;
             if ($iconNormalizePath !== null && !in_array($iconNormalizePath, $legacyFiles, true)) {
                 $legacyFiles[] = $iconNormalizePath;
             }
@@ -3253,7 +3262,7 @@ class StackInfo
 
         // Last (highest precedence) so it can safely override just the icon
         // label without disturbing anything else the user/other files set.
-        $iconNormalizePath = $this->getIconNormalizationOverridePath();
+        $iconNormalizePath = $includeDerived ? $this->getIconNormalizationOverridePath() : null;
         if ($iconNormalizePath !== null) {
             $paths[] = $iconNormalizePath;
         }

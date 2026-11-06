@@ -619,6 +619,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 <script src="<?php autov('/plugins/compose.manager/javascript/credentialManager.js'); ?>" type="text/javascript"></script>
 <script src="<?php autov('/plugins/compose.manager/javascript/composeOperations.js'); ?>" type="text/javascript"></script>
 <script src="<?php autov('/plugins/compose.manager/javascript/composeUpdateChecks.js'); ?>" type="text/javascript"></script>
+<script src="<?php autov('/plugins/compose.manager/javascript/composeEditorSources.js'); ?>" type="text/javascript"></script>
 <script src="<?php autov('/plugins/compose.manager/javascript/composeManagerMain.js'); ?>" type="text/javascript"></script>
 
 <HTML>
@@ -728,6 +729,10 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </div>
 
             <!-- Unified Tab Bar -->
+            <div id="editor-shared-sources" style="display:none;padding:10px;" role="status">
+                <div id="editor-shared-sources-message" class="compose-status-warning"></div>
+                <label><input id="editor-shared-sources-dismissed" type="checkbox" onchange="setEditorSharedSourceWarning(this.checked)"> Don't show shared-file warnings again for this stack</label>
+            </div>
             <div class="editor-tabs" role="tablist">
                 <button class="editor-tab active" id="editor-tab-compose" onclick="switchTab('compose')" role="tab" aria-selected="true" aria-controls="editor-panel-compose">
                     <i class="fa fa-file-code-o" aria-hidden="true"></i>

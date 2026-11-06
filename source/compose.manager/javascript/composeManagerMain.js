@@ -6500,6 +6500,7 @@ function openEditorModalByProject(project, projectName, initialTab) {
     // Load all files and settings
     loadEditorFiles(project);
     loadSettingsData(project, projectName);
+    loadEditorSharedSources(project);
 
     // Switch to appropriate initial tab (default to 'compose')
     var targetTab = initialTab || 'compose';
@@ -7389,7 +7390,7 @@ function createOverrideTemplate() {
 
     $('#labels-override-empty-state button').prop('disabled', true);
 
-    $.post(caURL, {
+    postEditorSourceSave({
         action: 'createOverrideTemplate',
         script: project,
         expectedPath: editorModal.filePaths.effectiveOverride || editorModal.filePaths.projectOverride || ''
@@ -7451,7 +7452,7 @@ function createEnvTemplate() {
 
     $('#env-empty-state button').prop('disabled', true);
 
-    $.post(caURL, {
+    postEditorSourceSave({
         action: 'createEnvTemplate',
         script: project,
         expectedPath: editorModal.filePaths.env || ''
@@ -8080,7 +8081,7 @@ function saveTab(tabName, saveErrors) {
         savePayload.file = editorModal.filePaths.compose;
     }
 
-    return $.post(caURL, savePayload).then(function(data) {
+    return postEditorSourceSave(savePayload).then(function(data) {
         var saveTarget = tabName === 'override' ? 'override file' : (tabName + ' file');
         if (!parseSaveResponse(data, saveErrors, saveTarget)) {
             return false;
@@ -8486,7 +8487,7 @@ function saveLabels(saveErrors) {
         'forceQuotes': true
     });
 
-    return $.post(caURL, {
+    return postEditorSourceSave({
         action: 'saveOverride',
         script: project,
         scriptContents: rawOverride,

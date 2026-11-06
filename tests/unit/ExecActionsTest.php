@@ -1451,6 +1451,30 @@ class ExecActionsTest extends TestCase
         $this->assertStringContainsString('saved', $output);
     }
 
+    public function testSharedSaveRequiresFreshConfirmationAndDismissalIsPerStackAndReversible(): void
+    {
+        $a = $this->createTestStack('a');
+        $b = $this->createTestStack('b');
+        file_put_contents($b . '/indirect', $a . '/compose.yaml');
+        file_put_contents($b . '/indirect_mode', 'file');
+        \StackInfo::clearCache();
+        $original = file_get_contents($a . '/compose.yaml');
+        $payload = ['script' => 'a', 'scriptContents' => "services:\n  app:\n    image: busybox\n"];
+        $challenge = json_decode($this->executeAction('saveYml', $payload), true);
+        $this->assertSame('shared_source_confirmation', $challenge['errorCode']);
+        $this->assertSame(['b'], $challenge['shared'][0]['stacks']);
+        $this->assertSame($original, file_get_contents($a . '/compose.yaml'));
+        $this->assertStringContainsString('saved', $this->executeAction('saveYml', $payload + ['sharedConfirmation' => $challenge['confirmation']]));
+        $dismissed = json_decode($this->executeAction('setSharedSourceWarning', ['script' => 'a', 'dismissed' => '1']), true);
+        $this->assertTrue($dismissed['dismissed']);
+        $this->assertStringContainsString('saved', $this->executeAction('saveYml', $payload));
+        $other = json_decode($this->executeAction('getSharedStackSources', ['script' => 'b']), true);
+        $this->assertFalse($other['dismissed']);
+        $this->assertNotEmpty($other['shared']);
+        $this->executeAction('setSharedSourceWarning', ['script' => 'a', 'dismissed' => '0']);
+        $this->assertSame('shared_source_confirmation', json_decode($this->executeAction('saveYml', $payload), true)['errorCode']);
+    }
+
     public function testSourceWritersRespectCanonicalLockAndInvalidateOldAcknowledgements(): void
     {
         $path = $this->createTestStack('source-owner');
@@ -1633,6 +1657,11 @@ class ExecActionsTest extends TestCase
         ]);
 
         $result = json_decode($output, true);
+        $this->assertSame('shared_source_confirmation', $result['errorCode']);
+        $this->assertFileDoesNotExist($indirectDir . '/.env');
+        $result = json_decode($this->executeAction('createEnvTemplate', [
+            'script' => 'test-stack', 'sharedConfirmation' => $result['confirmation'],
+        ]), true);
         $this->assertEquals('success', $result['result']);
         $this->assertTrue($result['exists']);
         $this->assertSame($indirectDir . '/.env', $result['fileName']);
