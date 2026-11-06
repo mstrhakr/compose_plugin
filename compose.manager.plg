@@ -36,70 +36,12 @@
 >
 
 <CHANGES>
-###2026.11.06.1244
-- Features (editor): warn about shared sources with per-stack dismissal
-- Features: continue tracked terminal actions in background safely
-- Bug Fixes (editor): resolve dangling source aliases consistently
-- Bug Fixes (storage): serialize first-use cache initialization
-- Bug Fixes (terminal): drain all owned session groups on cancellation
-- Bug Fixes (editor): target icon previews by exact service ID
-- Bug Fixes (updates): isolate stack configuration failures during bulk checks
-- Bug Fixes (updates): inspect mutually exclusive profiles without deployment validation
-- Bug Fixes (editor): reject stale source contents without discarding edits
-- Bug Fixes: coordinate Compose evidence with mutation and cache owners
-- Bug Fixes: centralize ownership of single bulk and cached image checks
-- Bug Fixes: preserve corrupt evidence until explicit cache clearing
-- Bug Fixes: gate image evidence publication by project generation
-- Bug Fixes: own image-check acknowledgements and surface pending-store failures
-- Bug Fixes: transact pending rechecks and acknowledge exact generations
-- Bug Fixes: preserve Docker membership changes during filter requests
-- Bug Fixes: isolate runtime dictionaries from inherited project keys
-- Bug Fixes: validate image recheck preparation before dispatch
-- Bug Fixes: finalize cancelled operations only after session shutdown
-- Bug Fixes: authenticate terminal controls and require removal evidence
-- Bug Fixes: explain command-specific terminal cancellation effects
-- Bug Fixes (ui): reconcile transient detail state and retry starting health
-- Bug Fixes (dashboard): preserve operation ownership and reject stale snapshots
-- Bug Fixes (ui): preserve open context menus across option refreshes
-- Bug Fixes (ui): preserve unchanged runtime animations and context menus
-- Bug Fixes (ui): share receipt completion tracking with Dashboard
-- Bug Fixes (ui): invalidate Docker filtering only when membership changes
-- Bug Fixes (ui): defer pending update checks until operations finish
-- Bug Fixes (ui): reconcile recreated container metrics and settling health
-- Bug Fixes (ui): allow independent Compose header and Docker visibility
-- Bug Fixes (ui): refresh action views without reloading on terminal close
-- Bug Fixes (ui): reconcile finite actions only after their dispatch completes
-- Bug Fixes (ui): track queued and running commands with dispatch receipts
-- Bug Fixes (ui): preserve action ownership and recover failed bulk dispatches
-- Bug Fixes (ui): guard progressive lists and replay pending detail refreshes
-- Performance: drain pending image rechecks in linear time
-- Performance (ui): scope detail enhancements and own Dashboard hiding retries
-- Performance (ui): keep runtime refreshes out of whole-list enhancements
-- Documentation: require end-to-end ownership review invariants
-- Documentation: clarify image-check publication coordination boundary
-- Documentation: require related-path and contract-aware review
-- Documentation: update manual testing gates for UI completion receipts
-- Documentation: define UI stabilization live testing checkpoint
-- Tests (terminal): acknowledge expected cancellation failure notice
-- Tests (e2e): retain scoped terminal dispatch diagnostics
-- Tests: make guarded ownership wait deterministic and retain diagnostics
-- Tests: cover active deployment image-check ownership on guarded host
-- Tests: cover scoped recheck ownership on guarded real hosts
-- Tests: guard live terminal continuation and cancellation cases
-- Tests: align guarded host cases with live UI lifecycle
-- Tests (e2e): verify recreated row identities and tighten container scope
-- Tests (e2e): add opt-in isolated Unraid stabilization gate
-- Tests (e2e): wait for exact operation receipts before host cleanup
-- Tests (ui): cover stale retry owners and removed Dashboard membership
-- Tests (ui): verify bulk receipt isolation and private storage
-- Upgrade Compose to 5.7.0 with guarded required-health deadline regression
-- Guard source edits and direct container actions against concurrent operations
-- Coordinate PHP and Git source mutations with check epochs
-- Use configured stack paths for Dashboard actions and logs
-- Bound managed terminal resources and preserve accepted startup tracking
-- Fix profile-aware Pull/Build &amp; Up deployment
+###2026.11.06.1329
+- Features (settings): organize diagnostic and cache actions in maintenance tab
+- Bug Fixes (identities): report conflicting ownership for saved project pins
+- Bug Fixes (settings): move identity checks into maintenance with evidence reports
 - [PR #187](https://github.com/mstrhakr/compose_plugin/pull/187)
-- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.10.27...v2026.11.06.1244)
+- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.10.27...v2026.11.06.1329)
 </CHANGES>
 
 <!-- The 'pre-install' script. -->
