@@ -23,10 +23,12 @@ final class SharedStackSources
         return trim($value) === 'true';
     }
 
-    /** @return array{shared: list<array{path: string, stacks: list<string>}>, dismissed: bool, incomplete: list<string>, confirmation: string} */
-    public static function inspect(string $root, StackInfo $stack, ?string $target = null): array
+    /** @param string|list<string>|null $target
+     *  @return array{shared: list<array{path: string, stacks: list<string>}>, dismissed: bool, incomplete: list<string>, confirmation: string}
+     */
+    public static function inspect(string $root, StackInfo $stack, string|array|null $target = null): array
     {
-        $paths = $target === null ? $stack->getSourceFilePaths() : [$target];
+        $paths = $target === null ? $stack->getSourceFilePaths() : (is_array($target) ? $target : [$target]);
         $keys = [];
         $inodes = [];
         foreach ($paths as $path) {

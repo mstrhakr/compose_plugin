@@ -91,4 +91,23 @@ final class StackSourceEditorTest extends TestCase
         $this->assertSame('external', readlink($directory . '/source'));
         $this->assertSame('previous', file_get_contents($directory . '/external'));
     }
+
+    public function testCompareAndSaveLockRefusesAnotherWriterThroughSymlinkOrHardLink(): void
+    {
+        $directory = $this->createTempDir();
+        file_put_contents($directory . '/source', 'original');
+        symlink('source', $directory . '/symlink');
+        link($directory . '/source', $directory . '/hardlink');
+        \StackSourceEditor::withFileLocks([$directory . '/source'], function () use ($directory): void {
+            foreach (['source', 'symlink', 'hardlink'] as $file) {
+                try {
+                    \StackSourceEditor::withFileLocks([$directory . '/' . $file], static fn() => true);
+                    $this->fail('A concurrent alias writer was allowed.');
+                } catch (\RuntimeException $error) {
+                    $this->assertStringContainsString('Another editor is saving', $error->getMessage());
+                }
+            }
+        });
+        $this->assertTrue(\StackSourceEditor::withFileLocks([$directory . '/source'], static fn() => true));
+    }
 }

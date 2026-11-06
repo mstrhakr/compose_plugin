@@ -96,6 +96,16 @@ save confirmations; the editor exposes the same checkbox to re-enable them.
 Incomplete inspection is reported rather than represented as exclusive
 ownership. These notices are advisory, not cross-project mutation coordination.
 
+Editor reads return a content revision distinguishing a missing file from an
+empty file. Updated editors submit that revision with Compose/env/override,
+Labels, and template saves. A mismatch preserves unsaved edits and asks the
+user to review the current file; it never automatically reloads or overwrites
+the other change. A short, nonblocking source-edit lock serializes plugin
+compare-and-save operations across path/symlink/hard-link aliases. This does not
+lock external editors or coordinate Git checkouts with other projects' checks.
+Legacy API callers without a revision retain their existing response contract
+and do not gain optimistic stale-content protection.
+
 Individual container actions resolve the actual Compose project label, acquire
 its lock, and execute against the inspected immutable container ID. Native
 containers retain their no-project behavior. Docker exit failures and bounded

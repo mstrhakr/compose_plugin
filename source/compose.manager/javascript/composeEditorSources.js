@@ -3,6 +3,14 @@ function parseEditorSourceResponse(data) {
     return typeof data === 'string' ? JSON.parse(data) : data;
 }
 
+function rememberEditorSourceRevision(response) {
+    if (!editorModal.sourceRevisions) editorModal.sourceRevisions = Object.create(null);
+    if (response && response.fileName && response.revision) editorModal.sourceRevisions[response.fileName] = response.revision;
+    Object.keys(response && response.revisions || {}).forEach(function(path) {
+        editorModal.sourceRevisions[path] = response.revisions[path];
+    });
+}
+
 function editorSharedSourceText(response) {
     var lines = (response.shared || []).map(function(entry) {
         return entry.path + ' is also used by: ' + entry.stacks.join(', ');
@@ -54,6 +62,13 @@ function setEditorSharedSourceWarning(dismissed) {
 
 function postEditorSourceSave(payload) {
     var deferred = $.Deferred();
+    var revision = Object.prototype.hasOwnProperty.call(payload, 'expectedRevision')
+        ? payload.expectedRevision : (editorModal.sourceRevisions || {})[payload.expectedPath];
+    if (!revision || (Object.prototype.hasOwnProperty.call(payload, 'expectedComposeRevision') && !payload.expectedComposeRevision)) {
+        deferred.resolve(JSON.stringify({ result: 'error', message: 'The file revision was not loaded. Copy your edits before reopening the editor.' }));
+        return deferred.promise();
+    }
+    payload.expectedRevision = revision;
     function send(confirmed) {
         $.post(caURL, payload).done(function(data) {
             var response;

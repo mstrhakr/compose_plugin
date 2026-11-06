@@ -1475,6 +1475,122 @@ class ExecActionsTest extends TestCase
         $this->assertSame('shared_source_confirmation', json_decode($this->executeAction('saveYml', $payload), true)['errorCode']);
     }
 
+    public function testLoadedRevisionsRejectStaleContentsForEveryEditorSaveAndAllowRepeatedOwnedSaves(): void
+    {
+        $path = $this->createTestStack('revision');
+        $cases = [
+            ['getYml', 'saveYml', $path . '/compose.yaml', "services:\n  app:\n    image: alpine\n"],
+            ['getEnv', 'saveEnv', $path . '/.env', "VALUE=first\r\n"],
+            ['getOverride', 'saveOverride', $path . '/compose.override.yaml', "services: {}\n"],
+        ];
+        foreach ($cases as [$get, $save, $file, $contents]) {
+            $loaded = json_decode($this->executeAction($get, ['script' => 'revision']), true);
+            $this->assertMatchesRegularExpression('/^[a-f0-9]{64}$/', $loaded['revision']);
+            $payload = ['script' => 'revision', 'scriptContents' => $contents, 'expectedPath' => $loaded['fileName'],
+                'expectedRevision' => $loaded['revision'], 'managed' => '0'];
+            $saved = json_decode($this->executeAction($save, $payload), true);
+            $this->assertSame('success', $saved['result']);
+            $this->assertSame(\StackSourceEditor::revision($contents, true), $saved['revision']);
+            $before = filemtime($file);
+            file_put_contents($file, 'external changes');
+            touch($file, $before);
+            $rejected = json_decode($this->executeAction($save, array_replace($payload, ['expectedRevision' => $saved['revision']])), true);
+            $this->assertSame('stale_content', $rejected['errorCode']);
+            $this->assertSame('external changes', file_get_contents($file));
+            $fresh = json_decode($this->executeAction($get, ['script' => 'revision']), true);
+            $second = json_decode($this->executeAction($save, array_replace($payload, ['expectedRevision' => $fresh['revision']])), true);
+            $this->assertSame('success', $second['result']);
+        }
+    }
+
+    public function testMissingFileRevisionDoesNotPermitOverwritingNewlyCreatedEmptyFile(): void
+    {
+        $path = $this->createTestStack('missing-revision');
+        $loaded = json_decode($this->executeAction('getEnv', ['script' => 'missing-revision']), true);
+        $this->assertFalse($loaded['exists']);
+        file_put_contents($path . '/.env', '');
+        $rejected = json_decode($this->executeAction('createEnvTemplate', [
+            'script' => 'missing-revision', 'expectedPath' => $loaded['fileName'], 'expectedRevision' => $loaded['revision'],
+        ]), true);
+        $this->assertSame('stale_content', $rejected['errorCode']);
+        $this->assertSame('', file_get_contents($path . '/.env'));
+    }
+
+    public function testDismissedSharingDoesNotBypassContentConflictProtection(): void
+    {
+        $a = $this->createTestStack('conflict-a');
+        $b = $this->createTestStack('conflict-b');
+        file_put_contents($b . '/indirect', $a . '/compose.yaml');
+        file_put_contents($b . '/indirect_mode', 'file');
+        \StackInfo::clearCache();
+        $this->executeAction('setSharedSourceWarning', ['script' => 'conflict-a', 'dismissed' => '1']);
+        $this->executeAction('setSharedSourceWarning', ['script' => 'conflict-b', 'dismissed' => '1']);
+        $first = json_decode($this->executeAction('getYml', ['script' => 'conflict-a']), true);
+        $second = json_decode($this->executeAction('getYml', ['script' => 'conflict-b']), true);
+        $saved = json_decode($this->executeAction('saveYml', [
+            'script' => 'conflict-a', 'expectedRevision' => $first['revision'], 'scriptContents' => "services:\n  new:\n    image: busybox\n",
+        ]), true);
+        $this->assertSame('success', $saved['result']);
+        $rejected = json_decode($this->executeAction('saveYml', [
+            'script' => 'conflict-b', 'expectedRevision' => $second['revision'], 'scriptContents' => "services: {}\n",
+        ]), true);
+        $this->assertSame('stale_content', $rejected['errorCode']);
+        $this->assertStringContainsString('new:', file_get_contents($a . '/compose.yaml'));
+    }
+
+    public function testLabelsSaveRejectsChangedMainComposeWithoutChangingOverride(): void
+    {
+        $path = $this->createTestStack('labels-revision');
+        $main = json_decode($this->executeAction('getYml', ['script' => 'labels-revision']), true);
+        $override = json_decode($this->executeAction('getOverride', ['script' => 'labels-revision']), true);
+        file_put_contents($path . '/compose.yaml', "services:\n  newer:\n    image: busybox\n");
+        $result = json_decode($this->executeAction('saveOverride', [
+            'script' => 'labels-revision', 'managed' => '1', 'scriptContents' => "services: {}\n",
+            'expectedRevision' => $override['revision'], 'expectedComposeRevision' => $main['revision'],
+        ]), true);
+        $this->assertSame('stale_content', $result['errorCode']);
+        $this->assertFileDoesNotExist($path . '/compose.override.yaml');
+    }
+
+    public function testCreatedOverrideRevisionSupportsImmediateLabelsSave(): void
+    {
+        $this->createTestStack('labels-template');
+        $main = json_decode($this->executeAction('getYml', ['script' => 'labels-template']), true);
+        $override = json_decode($this->executeAction('getOverride', ['script' => 'labels-template']), true);
+        $created = json_decode($this->executeAction('createOverrideTemplate', [
+            'script' => 'labels-template', 'expectedPath' => $override['fileName'],
+            'expectedRevision' => $override['revision'],
+        ]), true);
+        $this->assertSame('success', $created['result']);
+        $saved = json_decode($this->executeAction('saveOverride', [
+            'script' => 'labels-template', 'managed' => '1', 'expectedPath' => $created['fileName'],
+            'expectedRevision' => $created['revision'], 'expectedComposeRevision' => $main['revision'],
+            'scriptContents' => "services: {}\n",
+        ]), true);
+        $this->assertSame('success', $saved['result']);
+        $this->assertSame("services: {}\n", file_get_contents($created['fileName']));
+    }
+
+    public function testMainComposeSaveWarnsBeforeMigratingSharedOverride(): void
+    {
+        $a = $this->createTestStack('migration-a');
+        $b = $this->createTestStack('migration-b');
+        $override = $a . '/compose.override.yaml';
+        file_put_contents($override, "services:\n  app:\n    labels:\n      example: value\n");
+        file_put_contents($b . '/indirect', $override);
+        file_put_contents($b . '/indirect_mode', 'file');
+        \StackInfo::clearCache();
+        $original = file_get_contents($a . '/compose.yaml');
+        $challenge = json_decode($this->executeAction('saveYml', [
+            'script' => 'migration-a', 'scriptContents' => "services:\n  renamed:\n    image: alpine\n",
+        ]), true);
+        $this->assertSame('shared_source_confirmation', $challenge['errorCode']);
+        $this->assertSame($override, $challenge['shared'][0]['path']);
+        $this->assertSame(['migration-b'], $challenge['shared'][0]['stacks']);
+        $this->assertSame($original, file_get_contents($a . '/compose.yaml'));
+        $this->assertStringContainsString('app:', file_get_contents($override));
+    }
+
     public function testSourceWritersRespectCanonicalLockAndInvalidateOldAcknowledgements(): void
     {
         $path = $this->createTestStack('source-owner');

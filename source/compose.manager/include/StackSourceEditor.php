@@ -5,8 +5,70 @@ declare(strict_types=1);
 require_once __DIR__ . '/Util.php';
 require_once __DIR__ . '/StackMutationGuard.php';
 
+final class StaleSourceRevision extends RuntimeException {}
+
 final class StackSourceEditor
 {
+    /** @return array{content: string, revision: string, exists: bool} */
+    public static function read(string $path): array
+    {
+        clearstatcache(true, $path);
+        if (is_dir($path)) throw new RuntimeException('Target path is a directory.');
+        $exists = file_exists($path);
+        $content = $exists ? @file_get_contents($path) : '';
+        if ($content === false) throw new RuntimeException('Unable to read ' . $path . '.');
+        return ['content' => $content, 'revision' => self::revision($content, $exists), 'exists' => $exists];
+    }
+
+    public static function revision(string $content, bool $exists): string
+    {
+        return hash('sha256', ($exists ? 'file:' : 'missing:') . $content);
+    }
+
+    public static function assertRevision(string $path, mixed $expected): void
+    {
+        if (!is_string($expected) || preg_match('/^[a-f0-9]{64}$/D', $expected) !== 1) {
+            throw new InvalidArgumentException('A valid loaded file revision is required. Reopen the editor.');
+        }
+        if (!hash_equals(self::read($path)['revision'], $expected)) {
+            throw new StaleSourceRevision('This file changed since it was loaded. Your edits have been retained. Copy them before reloading, then review and merge the current file.');
+        }
+    }
+
+    /** @template T
+     *  @param list<string> $paths
+     *  @param callable(): T $work
+     *  @return T
+     */
+    public static function withFileLocks(array $paths, callable $work): mixed
+    {
+        $keys = [];
+        foreach ($paths as $path) {
+            $real = realpath($path);
+            $keys[] = hash('sha256', 'path:' . ($real === false ? (realpath(dirname($path)) ?: dirname($path)) . '/' . basename($path) : $real));
+            $stat = @stat($path);
+            if ($stat !== false) $keys[] = hash('sha256', 'inode:' . $stat['dev'] . ':' . $stat['ino']);
+        }
+        $keys = array_values(array_unique($keys));
+        sort($keys, SORT_STRING);
+        $directory = StackMutationGuard::directory() . '/source-edits';
+        if (!is_dir($directory) && !@mkdir($directory, 0755, true) && !is_dir($directory)) {
+            throw new RuntimeException('Unable to create source edit lock directory.');
+        }
+        $handles = [];
+        try {
+            foreach ($keys as $key) {
+                $handle = @fopen($directory . '/' . $key . '.lock', 'c+');
+                if ($handle === false) throw new RuntimeException('Unable to open source edit lock.');
+                $handles[] = $handle;
+                if (!flock($handle, LOCK_EX | LOCK_NB)) throw new RuntimeException('Another editor is saving this file. Try again after it finishes.');
+            }
+            return $work();
+        } finally {
+            foreach ($handles as $handle) fclose($handle);
+        }
+    }
+
     public static function write(string $path, string $contents): void
     {
         if (@file_put_contents($path, $contents) !== strlen($contents)) {

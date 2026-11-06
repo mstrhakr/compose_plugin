@@ -711,21 +711,19 @@ switch ($_POST['action']) {
         }
 
         // Check file existence consistently regardless of how path was resolved
-        if (is_file($composeFilePath)) {
-            $scriptContents = file_get_contents($composeFilePath);
-            if ($scriptContents === false) {
-                echo json_encode(['result' => 'error', 'message' => "Unable to read compose file: $composeFilePath"]);
-                break;
-            }
-        } else {
-            // File doesn't exist yet (new stack) - return empty content
-            $scriptContents = "";
+        try {
+            $loaded = StackSourceEditor::read($composeFilePath);
+        } catch (RuntimeException $error) {
+            composeLogger($error->getMessage(), ['stack' => $script], 'user', 'error', 'editor');
+            echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);
+            break;
         }
+        $scriptContents = $loaded['content'];
         $scriptContents = str_replace("\r", "", $scriptContents);
         if (!$scriptContents) {
             $scriptContents = "services:\n";
         }
-        echo json_encode(['result' => 'success', 'fileName' => $composeFilePath, 'content' => $scriptContents]);
+        echo json_encode(['result' => 'success', 'fileName' => $composeFilePath, 'content' => $scriptContents, 'revision' => $loaded['revision']]);
         break;
     case 'getEnv':
         $script = getPostScript();
@@ -733,14 +731,22 @@ switch ($_POST['action']) {
         $stackInfo = StackInfo::fromProject($compose_root, $script);
         $fileName = $stackInfo->getEnvFilePath() ?? ($stackInfo->composeSource . '/.env');
 
-        $envExists = is_file($fileName);
-        $scriptContents = $envExists ? file_get_contents($fileName) : "";
+        try {
+            $loaded = StackSourceEditor::read($fileName);
+        } catch (RuntimeException $error) {
+            composeLogger($error->getMessage(), ['stack' => $script], 'user', 'error', 'editor');
+            echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);
+            break;
+        }
+        $envExists = $loaded['exists'];
+        $scriptContents = $loaded['content'];
         $scriptContents = str_replace("\r", "", (string) $scriptContents);
         echo json_encode([
             'result' => 'success',
             'fileName' => $fileName,
             'content' => $scriptContents,
-            'exists' => $envExists
+            'exists' => $envExists,
+            'revision' => $loaded['revision']
         ]);
         break;
     case 'getOverride':
@@ -750,7 +756,17 @@ switch ($_POST['action']) {
         $stackInfo = StackInfo::fromProject($compose_root, $script);
         $overridePath = $stackInfo->getPreferredOverridePath();
 
-        $scriptContents = is_file($overridePath) ? file_get_contents($overridePath) : "";
+        try {
+            if ($overridePath === null) throw new RuntimeException('Unable to resolve override path.');
+            $loaded = StackSourceEditor::read($overridePath);
+            $projectOverride = $stackInfo->overrideInfo->getProjectOverridePath();
+            $projectLoaded = $projectOverride === $overridePath ? $loaded : StackSourceEditor::read($projectOverride);
+        } catch (RuntimeException $error) {
+            composeLogger($error->getMessage(), ['stack' => $script], 'user', 'error', 'editor');
+            echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);
+            break;
+        }
+        $scriptContents = $loaded['content'];
         $scriptContents = str_replace("\r", "", $scriptContents);
         if (!$scriptContents) {
             $scriptContents = "";
@@ -759,7 +775,9 @@ switch ($_POST['action']) {
             'result' => 'success',
             'fileName' => $overridePath,
             'content' => $scriptContents,
-            'exists' => is_file($overridePath)
+            'exists' => $loaded['exists'],
+            'revision' => $loaded['revision'],
+            'revisions' => [$overridePath => $loaded['revision'], $projectOverride => $projectLoaded['revision']]
         ]);
         break;
     case 'saveYml':
@@ -798,43 +816,56 @@ switch ($_POST['action']) {
                     if (rejectStaleClientPath($path, $label)) return null;
                     if ($path === null) throw new RuntimeException('Unable to resolve ' . $label . ' path.');
                     if (is_dir($path)) throw new RuntimeException('Target path is a directory.');
-                    $sharing = SharedStackSources::inspect($compose_root, $stack, $path);
-                    if (!$sharing['dismissed'] && $sharing['shared'] !== []
-                        && ($_POST['sharedConfirmation'] ?? '') !== $sharing['confirmation']) {
-                        echo json_encode(['result' => 'error', 'errorCode' => 'shared_source_confirmation',
-                            'message' => 'Review shared source files before saving.'] + $sharing);
-                        return null;
-                    }
-                    $template = $action === 'createEnvTemplate' || $action === 'createOverrideTemplate';
-                    if ($action === 'saveYml') {
-                        StackSourceEditor::saveCompose($stack, $path, $contents, $migrate);
-                    } else {
-                        if (is_dir($path)) throw new RuntimeException('Target path is a directory.');
-                        $original = StackSourceEditor::snapshot([$path]);
-                        try {
-                            if ($template) {
-                                if (!is_dir(dirname($path))) throw new RuntimeException('Target directory does not exist.');
-                                if (!is_file($path)) StackSourceEditor::write($path, $action === 'createEnvTemplate'
-                                    ? OverrideInfo::buildEnvTemplateContent() : OverrideInfo::buildTemplateContent());
-                            } else StackSourceEditor::write($path, $contents);
-                            if ($action === 'saveOverride' || $action === 'createOverrideTemplate') $stack->identity->registerComposeFile($stack->path, $path);
-                        } catch (RuntimeException $error) {
-                            StackSourceEditor::restore($original, $error);
+                    $lockPaths = [$path];
+                    if ($migrate) $lockPaths[] = $stack->overrideInfo->getProjectOverridePath();
+                    if (array_key_exists('expectedComposeRevision', $_POST) && $stack->composeFilePath !== null) $lockPaths[] = $stack->composeFilePath;
+                    return StackSourceEditor::withFileLocks($lockPaths, static function () use ($compose_root, $stack, $path, $contents, $action, $migrate): array|string|null {
+                        if (array_key_exists('expectedRevision', $_POST)) StackSourceEditor::assertRevision($path, $_POST['expectedRevision']);
+                        if (array_key_exists('expectedComposeRevision', $_POST)) {
+                            if ($stack->composeFilePath === null) throw new RuntimeException('Unable to resolve Labels Compose source.');
+                            StackSourceEditor::assertRevision($stack->composeFilePath, $_POST['expectedComposeRevision']);
                         }
-                    }
-                    StackInfo::clearCache();
-                    if ($template) {
-                        $content = file_get_contents($path);
-                        if ($content === false) throw new RuntimeException('Unable to read the created template.');
-                        return ['result' => 'success', 'fileName' => $path, 'content' => str_replace("\r", '', $content), 'exists' => true];
-                    }
-                    return $path;
+                        $changedPaths = $migrate ? [$path, $stack->overrideInfo->getProjectOverridePath()] : $path;
+                        $sharing = SharedStackSources::inspect($compose_root, $stack, $changedPaths);
+                        if (!$sharing['dismissed'] && $sharing['shared'] !== []
+                            && ($_POST['sharedConfirmation'] ?? '') !== $sharing['confirmation']) {
+                            echo json_encode(['result' => 'error', 'errorCode' => 'shared_source_confirmation',
+                                'message' => 'Review shared source files before saving.'] + $sharing);
+                            return null;
+                        }
+                        $template = $action === 'createEnvTemplate' || $action === 'createOverrideTemplate';
+                        if ($action === 'saveYml') {
+                            StackSourceEditor::saveCompose($stack, $path, $contents, $migrate);
+                        } else {
+                            $original = StackSourceEditor::snapshot([$path]);
+                            try {
+                                if ($template) {
+                                    if (!is_dir(dirname($path))) throw new RuntimeException('Target directory does not exist.');
+                                    if (!is_file($path)) StackSourceEditor::write($path, $action === 'createEnvTemplate'
+                                        ? OverrideInfo::buildEnvTemplateContent() : OverrideInfo::buildTemplateContent());
+                                } else StackSourceEditor::write($path, $contents);
+                                if ($action === 'saveOverride' || $action === 'createOverrideTemplate') $stack->identity->registerComposeFile($stack->path, $path);
+                            } catch (RuntimeException $error) {
+                                StackSourceEditor::restore($original, $error);
+                            }
+                        }
+                        StackInfo::clearCache();
+                        if ($template) {
+                            $content = file_get_contents($path);
+                            if ($content === false) throw new RuntimeException('Unable to read the created template.');
+                            return ['result' => 'success', 'fileName' => $path, 'content' => str_replace("\r", '', $content), 'exists' => true,
+                                'revision' => StackSourceEditor::revision($content, true)];
+                        }
+                        if (array_key_exists('expectedRevision', $_POST)) return ['result' => 'success', 'fileName' => $path, 'revision' => StackSourceEditor::revision($contents, true)];
+                        return $path;
+                    });
                 });
             if (is_array($savedPath)) echo json_encode($savedPath);
             elseif ($savedPath !== null) echo "$savedPath saved";
         } catch (RuntimeException | InvalidArgumentException | JsonException $e) {
             composeLogger('Unable to save stack source: ' . $e->getMessage(), ['stack' => $script], 'user', 'error', 'editor');
-            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage(),
+                'errorCode' => $e instanceof StaleSourceRevision ? 'stale_content' : 'source_save_failed']);
         }
         break;
     case 'clearIconCache':

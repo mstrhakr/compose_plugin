@@ -6451,6 +6451,7 @@ function openEditorModalByProject(project, projectName, initialTab) {
     editorModal.modifiedLabels = new Set();
     editorModal.settingsValidationErrors = new Set();
     editorModal.originalContent = {};
+    editorModal.sourceRevisions = Object.create(null);
     editorModal.originalSettings = {};
     editorModal.originalLabels = {};
     editorModal.labelsData = null;
@@ -6523,12 +6524,19 @@ function loadEditorFiles(project) {
         }).then(function(data) {
             if (data) {
                 var response = jQuery.parseJSON(data);
+                if (editorModal.currentProject !== project) return;
+                if (response.result !== 'success') {
+                    swal({ type: 'error', title: 'Load Failed', text: response.message || 'Unable to load Compose file.' });
+                    return;
+                }
+                rememberEditorSourceRevision(response);
                 editorModal.filePaths.compose = response.fileName || '';
                 editorModal.originalContent['compose'] = response.content || '';
                 if (editorModal.editors['compose']) editorModal.editors['compose'].setValue(response.content || '', -1);
                 updateEditorFileInfo();
             }
         }).fail(function() {
+            if (editorModal.currentProject !== project) return;
             var errorContent = '# Error loading file';
             editorModal.originalContent['compose'] = errorContent;
             if (editorModal.editors['compose']) editorModal.editors['compose'].setValue(errorContent, -1);
@@ -6543,6 +6551,12 @@ function loadEditorFiles(project) {
         }).then(function(data) {
             if (data) {
                 var response = jQuery.parseJSON(data);
+                if (editorModal.currentProject !== project) return;
+                if (response.result !== 'success') {
+                    swal({ type: 'error', title: 'Load Failed', text: response.message || 'Unable to load environment file.' });
+                    return;
+                }
+                rememberEditorSourceRevision(response);
                 editorModal.filePaths.env = response.fileName || '';
                 editorModal.envExists = response.exists === true;
                 if (editorModal.envExists) {
@@ -6559,6 +6573,7 @@ function loadEditorFiles(project) {
                 updateEditorFileInfo();
             }
         }).fail(function() {
+            if (editorModal.currentProject !== project) return;
             var errorContent = '# Error loading file';
             editorModal.originalContent['env'] = errorContent;
             if (editorModal.editors['env']) editorModal.editors['env'].setValue(errorContent, -1);
@@ -6615,6 +6630,7 @@ function switchComposeFile(path) {
                 return;
             }
             editorModal.filePaths.compose = response.fileName || path;
+            rememberEditorSourceRevision(response);
             editorModal.originalContent['compose'] = response.content || '';
             if (editorModal.editors['compose']) editorModal.editors['compose'].setValue(response.content || '', -1);
             editorModal.modifiedTabs.delete('compose');
@@ -7299,6 +7315,9 @@ function _populateOverrideEditor() {
     if (!editorModal.modifiedTabs.has('override')) {
         editorModal.originalContent['override'] = content;
         editorModal.editors['override'].setValue(content, -1);
+        Object.keys(editorModal.labelsData.revisions || {}).forEach(function(path) {
+            editorModal.sourceRevisions[path] = editorModal.labelsData.revisions[path];
+        });
     }
     setTimeout(function() {
         try {
@@ -7330,9 +7349,10 @@ function loadLabelsData(callback) {
         try {
             var composeData = JSON.parse(composeResult[0]);
             var overrideData = JSON.parse(overrideResult[0]);
+            if (editorModal.currentProject !== project) return;
 
-            if (composeData.result !== 'success') {
-                throw new Error('Failed to load compose file');
+            if (composeData.result !== 'success' || overrideData.result !== 'success') {
+                throw new Error(composeData.message || overrideData.message || 'Failed to load label source files');
             }
 
             var mainDoc = loadComposeYaml(composeData.content) || {
@@ -7352,7 +7372,9 @@ function loadLabelsData(callback) {
                 overrideDoc: overrideDoc,
                 overrideContent: overrideData.content || '',
                 overrideHasCustomTags: composeYamlContainsCustomTags(overrideData.content || ''),
-                overrideExists: overrideData.exists === true
+                overrideExists: overrideData.exists === true,
+                revisions: overrideData.revisions || {},
+                composeRevision: composeData.revision
             };
             editorModal.filePaths.compose = composeData.fileName || editorModal.filePaths.compose;
             editorModal.filePaths.effectiveOverride = overrideData.fileName || editorModal.filePaths.effectiveOverride;
@@ -7361,6 +7383,7 @@ function loadLabelsData(callback) {
             // Pre-cache override content for the override editor (only if not yet set for this project)
             if (editorModal.originalContent['override'] === undefined) {
                 editorModal.originalContent['override'] = overrideData.content || '';
+                rememberEditorSourceRevision(overrideData);
             }
 
             renderLabelsUI(mainDoc, overrideDoc);
@@ -7411,8 +7434,11 @@ function createOverrideTemplate() {
             editorModal.labelsData = editorModal.labelsData || {};
             editorModal.labelsData.overrideExists = true;
             editorModal.labelsData.overrideContent = response.content || '';
+            editorModal.labelsData.revisions = Object.assign({}, editorModal.labelsData.revisions);
+            editorModal.labelsData.revisions[response.fileName] = response.revision;
             editorModal.filePaths.effectiveOverride = response.fileName || editorModal.filePaths.effectiveOverride;
             editorModal.originalContent['override'] = response.content || '';
+            rememberEditorSourceRevision(response);
             editorModal.modifiedTabs.delete('override');
 
             if (editorModal.editors['override']) {
@@ -7470,6 +7496,7 @@ function createEnvTemplate() {
             editorModal.envExists = true;
             editorModal.filePaths.env = response.fileName || editorModal.filePaths.env;
             editorModal.originalContent['env'] = response.content || '';
+            rememberEditorSourceRevision(response);
             editorModal.modifiedTabs.delete('env');
 
             if (editorModal.editors['env']) {
@@ -8036,6 +8063,11 @@ function parseSaveResponse(data, saveErrors, saveTarget) {
         if (response.result === 'success') {
             return true;
         }
+        if (response.errorCode === 'stale_content') {
+            swal({ title: 'File changed', text: response.message, type: 'warning' });
+            if (saveErrors) saveErrors.push(response.message);
+            return false;
+        }
         if (handleStaleEditorResponse(response, 'The save target changed while this dialog was open. Reloading the editor.')) {
             if (saveErrors) saveErrors.push('__STALE_PATH__');
             return false;
@@ -8086,6 +8118,8 @@ function saveTab(tabName, saveErrors) {
         if (!parseSaveResponse(data, saveErrors, saveTarget)) {
             return false;
         }
+        if (editorModal.currentProject !== project) return false;
+        rememberEditorSourceRevision(parseEditorSourceResponse(data));
 
         editorModal.originalContent[tabName] = content;
         editorModal.modifiedTabs.delete(tabName);
@@ -8492,11 +8526,17 @@ function saveLabels(saveErrors) {
         script: project,
         scriptContents: rawOverride,
         managed: editorModal.labelsViewMode === 'basic' ? 1 : 0,
-        expectedPath: getExpectedSavePathForTab('override')
+        expectedPath: getExpectedSavePathForTab('override'),
+        expectedRevision: (editorModal.labelsData.revisions || {})[getExpectedSavePathForTab('override')],
+        expectedComposeRevision: editorModal.labelsData.composeRevision
     }).then(function(data) {
         if (!parseSaveResponse(data, saveErrors, 'WebUI labels')) {
             return false;
         }
+        if (editorModal.currentProject !== project) return false;
+        var savedRevision = parseEditorSourceResponse(data);
+        editorModal.labelsData.revisions = Object.assign({}, editorModal.labelsData.revisions);
+        editorModal.labelsData.revisions[savedRevision.fileName] = savedRevision.revision;
 
         // Collect services whose icon changed, then clear webgui icon cache
         var changedIconServices = [];
