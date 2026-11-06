@@ -52,11 +52,47 @@ foreach ($config["services"] as $service => $definition) {
 '
 }
 
+prepare_stack_images() {
+  local rc
+  preparation_phase=pull
+  local -a scope=() pull_args=()
+  if [ "$#" -gt 0 ]; then scope=(-- "$@"); fi
+  if [ "$build_on_update" = true ]; then
+    rebuild=true
+    pull_args+=(--ignore-buildable)
+  elif [ "$automatic_update" = true ]; then
+    pull_args+=(--ignore-buildable)
+  fi
+  echo "Pulling latest images..."
+  update_compose pull "${pull_args[@]}" "${scope[@]}"
+  rc=$?
+  if [ "$rc" -ne 0 ] && [ "$build_on_update" != true ] && [ "$automatic_update" != true ]; then
+    log_msg WARNING "Pull failed for $name; retrying without buildable services and rebuilding"
+    update_compose pull --ignore-buildable "${scope[@]}"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then rebuild=true; fi
+  fi
+  if [ "$rc" -ne 0 ]; then return "$rc"; fi
+  if [ "$rebuild" = true ]; then
+    preparation_phase=build
+    echo "Rebuilding images with latest base images..."
+    update_compose build --pull "${scope[@]}"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      log_msg WARNING "Build with --pull failed for $name; retrying with local base images"
+      echo "Build with --pull failed; retrying with local base images..."
+      update_compose build "${scope[@]}"
+      rc=$?
+    fi
+  fi
+  return "$rc"
+}
+
 run_stack_update() {
   local ids id details current_image image_ref image_id rc rebuild=false needs_update=false
-  local service state oneoff configured_services profiles profile arg targets config_json had_skips=false
+  local service state oneoff configured_services profiles profile arg targets config_json had_skips=false preparation_phase
   local old_images="" new_images=""
-  local -a pull_args=() up_args=(-d "${cmd_args[@]}") stale_images=() services=() candidates=()
+  local -a up_args=(-d "${cmd_args[@]}") stale_images=() services=() candidates=()
   local -a update_profile_args=(--profile '*')
   local -A counts=() running=() stopped=() unsafe=() container_services=()
   local -A configured=() selected=() container_images=() target_images=() service_images=()
@@ -165,43 +201,11 @@ run_stack_update() {
     fi
   done <<< "$ids"
 
-  if [ "$build_on_update" = true ]; then
-    rebuild=true
-    pull_args+=(--ignore-buildable)
-  elif [ "$automatic_update" = true ]; then
-    pull_args+=(--ignore-buildable)
-  fi
-  echo "Pulling latest images..."
-  update_compose pull "${pull_args[@]}" -- "${services[@]}"
+  prepare_stack_images "${services[@]}"
   rc=$?
-  # Preserve manual Update's local-tag compatibility without enabling unattended builds.
-  if [ "$rc" -ne 0 ] && [ "$build_on_update" != true ] && [ "$automatic_update" != true ]; then
-    log_msg WARNING "Pull failed for $name; retrying without buildable services and rebuilding"
-    update_compose pull --ignore-buildable -- "${services[@]}"
-    rc=$?
-    if [ "$rc" -eq 0 ]; then
-      rebuild=true
-    fi
-  fi
   if [ "$rc" -ne 0 ]; then
-    update_failed "$rc" pull
+    update_failed "$rc" "$preparation_phase"
     return "$rc"
-  fi
-
-  if [ "$rebuild" = true ]; then
-    echo "Rebuilding images with latest base images..."
-    update_compose build --pull -- "${services[@]}"
-    rc=$?
-    if [ "$rc" -ne 0 ]; then
-      log_msg WARNING "Build with --pull failed for $name; retrying with local base images"
-      echo "Build with --pull failed; retrying with local base images..."
-      update_compose build -- "${services[@]}"
-      rc=$?
-    fi
-    if [ "$rc" -ne 0 ]; then
-      update_failed "$rc" build
-      return "$rc"
-    fi
   fi
 
   if [ "$automatic_update" = true ]; then

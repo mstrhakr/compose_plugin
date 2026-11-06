@@ -33,7 +33,6 @@ foreach ($stackHiddenColumns as $hiddenCol) {
 $autoCheckUpdates = ($cfg['AUTO_CHECK_UPDATES'] ?? 'false') === 'true';
 $autoCheckDays = floatval($cfg['AUTO_CHECK_UPDATES_DAYS'] ?? '1');
 $showComposeOnTop = ($cfg['SHOW_COMPOSE_ON_TOP'] ?? 'false') === 'true';
-$hideComposeFromDocker = ($cfg['HIDE_COMPOSE_FROM_DOCKER'] ?? 'false') === 'true';
 
 // Get Docker Compose CLI version
 $composeVersion = trim(shell_exec('docker compose version --short 2>/dev/null') ?? '');
@@ -579,7 +578,6 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         autoCheckUpdates: <?php echo json_encode($autoCheckUpdates); ?>,
         autoCheckDays: <?php echo json_encode($autoCheckDays); ?>,
         showComposeOnTop: <?php echo json_encode($showComposeOnTop); ?>,
-        hideComposeFromDocker: <?php echo json_encode($hideComposeFromDocker); ?>,
         composeCliVersion: <?php echo json_encode($composeVersion); ?>,
         composeSystemMemBytes: <?php echo json_encode($composeSystemMemBytes); ?>,
         composeCpuCount: <?php echo json_encode($cpuCount); ?>,
@@ -611,7 +609,6 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
     var autoCheckUpdates = !!composeBootstrap.autoCheckUpdates;
     var autoCheckDays = Number(composeBootstrap.autoCheckDays || 1);
     var showComposeOnTop = !!composeBootstrap.showComposeOnTop;
-    var hideComposeFromDocker = !!composeBootstrap.hideComposeFromDocker;
     var composeCliVersion = composeBootstrap.composeCliVersion || '';
     var composeSystemMemBytes = Number(composeBootstrap.composeSystemMemBytes || 0);
     var composeCpuCount = Number(composeBootstrap.composeCpuCount || 1);
@@ -620,6 +617,9 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 <script src="<?php autov('/plugins/compose.manager/javascript/composeColumnCustomizer.js'); ?>" type="text/javascript"></script>
 <script src="<?php autov('/plugins/compose.manager/javascript/qrcode/qrcode.min.js'); ?>" type="text/javascript"></script>
 <script src="<?php autov('/plugins/compose.manager/javascript/credentialManager.js'); ?>" type="text/javascript"></script>
+<script src="<?php autov('/plugins/compose.manager/javascript/composeOperations.js'); ?>" type="text/javascript"></script>
+<script src="<?php autov('/plugins/compose.manager/javascript/composeUpdateChecks.js'); ?>" type="text/javascript"></script>
+<script src="<?php autov('/plugins/compose.manager/javascript/composeEditorSources.js'); ?>" type="text/javascript"></script>
 <script src="<?php autov('/plugins/compose.manager/javascript/composeManagerMain.js'); ?>" type="text/javascript"></script>
 
 <HTML>
@@ -729,6 +729,10 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </div>
 
             <!-- Unified Tab Bar -->
+            <div id="editor-shared-sources" style="display:none;padding:10px;" role="status">
+                <div id="editor-shared-sources-message" class="compose-status-warning"></div>
+                <label><input id="editor-shared-sources-dismissed" type="checkbox" onchange="setEditorSharedSourceWarning(this.checked)"> Don't show shared-file warnings again for this stack</label>
+            </div>
             <div class="editor-tabs" role="tablist">
                 <button class="editor-tab active" id="editor-tab-compose" onclick="switchTab('compose')" role="tab" aria-selected="true" aria-controls="editor-panel-compose">
                     <i class="fa fa-file-code-o" aria-hidden="true"></i>

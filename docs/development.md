@@ -2,6 +2,9 @@
 
 This document describes how to set up a development environment, run unit and integration tests, and use the project tooling.
 
+For the staged runtime-state, action, and live-metrics architecture, see the
+[UI runtime consistency plan](ui-runtime-plan.md).
+
 ## Prerequisites
 
 - PHP (match the project's platform requirements from `composer.json`)

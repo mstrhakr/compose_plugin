@@ -1754,7 +1754,9 @@ class OverrideInfo
         }
 
         if (!empty($result['migrations'])) {
-            file_put_contents($overridePath, $newOverrideContent);
+            if (@file_put_contents($overridePath, $newOverrideContent) !== strlen($newOverrideContent)) {
+                throw new RuntimeException('Unable to save migrated override ' . $overridePath . '.');
+            }
             $result['migrated'] = true;
 
             $migrationLog = array_map(fn($m) => "{$m['from']} -> {$m['to']}", $result['migrations']);
@@ -3191,7 +3193,16 @@ class StackInfo
         return $files;
     }
 
-    private function getComposeFilePaths(): array
+    public function getSourceFilePaths(): array
+    {
+        $paths = $this->getComposeFilePaths(false);
+        $paths[] = $this->getEffectiveEnvFilePath() ?? ($this->getEnvFilePath() ?? $this->composeSource . '/.env');
+        $paths[] = $this->getPreferredOverridePath();
+        $paths[] = $this->overrideInfo->getProjectOverridePath();
+        return array_values(array_unique(array_filter($paths, 'is_string')));
+    }
+
+    private function getComposeFilePaths(bool $includeDerived = true): array
     {
         if ($this->inputMigrationError !== null) {
             return array_values(array_filter($this->legacyComposeCandidates, 'is_file'));
@@ -3207,7 +3218,7 @@ class StackInfo
             // itself (see registerComposeFile()); this only adds the
             // generated icon-normalization layer, which is derived content
             // rather than a Compose input and so is never part of that list.
-            $iconNormalizePath = $this->getIconNormalizationOverridePath();
+            $iconNormalizePath = $includeDerived ? $this->getIconNormalizationOverridePath() : null;
             if ($iconNormalizePath !== null && !in_array($iconNormalizePath, $legacyFiles, true)) {
                 $legacyFiles[] = $iconNormalizePath;
             }
@@ -3251,7 +3262,7 @@ class StackInfo
 
         // Last (highest precedence) so it can safely override just the icon
         // label without disturbing anything else the user/other files set.
-        $iconNormalizePath = $this->getIconNormalizationOverridePath();
+        $iconNormalizePath = $includeDerived ? $this->getIconNormalizationOverridePath() : null;
         if ($iconNormalizePath !== null) {
             $paths[] = $iconNormalizePath;
         }
@@ -4030,7 +4041,9 @@ class StackInfo
         if (isset($args['envFilePath'])) {
             array_push($command, '--env-file', $args['envFilePath']);
         }
-        array_push($command, '-p', $args['projectName'], '--profile', '*', 'config', '--format', 'json');
+        // Mutually exclusive profiles can share container names; this inspects
+        // build metadata, not the validity of deploying every profile together.
+        array_push($command, '-p', $args['projectName'], '--profile', '*', 'config', '--no-consistency', '--format', 'json');
         $result = ProcessRunner::run($command, $args['projectDirectory'], getenv(), 60);
         if (!$result->succeeded()) {
             throw new RuntimeException("Unable to resolve build configuration for {$this->projectFolder}: " . $result->errorSummary());

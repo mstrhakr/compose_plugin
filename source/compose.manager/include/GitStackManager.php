@@ -9,6 +9,7 @@ require_once '/usr/local/emhttp/plugins/compose.manager/include/GitStackSettings
 require_once '/usr/local/emhttp/plugins/compose.manager/include/GitStackState.php';
 require_once '/usr/local/emhttp/plugins/compose.manager/include/GitClone.php';
 require_once '/usr/local/emhttp/plugins/compose.manager/include/CredentialVault.php';
+require_once '/usr/local/emhttp/plugins/compose.manager/include/StackMutationGuard.php';
 
 /**
  * The server refused a new ssh stack's clone, and the usual reason is that the repository
@@ -246,7 +247,7 @@ final class GitStackManager
                 );
             }
             return $backupDir;
-        });
+        }, true);
     }
 
     /**
@@ -360,7 +361,8 @@ final class GitStackManager
         return $this->withStackLock(
             $stack,
             /** @return array{previousCommit: string, deployedCommit: ?string, targetCommit: string, problems: string[], recreatesEveryContainer: bool, configDiff: ?string, configProblem: ?string} */
-            static fn(): array => $deploy->dryRun($stack->projectName, $profiles, $commit)
+            static fn(): array => $deploy->dryRun($stack->projectName, $profiles, $commit),
+            true
         );
     }
 
@@ -1133,7 +1135,7 @@ final class GitStackManager
                 );
             }
             return $movedTo;
-        });
+        }, true);
     }
 
     /**
@@ -1225,14 +1227,16 @@ final class GitStackManager
      * @param callable(): T $work
      * @return T
      */
-    private function withStackLock(StackInfo $stack, callable $work): mixed
+    private function withStackLock(StackInfo $stack, callable $work, bool $mutatesSource = false): mixed
     {
         $handle = self::tryStackLock($stack);
         if ($handle === null) {
             throw new RuntimeException("Another operation is in progress for '{$stack->projectFolder}'. Try again when it has finished.");
         }
         try {
-            return $work();
+            return $mutatesSource
+                ? StackMutationGuard::duringMutation($stack->projectName, $stack->projectFolder, $work)
+                : $work();
         } finally {
             flock($handle, LOCK_UN);
             fclose($handle);
@@ -1248,18 +1252,6 @@ final class GitStackManager
      */
     public static function tryStackLock(StackInfo $stack)
     {
-        if (!is_dir(COMPOSE_LOCK_DIR)) {
-            @mkdir(COMPOSE_LOCK_DIR, 0755, true);
-        }
-        $lockFile = COMPOSE_LOCK_DIR . '/' . $stack->projectName . '.lock';
-        $handle = @fopen($lockFile, 'c');
-        if ($handle === false) {
-            throw new RuntimeException("Could not open the lock file $lockFile.");
-        }
-        if (!flock($handle, LOCK_EX | LOCK_NB)) {
-            fclose($handle);
-            return null;
-        }
-        return $handle;
+        return StackMutationGuard::tryExclusive($stack->projectName);
     }
 }

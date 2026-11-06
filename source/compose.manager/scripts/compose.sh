@@ -14,7 +14,7 @@ LOCK_TIMEOUT=${COMPOSE_LOCK_TIMEOUT:-30}
 LOCK_DIR=${COMPOSE_LOCK_DIR:-/var/run/compose.manager}
 
 SHORT=e:,c:,f:,p:,d:,o:,g:,s:,w:
-LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:,follow-logs,wait,wait-timeout:,build,credential-id:,git-commit:,save-local-changes,automatic-deploy-from:,automatic-update,update-outcome-file:,include-stopped
+LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:,follow-logs,wait,wait-timeout:,build,credential-id:,git-commit:,save-local-changes,automatic-deploy-from:,automatic-update,update-outcome-file:,include-stopped,prepare-images
 OPTS=$(getopt -a -n compose --options $SHORT --longoptions $LONG -- "$@")
 
 eval set -- "$OPTS"
@@ -32,7 +32,11 @@ follow_logs=false
 wait_for_healthy=false
 wait_timeout=""
 build_on_update=false
+prepare_images=false
 lock_fd=""
+mutation_started=false
+mutation_folder=""
+mutation_pending_policy=renew
 operation_exit_code=0
 credential_id=""
 docker_config_dir=""
@@ -102,6 +106,20 @@ release_lock() {
     fi
 }
 
+record_mutation_boundary() {
+    COMPOSE_LOCK_DIR="$LOCK_DIR" php "$script_directory/mutation_boundary.php" "$name" "$mutation_folder" "$mutation_pending_policy"
+}
+
+finish_mutation() {
+    if [ "$mutation_started" = true ]; then
+        mutation_started=false
+        if ! record_mutation_boundary; then
+            log_msg ERROR "Unable to renew pending recheck after operation for $name"
+            return 1
+        fi
+    fi
+}
+
 # Ensure lock is released and follow state is cleared on exit.
 cleanup_docker_config() {
   if [ -n "$docker_config_dir" ]; then
@@ -110,7 +128,18 @@ cleanup_docker_config() {
   fi
 }
 
-trap 'release_lock; clear_follow_pid; cleanup_docker_config' EXIT
+cleanup() {
+    local status=$?
+    if ! finish_mutation; then
+        status=1
+        save_result failed "$status" "$command"
+    fi
+    release_lock
+    clear_follow_pid
+    cleanup_docker_config
+    exit "$status"
+}
+trap cleanup EXIT
 
 # Save operation result to stack directory
 save_result() {
@@ -230,6 +259,10 @@ do
       build_on_update=true
       shift;
       ;;
+    --prepare-images )
+      prepare_images=true
+      shift;
+      ;;
     --automatic-update )
       automatic_update=true
       shift;
@@ -318,6 +351,17 @@ case $command in
     if ! acquire_lock "$lock_name"; then
       exit 1
     fi
+    mutation_folder="${stack_path%/}"
+    mutation_folder="${mutation_folder##*/}"
+    case "$command" in
+      pull|update|gitdeploy) mutation_pending_policy=create ;;
+      up) if [ "$prepare_images" = true ]; then mutation_pending_policy=create; fi ;;
+    esac
+    if ! record_mutation_boundary; then
+      log_msg ERROR "Unable to record mutation for $name; refusing operation"
+      exit 1
+    fi
+    mutation_started=true
     ;;
 esac
 
@@ -338,6 +382,24 @@ case $command in
       log_msg "ERROR" "Follow logs and wait-for-healthy cannot be used together for the same compose up command"
       echo "✗ Follow stack logs and wait-for-healthy cannot be enabled at the same time."
       exit 1
+    fi
+
+    if [ "$prepare_images" = true ]; then
+      # Use deployment profiles from compose_base, not Update's runtime scope.
+      update_profile_args=()
+      rebuild=false
+      build_on_update=true
+      # shellcheck source=source/compose.manager/scripts/compose_update.sh
+      . "$script_directory/compose_update.sh"
+      prepare_stack_images
+      preparation_exit=$?
+      if [ "$preparation_exit" -ne 0 ]; then
+        save_result failed "$preparation_exit" up
+        log_msg ERROR "Image preparation failed for $name; containers were not started"
+        echo "Image preparation failed; containers were not started."
+        exit "$preparation_exit"
+      fi
+      cmd_args+=(--pull never --no-build)
     fi
 
     if [ "$wait_for_healthy" = true ]; then

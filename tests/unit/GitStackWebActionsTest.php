@@ -576,6 +576,32 @@ final class GitStackWebActionsTest extends TestCase
         );
     }
 
+    public function testTrackedGitDeployUsesManagedTerminalAndKeepsItsOperationReceipt(): void
+    {
+        $folder = $this->addGitStack('whoami');
+        $response = json_decode($this->deploy([
+            'path' => $this->composeRoot . '/' . $folder, 'trackOperation' => '1',
+        ]), true);
+        $this->assertStringStartsWith('/plugins/compose.manager/include/ShowTtyd.php?done=1&socket=compose_action_', $response['url']);
+        parse_str(parse_url($response['url'], PHP_URL_QUERY), $query);
+        $this->assertSame('gitdeploy', $query['command']);
+        $this->assertSame('0', $query['bulk']);
+        $session = \composeUiOperationFile('terminal-session', $query['session']);
+        $operation = \composeUiOperationFile($folder, $response['operations'][$folder]);
+        try {
+            $this->assertSame(['state' => 'queued'], \composeReadTerminalSession($query['session']));
+            $this->assertSame(['state' => 'queued'], json_decode((string) file_get_contents($operation), true));
+            $logs = implode("\n", $GLOBALS['composeLoggerMessages']);
+            $this->assertStringContainsString('compose_terminal_session.sh', $logs);
+            $this->assertStringContainsString('-cgitdeploy', $logs);
+            $this->assertStringContainsString($operation, $logs);
+        } finally {
+            unlink($session . '.log');
+            unlink($session);
+            unlink($operation);
+        }
+    }
+
     public function testTheWebDeployUsesTheRunningProfilesWhenNoneWereChosen(): void
     {
         $folder = $this->addGitStack('whoami');

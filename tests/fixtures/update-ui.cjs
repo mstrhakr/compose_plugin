@@ -13,13 +13,18 @@ function harness(config = {}) {
         setTimeout: fn => fn(),
         getConfig: () => ({ then: fn => fn(config) }),
         composeEscapeHtml: value => value,
+        composeEscapeAttr: value => value,
+        buildRemoveOrphansCheckboxHtml: () => '',
         basename: path => path.split('/').pop(),
         caURL: 'exec', compURL: 'compose',
-        composeUpdateCheckState: {}, composeUpdateCheckRevision: {}, stackDetailsPrefetchCache: {},
+        stackUpdateStatus: Object.create(null), stackDetailsPrefetchCache: {},
+        composeStackActionInProgress: Object.create(null),
         confirmedComposeAction: (path, options) => events.push({ path, ...options }),
         performComposeAction: options => events.push(options),
+        performMultipleComposeAction: (stacks, options) => events.push(options),
         setStackActionInProgress: () => {},
         composeActionStateText: () => 'updating',
+        updateUpdateAllButton() {},
         swal: (options, callback) => {
             checked['#swal-include-stopped'] = /id="swal-include-stopped" checked/.test(options.text || '');
             events.push({ dialog: options, callback });
@@ -35,24 +40,78 @@ function harness(config = {}) {
         events.push({ url, payload });
         if (callback) callback();
     };
+    context.$.ajax = () => ({
+        done(callback) { callback({ result: 'success' }); return this; },
+        fail() { return this; },
+    });
     for (const name of ['ComposeUpConfirmed', 'ComposeDownConfirmed', 'ComposeStopConfirmed',
         'ComposeRestartConfirmed', 'ComposePullConfirmed']) {
         context[name] = () => {};
     }
     vm.createContext(context);
+    vm.runInContext(fs.readFileSync(`${__dirname}/../../source/compose.manager/javascript/composeUpdateChecks.js`, 'utf8'), context);
     vm.runInContext(fs.readFileSync(`${__dirname}/../../source/compose.manager/javascript/composeUpdateStatus.js`, 'utf8'), context);
-    for (const name of ['composeUpdateScopeOptionHtml', 'ForceUpdateStackConfirmed', 'UpdateStackConfirmed',
-        'renderStackActionDialog', 'composeUpdateDigestDetails', 'executeUpdateAllStacks', 'updateAllStacks', 'showProfileSelector',
-        'composeUpdateDetailsTable',
+    for (const name of ['ComposeUpConfirmed', 'composeUpdateScopeOptionHtml', 'ForceUpdateStackConfirmed', 'UpdateStackConfirmed',
+        'renderStackActionDialog', 'showStackActionDialog', 'composeUpdateDigestDetails', 'executeUpdateAllStacks', 'updateAllStacks', 'showProfileSelector',
+        'composeUpdateDetailsTable', 'prepareStackRechecks',
         'updateStackUpdateUI', 'showUpdateWarning', 'createContainerInfo', 'composeImageUpdateKey', 'mergeContainerUpdateStatus',
         'mergeStackUpdateStatus', 'mergeUpdateStatus', 'checkAllUpdates', 'composeUpdateCheckBadge',
-        'setComposeUpdateCheckState', 'composeCheckedContainers', 'composeContainerUpdateBadge',
+        'renderComposeUpdateCheckState', 'composeCheckedContainers', 'composeContainerUpdateBadge',
         'checkStackUpdates', 'createStackInfo']) {
         const match = source.match(new RegExp(`^function ${name}\\([^]*?\\n\\}`, 'm'));
         assert.ok(match, `Missing function ${name}`);
         vm.runInContext(match[0], context);
     }
     return { context, checked, events };
+}
+
+for (const disableWarnings of [false, true]) {
+    const { context, events } = harness({ DISABLE_ACTION_WARNINGS: String(disableWarnings) });
+    context.renderStackActionDialog('prepareUp', 'New stack', '/stacks/new', 'web,monitoring', [], true, false);
+    if (!disableWarnings) {
+        assert.match(events[0].dialog.title, /Pull\/Build & Up/);
+        assert.ok(!events[0].dialog.text.includes('swal-include-stopped'));
+        events[0].callback(true);
+    }
+    const request = events.at(-1);
+    assert.equal(request.payload.action, 'composeUp');
+    assert.equal(request.payload.prepareImages, '1');
+    assert.equal(request.payload.profile, 'web,monitoring');
+    assert.equal(request.payload.includeStopped, undefined);
+}
+for (const all of [false, true]) {
+    const { context, events, checked } = harness();
+    const dollar = context.$;
+    context.$ = selector => selector === '.profile_checkbox:checked'
+        ? { each(callback) { callback.call({ val: () => 'web' }); } }
+        : typeof selector === 'object' ? selector : dollar(selector);
+    checked['#profile_all_profiles'] = all;
+    let profile;
+    context.ComposePrepareUp = (path, selected) => { profile = selected; };
+    context.showProfileSelector('prepareUp', '/stacks/new', ['web', 'jobs'], '', '');
+    assert.equal(events[0].dialog.title, 'Select Profiles');
+    events[0].callback(true);
+    assert.equal(profile, all ? '*' : 'web');
+}
+for (const response of ['bad JSON', '{"result":"error"}', '{"result":"success","services":[]}', '{"result":"success","services":"web"}']) {
+    const { context, events } = harness();
+    const dollar = context.$;
+    context.$ = selector => selector.startsWith('#compose_stacks') ? { length: 0 } : dollar(selector);
+    context.$.post = (url, payload, callback) => {
+        assert.equal(payload.action, 'getProfileServices');
+        assert.equal(payload.profiles, 'web');
+        callback(response);
+        return { fail() {} };
+    };
+    context.composeLogger = () => {};
+    context.showStackActionDialog('prepareUp', '/stacks/new', 'web');
+    assert.equal(events.at(-1).dialog.title, 'Deployment scope unavailable');
+    assert.equal(events.length, 1, 'Invalid scope never dispatches Up');
+}
+{
+    const { context, events } = harness();
+    context.ComposeUpConfirmed('/stacks/new', { profile: 'web' });
+    assert.equal(events[0].payload.prepareImages, '0', 'Ordinary Up does not prepare images');
 }
 
 for (const kind of ['image', 'build-base']) {
@@ -173,6 +232,7 @@ for (const initial of [false, true]) {
         };
     };
     context.$.post = (url, payload, callback) => { if (callback) callback(); };
+    context.$.ajax = baseDollar.ajax;
     context.updateAllStacks();
     assert.equal(checked['#swal-include-stopped'], initial);
     checked['#swal-include-stopped'] = !initial;
@@ -393,11 +453,15 @@ for (const response of ['', 'not json', JSON.stringify({ result: 'error', messag
         if (payload.action === 'checkStackUpdates' || payload.action === 'checkAllStacksUpdates') complete = callback;
         return { fail: () => {} };
     };
+    context.$.ajax = () => ({
+        done(callback) { callback({ result: 'success', remaining: [] }); return this; },
+        fail() { return this; },
+    });
     context.checkStackUpdates('test');
     assert.match(stackHtml, /Checking/);
     assert.match(containerHtml, /Checking/);
     assert.match(context.composeContainerUpdateBadge(previous, 'test', 'test'), /Checking/);
-    complete(JSON.stringify({ result: 'success', updates: [previous] }));
+    complete(JSON.stringify({ result: 'success', updates: [previous], recheckToken: null }));
     assert.match(stackHtml, /Rebuild/);
     assert.match(containerHtml, /Rebuild/);
     assert.doesNotMatch(containerHtml, /Checking/);
@@ -421,7 +485,7 @@ for (const response of ['', 'not json', JSON.stringify({ result: 'error', messag
 
     context.checkStackUpdates('test');
     complete(JSON.stringify({ result: 'error', message: 'Registry unavailable' }));
-    assert.match(containerHtml, /Check failed/);
+    assert.match(containerHtml, /check failed/i);
     assert.doesNotMatch(containerHtml, /Rebuild/);
     context.checkAllUpdates();
     assert.match(stackHtml, /Checking/);

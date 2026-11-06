@@ -738,7 +738,7 @@ function mergeStackUpdateStatus(stackInfo, prevStatus, freshCheck) {
 
     // Merge container-level update data
     if (prevStatus.containers && stackInfo.containers) {
-        var previousByName = {};
+        var previousByName = Object.create(null);
         prevStatus.containers.forEach(function(pc) {
             var prev = createContainerInfo(pc);
             previousByName[prev.name] = prev;
@@ -759,7 +759,8 @@ function mergeStackUpdateStatus(stackInfo, prevStatus, freshCheck) {
 // ═══════════════════════════════════════════════════════════════════
 
 // Timers for async operations (plugin-specific to avoid collision with Unraid's global timers)
-var composeTimers = {};
+var composeTimers = Object.create(null);
+var composeHealthRefreshTimers = Object.create(null);
 var composeListRefreshedDebounceTimer = null;
 
 function triggerComposeListRefreshedDebounced(delayMs) {
@@ -801,10 +802,23 @@ function hideComposeSpinner() {
 }
 
 // Load stack list asynchronously (namespaced to avoid conflict with Docker tab's loadlist)
+var composeListGeneration = 0;
+var cancelComposeListLoad = null;
+
 function composeLoadlist() {
+    if (cancelComposeListLoad) cancelComposeListLoad();
+    var generation = ++composeListGeneration;
     // Return a Promise so callers can reliably .then() / .catch() on completion
     return new Promise(function(resolve, reject) {
         var composeLoadRequestTs = Date.now();
+        var loadTimer;
+        cancelComposeListLoad = function() {
+            clearTimeout(loadTimer);
+            resolve('superseded');
+        };
+        function isCurrentLoad() {
+            return generation === composeListGeneration;
+        }
 
         // Bind autostart change handler early, before any rows are rendered or become interactive
         // during progressive loading. Use delegated event handler so it works for dynamically added rows.
@@ -818,12 +832,16 @@ function composeLoadlist() {
             });
         });
 
-        composeTimers.load = setTimeout(function() {
+        loadTimer = setTimeout(function() {
+            if (!isCurrentLoad()) return;
             showComposeSpinner('Loading stack list...');
         }, 500);
+        composeTimers.load = loadTimer;
 
         function finalizeComposeLoadlist(resolvePayload) {
-            clearTimeout(composeTimers.load);
+            if (!isCurrentLoad()) return;
+            cancelComposeListLoad = null;
+            clearTimeout(loadTimer);
 
             // Signal load subscribers (e.g. dockerload cache) that the list changed
             flushComposeListRefreshedDebounce();
@@ -853,6 +871,7 @@ function composeLoadlist() {
             try {
                 $('#compose_stacks tr.compose-sortable').each(function() {
                     var $row = $(this);
+                    if (composeStackActionInProgress[$row.data('project')]) return;
                     var stateText = $row.find('.state').text().toLowerCase();
                     var $icon = $row.find('.compose-status-icon').first();
                     if (!$icon.length) return;
@@ -906,6 +925,7 @@ function composeLoadlist() {
                 // Restore any state text preserved by setStackActionInProgress
                 $('#compose_stacks .state').each(function() {
                     var $s = $(this);
+                    if (composeStackActionInProgress[$s.closest('tr').data('project')]) return;
                     if ($s.data('orig-text')) {
                         $s.text($s.data('orig-text'));
                         $s.removeData('orig-text');
@@ -929,11 +949,14 @@ function composeLoadlist() {
             }
         }
 
-        $.get('/plugins/compose.manager/include/ComposeList.php', {
-            mode: 'list',
-            _: composeLoadRequestTs
-            })
+        $.ajax({
+            url: '/plugins/compose.manager/include/ComposeList.php',
+            method: 'GET',
+            timeout: 30000,
+            data: { mode: 'list', _: composeLoadRequestTs }
+        })
             .done(function(metaRaw) {
+                if (!isCurrentLoad()) return;
                 var meta = tryParseJson(metaRaw);
                 if (!meta || meta.result !== 'success' || !Array.isArray(meta.projects)) {
                     composeLogger('Invalid stack meta response', {
@@ -942,6 +965,7 @@ function composeLoadlist() {
                     $('#compose_list').html('<tr><td colspan="14" class="compose-status-danger" style="text-align:center;padding:20px;">Failed to load stack list. Please refresh the page.</td></tr>');
                     clearTimeout(composeTimers.load);
                     hideComposeSpinner();
+                    cancelComposeListLoad = null;
                     reject(new Error('Invalid stack list response'));
                     return;
                 }
@@ -964,7 +988,7 @@ function composeLoadlist() {
 
                 // Start loading stack container details in the background immediately.
                 // UI rendering stays top-down; this just gets data ahead of the visual pipeline.
-                prefetchStackDetailsInBackground(projects);
+                prefetchStackDetailsInBackground(projects, generation);
 
                 var progressHtml = '<tr id="compose-load-progress-row">' +
                     '<td colspan="14" style="text-align:center;padding:12px;border:none;background:transparent;">' +
@@ -1001,6 +1025,7 @@ function composeLoadlist() {
                 var stackLoadTimers = {};
 
                 function updateProgress() {
+                    if (!isCurrentLoad()) return;
                     $('#compose-load-progress-count').text(completed + '/' + projects.length);
                     if (completed >= projects.length) {
                         $('#compose-load-progress-row').remove();
@@ -1010,6 +1035,7 @@ function composeLoadlist() {
 
                 function queueProjectRequest(index) {
                     var project = projects[index];
+                    var runtimeGeneration = stackRuntimeGeneration[project] || 0;
                     stackLoadTimers[project] = Date.now();
 
                     composeLogger('progressive stack load start', {
@@ -1019,12 +1045,14 @@ function composeLoadlist() {
                     }, 'user', 'debug', 'composeLoadlist');
 
                     activeRequests++;
-                        $.get('/plugins/compose.manager/include/ComposeList.php', {
-                            mode: 'row',
-                            project: project,
-                            _: composeLoadRequestTs + '-' + index
+                        $.ajax({
+                            url: '/plugins/compose.manager/include/ComposeList.php',
+                            method: 'GET',
+                            timeout: 30000,
+                            data: { mode: 'row', project: project, _: composeLoadRequestTs + '-' + index }
                         })
                         .done(function(rowRaw) {
+                            if (!isCurrentLoad()) return;
                             var rowResp = tryParseJson(rowRaw);
                             var elapsedMs = Date.now() - (stackLoadTimers[project] || Date.now());
                             var detailParts = [];
@@ -1037,6 +1065,7 @@ function composeLoadlist() {
                             }
                             pendingRowsByIndex[index] = {
                                 ok: !!(rowResp && rowResp.result === 'success' && rowResp.html),
+                                runtimeGeneration: runtimeGeneration,
                                 rowResp: rowResp,
                                 project: project,
                                 position: index + 1,
@@ -1050,6 +1079,7 @@ function composeLoadlist() {
                             };
                         })
                         .fail(function(xhr, textStatus, errorThrown) {
+                            if (!isCurrentLoad()) return;
                             var failElapsedMs = Date.now() - (stackLoadTimers[project] || Date.now());
                             pendingRowsByIndex[index] = {
                                 ok: false,
@@ -1066,6 +1096,7 @@ function composeLoadlist() {
                             };
                         })
                         .always(function() {
+                            if (!isCurrentLoad()) return;
                             activeRequests--;
                             delete stackLoadTimers[project];
                             flushCommittedRowsInOrder();
@@ -1074,6 +1105,7 @@ function composeLoadlist() {
                 }
 
                 function dispatchProjectRequests() {
+                    if (!isCurrentLoad()) return;
                     while (activeRequests < maxParallelRequests && queueIndex < projects.length) {
                         queueProjectRequest(queueIndex);
                         queueIndex++;
@@ -1081,6 +1113,7 @@ function composeLoadlist() {
                 }
 
                 function flushCommittedRowsInOrder() {
+                    if (!isCurrentLoad()) return;
                     if (commitInProgress) {
                         return;
                     }
@@ -1105,6 +1138,9 @@ function composeLoadlist() {
                         var $rowChunk = $(entry.rowResp.html);
                         $('#compose-load-progress-row').before($rowChunk);
                         initializeProgressiveLoadedRows($rowChunk);
+                        if (entry.runtimeGeneration !== (stackRuntimeGeneration[entry.project] || 0)) {
+                            refreshStackByProject(entry.project);
+                        }
                         processPendingUpdateCheckForStack(entry.project);
                         if (typeof window.composeDockerLoadRenderCached === 'function' && composeShouldEnableDockerLoad()) {
                             window.composeDockerLoadRenderCached();
@@ -1127,6 +1163,7 @@ function composeLoadlist() {
                     }
 
                     waitForExpansion.finally(function() {
+                        if (!isCurrentLoad()) return;
                         commitIndex++;
                         completed++;
                         commitInProgress = false;
@@ -1138,6 +1175,8 @@ function composeLoadlist() {
                 dispatchProjectRequests();
             })
             .fail(function(xhr, status, error) {
+                if (!isCurrentLoad()) return;
+                cancelComposeListLoad = null;
                 composeLogger('failed', {
                     status: status,
                     error: error
@@ -1259,6 +1298,8 @@ function initializeProgressiveLoadedRows($rowChunk) {
     // Apply cached update status immediately for new rows when available.
     $rows.each(function() {
         var project = $(this).data('project');
+        composeUpdateChecks.rowCommitted(project);
+        renderStackActionProgress(project);
         if (project && stackUpdateStatus[project]) {
             updateStackUpdateUI(project, stackUpdateStatus[project]);
         }
@@ -1309,13 +1350,7 @@ function applyStackSummaryFromResponse(project, response) {
     var stackId = rowId.indexOf('stack-row-') === 0 ? rowId.substring('stack-row-'.length) : '';
     if (!stackId) return;
 
-    var containers = composeCheckedContainers(response, project, response.composeCheckRevision || 0);
-    stackContainersCache[stackId] = containers;
-    if (response.startedAt) {
-        stackStartedAtCache[stackId] = response.startedAt;
-    }
-
-    updateParentStackFromContainers(stackId, project);
+    reconcileStackRuntime(project, response, stackRuntimeGeneration[project] || 0);
 }
 
 // Load external stylesheets (non-critical styles — critical ones are inline above)
@@ -2059,7 +2094,7 @@ function updateTabModifiedState() {
 // composeEscapeHtml / composeEscapeAttr are provided by common.js
 
 // Update status cache per stack
-var stackUpdateStatus = {};
+var stackUpdateStatus = Object.create(null);
 var savedUpdateStatusLoaded = false;
 
 var composeDefaultExpandSettings = null;
@@ -2162,162 +2197,34 @@ var dockerVersionsInstalled = false;
 // If auto-check is enabled and interval has elapsed, trigger a fresh check
 // Also checks for pending rechecks from recent update operations
 function loadSavedUpdateStatus() {
-    $.post(caURL, {
-        action: 'getSavedUpdateStatus'
-    }, function(data) {
-        if (data) {
-            try {
-                var response = JSON.parse(data);
-                if (response.result === 'success' && response.stacks) {
-                    Object.keys(response.stacks).forEach(function(project) {
-                        mergeStackUpdateStatus(response.stacks[project], stackUpdateStatus[project], true);
-                    });
-                    stackUpdateStatus = response.stacks;
-                    if (response.dockerVersionsInstalled) dockerVersionsInstalled = true;
-
-                    // Mark as loaded only after successful callback
-                    savedUpdateStatusLoaded = true;
-
-                    // Update the UI for each stack with saved status
-                    for (var stackName in response.stacks) {
-                        var stackInfo = response.stacks[stackName];
-                        updateStackUpdateUI(stackName, stackInfo, true);
-                    }
-
-                    // Enable/disable Update All button based on saved status
-                    updateUpdateAllButton();
-
-                    // Check for pending rechecks first (from recent updates)
-                    // This takes priority over auto-check interval
-                    checkPendingRechecks(function(hadPendingRechecks) {
-                        // Only run auto-check if there were no pending rechecks
-                        if (!hadPendingRechecks && autoCheckUpdates) {
-                            checkAutoUpdateIfNeeded(response.stacks);
-                        }
-                    });
-                } else {
-                    composeLogger('Unable to load saved update status', {
-                        message: response.message || 'The server did not return saved update results.'
-                    }, 'user', 'error', 'loadSavedUpdateStatus');
-                    // No saved status, check for pending rechecks or run auto-check
-                    checkPendingRechecks(function(hadPendingRechecks) {
-                        if (!hadPendingRechecks && autoCheckUpdates) {
-                            checkAllUpdates();
-                        }
-                    });
-                }
-            } catch (e) {
-                composeLogger('Failed to load saved update status', {
-                    error: e && e.toString()
-                }, 'user', 'error', 'loadSavedUpdateStatus');
-                checkPendingRechecks(function(hadPendingRechecks) {
-                    if (!hadPendingRechecks && autoCheckUpdates) {
-                        checkAllUpdates();
-                    }
-                });
-            }
-        } else {
-            // No data, check for pending rechecks or run auto-check
-            checkPendingRechecks(function(hadPendingRechecks) {
-                if (!hadPendingRechecks && autoCheckUpdates) {
-                    checkAllUpdates();
-                }
-            });
-        }
-    }).fail(function(xhr, status, error) {
-        // Reset flag on transport failure so retries can work
-        savedUpdateStatusLoaded = false;
-        composeLogger('Failed to load saved update status', { status: status, error: error }, 'user', 'error', 'update-check');
-    });
+    composeUpdateChecks.saved();
 }
 
 // Check for pending rechecks from recent update operations
 // These stacks need to be rechecked regardless of auto-check interval
 function checkPendingRechecks(callback) {
-    $.post(caURL, {
-        action: 'getPendingRecheckStacks'
-    }, function(data) {
-        var hadPendingRechecks = false;
-        if (data) {
-            try {
-                var response = JSON.parse(data);
-                if (response.result === 'success' && response.pending) {
-                    var pendingStacks = Object.keys(response.pending);
-                    if (pendingStacks.length > 0) {
-                        hadPendingRechecks = true;
-                        composeLogger('checkPendingRechecks:found', {
-                            pendingStacks: pendingStacks
-                        }, 'user', 'debug', 'update-check');
-
-                        // Queue the rechecks. Row-commit hook drains the queue as
-                        // each row lands. For rows already committed before this
-                        // async POST returned, sweep them now so they aren't stranded.
-                        pendingStacks.forEach(function(stackName) {
-                            if (pendingUpdateCheckStacks.indexOf(stackName) === -1) {
-                                pendingUpdateCheckStacks.push(stackName);
-                            }
-                        });
-                        pendingStacks.slice().forEach(function(stackName) {
-                            if ($('#compose_stacks tr.compose-sortable[data-project="' + stackName + '"]').length > 0) {
-                                processPendingUpdateCheckForStack(stackName);
-                            }
-                        });
-                    }
-                }
-            } catch (e) {
-                composeLogger('checkPendingRechecks:failed', {
-                    error: e
-                }, 'user', 'error', 'update-check');
-            }
-        }
-        if (callback) callback(hadPendingRechecks);
-    });
+    composeUpdateChecks.pending(callback);
 }
 
 // Check if auto-update check is needed based on lastChecked timestamp
 function checkAutoUpdateIfNeeded(stacks) {
-    if (!autoCheckUpdates) return;
-
-    var now = Math.floor(Date.now() / 1000); // Current time in seconds
-    var intervalSeconds = autoCheckDays * 24 * 60 * 60; // Convert days to seconds
-    var needsCheck = true;
-
-    // Find the most recent lastChecked timestamp across all stacks
-    var latestCheck = 0;
-    for (var stackName in stacks) {
-        if (stacks[stackName].lastChecked && stacks[stackName].lastChecked > latestCheck) {
-            latestCheck = stacks[stackName].lastChecked;
-        }
-    }
-
-    // If we have a lastChecked time and it's within the interval, don't check
-    if (latestCheck > 0 && (now - latestCheck) < intervalSeconds) {
-        needsCheck = false;
-        composeLogger('Last check was ' + Math.round((now - latestCheck) / 60) + ' minutes ago, interval is ' + Math.round(intervalSeconds / 60) + ' minutes. Skipping.', null, 'user', 'debug', 'update-check');
-    }
-
-    if (needsCheck) {
-        composeLogger('Running automatic update check...', null, 'user', 'debug', 'update-check');
-        checkAllUpdates();
-    }
+    composeUpdateChecks.auto(stacks);
 }
-
-// Check for updates for all stacks
-var composeUpdateCheckState = {};
-var composeUpdateCheckRevision = {};
 
 function composeUpdateCheckBadge(project) {
     var state = composeUpdateCheckState[project];
     if (!state) return '';
+    if (state === 'failed') {
+        return '<a class="exec grey-text" style="cursor:pointer;white-space:nowrap;" onclick="checkStackUpdates(\'' +
+            composeEscapeAttr(project) + '\');return false;"><i class="fa fa-exclamation-circle fa-fw"></i> check failed</a>';
+    }
     return '<span class="' + (state === 'checking' ? 'compose-status-info' : 'grey-text') +
         '" style="white-space:nowrap;"><i class="fa fa-' +
         (state === 'checking' ? 'refresh fa-spin' : 'exclamation-circle fa-fw') + '"></i> ' +
         (state === 'checking' ? 'Checking...' : 'Check failed') + '</span>';
 }
 
-function setComposeUpdateCheckState(project, state) {
-    if (state) composeUpdateCheckState[project] = state;
-    else delete composeUpdateCheckState[project];
+function renderComposeUpdateCheckState(project) {
     var $row = $('#compose_stacks tr.compose-sortable[data-project="' + project + '"]');
     if (!$row.length) return;
     var stackId = $row.attr('id').replace('stack-row-', '');
@@ -2347,57 +2254,7 @@ function composeContainerUpdateBadge(container, project, stackId) {
 }
 
 function checkAllUpdates() {
-    $('#checkUpdatesBtn').prop('disabled', true).val('Checking...');
-    $('#updateAllBtn').prop('disabled', true);
-
-    // Checks include existing containers in every runtime state.
-    $('#compose_stacks tr.compose-sortable').each(function() {
-        var $row = $(this);
-        setComposeUpdateCheckState($row.data('project'), 'checking');
-    });
-
-    function showFailure(message) {
-        composeLogger('Update check failed', { message: message }, 'user', 'error', 'checkAllUpdates');
-        $('#updateAllBtn').prop('disabled', true);
-        $('#compose_stacks tr.compose-sortable').each(function() {
-            setComposeUpdateCheckState($(this).data('project'), 'failed');
-        });
-    }
-
-    $.post(caURL, {
-        action: 'checkAllStacksUpdates'
-    }, function(data) {
-        if (data) {
-            try {
-                var response = JSON.parse(data);
-                if (response.result === 'success' && response.stacks) {
-                    Object.keys(response.stacks).forEach(function(project) {
-                        mergeStackUpdateStatus(response.stacks[project], stackUpdateStatus[project], true);
-                    });
-                    stackUpdateStatus = response.stacks;
-
-                    // Update the UI for each stack
-                    for (var stackName in response.stacks) {
-                        var stackInfo = response.stacks[stackName];
-                        updateStackUpdateUI(stackName, stackInfo, true);
-                    }
-
-                    // Enable/disable Update All button based on available updates
-                    updateUpdateAllButton();
-                } else {
-                    showFailure(response.message || 'The server did not return update results.');
-                }
-            } catch (e) {
-                showFailure(e && e.toString());
-            }
-        } else {
-            showFailure('The server returned an empty response.');
-        }
-        $('#checkUpdatesBtn').prop('disabled', false).val('Check for Updates');
-    }).fail(function() {
-        $('#checkUpdatesBtn').prop('disabled', false).val('Check for Updates');
-        showFailure('The update check request failed.');
-    });
+    composeUpdateChecks.bulk();
 }
 
 // Check how many stacks have updates and enable/disable the Update All button
@@ -2516,9 +2373,6 @@ function executeUpdateAllStacks(stacks, background, suppressBackgroundNotificati
         });
         return;
     }
-    var height = 800;
-    var width = 1200;
-
     // Create a list of paths to update
     var paths = stacks.map(function(s) {
         return s.path;
@@ -2526,20 +2380,24 @@ function executeUpdateAllStacks(stacks, background, suppressBackgroundNotificati
 
     // Track all stacks for update check when dialog closes.
     // Server-side markStackForRecheck is authoritative; do NOT push into
-    // pendingUpdateCheckStacks at action start (drains would fire mid-action).
+    // the update-check queue at action start (drains would fire mid-action).
     var stackNames = [];
+    var operations = Object.create(null);
     stacks.forEach(function(s) {
         var stackName = s.project;
         stackNames.push(stackName);
-        setStackActionInProgress(stackName, true, composeActionStateText('update'));
+        operations[stackName] = setStackActionInProgress(stackName, true, composeActionStateText('update'));
     });
 
-    // Mark stacks for recheck server-side (persists across page reload)
-    $.post(caURL, {
-        action: 'markStackForRecheck',
-        stacks: JSON.stringify(stackNames)
-    }, function() {
-        performComposeAction({
+    function failUpdatePreparation() {
+        stackNames.forEach(function(stackName) {
+            setStackActionInProgress(stackName, false, null, operations[stackName]);
+        });
+    }
+
+    prepareStackRechecks(stackNames, 'Update All Failed', function() {
+        performMultipleComposeAction(stacks, {
+            stackNames: stackNames,
             actionName: 'update',
             title: 'Update All Stacks',
             requestUrl: compURL,
@@ -2550,29 +2408,34 @@ function executeUpdateAllStacks(stacks, background, suppressBackgroundNotificati
             },
             background: background,
             suppressBackgroundNotification: suppressBackgroundNotification,
-            pendingReload: false,
-            onComplete: function(parsed, data) {
-                if (parsed && parsed.background) {
-                    stacks.forEach(function(s) {
-                        pollBackgroundCompletion(s.project);
-                    });
-                } else if (data) {
-                    stackNames.forEach(function(stackName) {
-                        setStackActionInProgress(stackName, false);
-                    });
-                    queuePendingComposeReloads(stackNames);
-                } else {
-                    stackNames.forEach(function(stackName) {
-                        setStackActionInProgress(stackName, false);
-                    });
-                }
-            }
-        });
-    });
+            pendingReload: false
+        }, operations);
+    }, failUpdatePreparation);
+}
+
+function prepareStackRechecks(stackNames, title, done, onFailure) {
+    function fail() {
+        if (onFailure) onFailure();
+        composeLogger('Failed to prepare update checks', { stacks: stackNames }, 'user', 'error', 'stack-action');
+        swal({ title: title, text: 'Could not prepare update checks. No action was dispatched.', type: 'error' });
+    }
+    $.ajax({
+        url: caURL,
+        method: 'POST',
+        timeout: 30000,
+        data: { action: 'markStackForRecheck', stacks: JSON.stringify(stackNames) }
+    }).done(function(data) {
+        var response = typeof data === 'string' ? tryParseJson(data) : data;
+        if (!response || response.result !== 'success') {
+            fail();
+            return;
+        }
+        done();
+    }).fail(fail);
 }
 
 // Update UI for a single stack's update status
-function updateStackUpdateUI(stackName, stackInfo, freshCheck) {
+function updateStackUpdateUI(stackName, stackInfo) {
     // Find the stack row by project name (scoped to compose_stacks to avoid Docker tab conflicts)
     var $stackRow = $('#compose_stacks tr.compose-sortable[data-project="' + stackName + '"]');
     if ($stackRow.length === 0) return;
@@ -2580,11 +2443,6 @@ function updateStackUpdateUI(stackName, stackInfo, freshCheck) {
     var stackId = $stackRow.attr('id').replace('stack-row-', '');
     var $updateCell = $stackRow.find('.compose-updatecolumn');
 
-    if (freshCheck) {
-        delete composeUpdateCheckState[stackName];
-        composeUpdateCheckRevision[stackName] = (composeUpdateCheckRevision[stackName] || 0) + 1;
-        delete stackDetailsPrefetchCache[stackName];
-    }
     var presentation = composeStackUpdatePresentation(stackInfo.containers);
     var html = composeUpdatePresentationBadge(presentation);
     if (presentation.hasUpdate) {
@@ -2618,57 +2476,7 @@ function updateStackUpdateUI(stackName, stackInfo, freshCheck) {
 
 // Check updates for a single stack
 function checkStackUpdates(stackName) {
-    var $stackRow = $('#compose_stacks tr.compose-sortable[data-project="' + stackName + '"]');
-    if ($stackRow.length === 0) {
-        if (pendingUpdateCheckStacks.indexOf(stackName) === -1) {
-            pendingUpdateCheckStacks.push(stackName);
-        }
-        return;
-    }
-
-    var $updateCell = $stackRow.find('.compose-updatecolumn');
-    setComposeUpdateCheckState(stackName, 'checking');
-
-    function showFailure(message) {
-        composeLogger('Update check failed', { stackName: stackName, message: message }, 'user', 'error', 'checkStackUpdates');
-        setComposeUpdateCheckState(stackName, 'failed');
-        $updateCell.html('<a class="exec orange-text" style="cursor:pointer;white-space:nowrap;" onclick="checkStackUpdates(\'' + composeEscapeAttr(stackName) + '\');"><i class="fa fa-exclamation-circle fa-fw"></i> check failed</a>');
-    }
-
-    $.post(caURL, {
-        action: 'checkStackUpdates',
-        script: stackName
-    }, function(data) {
-        if (data) {
-            try {
-                var response = JSON.parse(data);
-                if (response.result === 'success' && Array.isArray(response.updates)) {
-                    var stackInfo = createStackInfo(stackName, response.updates, {
-                        projectName: response.projectName
-                    });
-                    mergeStackUpdateStatus(stackInfo, stackUpdateStatus[stackName], true);
-                    stackUpdateStatus[stackName] = stackInfo;
-                    updateStackUpdateUI(stackName, stackInfo, true);
-                    // Update the Update All button state
-                    updateUpdateAllButton();
-
-                    // Clear the pending recheck flag for this stack (if any)
-                    $.post(caURL, {
-                        action: 'clearStackRecheck',
-                        stacks: JSON.stringify([stackName])
-                    });
-                } else {
-                    showFailure(response.message || 'The server did not return an update result.');
-                }
-            } catch (e) {
-                showFailure(e && e.toString());
-            }
-        } else {
-            showFailure('The server returned an empty response.');
-        }
-    }).fail(function(xhr, status, error) {
-        showFailure(error || status);
-    });
+    composeUpdateChecks.single(stackName);
 }
 
 // Validate URL scheme for WebUI links (allows [IP] and [PORT]/[PORT:xxxx] placeholders)
@@ -2725,6 +2533,11 @@ function sanitizeIconPreviewSrc(raw) {
 
 function loadPersistentContainerCache() {
     return new Promise(function(resolve) {
+        function failed(message) {
+            composeLogger('Failed to load persistent container cache', { message: message }, 'user', 'error', 'load-cache');
+            swal({ title: 'Container metadata unavailable', text: message + ' Existing metadata has been retained; refresh to retry or clear the update cache to recover damaged storage.', type: 'warning' });
+            resolve(persistentContainerCache);
+        }
         $.ajax({
             url: caURL,
             method: 'POST',
@@ -2734,14 +2547,16 @@ function loadPersistentContainerCache() {
             }
         })
             .done(function(response) {
+                if (!response || response.result !== 'success' || !response.cache || typeof response.cache !== 'object') {
+                    failed(response && response.message || 'The server returned invalid container metadata.');
+                    return;
+                }
                 composeLogger('Loaded persistent container cache', response, 'user', 'debug', 'load-cache');
-                persistentContainerCache = (response && response.cache) ? response.cache : {};
+                persistentContainerCache = Object.assign(Object.create(null), response && response.cache);
                 resolve(persistentContainerCache);
             })
             .fail(function() {
-                composeLogger('Failed to load persistent container cache', null, 'user', 'error', 'load-cache');
-                persistentContainerCache = {};
-                resolve(persistentContainerCache);
+                failed('The container metadata request failed.');
             });
     });
 }
@@ -2800,8 +2615,9 @@ function ensureComposeInfoPublisherRunning() {
 }
 
 function getPersistentContainerInfo(project, service) {
-    if (!project || !service || !persistentContainerCache[project]) return null;
-    return persistentContainerCache[project][service] || null;
+    if (!project || !service || !Object.prototype.hasOwnProperty.call(persistentContainerCache, project)) return null;
+    var services = persistentContainerCache[project];
+    return services && Object.prototype.hasOwnProperty.call(services, service) ? services[service] : null;
 }
 
 // Process WebUI URL placeholders for stack-level WebUI (where no container context exists)
@@ -3214,24 +3030,31 @@ $(function() {
                 }
             };
 
-            function renderComposeLoadCache() {
+            function renderComposeLoadCache(containers, $root) {
                 if (!isComposeLoadVisible()) {
                     return;
                 }
 
-                for (var shortId in composeLoadById) {
+                var ids = Array.isArray(containers) ? containers.map(function(container) {
+                    return composeNormalizeContainerKey(container.id);
+                }) : Object.keys(composeLoadById);
+                function select(selector) { return $root ? $root.find(selector) : $(selector); }
+                ids.forEach(function(shortId) {
                     var info = composeLoadById[shortId];
+                    if (!info) return;
                     var selectorId = composeEscapeSelectorFragment(shortId);
-                    $('.compose-cpu-' + selectorId).removeClass('compose-text-muted').text(info.cpuText + ' / 100%');
-                    $('.compose-mem-' + selectorId).removeClass('compose-text-muted').text(info.mem);
-                    $('.compose-netio-' + selectorId).removeClass('compose-text-muted').html(formatInOutHtml(info.netInput, info.netOutput, 'in', 'out'));
-                    $('.compose-blockio-' + selectorId).removeClass('compose-text-muted').html(formatInOutHtml(info.blockInput, info.blockOutput, 'read', 'write'));
-                    $('#compose-cpu-bar-' + selectorId).css('width', info.cpuText);
-                    $('#compose-mem-bar-' + selectorId).css('width', Math.min(info.memPercent || 0, 100).toFixed(2) + '%');
-                }
+                    select('.compose-cpu-' + selectorId).removeClass('compose-text-muted').text(info.cpuText + ' / 100%');
+                    select('.compose-mem-' + selectorId).removeClass('compose-text-muted').text(info.mem);
+                    select('.compose-netio-' + selectorId).removeClass('compose-text-muted').html(formatInOutHtml(info.netInput, info.netOutput, 'in', 'out'));
+                    select('.compose-blockio-' + selectorId).removeClass('compose-text-muted').html(formatInOutHtml(info.blockInput, info.blockOutput, 'read', 'write'));
+                    select('#compose-cpu-bar-' + selectorId).css('width', info.cpuText);
+                    select('#compose-mem-bar-' + selectorId).css('width', Math.min(info.memPercent || 0, 100).toFixed(2) + '%');
+                });
 
-                renderStackAggregates();
-                composeLoadLastRenderMs = Date.now();
+                if (!$root) {
+                    renderStackAggregates();
+                    composeLoadLastRenderMs = Date.now();
+                }
             }
 
             function scheduleComposeLoadRender(forceImmediate) {
@@ -3469,6 +3292,12 @@ $(function() {
                 scheduleComposeLoadRender(false);
             });
 
+            composeDockerLoad.on('connect', function() {
+                if (isCurrentComposeDockerLoad(composeDockerLoad, newGeneration) && composeDockerLoadRunning) {
+                    ensureComposeInfoPublisherRunning();
+                }
+            });
+
             composeDockerLoad.on('error', function(code, desc) {
                 if (!isCurrentComposeDockerLoad(composeDockerLoad, newGeneration)) {
                     return;
@@ -3578,7 +3407,6 @@ $(function() {
                 if (composeShouldEnableDockerLoad()) {
                     if (!composeDockerLoadRunning) {
                         composeLogger('restarting WebSocket after hidden period (was stopped)', null, 'user', 'debug', 'dockerload');
-                        ensureComposeInfoPublisherRunning();
                         window.composeDockerLoadToggle(true);
                     } else if (hiddenDurationMs >= composeLoadHiddenStopMs) {
                         // Still marked running, but hidden long enough that the
@@ -3587,7 +3415,6 @@ $(function() {
                         // us. Force a clean reconnect rather than trusting a
                         // socket we have no way to directly introspect.
                         composeLogger('tab was hidden long enough that the WebSocket may be stale — forcing reconnect', null, 'user', 'debug', 'dockerload');
-                        ensureComposeInfoPublisherRunning();
                         window.composeDockerLoadToggle(false);
                         window.composeDockerLoadToggle(true);
                     }
@@ -3628,8 +3455,7 @@ $(function() {
                     'listReady': composeListReady,
                     'loadColumnsVisible': composeHasVisibleLoadColumns()
                 }, 'user', 'debug', 'dockerload');
-                composeDockerLoad.start();
-                composeDockerLoadRunning = true;
+                window.composeDockerLoadToggle(true);
             } else {
                 composeLogger('deferring socket start', {
                     'listReady': composeListReady,
@@ -4321,82 +4147,38 @@ function queuePendingComposeReloads(stackNames, delayMs) {
     schedulePendingComposeReloads(delayMs || 500);
 }
 
-// Poll for background operation completion by checking if stack lock is released
-// Once lock is released, refresh the stack and clear the checking state
-function pollBackgroundCompletion(stackName, refreshDelayMs = 0) {
-    // Poll with adaptive frequency to handle both fast and slow operations:
-    //   0–60s:   every 2s   (30 checks)
-    //   60s–5m:  every 5s   (48 checks)
-    //   5m–30m:  every 15s  (100 checks)
-    // Total coverage: ~30 minutes before giving up
-    var elapsed = 0; // seconds
-    var startedAt = Date.now();
-
-    function getInterval() {
-        if (elapsed < 60) return 2000;
-        if (elapsed < 300) return 5000;
-        return 15000;
-    }
-
-    function check() {
-        var completed = false;
-        $.ajax({
-            url: caURL,
-            method: 'POST',
-            timeout: 30000,
-            data: {
-                action: 'checkStackLock',
-                script: stackName
+// Tracked dispatches use receipts; older action paths retain lock polling.
+function pollBackgroundCompletion(stackName, refreshDelayMs = 0, operation) {
+    operation = operation || composeStackActionInProgress[stackName];
+    composePollOperation({
+        endpoint: caURL,
+        project: stackName,
+        operationId: operation && operation.receipt,
+        isCurrent: function() {
+            return !operation || composeStackActionInProgress[stackName] === operation;
+        },
+        onComplete: function(exitCode) {
+            setStackActionInProgress(stackName, false, null, operation);
+            if (exitCode !== 0) {
+                composeLogger('Compose operation failed', { stack: stackName, exitCode: exitCode }, 'user', 'error', 'stack-action');
+                swal({ title: 'Compose Action Failed', text: 'The operation for ' + stackName + ' exited with code ' + exitCode + '. Check its command log for details.', type: 'error' });
             }
-        }).done(function(response) {
-            try {
-                var parsed = typeof response === 'string' ? tryParseJson(response) : response;
-                if (parsed && parsed.result === 'success' && parsed.locked === false) {
-                    completed = true;
-                    // Lock is released — clear spinner first, then fetch fresh data
-                    // so refreshStackByProject always wins and overwrites the restored state
-                    setStackActionInProgress(stackName, false);
-                    setTimeout(function() {
-                        refreshStackByProject(stackName);
-                        // Sync from server pending file (authoritative). This
-                        // populates the queue and sweeps any already-rendered rows.
-                        checkPendingRechecks();
-                    }, refreshDelayMs);
-                    return; // stop scheduling
-                }
-                if (!parsed || parsed.result !== 'success' || typeof parsed.locked !== 'boolean') {
-                    composeLogger('Lock check failed', parsed, 'user', 'error', 'poll');
-                }
-            } catch (e) {
-                composeLogger('Parse error', e, 'user', 'error', 'poll');
-            }
-        }).fail(function(xhr, status, error) {
-            composeLogger('Lock check request failed', {
-                stack: stackName,
-                status: status,
-                error: error
-            }, 'user', 'error', 'poll');
-        }).always(function() {
-            if (completed) return;
-            elapsed = (Date.now() - startedAt) / 1000;
-            // Schedule next check if still within timeout (30 minutes)
-            var interval = getInterval();
-            if (elapsed < 1800) {
-                setTimeout(check, interval);
-            } else {
-                composeLogger('Timeout after 30m', {
-                    stack: stackName
-                }, 'user', 'warn', 'poll');
-                setStackActionInProgress(stackName, false);
+            setTimeout(function() {
+                if (composeStackActionInProgress[stackName]) return;
                 refreshStackByProject(stackName);
-                swal({ title: 'Unable to confirm completion', text: 'The operation may still be running. Refresh the stack to check its status.', type: 'warning' });
-            }
-        });
-    }
-
-    // Start first check after 2 seconds
-    elapsed += 2;
-    setTimeout(check, 2000);
+                checkPendingRechecks();
+            }, refreshDelayMs);
+        },
+        onError: function(message, details) {
+            composeLogger(message, details, 'user', 'error', 'poll');
+        },
+        onTimeout: function() {
+            composeLogger('Timeout after 30m', { stack: stackName }, 'user', 'warn', 'poll');
+            setStackActionInProgress(stackName, false, null, operation);
+            refreshStackByProject(stackName);
+            swal({ title: 'Unable to confirm completion', text: 'The operation may still be running. Refresh the stack to check its status.', type: 'warning' });
+        }
+    });
 }
 
 function composeActionStateText(actionName) {
@@ -4567,6 +4349,19 @@ function composeIdentityBlocked(path) {
     return true;
 }
 
+function composeActionBoxClosed(projects) {
+    (projects || '').split(',').filter(Boolean).forEach(function(project) {
+        refreshStackByProject(decodeURIComponent(project));
+    });
+}
+
+function openComposeActionBox(url, title, stackNames) {
+    var projects = (stackNames || []).map(function(project) {
+        return encodeURIComponent(project);
+    }).join(',');
+    openBox(url, title, 800, 1200, true, 'composeActionBoxClosed', projects);
+}
+
 function performComposeAction(opts) {
     opts = opts || {};
     var stackName = opts.stackName;
@@ -4576,15 +4371,15 @@ function performComposeAction(opts) {
     var payload = opts.payload || {};
     var background = opts.background || false;
     var suppressBackgroundNotification = opts.suppressBackgroundNotification || false;
-    var pendingReload = opts.pendingReload || false;
+    var pendingReload = opts.pendingReload !== false;
     var actionStateText = opts.actionStateText || composeActionStateText(actionName);
     var onComplete = opts.onComplete;
 
-    if (stackName) {
-        setStackActionInProgress(stackName, true, actionStateText);
-    }
+    var operation = stackName ? setStackActionInProgress(stackName, true, actionStateText) : null;
 
     payload.background = background ? 1 : 0;
+    // Attached "up" follows logs indefinitely; preserve its existing close/detach path.
+    payload.trackOperation = payload.followLogs ? '0' : '1';
     if (Object.prototype.hasOwnProperty.call(payload, 'removeOrphans')) {
         payload.removeOrphans = payload.removeOrphans ? 1 : 0;
     }
@@ -4592,11 +4387,17 @@ function performComposeAction(opts) {
         payload.followLogs = payload.followLogs ? 1 : 0;
     }
 
-    $.post(requestUrl, payload, function(data) {
-        var parsed = tryParseJson(data);
+    $.ajax({
+        url: requestUrl,
+        method: 'POST',
+        timeout: 30000,
+        data: payload
+    }).done(function(data) {
+        if (operation && composeStackActionInProgress[stackName] !== operation) return;
+        var parsed = typeof data === 'string' ? tryParseJson(data) : data;
         if (parsed && parsed.error === 'identity') {
             if (stackName) {
-                setStackActionInProgress(stackName, false);
+                setStackActionInProgress(stackName, false, null, operation);
             }
             composeHandleIdentityError(parsed);
             if (typeof onComplete === 'function') {
@@ -4605,13 +4406,13 @@ function performComposeAction(opts) {
             return;
         }
         // Any other refusal comes back as {error, message} instead of a terminal URL.
-        if (parsed && parsed.error && parsed.message) {
+        if (parsed && parsed.error) {
             if (stackName) {
-                setStackActionInProgress(stackName, false);
+                setStackActionInProgress(stackName, false, null, operation);
             }
             swal({
                 title: title,
-                text: parsed.message,
+                text: parsed.message || 'The server refused the compose action.',
                 type: 'error'
             });
             if (typeof onComplete === 'function') {
@@ -4619,28 +4420,54 @@ function performComposeAction(opts) {
             }
             return;
         }
-        if (parsed && parsed.background) {
-            if (!suppressBackgroundNotification) {
+        if (parsed && parsed.background === true) {
+            if (parsed.warning) {
+                swal({ title: title, text: parsed.message || 'The command may be running without a terminal. Completion tracking will continue.', type: 'warning' });
+            } else if (!suppressBackgroundNotification) {
                 notifyBackgroundStarted(title, true);
             }
             if (stackName) {
-                pollBackgroundCompletion(stackName, opts.refreshDelayMs || 0);
+                if (parsed.operations && parsed.operations[stackName]) operation.receipt = parsed.operations[stackName];
+                pollBackgroundCompletion(stackName, opts.refreshDelayMs || 0, operation);
             }
-        } else if (data) {
+        } else if (parsed && typeof parsed.url === 'string'
+            && /^\/plugins\/compose\.manager\/include\/ShowTtyd\.php(?:\?|$)/.test(parsed.url)
+            && parsed.operations && typeof parsed.operations === 'object') {
             if (stackName) {
-                setStackActionInProgress(stackName, false);
+                if (parsed.operations[stackName]) {
+                    operation.receipt = parsed.operations[stackName];
+                    pollBackgroundCompletion(stackName, opts.refreshDelayMs || 0, operation);
+                } else {
+                    setStackActionInProgress(stackName, false, null, operation);
+                    composeLogger('Missing operation receipt', { stack: stackName }, 'user', 'error', 'stack-action');
+                    swal({ title: title, text: 'The server did not confirm operation tracking. Refresh the stack to check its status.', type: 'warning' });
+                }
+            }
+            openComposeActionBox(parsed.url, title, opts.stackNames || (stackName ? [stackName] : []));
+        } else if (typeof data === 'string' && /^\/plugins\/compose\.manager\/include\/ShowTtyd\.php(?:\?|$)/.test(data.trim())) {
+            if (stackName) {
+                setStackActionInProgress(stackName, false, null, operation);
             }
             if (pendingReload && stackName) {
                 queuePendingComposeReloads([stackName], opts.refreshDelayMs || 0);
             }
-            openBox(data, title, 800, 1200, true);
+            openComposeActionBox(data.trim(), title, opts.stackNames || (stackName ? [stackName] : []));
+        } else {
+            if (stackName) {
+                setStackActionInProgress(stackName, false, null, operation);
+            }
+            composeLogger('Compose action returned an invalid response', { stack: stackName, action: actionName }, 'user', 'error', 'stack-action');
+            swal({ title: title, text: 'The server returned an empty or invalid response. Refresh the stack to check whether the operation started.', type: 'error' });
+            parsed = null;
+            data = null;
         }
         if (typeof onComplete === 'function') {
             onComplete(parsed, data);
         }
     }).fail(function() {
+        if (operation && composeStackActionInProgress[stackName] !== operation) return;
         if (stackName) {
-            setStackActionInProgress(stackName, false);
+            setStackActionInProgress(stackName, false, null, operation);
         }
         composeLogger('Compose action request failed', { stack: stackName, action: actionName }, 'user', 'error', 'stack-action');
         swal({ title: title, text: 'The request failed. Refresh the stack to check whether the operation started.', type: 'error' });
@@ -4648,6 +4475,35 @@ function performComposeAction(opts) {
             onComplete(null, null);
         }
     });
+}
+
+function performMultipleComposeAction(stacks, opts, operations) {
+    operations = operations || Object.create(null);
+    opts.stackNames = stacks.map(function(stack) { return stack.project; });
+    stacks.forEach(function(stack) {
+        if (!operations[stack.project]) {
+            operations[stack.project] = setStackActionInProgress(stack.project, true, composeActionStateText(opts.actionName));
+        }
+    });
+    opts.onComplete = function(parsed, data) {
+        var refresh = [];
+        stacks.forEach(function(stack) {
+            var project = stack.project;
+            var operation = operations[project];
+            if (composeStackActionInProgress[project] !== operation) return;
+            if (parsed && parsed.operations && parsed.operations[project]) {
+                operation.receipt = parsed.operations[project];
+                pollBackgroundCompletion(project, 0, operation);
+            } else if (parsed && parsed.background === true && !parsed.operations) {
+                pollBackgroundCompletion(project, 0, operation);
+            } else {
+                setStackActionInProgress(project, false, null, operation);
+                if (data && !(parsed && parsed.error)) refresh.push(project);
+            }
+        });
+        if (refresh.length) queuePendingComposeReloads(refresh);
+    };
+    performComposeAction(opts);
 }
 
 function confirmedComposeAction(path, opts) {
@@ -4703,6 +4559,9 @@ function confirmedComposeAction(path, opts) {
 function ComposeUpConfirmed(path, opts) {
     opts = opts || {};
     confirmedComposeAction(path, {
+        preAction: opts.prepareImages ? function(done) {
+            prepareStackRechecks([basename(path)], 'Compose Up Failed', done);
+        } : null,
         actionName: 'up',
         titlePrefix: 'Compose Up',
         requestUrl: compURL,
@@ -4711,7 +4570,8 @@ function ComposeUpConfirmed(path, opts) {
             path: path,
             profile: opts.profile || '',
             removeOrphans: !!opts.removeOrphans,
-            followLogs: !!opts.followLogs
+            followLogs: !!opts.followLogs,
+            prepareImages: opts.prepareImages ? '1' : '0'
         },
         background: !!opts.background,
         suppressBackgroundNotification: !!opts.suppressBackgroundNotification,
@@ -4721,22 +4581,20 @@ function ComposeUpConfirmed(path, opts) {
 
 // Recreate containers without pulling (for label changes)
 function ComposeRecreateConfirmed(path, profile = "") {
-    var height = 800;
-    var width = 1200;
-
-    $.post(compURL, {
-        action: 'composeUpRecreate',
-        path: path,
-        profile: profile
-    }, function(data) {
-        if (data) {
-            openBox(data, "Compose Recreate: " + basename(path), height, width, true);
-        }
-    })
+    confirmedComposeAction(path, {
+        actionName: 'recreate',
+        titlePrefix: 'Compose Recreate',
+        payload: { action: 'composeUpRecreate', path: path, profile: profile },
+        pendingReload: true
+    });
 }
 
 function ComposeUp(path, profile = "") {
     showStackActionDialog('up', path, profile);
+}
+
+function ComposePrepareUp(path, profile = "") {
+    showStackActionDialog('prepareUp', path, profile);
 }
 
 function ComposeDownConfirmed(path, opts) {
@@ -4811,16 +4669,13 @@ function ForceUpdateStackConfirmed(path, opts) {
     opts = opts || {};
     var stackName = basename(path);
 
-    // Do NOT push to pendingUpdateCheckStacks here. See UpdateStackConfirmed
+    // Do NOT queue update checks here. See UpdateStackConfirmed
     // for the reasoning — the server-side mark is authoritative and the
     // client queue is populated from it on reload / background completion.
 
     confirmedComposeAction(path, {
         preAction: function(done) {
-            $.post(caURL, {
-                action: 'markStackForRecheck',
-                stacks: JSON.stringify([stackName])
-            }, done);
+            prepareStackRechecks([stackName], 'Force Update Failed', done);
         },
         actionName: 'forceUpdate',
         titlePrefix: 'Force Update',
@@ -4930,59 +4785,14 @@ showConfirmButton: false
     });
 }
 
-// Track stacks that need update check after operation completes
-// Using array to support Update All Stacks operation
-var pendingUpdateCheckStacks = [];
-
 function processPendingUpdateCheckForStack(stackName) {
-    if (!stackName || !pendingUpdateCheckStacks || pendingUpdateCheckStacks.length === 0) {
-        return;
-    }
-
-    var pendingIndex = pendingUpdateCheckStacks.indexOf(stackName);
-    if (pendingIndex === -1) {
-        return;
-    }
-
-    pendingUpdateCheckStacks.splice(pendingIndex, 1);
-    setTimeout(function() {
-        checkStackUpdates(stackName);
-    }, 0);
+    composeUpdateChecks.drain(stackName);
 }
 
 // Process the queued stacks from pending update checks.
 // This is called from refreshStackRow and processPendingComposeReloads.
 function processPendingUpdateChecks() {
-    if (!pendingUpdateCheckStacks || pendingUpdateCheckStacks.length === 0) {
-        return;
-    }
-
-    var stacksToCheck = pendingUpdateCheckStacks.slice();
-    pendingUpdateCheckStacks = [];
-    var deferredStacks = [];
-
-    // Delay slightly to let the UI settle after row refresh
-    setTimeout(function() {
-        composeLogger('Processing pending update checks', {
-            stacks: stacksToCheck
-        }, 'user', 'debug', 'update-check');
-
-        stacksToCheck.forEach(function(stackName) {
-            if (composeStackActionInProgress[stackName]) {
-                // Update action still in progress; defer until completion.
-                deferredStacks.push(stackName);
-                composeLogger('Deferring pending update check while action is in progress', {
-                    stack: stackName
-                }, 'user', 'debug', 'update-check');
-            } else {
-                checkStackUpdates(stackName);
-            }
-        });
-
-        if (deferredStacks.length > 0) {
-            pendingUpdateCheckStacks = pendingUpdateCheckStacks.concat(deferredStacks);
-        }
-    }, 1000);
+    composeUpdateChecks.drainAll();
 }
 
 // >0 while refreshStackRow AJAX calls are in-flight; the loadlist
@@ -4997,7 +4807,7 @@ var skipNextComposeLoadlist = false;
 // Track stacks that need a full compose list reload after start/stop operations
 var pendingComposeReloadStacks = [];
 // Track stacks currently in progress (e.g. background start/stop/update)
-var composeStackActionInProgress = {};
+var composeStackActionInProgress = Object.create(null);
 // Timer for batching compose reloads to avoid duplicate refreshes
 var pendingComposeReloadTimer = null;
 
@@ -5070,53 +4880,57 @@ function refreshStackByProject(project) {
 // always makes an AJAX call to get current container states.
 function refreshStackRow(stackId, project) {
     var revision = composeUpdateCheckRevision[project] || 0;
+    var generation = beginStackRuntimeRequest(project);
     pendingComposeRefreshCount++;
-    $.post(caURL, {
-        action: 'getStackContainers',
-        script: project
-    }, function(data) {
+    $.ajax({
+        url: caURL,
+        method: 'POST',
+        timeout: 30000,
+        data: { action: 'getStackContainers', script: project }
+    }).done(function(data) {
         if (data) {
             try {
                 composeLogger('response', {
                     project: project,
                     data: data
                 }, 'user', 'info', 'refreshStackRow');
-                var response = JSON.parse(data);
+                var response = typeof data === 'string' ? JSON.parse(data) : data;
                 if (response.result === 'success') {
-                    var containers = composeCheckedContainers(response, project, revision);
-                    // Update cache with fresh data
-                    stackContainersCache[stackId] = containers;
-                    if (response.startedAt) stackStartedAtCache[stackId] = response.startedAt;
-                    // Now update the row using the fresh cache
-                    updateParentStackFromContainers(stackId, project);
-                    // If details are expanded, refresh them too
-                    // If details are expanded (by JS state or DOM visibility), refresh them
+                    response.composeCheckRevision = revision;
+                    var containers = reconcileStackRuntime(project, response, generation);
+                    if (!containers) return;
+                    // Refresh details only while they are still wanted.
                     var $detailsRow = $('#details-row-' + stackId);
-                    if (expandedStacks[stackId] || $detailsRow.is(':visible')) {
+                    if (stackDetailsDesiredExpanded[stackId] !== false
+                        && (expandedStacks[stackId] || $detailsRow.is(':visible'))) {
                         expandedStacks[stackId] = true; // re-sync JS state with DOM
                         renderContainerDetails(stackId, containers, project);
                         if (!$detailsRow.is(':visible')) {
                             $detailsRow.slideDown(200);
                         }
                     }
+                } else {
+                    composeLogger('Runtime refresh failed', { project: project, response: response }, 'user', 'error', 'refreshStackRow');
                 }
             } catch (e) {
                 composeLogger('parse-error', {
                     project: project,
                     err: e.toString()
                 }, 'user', 'error', 'refreshStackRow');
-                // Fallback: update from whatever cache we have
-                updateParentStackFromContainers(stackId, project);
+            }
+        } else {
+            composeLogger('Empty runtime refresh response', { project: project }, 'user', 'error', 'refreshStackRow');
+        }
+    }).fail(function(xhr, status, error) {
+        composeLogger('Runtime refresh request failed', { project: project, status: status, error: error }, 'user', 'error', 'refreshStackRow');
+    }).always(function() {
+        pendingComposeRefreshCount = Math.max(0, pendingComposeRefreshCount - 1);
+        if (generation === (stackRuntimeGeneration[project] || 0)) {
+            var $row = $('#stack-row-' + stackId);
+            if ($row.length && stackContainersCache[stackId]) {
+                reconcileStackRuntimeMetadata($row, project, stackContainersCache[stackId]);
             }
         }
-        pendingComposeRefreshCount = Math.max(0, pendingComposeRefreshCount - 1);
-        if (pendingComposeRefreshCount === 0) {
-            processPendingUpdateChecks();
-        }
-    }).fail(function() {
-        // On network failure, fall back to cache-based update
-        updateParentStackFromContainers(stackId, project);
-        pendingComposeRefreshCount = Math.max(0, pendingComposeRefreshCount - 1);
         if (pendingComposeRefreshCount === 0) {
             processPendingUpdateChecks();
         }
@@ -5124,7 +4938,8 @@ function refreshStackRow(stackId, project) {
 }
 
 // Toggle per-stack action-in-progress UI (replace status icon with spinner)
-function setStackActionInProgress(stackName, inProgress, text) {
+function setStackActionInProgress(stackName, inProgress, text, operation) {
+    if (!inProgress && operation && composeStackActionInProgress[stackName] !== operation) return false;
     composeLogger('setStackActionInProgress', {
         stack: stackName,
         inProgress: inProgress,
@@ -5132,13 +4947,26 @@ function setStackActionInProgress(stackName, inProgress, text) {
     }, 'user', 'info', 'stack-action');
 
     if (inProgress) {
-        composeStackActionInProgress[stackName] = true;
+        composeUpdateChecks.invalidate(stackName, false);
+        beginStackRuntimeRequest(stackName);
+        operation = { text: text || 'checking...' };
+        composeStackActionInProgress[stackName] = operation;
     } else {
         delete composeStackActionInProgress[stackName];
     }
 
+    renderStackActionProgress(stackName);
+    return operation;
+}
+
+function renderStackActionProgress(stackName) {
+    var operation = composeStackActionInProgress[stackName];
+    var inProgress = !!operation;
     var $stackRow = $('#compose_stacks tr.compose-sortable[data-project="' + stackName + '"]');
     if ($stackRow.length === 0) return;
+    $stackRow.find('span[data-stackid]').each(function() {
+        addComposeStackContext(this.id);
+    });
     $stackRow.data('action-in-progress', inProgress ? true : null);
     if (!inProgress) {
         $stackRow.removeData('action-in-progress');
@@ -5152,12 +4980,8 @@ function setStackActionInProgress(stackName, inProgress, text) {
         }
         // Use same spinner as containers to keep UI consistent
         $icon.removeClass().addClass('fa fa-refresh fa-spin compose-status-spinner compose-status-icon');
-        $state.data('orig-text', $state.text());
-        if (text) {
-            $state.text(text);
-        } else {
-            $state.text('checking...');
-        }
+        if (!$state.data('orig-text')) $state.data('orig-text', $state.text());
+        $state.text(operation.text);
     } else {
         // Restore original icon classes if we saved them
         if ($icon.data('orig-class')) {
@@ -5176,17 +5000,14 @@ function UpdateStackConfirmed(path, opts) {
     opts = opts || {};
     var stackName = basename(path);
 
-    // Do NOT push to pendingUpdateCheckStacks here. Server-side
+    // Do NOT queue update checks here. Server-side
     // markStackForRecheck is authoritative; an incidental row refresh
     // during the action would otherwise drain the queue and run the
     // check while the update is still in progress.
 
     confirmedComposeAction(path, {
         preAction: function(done) {
-            $.post(caURL, {
-                action: 'markStackForRecheck',
-                stacks: JSON.stringify([stackName])
-            }, done);
+            prepareStackRechecks([stackName], 'Update Failed', done);
         },
         actionName: 'update',
         titlePrefix: 'Update',
@@ -5557,40 +5378,19 @@ function executeStartAllStacks(opts) {
     var background = !!opts.background;
     var suppressBackgroundNotification = !!opts.suppressBackgroundNotification;
     var removeOrphans = !!opts.removeOrphans;
-    var height = 800;
-    var width = 1200;
 
     // Create a list of paths to start
     var paths = stacks.map(function(s) {
         return s.path;
     });
 
-    // Mark stacks for local reload and show per-row spinners
-    stacks.forEach(function(s) {
-        var stackName = s.project;
-        if (pendingComposeReloadStacks.indexOf(stackName) === -1) pendingComposeReloadStacks.push(stackName);
-        composeLogger('queued', {
-            stack: stackName,
-            pending: pendingComposeReloadStacks.slice()
-        }, 'user', 'info', 'startAllStacks');
-        setStackActionInProgress(stackName, true);
-    });
-
-    $.post(compURL, {
-        action: 'composeUpMultiple',
-        paths: JSON.stringify(paths),
-        background: background ? 1 : 0,
-        removeOrphans: removeOrphans ? 1 : 0
-    }, function(data) {
-        var parsed = tryParseJson(data);
-        if (parsed && parsed.background) {
-            notifyBackgroundStarted('Start All Stacks', !suppressBackgroundNotification);
-            stacks.forEach(function(s) {
-                pollBackgroundCompletion(s.project);
-            });
-        } else if (data) {
-            openBox(data, 'Start All Stacks', height, width, true);
-        }
+    performMultipleComposeAction(stacks, {
+        actionName: 'up',
+        title: 'Start All Stacks',
+        requestUrl: compURL,
+        payload: { action: 'composeUpMultiple', paths: JSON.stringify(paths), removeOrphans: removeOrphans },
+        background: background,
+        suppressBackgroundNotification: suppressBackgroundNotification
     });
 }
 
@@ -5692,40 +5492,19 @@ function executeStopAllStacks(opts) {
     var background = !!opts.background;
     var suppressBackgroundNotification = !!opts.suppressBackgroundNotification;
     var removeOrphans = !!opts.removeOrphans;
-    var height = 800;
-    var width = 1200;
 
     // Create a list of paths to stop
     var paths = stacks.map(function(s) {
         return s.path;
     });
 
-    // Mark stacks for local reload and show per-row spinners
-    stacks.forEach(function(s) {
-        var stackName = s.project;
-        if (pendingComposeReloadStacks.indexOf(stackName) === -1) pendingComposeReloadStacks.push(stackName);
-        composeLogger('queued', {
-            stack: stackName,
-            pending: pendingComposeReloadStacks.slice()
-        }, 'user', 'info', 'stopAllStacks');
-        setStackActionInProgress(stackName, true);
-    });
-
-    $.post(compURL, {
-        action: 'composeDownMultiple',
-        paths: JSON.stringify(paths),
-        background: background ? 1 : 0,
-        removeOrphans: removeOrphans ? 1 : 0
-    }, function(data) {
-        var parsed = tryParseJson(data);
-        if (parsed && parsed.background) {
-            notifyBackgroundStarted('Stop All Stacks', !suppressBackgroundNotification);
-            stacks.forEach(function(s) {
-                pollBackgroundCompletion(s.project);
-            });
-        } else if (data) {
-            openBox(data, 'Stop All Stacks', height, width, true);
-        }
+    performMultipleComposeAction(stacks, {
+        actionName: 'down',
+        title: 'Stop All Stacks',
+        requestUrl: compURL,
+        payload: { action: 'composeDownMultiple', paths: JSON.stringify(paths), removeOrphans: removeOrphans },
+        background: background,
+        suppressBackgroundNotification: suppressBackgroundNotification
     });
 }
 
@@ -5851,6 +5630,10 @@ function showStackActionDialog(action, path, profile, showDetails) {
                 data
             }, 'user', 'error', 'showStackActionDialog');
         }
+        if (action === 'prepareUp' && (!response || response.result !== 'success' || !Array.isArray(profileServices) || !profileServices.length)) {
+            swal({ title: 'Deployment scope unavailable', text: 'Could not resolve services for the selected profiles. No deployment was started.', type: 'error' });
+            return;
+        }
 
         // Build a lookup of running containers by service name
         var containersByService = {};
@@ -5894,6 +5677,11 @@ function showStackActionDialog(action, path, profile, showDetails) {
             renderStackActionDialog(action, displayName, path, profile, containers, hasBuild, detectedMismatch);
         });
     }).fail(function(xhr, status, error) {
+        if (action === 'prepareUp') {
+            composeLogger('Deployment profile resolution failed', { project: project, status: status, error: error }, 'user', 'error', 'stack-action');
+            swal({ title: 'Deployment scope unavailable', text: 'Could not resolve services for the selected profiles. No deployment was started.', type: 'error' });
+            return;
+        }
         // Fallback: if profile resolution fails, show cached container metadata
         composeLogger('getProfileServices AJAX fail', {
             xhr,
@@ -5977,6 +5765,18 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             warningIcon: 'info-circle',
             warningColor: window.getComputedStyle(document.documentElement).getPropertyValue('--dynamix-ui-dropdownchecklist-color'),
             confirmText: 'Compose Up',
+            showUpdateReadiness: false,
+            showRemoveOrphans: true,
+            confirmedFn: ComposeUpConfirmed
+        },
+        'prepareUp': {
+            title: 'Pull/Build & Up: ' + composeEscapeHtml(displayName),
+            description: 'Prepare fresh images, then create and start the selected services in <b>' + composeEscapeHtml(displayName) + '</b>.',
+            listTitle: 'SERVICES',
+            warning: 'Published images will be pulled and buildable services rebuilt with latest available base images. Selected profiles and default services will be started, including services without containers.',
+            warningIcon: 'exclamation-triangle',
+            warningColor: window.getComputedStyle(document.documentElement).getPropertyValue('--brand-orange'),
+            confirmText: 'Pull/Build & Up',
             showUpdateReadiness: false,
             showRemoveOrphans: true,
             confirmedFn: ComposeUpConfirmed
@@ -6148,7 +5948,8 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
                 background: bgDefault,
                 suppressBackgroundNotification: bgDefault,
                 removeOrphans: removeOrphansDefault,
-                includeStopped: includeStoppedDefault
+                includeStopped: includeStoppedDefault,
+                prepareImages: action === 'prepareUp'
             });
             return;
         }
@@ -6179,7 +5980,8 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
                     suppressBackgroundNotification: runInBackground,
                     removeOrphans: removeOrphans,
                     followLogs: followLogs,
-                    includeStopped: isUpdate && $('#swal-include-stopped').is(':checked')
+                    includeStopped: isUpdate && $('#swal-include-stopped').is(':checked'),
+                    prepareImages: action === 'prepareUp'
                 });
             }
         });
@@ -6282,33 +6084,63 @@ function ComposeLogs(pathOrProject, profile = "") {
 // Stack Actions Menu Functions
 // ============================================
 var currentStackId = null;
-var expandedStacks = {};
-var stackContainersCache = {};
-var persistentContainerCache = {}; // Persistent cache loaded from disk
-var stackStartedAtCache = {}; // Cache for stack-level started_at timestamps
+var expandedStacks = Object.create(null);
+var stackContainersCache = Object.create(null);
+var persistentContainerCache = Object.create(null); // Persistent cache loaded from disk
+var stackStartedAtCache = Object.create(null); // Cache for stack-level started_at timestamps
 // Track stacks currently loading details to prevent concurrent reloads
-var stackDetailsLoading = {};
-var stackDetailsLoadPromises = {};
-var stackDetailsPrefetchPromises = {};
-var stackDetailsPrefetchCache = {};
+var stackDetailsLoading = Object.create(null);
+var stackDetailsLoadPromises = Object.create(null);
+var stackDetailsReloadRequested = Object.create(null);
+var stackDetailsPrefetchPromises = Object.create(null);
+var stackDetailsPrefetchCache = Object.create(null);
+var stackRuntimeGeneration = Object.create(null);
+
+function beginStackRuntimeRequest(project) {
+    stackRuntimeGeneration[project] = (stackRuntimeGeneration[project] || 0) + 1;
+    delete stackDetailsPrefetchCache[project];
+    return stackRuntimeGeneration[project];
+}
+
+function reconcileStackRuntime(project, response, generation) {
+    if (generation !== (stackRuntimeGeneration[project] || 0)) return null;
+    if (!response || response.result !== 'success' || !Array.isArray(response.containers)) {
+        composeLogger('Invalid runtime response', { project: project }, 'user', 'error', 'runtime');
+        return null;
+    }
+    var $row = $('#compose_stacks tr.compose-sortable[data-project="' + project + '"]');
+    if (!$row.length) return null;
+    var stackId = String($row.attr('id') || '').replace('stack-row-', '');
+    var containers = composeCheckedContainers(response, project, response.composeCheckRevision || 0);
+    stackContainersCache[stackId] = containers;
+    stackStartedAtCache[stackId] = response.startedAt || '';
+    updateParentStackFromContainers(stackId, project);
+    return containers;
+}
+
 // Suppress immediate refresh after a render to avoid loops
-var stackDetailsJustRendered = {};
+var stackDetailsJustRendered = Object.create(null);
 // Track user intent during async loads so late responses do not reopen collapsed rows.
-var stackDetailsDesiredExpanded = {};
+var stackDetailsDesiredExpanded = Object.create(null);
 // Batch/safeguard toggle-all updates under rapid clicking.
 var stackToggleAllBatching = false;
 var stackToggleAllBusy = false;
 var stackToggleAllQueuedForceExpand = null;
 var stackToggleAllQueuedToggle = false;
 
-function prefetchStackDetailsInBackground(projects) {
+function prefetchStackDetailsInBackground(projects, listGeneration) {
     if (!Array.isArray(projects) || projects.length === 0) return;
 
     var maxParallel = 4;
     var next = 0;
     var active = 0;
 
+    function isCurrentPrefetch() {
+        return listGeneration === undefined || listGeneration === composeListGeneration;
+    }
+
     function schedule() {
+        if (!isCurrentPrefetch()) return;
         while (active < maxParallel && next < projects.length) {
             (function(project) {
                 next++;
@@ -6320,21 +6152,29 @@ function prefetchStackDetailsInBackground(projects) {
 
                 active++;
                 var revision = composeUpdateCheckRevision[project] || 0;
+                var generation = beginStackRuntimeRequest(project);
                 stackDetailsPrefetchPromises[project] = new Promise(function(resolve) {
-                    $.post(caURL, {
-                        action: 'getStackContainers',
-                        script: project
-                    }, function(data) {
-                        var parsed = tryParseJson(data);
-                        if (parsed && parsed.result === 'success') {
+                    $.ajax({
+                        url: caURL,
+                        method: 'POST',
+                        timeout: 30000,
+                        data: { action: 'getStackContainers', script: project }
+                    }).done(function(data) {
+                        var parsed = typeof data === 'string' ? tryParseJson(data) : data;
+                        if (isCurrentPrefetch() && parsed && parsed.result === 'success'
+                            && generation === stackRuntimeGeneration[project]) {
                             parsed.composeCheckRevision = revision;
                             stackDetailsPrefetchCache[project] = parsed;
                             // If the row already exists, bubble prefetched summary
                             // data into parent columns during initial progressive load.
                             applyStackSummaryFromResponse(project, parsed);
                         }
+                        if (!parsed || parsed.result !== 'success') {
+                            composeLogger('Runtime prefetch failed', { project: project, response: parsed }, 'user', 'warning', 'runtime');
+                        }
                         resolve();
                     }).fail(function() {
+                        composeLogger('Runtime prefetch request failed', { project: project }, 'user', 'warning', 'runtime');
                         resolve();
                     }).always(function() {
                         active--;
@@ -6459,6 +6299,7 @@ function showProfileSelector(action, path, profiles, runningProfile, defaultProf
     }
     var actionNames = {
         'up': 'Compose Up',
+        'prepareUp': 'Pull/Build & Up',
         'down': 'Compose Down',
         'stop': 'Compose Stop',
         'restart': 'Compose Restart',
@@ -6542,6 +6383,9 @@ function showProfileSelector(action, path, profiles, runningProfile, defaultProf
                     case 'up':
                         ComposeUp(path, profileStr);
                         break;
+                    case 'prepareUp':
+                        ComposePrepareUp(path, profileStr);
+                        break;
                     case 'down':
                         ComposeDown(path, profileStr);
                         break;
@@ -6607,6 +6451,7 @@ function openEditorModalByProject(project, projectName, initialTab) {
     editorModal.modifiedLabels = new Set();
     editorModal.settingsValidationErrors = new Set();
     editorModal.originalContent = {};
+    editorModal.sourceRevisions = Object.create(null);
     editorModal.originalSettings = {};
     editorModal.originalLabels = {};
     editorModal.labelsData = null;
@@ -6656,6 +6501,7 @@ function openEditorModalByProject(project, projectName, initialTab) {
     // Load all files and settings
     loadEditorFiles(project);
     loadSettingsData(project, projectName);
+    loadEditorSharedSources(project);
 
     // Switch to appropriate initial tab (default to 'compose')
     var targetTab = initialTab || 'compose';
@@ -6678,12 +6524,19 @@ function loadEditorFiles(project) {
         }).then(function(data) {
             if (data) {
                 var response = jQuery.parseJSON(data);
+                if (editorModal.currentProject !== project) return;
+                if (response.result !== 'success') {
+                    swal({ type: 'error', title: 'Load Failed', text: response.message || 'Unable to load Compose file.' });
+                    return;
+                }
+                rememberEditorSourceRevision(response);
                 editorModal.filePaths.compose = response.fileName || '';
                 editorModal.originalContent['compose'] = response.content || '';
                 if (editorModal.editors['compose']) editorModal.editors['compose'].setValue(response.content || '', -1);
                 updateEditorFileInfo();
             }
         }).fail(function() {
+            if (editorModal.currentProject !== project) return;
             var errorContent = '# Error loading file';
             editorModal.originalContent['compose'] = errorContent;
             if (editorModal.editors['compose']) editorModal.editors['compose'].setValue(errorContent, -1);
@@ -6698,6 +6551,12 @@ function loadEditorFiles(project) {
         }).then(function(data) {
             if (data) {
                 var response = jQuery.parseJSON(data);
+                if (editorModal.currentProject !== project) return;
+                if (response.result !== 'success') {
+                    swal({ type: 'error', title: 'Load Failed', text: response.message || 'Unable to load environment file.' });
+                    return;
+                }
+                rememberEditorSourceRevision(response);
                 editorModal.filePaths.env = response.fileName || '';
                 editorModal.envExists = response.exists === true;
                 if (editorModal.envExists) {
@@ -6714,6 +6573,7 @@ function loadEditorFiles(project) {
                 updateEditorFileInfo();
             }
         }).fail(function() {
+            if (editorModal.currentProject !== project) return;
             var errorContent = '# Error loading file';
             editorModal.originalContent['env'] = errorContent;
             if (editorModal.editors['env']) editorModal.editors['env'].setValue(errorContent, -1);
@@ -6770,6 +6630,7 @@ function switchComposeFile(path) {
                 return;
             }
             editorModal.filePaths.compose = response.fileName || path;
+            rememberEditorSourceRevision(response);
             editorModal.originalContent['compose'] = response.content || '';
             if (editorModal.editors['compose']) editorModal.editors['compose'].setValue(response.content || '', -1);
             editorModal.modifiedTabs.delete('compose');
@@ -7454,6 +7315,9 @@ function _populateOverrideEditor() {
     if (!editorModal.modifiedTabs.has('override')) {
         editorModal.originalContent['override'] = content;
         editorModal.editors['override'].setValue(content, -1);
+        Object.keys(editorModal.labelsData.revisions || {}).forEach(function(path) {
+            editorModal.sourceRevisions[path] = editorModal.labelsData.revisions[path];
+        });
     }
     setTimeout(function() {
         try {
@@ -7485,9 +7349,10 @@ function loadLabelsData(callback) {
         try {
             var composeData = JSON.parse(composeResult[0]);
             var overrideData = JSON.parse(overrideResult[0]);
+            if (editorModal.currentProject !== project) return;
 
-            if (composeData.result !== 'success') {
-                throw new Error('Failed to load compose file');
+            if (composeData.result !== 'success' || overrideData.result !== 'success') {
+                throw new Error(composeData.message || overrideData.message || 'Failed to load label source files');
             }
 
             var mainDoc = loadComposeYaml(composeData.content) || {
@@ -7507,7 +7372,9 @@ function loadLabelsData(callback) {
                 overrideDoc: overrideDoc,
                 overrideContent: overrideData.content || '',
                 overrideHasCustomTags: composeYamlContainsCustomTags(overrideData.content || ''),
-                overrideExists: overrideData.exists === true
+                overrideExists: overrideData.exists === true,
+                revisions: overrideData.revisions || {},
+                composeRevision: composeData.revision
             };
             editorModal.filePaths.compose = composeData.fileName || editorModal.filePaths.compose;
             editorModal.filePaths.effectiveOverride = overrideData.fileName || editorModal.filePaths.effectiveOverride;
@@ -7516,6 +7383,7 @@ function loadLabelsData(callback) {
             // Pre-cache override content for the override editor (only if not yet set for this project)
             if (editorModal.originalContent['override'] === undefined) {
                 editorModal.originalContent['override'] = overrideData.content || '';
+                rememberEditorSourceRevision(overrideData);
             }
 
             renderLabelsUI(mainDoc, overrideDoc);
@@ -7545,7 +7413,7 @@ function createOverrideTemplate() {
 
     $('#labels-override-empty-state button').prop('disabled', true);
 
-    $.post(caURL, {
+    postEditorSourceSave({
         action: 'createOverrideTemplate',
         script: project,
         expectedPath: editorModal.filePaths.effectiveOverride || editorModal.filePaths.projectOverride || ''
@@ -7566,8 +7434,11 @@ function createOverrideTemplate() {
             editorModal.labelsData = editorModal.labelsData || {};
             editorModal.labelsData.overrideExists = true;
             editorModal.labelsData.overrideContent = response.content || '';
+            editorModal.labelsData.revisions = Object.assign({}, editorModal.labelsData.revisions);
+            editorModal.labelsData.revisions[response.fileName] = response.revision;
             editorModal.filePaths.effectiveOverride = response.fileName || editorModal.filePaths.effectiveOverride;
             editorModal.originalContent['override'] = response.content || '';
+            rememberEditorSourceRevision(response);
             editorModal.modifiedTabs.delete('override');
 
             if (editorModal.editors['override']) {
@@ -7607,7 +7478,7 @@ function createEnvTemplate() {
 
     $('#env-empty-state button').prop('disabled', true);
 
-    $.post(caURL, {
+    postEditorSourceSave({
         action: 'createEnvTemplate',
         script: project,
         expectedPath: editorModal.filePaths.env || ''
@@ -7625,6 +7496,7 @@ function createEnvTemplate() {
             editorModal.envExists = true;
             editorModal.filePaths.env = response.fileName || editorModal.filePaths.env;
             editorModal.originalContent['env'] = response.content || '';
+            rememberEditorSourceRevision(response);
             editorModal.modifiedTabs.delete('env');
 
             if (editorModal.editors['env']) {
@@ -7849,8 +7721,10 @@ function renderLabelsUI(mainDoc, overrideDoc) {
             clearTimeout($input.data('iconDebounce'));
             $input.data('iconDebounce', setTimeout(function() {
                 var iconUrl = $input.val().trim();
-                var $preview = $('#label-icon-preview-' + service);
-                $preview.attr('src', sanitizeIconPreviewSrc(iconUrl));
+                var preview = document.getElementById('label-icon-preview-' + $input[0].getAttribute('data-service'));
+                if (preview instanceof HTMLImageElement) {
+                    preview.src = sanitizeIconPreviewSrc(iconUrl);
+                }
             }, 300));
         }
 
@@ -8191,6 +8065,11 @@ function parseSaveResponse(data, saveErrors, saveTarget) {
         if (response.result === 'success') {
             return true;
         }
+        if (response.errorCode === 'stale_content') {
+            swal({ title: 'File changed', text: response.message, type: 'warning' });
+            if (saveErrors) saveErrors.push(response.message);
+            return false;
+        }
         if (handleStaleEditorResponse(response, 'The save target changed while this dialog was open. Reloading the editor.')) {
             if (saveErrors) saveErrors.push('__STALE_PATH__');
             return false;
@@ -8236,11 +8115,13 @@ function saveTab(tabName, saveErrors) {
         savePayload.file = editorModal.filePaths.compose;
     }
 
-    return $.post(caURL, savePayload).then(function(data) {
+    return postEditorSourceSave(savePayload).then(function(data) {
         var saveTarget = tabName === 'override' ? 'override file' : (tabName + ' file');
         if (!parseSaveResponse(data, saveErrors, saveTarget)) {
             return false;
         }
+        if (editorModal.currentProject !== project) return false;
+        rememberEditorSourceRevision(parseEditorSourceResponse(data));
 
         editorModal.originalContent[tabName] = content;
         editorModal.modifiedTabs.delete(tabName);
@@ -8642,16 +8523,22 @@ function saveLabels(saveErrors) {
         'forceQuotes': true
     });
 
-    return $.post(caURL, {
+    return postEditorSourceSave({
         action: 'saveOverride',
         script: project,
         scriptContents: rawOverride,
         managed: editorModal.labelsViewMode === 'basic' ? 1 : 0,
-        expectedPath: getExpectedSavePathForTab('override')
+        expectedPath: getExpectedSavePathForTab('override'),
+        expectedRevision: (editorModal.labelsData.revisions || {})[getExpectedSavePathForTab('override')],
+        expectedComposeRevision: editorModal.labelsData.composeRevision
     }).then(function(data) {
         if (!parseSaveResponse(data, saveErrors, 'WebUI labels')) {
             return false;
         }
+        if (editorModal.currentProject !== project) return false;
+        var savedRevision = parseEditorSourceResponse(data);
+        editorModal.labelsData.revisions = Object.assign({}, editorModal.labelsData.revisions);
+        editorModal.labelsData.revisions[savedRevision.fileName] = savedRevision.revision;
 
         // Collect services whose icon changed, then clear webgui icon cache
         var changedIconServices = [];
@@ -8795,11 +8682,12 @@ function deleteStackByProject(project, projectName) {
         cancelButtonText: "Cancel"
     }, function(confirmed) {
         if (confirmed) {
-            setStackActionInProgress(project, true, 'Deleting stack...');
+            var operation = setStackActionInProgress(project, true, 'Deleting stack...');
             $.post(caURL, {
                 action: 'deleteStack',
                 stackName: project
             }, function(data) {
+                if (composeStackActionInProgress[project] !== operation) return;
                 try {
                     if (!data) {
                         setStackActionInProgress(project, false);
@@ -8869,6 +8757,7 @@ function deleteStackByProject(project, projectName) {
                     });
                 }
             }).fail(function() {
+                if (composeStackActionInProgress[project] !== operation) return;
                 setStackActionInProgress(project, false);
                 composeLogger('Delete request failed for project', {
                     project: project
@@ -8892,24 +8781,33 @@ function purgeDeletedStackCaches(project, stackId) {
         delete expandedStacks[stackId];
         delete stackDetailsDesiredExpanded[stackId];
         delete stackDetailsLoading[stackId];
+        delete stackDetailsReloadRequested[stackId];
         delete stackContainersCache[stackId];
     }
 
     delete composeStackActionInProgress[project];
+    composeUpdateChecks.invalidate(project, true);
+    clearTimeout(composeHealthRefreshTimers[project]);
+    delete composeHealthRefreshTimers[project];
+    beginStackRuntimeRequest(project);
     delete stackDetailsPrefetchCache[project];
     delete stackDetailsPrefetchPromises[project];
     delete persistentContainerCache[project];
     delete stackUpdateStatus[project];
 
-    pendingUpdateCheckStacks = (pendingUpdateCheckStacks || []).filter(function(stackName) {
-        return stackName !== project;
-    });
     pendingComposeReloadStacks = (pendingComposeReloadStacks || []).filter(function(stackName) {
         return stackName !== project;
     });
 }
 
 function removeStackFromUiByProject(project) {
+    if (cancelComposeListLoad) {
+        cancelComposeListLoad();
+        cancelComposeListLoad = null;
+        composeListGeneration++;
+        hideComposeSpinner();
+        setTimeout(composeLoadlist, 0);
+    }
     var $stackRow = $('#compose_stacks tr.compose-sortable[data-project="' + project + '"]');
     var stackId = '';
     if ($stackRow.length > 0) {
@@ -8921,6 +8819,7 @@ function removeStackFromUiByProject(project) {
     }
 
     purgeDeletedStackCaches(project, stackId);
+    $(document).trigger('compose-stack-removed', [project]);
 
     if ($stackRow.length === 0) {
         return;
@@ -9084,12 +8983,28 @@ function loadStackContainerDetails(stackId, project) {
         stackDetailsDesiredExpanded[stackId] = !!expandedStacks[stackId] || $('#details-row-' + stackId).is(':visible');
     }
 
-    function renderFromResponse(response, finishLoad) {
-        if (response && response.result === 'success') {
-            var containers = composeCheckedContainers(response, project, response.composeCheckRevision || 0);
-
-            stackContainersCache[stackId] = containers;
-            if (response.startedAt) stackStartedAtCache[stackId] = response.startedAt;
+    function renderFromResponse(response, finishLoad, generation) {
+        if (generation !== (stackRuntimeGeneration[project] || 0)) {
+            if (stackContainersCache[stackId]) {
+                renderContainerDetails(stackId, stackContainersCache[stackId], project);
+            } else {
+                $container.html('<div class="stack-details-error">Container state changed while loading. Collapse and expand to retry.</div>');
+                composeLogger('Detail response superseded; retry required', { project: project }, 'user', 'warning', 'container-details');
+            }
+            if (stackDetailsDesiredExpanded[stackId] === false) {
+                $('#details-row-' + stackId).stop(true, true).hide();
+            } else {
+                $('#details-row-' + stackId).stop(true, true).slideDown(200);
+            }
+            finishLoad();
+            return true;
+        }
+        if (response && response.result === 'success' && Array.isArray(response.containers)) {
+            var containers = reconcileStackRuntime(project, response, generation);
+            if (!containers) {
+                finishLoad();
+                return true;
+            }
             composeLogger('success', {
                 stackId: stackId,
                 project: project,
@@ -9112,7 +9027,12 @@ function loadStackContainerDetails(stackId, project) {
 
     function renderError(message, finishLoad, level) {
         $container.html('<div class="stack-details-error"><i class="fa fa-exclamation-triangle"></i> ' + composeEscapeHtml(message) + '</div>');
-        $('#details-row-' + stackId).stop(true, true).slideDown(200, finishLoad);
+        if (stackDetailsDesiredExpanded[stackId] === false) {
+            $('#details-row-' + stackId).stop(true, true).hide();
+            finishLoad();
+        } else {
+            $('#details-row-' + stackId).stop(true, true).slideDown(200, finishLoad);
+        }
         composeLogger(level || 'error', {
             stackId: stackId,
             project: project,
@@ -9122,6 +9042,7 @@ function loadStackContainerDetails(stackId, project) {
 
     // Prevent parallel loads for same stack
     if (stackDetailsLoading[stackId]) {
+        stackDetailsReloadRequested[stackId] = true;
         composeLogger('already-loading', {
             stackId: stackId,
             project: project
@@ -9131,6 +9052,11 @@ function loadStackContainerDetails(stackId, project) {
     stackDetailsLoading[stackId] = true;
     stackDetailsLoadPromises[stackId] = new Promise(function(resolve) {
         function finishLoad() {
+            if (stackDetailsReloadRequested[stackId]) {
+                delete stackDetailsReloadRequested[stackId];
+                fetchAndRender(finishLoad);
+                return;
+            }
             stackDetailsLoading[stackId] = false;
             delete stackDetailsLoadPromises[stackId];
             updateStackToggleAllButtonState();
@@ -9147,18 +9073,16 @@ function loadStackContainerDetails(stackId, project) {
 
     function fetchAndRender(finishLoad) {
         var revision = composeUpdateCheckRevision[project] || 0;
-        $.post(caURL, {
-            action: 'getStackContainers',
-            script: project
-        }, function(data) {
-            var parsed = tryParseJson(data);
-            if (parsed && parsed.result === 'success') {
-                parsed.composeCheckRevision = revision;
-                // Keep prefetch cache warm with latest direct fetch too.
-                stackDetailsPrefetchCache[project] = parsed;
-            }
-
-            if (renderFromResponse(parsed, finishLoad)) {
+        var generation = beginStackRuntimeRequest(project);
+        $.ajax({
+            url: caURL,
+            method: 'POST',
+            timeout: 30000,
+            data: { action: 'getStackContainers', script: project }
+        }).done(function(data) {
+            var parsed = typeof data === 'string' ? tryParseJson(data) : data;
+            if (parsed) parsed.composeCheckRevision = revision;
+            if (renderFromResponse(parsed, finishLoad, generation)) {
                 return;
             }
 
@@ -9168,6 +9092,10 @@ function loadStackContainerDetails(stackId, project) {
                 renderError('Failed to load container details', finishLoad, 'warning');
             }
         }).fail(function() {
+            if (generation !== (stackRuntimeGeneration[project] || 0)) {
+                renderFromResponse(null, finishLoad, generation);
+                return;
+            }
             renderError('Failed to load container details', finishLoad, 'error');
         });
     }
@@ -9177,7 +9105,7 @@ function loadStackContainerDetails(stackId, project) {
         if (stackDetailsPrefetchCache[project]) {
             var cached = stackDetailsPrefetchCache[project];
             delete stackDetailsPrefetchCache[project];
-            if (!renderFromResponse(cached, finishLoad)) {
+            if (!renderFromResponse(cached, finishLoad, stackRuntimeGeneration[project] || 0)) {
                 fetchAndRender(finishLoad);
             }
             return;
@@ -9185,11 +9113,16 @@ function loadStackContainerDetails(stackId, project) {
 
         // If a prefetch is currently in-flight for this project, wait for it once.
         if (stackDetailsPrefetchPromises[project]) {
+            var waitingGeneration = stackRuntimeGeneration[project] || 0;
             stackDetailsPrefetchPromises[project].then(function() {
+                if (waitingGeneration !== (stackRuntimeGeneration[project] || 0)) {
+                    renderFromResponse(null, finishLoad, waitingGeneration);
+                    return;
+                }
                 if (stackDetailsPrefetchCache[project]) {
                     var prefetched = stackDetailsPrefetchCache[project];
                     delete stackDetailsPrefetchCache[project];
-                    if (renderFromResponse(prefetched, finishLoad)) {
+                    if (renderFromResponse(prefetched, finishLoad, stackRuntimeGeneration[project] || 0)) {
                         return;
                     }
                 }
@@ -9370,13 +9303,26 @@ function renderContainerDetails(stackId, containers, project) {
 
     html += '</tbody></table>';
 
+    var busy = !!composeStackActionInProgress[project];
+    if ($container.data('runtime-html') === html && $container.find('.compose-ct-table').length
+        && !$container.find('.compose-status-spinner, .compose-container-spinner, [data-orig-text], [data-orig-class]').length) {
+        if ($container.data('runtime-busy') !== busy) {
+            containers.forEach(function(container, idx) {
+                addComposeContainerContext('ct-' + stackId + '-' + idx);
+            });
+            $container.data('runtime-busy', busy);
+        }
+        return;
+    }
     $container.html(html);
+    $container.data('runtime-html', html);
+    $container.data('runtime-busy', busy);
 
     if (window.composeColCustomizer && typeof window.composeColCustomizer.reapply === 'function') {
-        window.composeColCustomizer.reapply();
+        window.composeColCustomizer.reapply($container);
     }
     if (window.composeDockerLoadRenderCached && typeof window.composeDockerLoadRenderCached === 'function') {
-        window.composeDockerLoadRenderCached();
+        window.composeDockerLoadRenderCached(containers, $container);
     }
 
     // Update the parent stack row shortly after rendering so counts and status
@@ -9451,6 +9397,35 @@ function buildStackInfoFromCache(stackId, project) {
     return createStackInfo(project, containers);
 }
 
+function reconcileStackRuntimeMetadata($stackRow, project, containers) {
+    var ids = containers.map(function(container) {
+        return String(container.id || '').replace(/^sha256:/, '').slice(0, 12);
+    }).filter(Boolean).join(',');
+    var names = JSON.stringify(containers.map(function(container) {
+        return container.name;
+    }).filter(Boolean));
+    var changed = $stackRow.attr('data-ctids') !== ids;
+    $stackRow.attr('data-ctids', ids).data('ctids', ids);
+    $stackRow.attr('data-containers', names).data('containers', JSON.parse(names));
+    if (changed) {
+        triggerComposeListRefreshedDebounced();
+    }
+
+    var starting = containers.some(function(container) {
+        return container.isRunning && composeNormalizeHealthStatus(container.health, container.state) === 'starting';
+    });
+    if (!starting) {
+        clearTimeout(composeHealthRefreshTimers[project]);
+        delete composeHealthRefreshTimers[project];
+    } else if (!composeHealthRefreshTimers[project]) {
+        // The operation lock can be released before Docker's health checks settle.
+        composeHealthRefreshTimers[project] = setTimeout(function() {
+            delete composeHealthRefreshTimers[project];
+            refreshStackByProject(project);
+        }, 5000);
+    }
+}
+
 // Update only the parent stack row using cached container details
 function updateParentStackFromContainers(stackId, project) {
     try {
@@ -9468,6 +9443,7 @@ function updateParentStackFromContainers(stackId, project) {
         // Update the update-column using existing helper (expects stackInfo)
         var stackInfo = buildStackInfoFromCache(stackId, project);
         if (stackUpdateStatus[project]) stackInfo.lastChecked = stackUpdateStatus[project].lastChecked;
+        reconcileStackRuntimeMetadata($stackRow, project, stackInfo.containers);
 
         // Cache the merged update status and apply UI update
         stackUpdateStatus[project] = stackInfo;
@@ -9489,7 +9465,7 @@ function updateParentStackFromContainers(stackId, project) {
         var totalCount = stateInfo.totalCount;
         var anyRunning = runningCount > 0;
         var newState = stateInfo.state;
-        $stateEl.text(stateInfo.label);
+        if ($stateEl.text() !== stateInfo.label) $stateEl.text(stateInfo.label);
         $stateEl.removeData('orig-text');
         if (!isChecking) {
             updateStackUpdateUI(project, stackInfo);
@@ -9508,19 +9484,8 @@ function updateParentStackFromContainers(stackId, project) {
             var shape = stateInfo.shape;
             var colorClass = stateInfo.colorClass;
 
-            // Remove spinner / temporary classes and any previous fa-<name> classes
-            $icon.removeClass('fa-refresh fa-spin compose-status-spinner');
-            // Use a regex that matches the full fa-<name> (including hyphens) to ensure
-            // icons like fa-exclamation-circle are removed completely.
-            $icon.removeClass(function(i, cls) {
-                return (cls.match(/fa-[^\s]+/g) || []).join(' ');
-            });
-
-            // Remove any previous color classes
-            $icon.removeClass('green-text orange-text grey-text cyan-text');
-
-            // Apply the new shape and color
-            $icon.addClass('fa fa-' + shape + ' ' + colorClass + ' compose-status-icon');
+            var iconClass = 'fa fa-' + shape + ' ' + colorClass + ' compose-status-icon';
+            if ($icon.attr('class') !== iconClass) $icon.attr('class', iconClass);
 
             // Clear any saved orig-class since we've now applied the new state
             if ($icon.data('orig-class')) {
@@ -9583,11 +9548,10 @@ function updateParentStackFromContainers(stackId, project) {
         try {
             var $healthCell = $stackRow.find('td.col-health');
             var healthStatus = composeAggregateStackHealth(stackInfo.containers);
-            $healthCell.html(composeRenderHealthBadge(healthStatus, anyRunning ? 'running' : 'exited'));
+            var healthHtml = composeRenderHealthBadge(healthStatus, anyRunning ? 'running' : 'exited');
+            if ($healthCell.html() !== healthHtml) $healthCell.html(healthHtml);
         } catch (e) {}
 
-        // Re-apply list helpers after row updates.
-        applyListEnhancements();
     } catch (e) {
         composeLogger('updateParentStackFromContainers error', {
             err: e.toString(),
@@ -9600,6 +9564,36 @@ function updateParentStackFromContainers(stackId, project) {
 }
 
 // Attach context menu to container icon (like Docker tab's addDockerContainerContext)
+function refreshComposeContextMenu(elementId, options) {
+    var $menu = $('#dropdown-' + elementId);
+    var open = $menu.is(':visible');
+    var position = open ? { top: $menu.css('top'), left: $menu.css('left') } : null;
+    var above = open && $menu.hasClass('dropdown-context-up');
+    var scroll = open ? $menu.scrollTop() : 0;
+    var $focused = open ? $menu.find('a:focus') : $();
+    var focusText = $focused.length ? $focused.text() : null;
+    context.attach('#' + elementId, options);
+    fixContextDropdownOverflow(elementId);
+    $menu = $('#dropdown-' + elementId);
+    // The host menu library ignores the disabled option; enforce it in our adapter.
+    $menu.children('li').each(function(index) {
+        if (!options[index] || !options[index].disabled) return;
+        $(this).addClass('disabled').find('a').attr('aria-disabled', 'true')
+            .on('click.compose-disabled', function(event) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+            });
+    });
+    if (open) {
+        $menu.toggleClass('dropdown-context-up', !!above).css(position).show().scrollTop(scroll);
+        if (focusText !== null) {
+            $menu.find('a').filter(function() {
+                return $(this).text() === focusText;
+            }).first().trigger('focus');
+        }
+    }
+}
+
 // Keep a context dropdown above the footer and extend the scrollable area so it stays reachable
 // (same fix as unraid/webgui#2639)
 function fixContextDropdownOverflow(elementId) {
@@ -9734,15 +9728,28 @@ function addComposeContainerContext(elementId) {
         }
     });
 
+    var project = $('#stack-row-' + stackId).data('project');
+    opts.forEach(function(option) {
+        if (['Start', 'Stop', 'Pause', 'Resume', 'Restart'].indexOf(option.text) !== -1) {
+            option.disabled = !!composeStackActionInProgress[project];
+        }
+    });
+
     // Ensure stale menu bindings don't persist across state transitions
     $el.off('contextmenu');
-    context.attach('#' + elementId, opts);
-    fixContextDropdownOverflow(elementId);
+    refreshComposeContextMenu(elementId, opts);
 }
 
 function containerAction(containerName, action, stackId) {
-    // Show spinner by replacing the status icon (play/stop) in-place
     var $iconWrap = $('[data-name="' + containerName + '"]').first();
+    if (stackId === undefined) stackId = $iconWrap.data('stackid');
+    var actionProject = $('#stack-row-' + stackId).data('project');
+    if (composeStackActionInProgress[actionProject]) {
+        swal({ title: 'Stack action in progress', text: 'Wait for the current operation to finish before changing its containers.', type: 'info' });
+        return;
+    }
+    var operation = actionProject ? setStackActionInProgress(actionProject, true, composeActionStateText(action)) : null;
+    // Show spinner by replacing the status icon (play/stop) in-place
     // The status icon lives in the sibling '.inner' span next to the '.hand' wrapper
     var $statusIcon = $iconWrap.closest('td').find('.inner i').first();
     var statusOrigClass = null;
@@ -9802,18 +9809,35 @@ function containerAction(containerName, action, stackId) {
         } catch (e) {}
     }
 
-    $.post(caURL, {
-        action: 'containerAction',
-        container: containerName,
-        containerAction: action
-    }, function(data) {
+    function failContainerAction(message) {
+        if (operation && composeStackActionInProgress[actionProject] !== operation) return;
+        if (operation) setStackActionInProgress(actionProject, false, null, operation);
+        if (statusOrigClass !== null) $statusIcon.attr('class', statusOrigClass);
+        if (stateOrigText !== null) $stateTextEl.text(stateOrigText);
+        if ($icon && $icon.length) {
+            $icon.attr('class', originalClass).css('opacity', 1);
+        }
+        $iconWrap.find('.compose-container-spinner').remove();
+        composeLogger('Container action failed', { container: containerName, action: action, message: message }, 'user', 'error', 'container-action');
+        swal({ title: 'Action Failed', text: message, type: 'error' });
+        if (actionProject) refreshStackByProject(actionProject);
+    }
+
+    $.ajax({
+        url: caURL,
+        method: 'POST',
+        timeout: 30000,
+        data: { action: 'containerAction', container: containerName, containerAction: action }
+    }).done(function(data) {
+        if (operation && composeStackActionInProgress[actionProject] !== operation) return;
         if (data) {
             try {
-                var response = JSON.parse(data);
+                var response = typeof data === 'string' ? JSON.parse(data) : data;
             } catch (e) {
+                failContainerAction('The server returned an invalid container action response.');
                 return;
             }
-            if (response.result === 'success') {
+            if (response && response.result === 'success') {
                 // Refresh the container details
                 // Also mark the parent stack for a compose-list reload so the stack-level
                 // status (play/stop icon, running count) is refreshed after the container action.
@@ -9827,18 +9851,17 @@ function containerAction(containerName, action, stackId) {
                             stack: project,
                             pending: pendingComposeReloadStacks.slice()
                         }, 'user', 'info', 'container-action');
-                        // Show per-stack spinner immediately
-                        try {
-                            setStackActionInProgress(project, true);
-                        } catch (e) {}
                     }
                 } catch (e) {}
 
                 // Refresh the container details after a short delay to let docker settle
                 setTimeout(function() {
+                    if (operation && composeStackActionInProgress[actionProject] !== operation) return;
                     var project = $('#stack-row-' + stackId).data('project');
-                    setStackActionInProgress(project, false);
-                    loadStackContainerDetails(stackId, project);
+                    if (project) {
+                        setStackActionInProgress(project, false, null, operation);
+                        refreshStackByProject(project);
+                    }
                 }, 1000);
                 // Schedule a debounced parent-row update so multiple signals collapse
                 try {
@@ -9851,63 +9874,13 @@ function containerAction(containerName, action, stackId) {
                     }, 1500);
                 }
             } else {
-                // Restore status icon or remove overlay spinner
-                if (__spinnerInserted) {
-                    // Restore status icon if we replaced it
-                    var $restStatus = $iconWrap.closest('td').find('.inner i').first();
-                    if ($restStatus.length && $restStatus.attr('data-orig-class')) {
-                        $restStatus.removeClass().addClass($restStatus.attr('data-orig-class'));
-                        $restStatus.removeAttr('data-orig-class');
-                    } else {
-                        // Fallback: restore any overlay on the image
-                        try {
-                            $icon.css('opacity', 1);
-                            $iconWrap.find('.compose-container-spinner').remove();
-                        } catch (e) {}
-                    }
-                    // Restore state text if we changed it
-                    try {
-                        var $stateEl = $iconWrap.closest('td').find('.inner .state').first();
-                        if ($stateEl.length && $stateEl.attr('data-orig-text')) {
-                            $stateEl.text($stateEl.attr('data-orig-text'));
-                            $stateEl.removeAttr('data-orig-text');
-                        }
-                    } catch (e) {}
-                }
-                swal({
-                    title: 'Action Failed',
-                    text: composeEscapeHtml(response.message) || 'Failed to ' + action + ' container',
-                    type: 'error'
-                });
+                failContainerAction((response && response.message) || 'Failed to ' + action + ' container');
             }
+        } else {
+            failContainerAction('The server returned an empty container action response.');
         }
     }).fail(function() {
-        // Restore status icon or remove overlay spinner
-        if (__spinnerInserted) {
-            var $restStatus = $iconWrap.closest('td').find('.inner i').first();
-            if ($restStatus.length && $restStatus.attr('data-orig-class')) {
-                $restStatus.removeClass().addClass($restStatus.attr('data-orig-class'));
-                $restStatus.removeAttr('data-orig-class');
-            } else {
-                try {
-                    $icon.css('opacity', 1);
-                    $iconWrap.find('.compose-container-spinner').remove();
-                } catch (e) {}
-            }
-            // Restore state text if we changed it
-            try {
-                var $stateEl = $iconWrap.closest('td').find('.inner .state').first();
-                if ($stateEl.length && $stateEl.attr('data-orig-text')) {
-                    $stateEl.text($stateEl.attr('data-orig-text'));
-                    $stateEl.removeAttr('data-orig-text');
-                }
-            } catch (e) {}
-        }
-        swal({
-            title: 'Action Failed',
-            text: 'Failed to ' + action + ' container',
-            type: 'error'
-        });
+        failContainerAction('The request failed. Refresh the stack to check whether the container action completed.');
     });
 }
 
@@ -9964,6 +9937,12 @@ function addComposeStackContext(elementId) {
     if (stackUpdateStatus[project] && stackUpdateStatus[project].hasUpdate) {
         hasUpdates = true;
     }
+
+    var busy = !!composeStackActionInProgress[project];
+    var menuState = JSON.stringify([stackId, project, projectName, isUp, path, profiles,
+        runningProfile, defaultProfile, webuiUrl, hasBuild, isGitStack,
+        gitDeployFailed, canComposeDownStopped, hasUpdates, busy]);
+    if ($el.data('compose-menu-state') === menuState) return;
 
     var opts = [];
     context.settings({
@@ -10136,16 +10115,16 @@ function addComposeStackContext(elementId) {
         });
 
         // Update (pull/build and start)
-        var updateLabel = hasBuild ? 'Build & Up' : 'Pull & Up';
+        var updateLabel = 'Pull/Build & Up';
         opts.push({
             text: updateLabel,
             icon: 'fa-cloud-download',
             action: function(e) {
                 e.preventDefault();
                 if (profiles.length > 0) {
-                    showProfileSelector('update', path, profiles, runningProfile, defaultProfile);
+                    showProfileSelector('prepareUp', path, profiles, runningProfile, defaultProfile);
                 } else {
-                    UpdateStack(path);
+                    ComposePrepareUp(path);
                 }
             }
         });
@@ -10263,9 +10242,22 @@ function addComposeStackContext(elementId) {
         });
     }
 
-    context.destroy('#' + elementId);
-    context.attach('#' + elementId, opts);
-    fixContextDropdownOverflow(elementId);
+    var readOnlyActions = ['WebUI', 'View Logs', 'View Last Cmd Log', 'Check for Changes'];
+    opts.forEach(function(option) {
+        if (!option.action || readOnlyActions.indexOf(option.text) !== -1) return;
+        var action = option.action;
+        option.disabled = !!option.disabled || busy;
+        option.action = function(e) {
+            if (composeStackActionInProgress[project]) {
+                e.preventDefault();
+                swal({ title: 'Stack action in progress', text: 'Wait for the current operation to finish before changing this stack.', type: 'info' });
+                return;
+            }
+            action(e);
+        };
+    });
+    refreshComposeContextMenu(elementId, opts);
+    $el.data('compose-menu-state', menuState);
 }
 
 // Event delegation for docker-style container actions

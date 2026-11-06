@@ -329,7 +329,7 @@ class DashboardStacksTest extends TestCase
     // Update Status Loading Tests
     // ===========================================
 
-    public function testRealEndpointPreservesUnknownAndReadinessEvidence(): void
+    public function testRealEndpointPreservesConfiguredPathAndReadinessEvidence(): void
     {
         $this->createTestStack('readiness');
         $saved = ['readiness' => ['hasUpdate' => false, 'containers' => [
@@ -353,6 +353,8 @@ class DashboardStacksTest extends TestCase
                 ob_start();
                 include '/usr/local/emhttp/plugins/compose.manager/include/DashboardStacks.php';
                 $result = json_decode(ob_get_clean(), true);
+                $this->assertSame($this->testComposeRoot . '/readiness', $result['stacks'][0]['path']);
+                $this->assertSame('readiness', $result['stacks'][0]['folder']);
                 $this->assertSame([$container], $result['stacks'][0]['updateContainers']);
                 $this->assertSame($readiness === 'unknown' ? 'unknown' :
                     ($container['hasUpdate'] ? 'update-available' : 'up-to-date'), $result['stacks'][0]['update']);

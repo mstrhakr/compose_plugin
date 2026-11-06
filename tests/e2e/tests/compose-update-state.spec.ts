@@ -9,6 +9,9 @@ const factories = source.slice(source.indexOf('function createContainerInfo('), 
 const statusSource = readFileSync(
   resolve(__dirname, '../../../source/compose.manager/javascript/composeUpdateStatus.js'), 'utf8'
 );
+const checks = readFileSync(
+  resolve(__dirname, '../../../source/compose.manager/javascript/composeUpdateChecks.js'), 'utf8'
+);
 
 function exactFunction(name: string): string {
   return source.match(new RegExp(`^function ${name}\\([^]*?\\n\\}`, 'm'))![0];
@@ -151,7 +154,8 @@ test.describe('Compose update state regressions', () => {
   });
 
   test('background completion polling retries transport and malformed responses', async ({ page }) => {
-    const poll = functionSource('pollBackgroundCompletion', 'composeActionStateText');
+    const poll = readFileSync(resolve(__dirname, '../../../source/compose.manager/javascript/composeOperations.js'), 'utf8') +
+      functionSource('pollBackgroundCompletion', 'composeActionStateText');
     const parse = functionSource('tryParseJson', 'syncComposeStackRowStriping');
     const result = await page.evaluate(({ poll, parse }) => {
       const timers: Array<() => void> = [];
@@ -184,7 +188,7 @@ test.describe('Compose update state regressions', () => {
       };
       const run = new Function('$', 'setTimeout', 'setStackActionInProgress',
         'refreshStackByProject', 'checkPendingRechecks', 'composeLogger', `
-        var caURL = '/exec';
+        var caURL = '/exec', composeStackActionInProgress = {};
         ${parse}
         ${poll}
         pollBackgroundCompletion('stack');
@@ -200,15 +204,15 @@ test.describe('Compose update state regressions', () => {
     expect(result.progress).toEqual([false]);
     expect(result.refreshed).toEqual(['stack']);
     expect(result.rechecks).toBe(1);
-    expect(result.errors).toContain('Lock check request failed');
-    expect(result.errors).toContain('Lock check failed');
+    expect(result.errors).toContain('Completion check request failed');
+    expect(result.errors).toContain('Completion check failed');
     expect(result.pendingTimers).toBe(0);
   });
 
   test('failed update-check requests replace the checking spinner with a retry link', async ({ page }) => {
     const check = functionSource('checkStackUpdates', 'isValidWebUIUrl');
-    const checkState = exactFunction('setComposeUpdateCheckState') + exactFunction('composeUpdateCheckBadge');
-    const results = await page.evaluate(({ check, factories, checkState }) => {
+    const checkState = exactFunction('renderComposeUpdateCheckState') + exactFunction('composeUpdateCheckBadge');
+    const results = await page.evaluate(({ check, factories, checkState, checks }) => {
       return ['network', 'malformed', 'server', 'empty', 'incomplete'].map((mode) => {
         let html = '';
         const messages: string[] = [];
@@ -232,19 +236,19 @@ test.describe('Compose update state regressions', () => {
         const run = new Function('$', 'composeEscapeAttr', 'composeLogger', `
           var caURL = '/exec';
           var stackUpdateStatus = {};
-          var pendingUpdateCheckStacks = [];
-          var composeUpdateCheckState = {};
+          var composeStackActionInProgress = {};
           function updateStackUpdateUI() {}
           function updateUpdateAllButton() {}
           ${factories}
           ${checkState}
+          ${checks}
           ${check}
           checkStackUpdates('stack');
         `);
         run($, (value: string) => value, (message: string) => messages.push(message));
         return { html, messages };
       });
-    }, { check, factories, checkState });
+    }, { check, factories, checkState, checks });
     for (const result of results) {
       expect(result.html).toContain('check failed');
       expect(result.html).toContain("checkStackUpdates('stack')");
@@ -258,14 +262,14 @@ test.describe('Compose update state regressions', () => {
     const result = await page.evaluate((action) => {
       const progress: boolean[] = [];
       const notices: Array<{ type: string }> = [];
-      const $ = { post: () => ({ fail(callback: () => void) { callback(); } }) };
+      const $ = { ajax: () => ({ done() { return this; }, fail(callback: () => void) { callback(); } }) };
       const run = new Function('$', 'setStackActionInProgress', 'composeLogger', 'swal', `
-        var compURL = '/compose';
+        var compURL = '/compose', composeStackActionInProgress = {};
         function composeActionStateText() { return 'starting...'; }
         ${action}
         performComposeAction({ stackName: 'stack', actionName: 'up', pendingReload: true });
       `);
-      run($, (_stack: string, active: boolean) => progress.push(active), () => {},
+      run($, (_stack: string, active: boolean) => { progress.push(active); }, () => {},
         (notice: { type: string }) => notices.push(notice));
       return { progress, notices };
     }, action);
@@ -301,7 +305,8 @@ test.describe('Compose update state regressions', () => {
         var stackUpdateStatus = {}, composeStackActionInProgress = {}, stackStartedAtCache = {};
         function buildStackInfoFromCache() { return createStackInfo('stack', [{ name: 'app', state: 'running' }]); }
         function deriveStackState() { return { label: 'started', state: 'started', runningCount: 1, totalCount: 1, colorClass: 'green-text' }; }
-        function applyListEnhancements() {}
+        function applyListEnhancements() { throw new Error('Runtime refresh must not rebuild whole-list helpers'); }
+        function reconcileStackRuntimeMetadata() {}
         ${refresh}
         updateParentStackFromContainers('1', 'stack');
       `);

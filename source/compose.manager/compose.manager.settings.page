@@ -875,7 +875,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             }
         }
 
-        // Handle header menu toggle -> disable/enable compose-on-top and hide-from-docker
+        // Handle header menu toggle -> disable/enable compose-on-top
         // Saves and restores the original checked state of dependent settings so toggling
         // the header menu on then off preserves the user's previous selections.
         function toggleComposeOnTop() {
@@ -905,40 +905,6 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 if (typeof saved !== 'undefined') {
                     $onTop.prop('checked', saved).change();
                     $onTop.removeData('saved-state');
-                }
-            }
-            // Also toggle hide-from-docker (only available in non-tabbed mode)
-            toggleHideFromDocker();
-        }
-
-        // Handle header menu toggle -> disable/enable hide compose from docker tab
-        function toggleHideFromDocker() {
-            var headerMenuEnabled = $('#SHOW_COMPOSE_IN_HEADER_MENU').is(':checked');
-            var $wrapper = $('#docker-page-hide-wrapper');
-            if (headerMenuEnabled) {
-                // Save current state before disabling
-                var $hide = $('#HIDE_COMPOSE_FROM_DOCKER');
-                if (typeof $hide.data('saved-state') === 'undefined') {
-                    $hide.data('saved-state', $hide.is(':checked'));
-                }
-                if ($hide.is(':checked')) {
-                    $hide.prop('checked', false).change();
-                }
-                $wrapper.css({
-                    opacity: 0.4,
-                    pointerEvents: 'none'
-                });
-            } else {
-                $wrapper.css({
-                    opacity: 1,
-                    pointerEvents: ''
-                });
-                // Restore previously saved state
-                var $hide = $('#HIDE_COMPOSE_FROM_DOCKER');
-                var saved = $hide.data('saved-state');
-                if (typeof saved !== 'undefined') {
-                    $hide.prop('checked', saved).change();
-                    $hide.removeData('saved-state');
                 }
             }
         }
@@ -1433,7 +1399,6 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
         function clearDependentToggleSavedStateCache() {
             $('#SHOW_COMPOSE_ON_TOP').removeData('saved-state');
-            $('#HIDE_COMPOSE_FROM_DOCKER').removeData('saved-state');
             $('#HIDE_DOCKER_COMPOSE_CONTAINERS').removeData('saved-state');
             $('#ONLY_EXPAND_RUNNING_STACKS').removeData('saved-state');
         }
@@ -2859,14 +2824,14 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dd>
         </dl>
 
-        <dl style="opacity:0.7;pointer-events:none;" id="docker-page-hide-wrapper">
+        <dl id="docker-page-hide-wrapper">
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Hide Compose Containers from Docker Page)_:</dt>
             <dd>
                 <input type="checkbox" name="HIDE_COMPOSE_FROM_DOCKER" id="HIDE_COMPOSE_FROM_DOCKER" class="compose-toggle" <?= ($cfg['HIDE_COMPOSE_FROM_DOCKER'] ?? 'false') == 'true' ? 'checked' : '' ?>>
                 <blockquote class="inline_help">
                     When enabled, containers managed by Compose stacks will be hidden from the Docker Containers table on the Docker page.<br>
-                    This avoids duplicate display when Compose stacks are shown on the same page (inline mode).<br>
-                    <em>Only available when "Show Compose in Header Menu" is disabled (inline mode).</em>
+                    Works both with the separate Compose header menu and with Compose stacks on the Docker page.<br>
+                    This does not change the separate Dashboard tile visibility setting.
                 </blockquote>
             </dd>
         </dl>

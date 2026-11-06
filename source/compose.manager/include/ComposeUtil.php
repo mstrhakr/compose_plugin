@@ -18,7 +18,8 @@ switch ($_POST['action']) {
         echoComposeCommand('up', [
             'background' => $background,
             'removeOrphans' => $removeOrphans,
-            'followLogs' => $followLogs
+            'followLogs' => $followLogs,
+            'prepareImages' => ($_POST['prepareImages'] ?? '') === '1'
         ]);
         break;
     case 'composeDetachFollow':

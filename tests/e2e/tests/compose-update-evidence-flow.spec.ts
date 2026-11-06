@@ -5,11 +5,12 @@ import { resolve } from 'node:path';
 const root = resolve(__dirname, '../../../source/compose.manager/javascript');
 const source = readFileSync(`${root}/composeManagerMain.js`, 'utf8');
 const status = readFileSync(`${root}/composeUpdateStatus.js`, 'utf8');
+const checks = readFileSync(`${root}/composeUpdateChecks.js`, 'utf8');
 const functions = [
   'createContainerInfo', 'composeImageUpdateKey', 'mergeContainerUpdateStatus',
   'createStackInfo', 'mergeStackUpdateStatus', 'mergeUpdateStatus',
   'composeCheckedContainers', 'composeContainerUpdateBadge', 'composeUpdateCheckBadge',
-  'setComposeUpdateCheckState', 'updateStackUpdateUI', 'checkStackUpdates',
+  'renderComposeUpdateCheckState', 'updateStackUpdateUI', 'checkStackUpdates',
 ].map(name => source.match(new RegExp(`^function ${name}\\([^]*?\\n\\}`, 'm'))![0]).join('\n');
 
 test.use({ storageState: { cookies: [], origins: [] } });
@@ -31,7 +32,7 @@ for (const kind of ['image', 'build-base']) {
         const action = new URLSearchParams(route.request().postData() || '').get('action');
         if (action === 'checkStackUpdates') {
           checked = true;
-          await route.fulfill({ json: { result: 'success', updates: [pending] } });
+          await route.fulfill({ json: { result: 'success', updates: [pending], recheckToken: null } });
         } else if (action === 'getStackContainers') {
           if (blockDetails) await new Promise<void>(resolve => { releaseDetails = resolve; });
           const container = recreated
@@ -39,7 +40,7 @@ for (const kind of ['image', 'build-base']) {
             : pending;
           await route.fulfill({ json: { result: 'success', containers: [container] } });
         } else {
-          await route.fulfill({ json: { result: 'success' } });
+          await route.fulfill({ json: { result: 'success', remaining: [] } });
         }
         return;
       }
@@ -64,14 +65,21 @@ for (const kind of ['image', 'build-base']) {
               .then(response => response.text()).then(text => { if (callback) callback(text); });
             return {fail: handler => request.catch(error => handler({}, 'error', error.message))};
           };
+          $.ajax = options => {
+            let success, failure;
+            fetch(options.url, {method:'POST', body:new URLSearchParams(options.data)})
+              .then(response => response.text()).then(text => success(text)).catch(error => failure(error));
+            const request = {done(callback) {success=callback; return request;}, fail(callback) {failure=callback; return request;}};
+            return request;
+          };
           var caURL = '/exec', stackUpdateStatus = {}, stackContainersCache = {},
-            composeUpdateCheckState = {}, composeUpdateCheckRevision = {}, stackDetailsPrefetchCache = {},
-            pendingUpdateCheckStacks = [];
+            stackDetailsPrefetchCache = {}, composeStackActionInProgress = {};
           function composeEscapeAttr(value) { return value; }
           function composeLogger() {}
           function updateUpdateAllButton() {}
           function isValidIconSrc() { return true; }
           ${status}
+          ${checks}
           ${functions}
           stackUpdateStatus.test = {containers: ${JSON.stringify(checked ? [pending] : [])}};
           updateStackUpdateUI('test', stackUpdateStatus.test);

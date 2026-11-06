@@ -17,9 +17,9 @@ require_once '/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerCli
  * Scope guarantees:
  *   - Callers pass an explicit set of images to check. This class never
  *     enumerates the full Docker image list.
- *   - Only entries for the passed images are read/written in the shared
- *     unraid-update-status.json file. Entries for non-compose images are
- *     untouched (no interference with the native Docker tab's state).
+ *   - Registry evidence is cached only for this checker's lifetime.
+ *     StackUpdateService owns accepted, persistent stack update evidence.
+ *     The native Docker tab's update cache is never read or written.
  *
  * Also see the parallel upstream fix for the native Docker tab in the
  * dynamix.docker.manager DockerUpdate class. This plugin-local
@@ -28,24 +28,20 @@ require_once '/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerCli
  */
 class ComposeUpdateCheck
 {
-    /** @var string Path to the shared Unraid update-status JSON file. */
-    private string $statusFile;
     private ?string $credentialId;
     /** @var array<string, array|null> */
     private array $remoteManifests = [];
     /** @var array<string, array{digest: string, diffIds: string[]}|null> */
     private array $baseConfigs = [];
 
-    public function __construct(?string $statusFile = null, ?string $credentialId = null)
+    public function __construct(?string $credentialId = null)
     {
-        $this->statusFile = $statusFile ?? UNRAID_UPDATE_STATUS_FILE;
         $this->credentialId = $credentialId;
     }
 
     /**
-     * Check a batch of images. Reads and writes the shared status file
-     * exactly once around the batch, and only touches entries for the
-     * provided images. Duplicate images in $images are checked only once.
+     * Check a batch of images without persisting image-level evidence.
+     * Duplicate images in $images are checked only once.
      *
      * @param string[] $images
      * @param string|null $platform Target os/architecture[/variant], or the host platform
@@ -54,9 +50,7 @@ class ComposeUpdateCheck
      */
     public function checkMany(array $images, ?string $platform = null): array
     {
-        $status = $this->loadStatus();
         $results = [];
-        $dirty = false;
 
         foreach ($images as $rawImage) {
             $image = ContainerInfo::normalizeImageForUpdateCheck((string) $rawImage);
@@ -76,23 +70,9 @@ class ComposeUpdateCheck
             }
             $summary = $this->summarize($local, $remote);
 
-            // Unraid's shared cache has no platform dimension; keep foreign targets out.
-            if ($platform === null || $platform === self::hostPlatform()) {
-                $status[$image] = [
-                    'local'  => (string) ($local ?? ''),
-                    'remote' => (string) ($remote ?? ''),
-                    'status' => $summary['statusRaw'],
-                    // Bind provenance to the value: native writers may replace remote independently.
-                    'configDigest' => (string) ($remote ?? ''),
-                ];
-                $dirty = true;
-            }
             $results[$image] = $summary['result'];
         }
 
-        if ($dirty) {
-            $this->saveStatus($status);
-        }
         return $results;
     }
 
@@ -508,7 +488,6 @@ class ComposeUpdateCheck
     {
         if (!$local || !$remote) {
             return [
-                'statusRaw' => 'undef',
                 'result' => [
                     'local'     => (string) ($local  ?? ''),
                     'remote'    => (string) ($remote ?? ''),
@@ -519,7 +498,6 @@ class ComposeUpdateCheck
         }
         $upToDate = ($local === $remote);
         return [
-            'statusRaw' => $upToDate ? 'true' : 'false',
             'result' => [
                 'local'     => $local,
                 'remote'    => $remote,
@@ -527,28 +505,6 @@ class ComposeUpdateCheck
                 'hasUpdate' => !$upToDate,
             ],
         ];
-    }
-
-    private function loadStatus(): array
-    {
-        if (class_exists('DockerUtil') && method_exists('DockerUtil', 'loadJSON')) {
-            $loaded = DockerUtil::loadJSON($this->statusFile);
-            return is_array($loaded) ? $loaded : [];
-        }
-        if (is_file($this->statusFile)) {
-            $decoded = json_decode((string) @file_get_contents($this->statusFile), true);
-            return is_array($decoded) ? $decoded : [];
-        }
-        return [];
-    }
-
-    private function saveStatus(array $status): void
-    {
-        if (class_exists('DockerUtil') && method_exists('DockerUtil', 'saveJSON')) {
-            DockerUtil::saveJSON($this->statusFile, $status);
-            return;
-        }
-        @file_put_contents($this->statusFile, json_encode($status, JSON_PRETTY_PRINT));
     }
 
     /**

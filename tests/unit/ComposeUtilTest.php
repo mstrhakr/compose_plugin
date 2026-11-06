@@ -34,6 +34,58 @@ require_once '/usr/local/emhttp/plugins/compose.manager/include/Defines.php';
  */
 class ComposeUtilTest extends TestCase
 {
+    public function testTrackedBulkDispatchQueuesEveryAcceptedStackBeforeTerminalConnection(): void
+    {
+        global $compose_root;
+        $compose_root = $this->createTempDir();
+        $paths = [];
+        foreach (['receipt-first', 'receipt-second'] as $project) {
+            $path = $compose_root . '/' . $project;
+            mkdir($path, 0755, true);
+            file_put_contents($path . '/compose.yaml', "services:\n  app:\n    image: nginx\n");
+            $paths[] = $path;
+        }
+        $varFile = $this->createTempDir() . '/var.ini';
+        file_put_contents($varFile, "mdState=STARTED\n");
+        \PluginTests\StreamWrapper\UnraidStreamWrapper::addMapping('/var/local/emhttp/var.ini', $varFile);
+        $before = glob('/tmp/compose_multi_*.sh') ?: [];
+        $_POST['trackOperation'] = '1';
+        $files = [];
+        $sessionFiles = [];
+        $scripts = [];
+        try {
+            ob_start();
+            echoComposeCommandMultiple('up', ['paths' => $paths]);
+            $response = json_decode((string) ob_get_clean(), true);
+            $this->assertStringStartsWith('/plugins/compose.manager/include/ShowTtyd.php?done=1&socket=compose_action_', $response['url']);
+            parse_str(parse_url($response['url'], PHP_URL_QUERY), $query);
+            $this->assertSame('up', $query['command']);
+            $this->assertSame('1', $query['bulk']);
+            $sessionFiles[] = \composeUiOperationFile('terminal-session', $query['session']) . '.log';
+            $sessionFiles[] = \composeUiOperationFile('terminal-session', $query['session']);
+            $this->assertSame(['receipt-first', 'receipt-second'], array_keys($response['operations']));
+            foreach ($response['operations'] as $project => $id) {
+                $file = \composeUiOperationFile($project, $id);
+                $files[] = $file;
+                $this->assertSame(['state' => 'queued'], json_decode((string) file_get_contents($file), true));
+            }
+            $scripts = array_values(array_filter(
+                array_diff(glob('/tmp/compose_multi_*.sh') ?: [], $before),
+                static fn(string $script): bool => str_contains((string) file_get_contents($script), $files[0])
+            ));
+            $this->assertCount(1, $scripts);
+            $script = (string) file_get_contents($scripts[0]);
+            foreach ($files as $file) {
+                $this->assertStringContainsString(escapeshellarg($file), $script);
+            }
+        } finally {
+            foreach (array_merge($files, $sessionFiles, $scripts) as $file) {
+                @unlink($file);
+            }
+            unset($_POST['trackOperation']);
+        }
+    }
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -122,6 +174,22 @@ class ComposeUtilTest extends TestCase
         
         // Should return ttyd viewer URL for non-log actions
         $this->assertSame('/plugins/compose.manager/include/ShowTtyd.php?done=1', $output);
+
+        $_POST['trackOperation'] = '1';
+        ob_start();
+        echoComposeCommand('up');
+        $tracked = json_decode((string) ob_get_clean(), true);
+        $this->assertStringStartsWith('/plugins/compose.manager/include/ShowTtyd.php?done=1&socket=compose_action_', $tracked['url']);
+        parse_str(parse_url($tracked['url'], PHP_URL_QUERY), $query);
+        $this->assertSame('up', $query['command']);
+        $this->assertSame('0', $query['bulk']);
+        $sessionFile = \composeUiOperationFile('terminal-session', $query['session']);
+        unlink($sessionFile . '.log');
+        unlink($sessionFile);
+        $receipt = \composeUiOperationFile($stackName, $tracked['operations'][$stackName]);
+        $this->assertSame(['state' => 'queued'], json_decode((string) file_get_contents($receipt), true));
+        unlink($receipt);
+        unset($_POST['trackOperation']);
         
         // Cleanup
         unlink("$varIniDir/var.ini");
@@ -227,6 +295,7 @@ class ComposeUtilTest extends TestCase
         // Set POST data with profile
         $_POST['path'] = $stackDir;
         $_POST['profile'] = 'dev';
+        $GLOBALS['composeLoggerMessages'] = [];
         
         // Capture output
         ob_start();
@@ -235,6 +304,17 @@ class ComposeUtilTest extends TestCase
         
         // Should return ttyd viewer URL
         $this->assertSame('/plugins/compose.manager/include/ShowTtyd.php?done=1', $output);
+        $this->assertStringNotContainsString('--prepare-images', implode("\n", $GLOBALS['composeLoggerMessages']));
+
+        $GLOBALS['composeLoggerMessages'] = [];
+        ob_start();
+        echoComposeCommand('up', ['prepareImages' => true]);
+        $preparedOutput = ob_get_clean();
+        $this->assertSame($output, $preparedOutput);
+        $commands = implode("\n", $GLOBALS['composeLoggerMessages']);
+        $this->assertStringContainsString("'--prepare-images'", $commands);
+        $this->assertStringContainsString("'-gdev'", $commands);
+        $this->assertStringContainsString("'-cup'", $commands);
         
         // Cleanup
         unlink("$varIniDir/var.ini");

@@ -10,6 +10,8 @@
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Defines.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Util.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/StackUpdateService.php");
+require_once __DIR__ . '/UiOperation.php';
+require_once __DIR__ . '/TerminalSession.php';
 require_once("/usr/local/emhttp/plugins/dynamix/include/Wrappers.php");
 
 /**
@@ -342,6 +344,9 @@ function echoComposeCommand($action, array $options = [])
             if ($action === 'up' && $followLogs) {
                 $composeCommand[] = "--follow-logs";
             }
+            if ($action === 'up' && !empty($options['prepareImages'])) {
+                $composeCommand[] = '--prepare-images';
+            }
         }
 
         if ($action === 'up' && $waitForHealthy) {
@@ -359,21 +364,28 @@ function echoComposeCommand($action, array $options = [])
             // Run fully in the background using compose_background.sh.
             // Output is captured to last_cmd.log; notification sent on completion.
             $bgScript = $plugin_root . "scripts/compose_background.sh";
-            $bgCmd = escapeshellarg($bgScript);
-            foreach ($composeCommand as $arg) {
-                $bgCmd .= ' ' . escapeshellarg($arg);
-            }
+            $operations = [];
+            $trackedCommand = composeTrackUiCommand(array_merge([$bgScript], $composeCommand), $stackInfo->projectFolder, $operations);
+            $bgCmd = implode(' ', array_map('escapeshellarg', $trackedCommand));
             $bgCmd .= ' > /dev/null 2>&1 &';
             exec($bgCmd);
             composeLogger("Background command: " . $bgCmd, ['command' => $bgCmd], 'user', 'debug', 'compose');
             // Signal to JS that this ran in background (no terminal window to open)
-            echo json_encode(['background' => true]);
+            echo json_encode(['background' => true, 'operations' => $operations]);
         } else {
             $logFile = getLastCmdLogFileForComposeAction($action, $path);
+            $operations = [];
+            if ($action !== 'logs') {
+                $composeCommand = composeTrackUiCommand($composeCommand, $stackInfo->projectFolder, $operations);
+            }
             $composeCommandEscaped = array_map(function ($item) {
                 return escapeshellarg($item);
             }, $composeCommand);
             $composeCommandStr = join(" ", $composeCommandEscaped);
+            if ($operations && !$followLogs) {
+                composeEchoTerminalSession($composeCommandStr, $operations, $debug, $logFile, $action);
+                return;
+            }
             // Use a per-stack socket for logs so viewing logs doesn't conflict
             // with action operations (up/update/pull) that share the default socket.
             $logsSocket = '';
@@ -390,7 +402,7 @@ function echoComposeCommand($action, array $options = [])
                     $composeCommand .= '&path=' . urlencode($path);
                 }
             }
-            echo $composeCommand;
+            echo $operations ? json_encode(['url' => $composeCommand, 'operations' => $operations]) : $composeCommand;
         }
         composeLogger("Final compose command: " . $composeCommand, ['command' => $composeCommand], 'user', 'debug', 'compose');
     }
@@ -564,19 +576,25 @@ function echoGitDeployCommand(array $options = []): void
 
     if ($background) {
         // As echoComposeCommand(): output goes to last_cmd.log and a notification is sent at the end.
-        $bgCmd = escapeshellarg($plugin_root . "scripts/compose_background.sh");
-        foreach ($composeCommand as $arg) {
-            $bgCmd .= ' ' . escapeshellarg($arg);
-        }
+        $operations = [];
+        $trackedCommand = composeTrackUiCommand(array_merge([$plugin_root . "scripts/compose_background.sh"], $composeCommand), $stack->projectFolder, $operations);
+        $bgCmd = implode(' ', array_map('escapeshellarg', $trackedCommand));
         exec($bgCmd . ' > /dev/null 2>&1 &');
         composeLogger("Background command: " . $bgCmd, ['command' => $bgCmd], 'user', 'debug', 'compose');
-        echo json_encode(['background' => true]);
+        echo json_encode(['background' => true, 'operations' => $operations]);
         return;
     }
 
+    $operations = [];
+    $composeCommand = composeTrackUiCommand($composeCommand, $stack->projectFolder, $operations);
     $composeCommandString = implode(' ', array_map('escapeshellarg', $composeCommand));
+    if ($operations) {
+        composeEchoTerminalSession($composeCommandString, $operations, $debug, getLastCmdLogFileForComposeAction('gitdeploy', $stack->path), 'gitdeploy');
+        return;
+    }
     execComposeCommandInTTY($composeCommandString, $debug, getLastCmdLogFileForComposeAction('gitdeploy', $stack->path));
-    echo "/plugins/compose.manager/include/ShowTtyd.php?done=1";
+    $url = "/plugins/compose.manager/include/ShowTtyd.php?done=1";
+    echo $url;
 }
 
 /**
@@ -607,6 +625,7 @@ function echoComposeCommandMultiple($action, array $options = [])
     $commands = array();
     $stackNames = array();
     $blockedStacks = array();
+    $commandProjects = [];
 
     foreach ($paths as $path) {
         composeLogger("Processing stack for multi-compose action: " . $path, ['path' => $path, 'action' => $action], 'user', 'debug', 'compose-multi');
@@ -683,6 +702,7 @@ function echoComposeCommandMultiple($action, array $options = [])
         }
 
         $commands[] = $composeCommand;
+        $commandProjects[] = $stackInfo->projectFolder;
     }
 
     if (empty($commands)) {
@@ -713,11 +733,10 @@ function echoComposeCommandMultiple($action, array $options = [])
         $bgScript = $plugin_root . "scripts/compose_background.sh";
         $tmpScript = "/tmp/compose_multi_bg_" . uniqid() . ".sh";
         $scriptContent = "#!/bin/bash\n";
-        foreach ($commands as $cmd) {
-            $line = escapeshellarg($bgScript);
-            foreach ($cmd as $arg) {
-                $line .= ' ' . escapeshellarg($arg);
-            }
+        $operations = [];
+        foreach ($commands as $index => $cmd) {
+            $trackedCommand = composeTrackUiCommand(array_merge([$bgScript], $cmd), $commandProjects[$index], $operations);
+            $line = implode(' ', array_map('escapeshellarg', $trackedCommand));
             $scriptContent .= "$line\n";
         }
         $scriptContent .= "rm -f " . escapeshellarg($tmpScript) . "\n";
@@ -725,7 +744,7 @@ function echoComposeCommandMultiple($action, array $options = [])
         chmod($tmpScript, 0700);
         exec(escapeshellarg($tmpScript) . ' > /dev/null 2>&1 &');
         composeLogger("Background multi-stack queued: " . $tmpScript, ['script' => $tmpScript, 'stacks' => count($commands)], 'user', 'debug', 'compose-multi');
-        echo json_encode(['background' => true]);
+        echo json_encode(['background' => true, 'operations' => $operations]);
         return;
     }
 
@@ -734,13 +753,17 @@ function echoComposeCommandMultiple($action, array $options = [])
     $tmpScript = "/tmp/compose_multi_" . uniqid() . ".sh";
     $scriptContent = "#!/bin/bash\n";
     $scriptContent .= "# Multi-stack compose script (ttyd) - auto-generated\n\n";
+    $scriptContent .= 'trap ' . escapeshellarg('rm -f ' . escapeshellarg($tmpScript)) . " EXIT\n";
+    $scriptContent .= "result=0\n";
 
     foreach ($blockedStacks as $blocked) {
         $blockedTitle = str_replace(['\\', '"'], ['\\\\', '\\"'], $blocked);
         $scriptContent .= "echo \"! Skipped " . $blockedTitle . ": compose project identity is unresolved\"\n";
     }
 
+    $operations = [];
     foreach ($commands as $idx => $cmd) {
+        $cmd = composeTrackUiCommand($cmd, $commandProjects[$idx], $operations);
         $cmdStr = implode(" ", array_map('escapeshellarg', $cmd));
         $stackTitle = str_replace(['\\', '"'], ['\\\\', '\\"'], $stackNames[$idx]);
 
@@ -750,6 +773,7 @@ function echoComposeCommandMultiple($action, array $options = [])
         $scriptContent .= $cmdStr . "\n";
         $scriptContent .= "rc=$?\n";
         $scriptContent .= "if [ \$rc -ne 0 ]; then\n";
+        $scriptContent .= "  result=\$rc\n";
         $scriptContent .= "  echo \"X Stack " . $stackTitle . " failed to " . strtolower($actionLabel) . " (exit code: \$rc)\"\n";
         $scriptContent .= "fi\n";
         $scriptContent .= "echo \"\"\n";
@@ -758,13 +782,18 @@ function echoComposeCommandMultiple($action, array $options = [])
     $scriptContent .= "echo \"========================================\"\n";
     $scriptContent .= "echo \"=== All operations complete ===\"\n";
     $scriptContent .= "echo \"========================================\"\n";
-    $scriptContent .= "rm -f " . escapeshellarg($tmpScript) . "\n";
+    $scriptContent .= "exit \$result\n";
 
     file_put_contents($tmpScript, $scriptContent);
     chmod($tmpScript, 0755);
 
     $ttydCommand = "bash " . escapeshellarg($tmpScript);
+    if ($operations) {
+        composeEchoTerminalSession($ttydCommand, $operations, $debug, '', $action);
+        return;
+    }
     execComposeCommandInTTY($ttydCommand, $debug);
     composeLogger("Multi-stack script created: " . $tmpScript, null, 'user', 'debug', 'compose-multi');
-    echo "/plugins/compose.manager/include/ShowTtyd.php?done=1";
+    $url = "/plugins/compose.manager/include/ShowTtyd.php?done=1";
+    echo $url;
 }

@@ -81,6 +81,7 @@ foreach (StackInfo::allFromRoot($compose_root) as $stackInfo) {
     $summary['stacks'][] = [
         'name' => $stackInfo->getName(),
         'folder' => $stackInfo->projectFolder,
+        'path' => $stackInfo->path,
         'state' => $state,
         'running' => $runningCount,
         'total' => $totalContainers,

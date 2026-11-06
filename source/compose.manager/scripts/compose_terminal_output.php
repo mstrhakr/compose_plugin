@@ -1,0 +1,37 @@
+#!/usr/bin/php
+<?php
+
+// Keep a bounded live spool; the stack's command log retains the complete output.
+$spool = fopen($argv[1], 'c+b');
+$log = $argv[2] !== '' ? fopen($argv[2], 'wb') : null;
+if ($spool === false || $log === false) {
+    fwrite(STDERR, "Unable to open terminal output files.\n");
+    exit(1);
+}
+$size = 0;
+while (!feof(STDIN)) {
+    $chunk = fread(STDIN, 8192);
+    if ($chunk === false) {
+        fwrite(STDERR, "Unable to read command output.\n");
+        exit(1);
+    }
+    if ($log !== null && (fwrite($log, $chunk) !== strlen($chunk) || !fflush($log))) {
+        fwrite(STDERR, "Unable to save stack command log.\n");
+        exit(1);
+    }
+    if ($size + strlen($chunk) > 1048576) {
+        if (!ftruncate($spool, 0) || fseek($spool, 0) !== 0) {
+            fwrite(STDERR, "Unable to rotate terminal output.\n");
+            exit(1);
+        }
+        $chunk = "[Earlier output omitted from live viewer; see the stack command log.]\n" . $chunk;
+        $size = 0;
+    }
+    if (fwrite($spool, $chunk) !== strlen($chunk) || !fflush($spool)) {
+        fwrite(STDERR, "Unable to save command output.\n");
+        exit(1);
+    }
+    $size += strlen($chunk);
+}
+fclose($spool);
+if ($log !== null) fclose($log);

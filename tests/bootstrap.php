@@ -42,7 +42,7 @@ define('COMPOSE_LEGACY_ORIGIN_FILE', $_bootConfigTemp . '/legacy-origin');
 define('UNRAID_UPDATE_STATUS_FILE',  sys_get_temp_dir() . '/unraid-update-status.json');
 define('PENDING_RECHECK_FILE',       $_bootConfigTemp . '/pending-recheck.json');
 define('COMPOSE_TTYD_SOCKET_DIR',    sys_get_temp_dir());
-define('COMPOSE_SKIP_TTYD_EXEC',     true);
+defined('COMPOSE_SKIP_TTYD_EXEC') || define('COMPOSE_SKIP_TTYD_EXEC', true);
 define('COMPOSE_ICON_CACHE_DIR',     sys_get_temp_dir() . '/compose_manager_icon_cache_test');
 define('COMPOSE_DM_ICON_RAM_DIR',     sys_get_temp_dir() . '/compose_manager_dm_images_ram');
 define('COMPOSE_DM_ICON_PERSIST_DIR', sys_get_temp_dir() . '/compose_manager_dm_images');

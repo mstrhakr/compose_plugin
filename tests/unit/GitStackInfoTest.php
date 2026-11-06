@@ -177,6 +177,38 @@ final class GitStackInfoTest extends TestCase
         $this->assertSame([$this->clone . '/whoami/compose.yaml'], $paths);
     }
 
+    public function testBuildInspectionDoesNotValidateAllProfilesAsOneDeployment(): void
+    {
+        $bin = $this->createTempDir();
+        $path = getenv('PATH');
+        file_put_contents($bin . '/docker', "#!/bin/sh\n"
+            . "case \" \$* \" in\n*' --profile * config --no-consistency --format json '*) "
+            . "printf '%s\\n' '{\"services\":{\"build\":{\"build\":{\"context\":\"/source\"}}}}';;\n"
+            . "*) echo 'conflicting container names across profiles' >&2; exit 1;;\nesac\n");
+        chmod($bin . '/docker', 0755);
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        try {
+            $this->assertSame(['build'], array_keys($this->stack()->getBuildConfigs()));
+        } finally {
+            putenv('PATH=' . $path);
+        }
+    }
+
+    public function testMutuallyExclusiveProfileContainerNamesStillAllowBuildInspection(): void
+    {
+        exec('docker compose version 2>/dev/null', $output, $exitCode);
+        if ($exitCode !== 0) $this->markTestSkipped('docker compose is not available.');
+        mkdir($this->clone . '/whoami/app');
+        file_put_contents($this->clone . '/whoami/app/Dockerfile', "FROM alpine\n");
+        file_put_contents($this->clone . '/whoami/compose.yaml', "services:\n"
+            . "  main:\n    image: alpine\n    container_name: shared-app\n    profiles: [main]\n"
+            . "  latest:\n    image: alpine:latest\n    container_name: shared-app\n    profiles: [latest]\n"
+            . "  build:\n    build: ./app\n    profiles: [build]\n");
+        $builds = $this->stack()->getBuildConfigs();
+        $this->assertSame(['build'], array_keys($builds));
+        $this->assertSame($this->clone . '/whoami/app', $builds['build']['build']['context']);
+    }
+
     public function testBuildConfigFailuresAreNotAnEmptyBuildMap(): void
     {
         $bin = $this->createTempDir();

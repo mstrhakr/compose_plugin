@@ -36,6 +36,7 @@ Each stack supports the following actions:
 | Action | Description |
 |--------|-------------|
 | **Compose Up** | Start all services in the stack |
+| **Pull/Build & Up** | Prepare fresh images, then create/start default services and selected profiles, including services with no existing containers |
 | **Compose Down** | Stop and remove all containers |
 | **Update Stack** | Pull latest images and recreate containers |
 | **Edit Stack** | Open the stack editor |
@@ -84,6 +85,14 @@ For long local builds, select **Run in background** so execution is independent
 of the live terminal connection. Manual updates have no engine command timeout;
 automatic updates apply a 30-minute timeout per Compose command by default.
 A terminal reconnect message alone does not establish that a build timed out.
+
+Closing an action terminal refreshes the affected stack rows without reloading
+the page. Closing is not completion: operation tracking continues independently,
+and refreshes the stack again when its operation lock is released. Dashboard
+action terminals refresh the Compose tile when closed.
+Recreated container IDs are also refreshed for live stack metrics. Containers
+whose health is still `starting` are checked again every five seconds until
+their health settles; closing the terminal does not freeze that first snapshot.
 Check the stack's last command log and operation result before retrying.
 
 #### Changelogs
@@ -145,7 +154,7 @@ Compose Manager provides a Backup & Restore interface under **Settings → Compo
 
 ### Hiding and Filtering Compose Containers
 
-Use **Hide Compose Containers from Docker Page** to hide Compose-managed containers from the native Docker Containers table when **Show Compose in Header Menu** is disabled (inline mode). Use **Hide Compose Containers from Docker Dashboard Tile** to hide them from the native Dashboard tile when **Show Dashboard Tile** is enabled. These display options avoid duplicate entries without changing how containers run; no legacy WebUI patch is required.
+Use **Hide Compose Containers from Docker Page** to hide Compose-managed containers from the native Docker Containers table in either layout: with a separate Compose header menu or with Compose stacks inline on the Docker page. The two settings can be enabled together. Use **Hide Compose Containers from Docker Dashboard Tile** to hide them from the native Dashboard tile when **Show Dashboard Tile** is enabled. The Docker page and Dashboard preferences are independent. These display options avoid duplicate entries without changing how containers run; no legacy WebUI patch is required.
 
 ### Display Options
 

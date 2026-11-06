@@ -15,6 +15,7 @@ UPDATE_ENGINE="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_u
 # ============================================================
 
 test_setup() {
+    setup_mutation_php
     # Skip sleep commands for faster tests
     export MOCK_SKIP_SLEEP=true
     
@@ -138,8 +139,13 @@ test_setup() {
 }
 
 @test "compose.sh combines exit cleanup handlers into one trap" {
-    run grep -F "trap 'release_lock; clear_follow_pid; cleanup_docker_config' EXIT" "$COMPOSE_SCRIPT"
+    run grep -F 'trap cleanup EXIT' "$COMPOSE_SCRIPT"
     assert_success
+    run sed -n '/^cleanup()/,/^}/p' "$COMPOSE_SCRIPT"
+    assert_output_contains 'finish_mutation'
+    assert_output_contains 'release_lock'
+    assert_output_contains 'clear_follow_pid'
+    assert_output_contains 'cleanup_docker_config'
 }
 
 @test "compose.sh follow mode keeps the compose command in foreground" {
@@ -219,7 +225,7 @@ test_setup() {
     # Bases that only exist locally can't be pulled; the update must still rebuild them.
     run cat "$UPDATE_ENGINE"
     assert_success
-    [[ "$output" == *'update_compose build --pull -- "${services[@]}"'*'update_compose build -- "${services[@]}"'$'\n'* ]]
+    [[ "$output" == *'update_compose build --pull "${scope[@]}"'*'update_compose build "${scope[@]}"'$'\n'* ]]
 }
 
 @test "compose.sh update falls back to rebuilding when buildable images can't be pulled" {

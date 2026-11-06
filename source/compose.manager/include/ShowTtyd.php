@@ -9,6 +9,11 @@ if (!empty($_GET['socket'])) {
 }
 $showDone = !empty($_GET['done']);
 $stackPath = isset($_GET['path']) ? trim($_GET['path']) : '';
+$terminalSession = (string) ($_GET['session'] ?? '');
+if ($terminalSession !== '' && preg_match('/^[a-f0-9]{32}$/D', $terminalSession) !== 1) {
+    http_response_code(400);
+    exit('Invalid terminal session identifier.');
+}
 
 $url = "/logterminal/$active_socket/";
 
@@ -93,12 +98,31 @@ $themeSheetJson = json_encode("themes/{$themeFile}.css");
             background: transparent;
             flex-shrink: 0
         }
+
+        button[hidden] {
+            display: none !important
+        }
     </style>
 </head>
 
 <body>
     <iframe id="ttyd-frame" src="<?= $url ?>"></iframe>
-    <?php if ($showDone): ?>
+    <?php if ($terminalSession !== ''): ?>
+        <p id="terminal-status" class="centered" role="status" aria-live="polite">Checking command status...</p>
+        <p class="centered ui-dialog-buttonpane">
+            <span class="ui-dialog-buttonset">
+                <button type="button" id="terminal-background">Continue in background</button>
+                <button type="button" id="terminal-stop" disabled>Stop command</button>
+                <button type="button" id="done-btn" hidden>Done</button>
+            </span>
+        </p>
+        <script>
+            window.composeTerminalSession = <?= json_encode($terminalSession) ?>;
+            window.composeTerminalCommand = <?= json_encode((string) ($_GET['command'] ?? ''), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+            window.composeTerminalBulk = <?= ($_GET['bulk'] ?? '') === '1' ? 'true' : 'false' ?>;
+        </script>
+        <script src="<?php autov('/plugins/compose.manager/javascript/composeTerminal.js'); ?>"></script>
+    <?php elseif ($showDone): ?>
         <p class="centered ui-dialog-buttonpane">
             <span class="ui-dialog-buttonset">
                 <button type="button" id="done-btn">Done</button>
@@ -160,7 +184,7 @@ $themeSheetJson = json_encode("themes/{$themeFile}.css");
         // Defer all DOM/layout work until stylesheets have loaded to avoid
         // "Layout forced before page fully loaded" / flash of unstyled content.
         window.addEventListener('load', function() {
-            <?php if ($showDone): ?>
+            <?php if ($showDone && $terminalSession === ''): ?>
                 document.getElementById('done-btn').addEventListener('click', function() {
                     try {
                         var stackPath = <?= json_encode($stackPath) ?>;
@@ -168,7 +192,8 @@ $themeSheetJson = json_encode("themes/{$themeFile}.css");
                             var xhr = new XMLHttpRequest();
                             xhr.open('POST', '/plugins/compose.manager/include/ComposeUtil.php', true);
                             xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
-                            xhr.send('action=composeDetachFollow&path=' + encodeURIComponent(stackPath));
+                            xhr.send('action=composeDetachFollow&path=' + encodeURIComponent(stackPath) +
+                                '&csrf_token=' + encodeURIComponent(top.csrf_token));
                         }
                     } catch (e) {}
                     try {

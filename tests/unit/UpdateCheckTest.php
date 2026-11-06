@@ -10,11 +10,31 @@ require_once '/usr/local/emhttp/plugins/compose.manager/include/UpdateCheck.php'
 
 class UpdateCheckTest extends TestCase
 {
+    private string|false $originalNativeCache;
+    private string $nativeCacheBytes = "{\n  \"library/postgres:18\": {\"local\":\"native-local\",\"remote\":\"native-remote\",\"status\":\"false\"},\n  \"unrelated:latest\": {\"status\":\"true\"}\n}\n";
+
     protected function setUp(): void
     {
         parent::setUp();
         @unlink(COMPOSE_CREDENTIAL_VAULT_FILE);
         @unlink(COMPOSE_CREDENTIAL_KEY_FILE);
+        $this->originalNativeCache = is_file(UNRAID_UPDATE_STATUS_FILE)
+            ? file_get_contents(UNRAID_UPDATE_STATUS_FILE) : false;
+        file_put_contents(UNRAID_UPDATE_STATUS_FILE, $this->nativeCacheBytes);
+    }
+
+    protected function tearDown(): void
+    {
+        try {
+            $this->assertSame($this->nativeCacheBytes, file_get_contents(UNRAID_UPDATE_STATUS_FILE), 'Checks must leave native Docker update cache bytes unchanged.');
+        } finally {
+            if ($this->originalNativeCache === false) {
+                @unlink(UNRAID_UPDATE_STATUS_FILE);
+            } else {
+                file_put_contents(UNRAID_UPDATE_STATUS_FILE, $this->originalNativeCache);
+            }
+            parent::tearDown();
+        }
     }
 
     public function testAttachedCredentialsAreScopedToTheirRegistryAndChecker(): void
@@ -34,17 +54,17 @@ class UpdateCheckTest extends TestCase
         ]);
         $resolve = new \ReflectionMethod(\ComposeUpdateCheck::class, 'resolveRegistryAuth');
         foreach ([$first, $second, $first] as $credential) {
-            $auth = $resolve->invoke(new \ComposeUpdateCheck(null, $credential['id']), 'ghcr.io/org/private:latest');
+            $auth = $resolve->invoke(new \ComposeUpdateCheck($credential['id']), 'ghcr.io/org/private:latest');
             $this->assertSame(strtolower($credential['name']), $auth['username']);
             $this->assertSame(strtolower($credential['name']) . '-test-token', $auth['password']);
         }
-        $checker = new \ComposeUpdateCheck(null, $first['id']);
+        $checker = new \ComposeUpdateCheck($first['id']);
         $this->assertSame(
             $resolve->invoke(new \ComposeUpdateCheck(), 'quay.io/org/public:latest'),
             $resolve->invoke($checker, 'quay.io/org/public:latest')
         );
         foreach (['postgres:18', 'docker.io/library/postgres:18'] as $image) {
-            $auth = $resolve->invoke(new \ComposeUpdateCheck(null, $hub['id']), $image);
+            $auth = $resolve->invoke(new \ComposeUpdateCheck($hub['id']), $image);
             $this->assertSame('hub', $auth['username']);
             $this->assertSame('hub-test-token', $auth['password']);
         }
@@ -118,7 +138,7 @@ class UpdateCheckTest extends TestCase
                 'name' => 'Private registry', 'provider' => 'github', 'registry' => 'ghcr.io',
                 'username' => 'registry-user', 'secret' => 'fixture-token',
             ]);
-            $checker = new class($directory . '/status.json', $saved['id']) extends \ComposeUpdateCheck {
+            $checker = new class($saved['id']) extends \ComposeUpdateCheck {
                 public string $endpoint;
                 protected function resolveRegistryAuth(string $image): array
                 {
@@ -134,8 +154,7 @@ class UpdateCheckTest extends TestCase
             $this->assertSame($reject ? 'unknown' : 'update-available', $results['private-app']['status']);
             $this->assertSame(!$reject, $results['private-app']['hasUpdate']);
             $this->assertSame($reject ? '' : 'sha256:new', $results['private-app']['remote']);
-            $cached = json_decode((string) file_get_contents($directory . '/status.json'), true);
-            $this->assertSame($reject ? '' : 'sha256:new', $cached['ghcr.io/org/private:latest']['configDigest']);
+            $this->assertSame($this->nativeCacheBytes, file_get_contents(UNRAID_UPDATE_STATUS_FILE));
             $requestCount = count(file($directory . '/requests'));
             \DockerClient::setMockResponse('/containers/private-app/json', ['Image' => 'sha256:new']);
             for ($stack = 0; $stack < 10; $stack++) {
@@ -144,11 +163,11 @@ class UpdateCheckTest extends TestCase
             }
             $this->assertCount($requestCount, file($directory . '/requests'), 'Remote evidence is fetched once per checker.');
             $class = get_class($checker);
-            $isolated = new $class($directory . '/isolated.json', 'missing');
+            $isolated = new $class('missing');
             $isolated->endpoint = $checker->endpoint;
             $isolatedResult = $isolated->checkContainers([['Name' => 'private-app', 'Image' => 'ghcr.io/org/private:latest']]);
             $this->assertSame('unknown', $isolatedResult['private-app']['status'], 'A different credential cannot reuse authenticated results.');
-            $this->assertStringNotContainsString('fixture-token', json_encode($cached));
+            $this->assertStringNotContainsString('fixture-token', file_get_contents(UNRAID_UPDATE_STATUS_FILE));
             $this->assertStringNotContainsString('fixture-token', implode("\n", $GLOBALS['composeLoggerMessages'] ?? []));
         } finally {
             proc_terminate($process);
@@ -160,10 +179,23 @@ class UpdateCheckTest extends TestCase
 
     public function testMissingAttachedCredentialFailsExplicitlyWithoutAnonymousFallback(): void
     {
-        $checker = new \ComposeUpdateCheck($this->createTempDir() . '/status.json', 'missing');
+        $checker = new \ComposeUpdateCheck('missing');
         $result = $checker->checkMany(['ghcr.io/org/private:latest'])['ghcr.io/org/private:latest'];
         $this->assertSame('unknown', $result['status']);
         $this->assertContains('Unable to load attached registry credential for update check', $GLOBALS['composeLoggerMessages']);
+    }
+
+    public function testCheckDoesNotCreateAMissingNativeCache(): void
+    {
+        unlink(UNRAID_UPDATE_STATUS_FILE);
+        try {
+            $checker = new \ComposeUpdateCheck('missing');
+            $result = $checker->checkMany(['ghcr.io/org/private:latest'])['ghcr.io/org/private:latest'];
+            $this->assertSame('unknown', $result['status']);
+            $this->assertFileDoesNotExist(UNRAID_UPDATE_STATUS_FILE);
+        } finally {
+            file_put_contents(UNRAID_UPDATE_STATUS_FILE, $this->nativeCacheBytes);
+        }
     }
 
     public function testGitCredentialCannotBeUsedAsARegistryLogin(): void
@@ -172,7 +204,7 @@ class UpdateCheckTest extends TestCase
             'name' => 'Repository only', 'provider' => 'git', 'registry' => 'ghcr.io',
             'username' => 'user', 'secret' => 'repository-only-token',
         ]);
-        $checker = new \ComposeUpdateCheck($this->createTempDir() . '/status.json', $credential['id']);
+        $checker = new \ComposeUpdateCheck($credential['id']);
         $result = $checker->checkMany(['ghcr.io/org/private:latest'])['ghcr.io/org/private:latest'];
         $this->assertSame('unknown', $result['status']);
         $this->assertContains('Unable to load attached registry credential for update check', $GLOBALS['composeLoggerMessages']);
@@ -293,7 +325,7 @@ class UpdateCheckTest extends TestCase
         foreach ([[null, 'sha256:remote'], ['sha256:local', null]] as [$local, $remote]) {
             $result = $summarize->invoke($checker, $local, $remote);
             $this->assertSame('unknown', $result['result']['status']);
-            $this->assertSame('undef', $result['statusRaw']);
+            $this->assertFalse($result['result']['hasUpdate']);
         }
     }
 
@@ -527,7 +559,7 @@ class UpdateCheckTest extends TestCase
         $this->assertSame('arm64', $select->invoke($checker, $manifests, 'linux/arm64'));
     }
 
-    public function testPlatformFlowsThroughBaseResolutionRegistrySelectionAndBothCaches(): void
+    public function testPlatformFlowsThroughBaseResolutionRegistrySelectionAndRequestCaches(): void
     {
         $directory = $this->createTempDir();
         mkdir($directory . '/base/manifests', 0755, true);
@@ -547,7 +579,7 @@ class UpdateCheckTest extends TestCase
             ]));
         }
         file_put_contents($directory . '/base/manifests/latest', json_encode(['manifests' => $manifests]));
-        $checker = new class($directory . '/status.json') extends \ComposeUpdateCheck {
+        $checker = new class extends \ComposeUpdateCheck {
             public string $endpoint;
             protected function resolveRegistryAuth(string $image): array
             {
@@ -582,12 +614,7 @@ class UpdateCheckTest extends TestCase
             $this->assertSame('sha256:config-' . $arch, $result['library/base:latest']['remote']);
         }
         $this->assertSame('', $checker->checkMany(['base:latest'], 'linux/arm/v7')['library/base:latest']['remote']);
-        $host = new \ReflectionMethod(\ComposeUpdateCheck::class, 'hostPlatform');
-        $hostArch = explode('/', $host->invoke(null))[1];
-        if (in_array($hostArch, ['amd64', 'arm64'], true)) {
-            $cached = json_decode((string) file_get_contents($directory . '/status.json'), true);
-            $this->assertSame('sha256:config-' . $hostArch, $cached['library/base:latest']['remote']);
-        }
+        $this->assertSame($this->nativeCacheBytes, file_get_contents(UNRAID_UPDATE_STATUS_FILE));
 
         $unknown = $checker->checkContainers([$rows[0]], [
             'amd64' => ['build' => ['dockerfile_inline' => 'FROM --platform=${UNRESOLVED} base:latest'], 'image' => null],
@@ -619,7 +646,7 @@ class UpdateCheckTest extends TestCase
             'config' => ['digest' => 'sha256:config-amd64'],
         ]));
         $class = get_class($checker);
-        $single = new $class($directory . '/single-status.json');
+        $single = new $class();
         $single->endpoint = $checker->endpoint;
         $this->assertSame('', $single->checkMany(['base:latest'], 'linux/arm64')['library/base:latest']['remote']);
         $this->assertSame(

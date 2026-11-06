@@ -37,7 +37,7 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 if [[ -z "${COMPOSE_VERSION:-}" ]]; then
-  COMPOSE_VERSION="5.1.2"
+  COMPOSE_VERSION="5.7.0"
 fi
 
 in_container=false
