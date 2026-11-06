@@ -231,7 +231,9 @@ test('scoped image checks acknowledge only the captured pending generation', asy
 });
 
 test('active scoped deployment defers image checks and invalidates earlier acknowledgements', async ({ page, stack }) => {
-  await stack.save(yaml.replace('test: ["CMD", "true"]', 'test: ["CMD", "false"]'));
+  await stack.save(yaml
+    .replace('test: ["CMD", "true"]', 'test: ["CMD-SHELL", "sleep 10; true"]')
+    .replace('timeout: 1s', 'timeout: 15s'));
   const mark = await postForm(page, exec, { action: 'markStackForRecheck', stacks: JSON.stringify([stack.project]) });
   expect(mark.json?.result, mark.body).toBe('success');
   const before = await postForm(page, exec, { action: 'checkStackUpdates', script: stack.project });
@@ -258,7 +260,15 @@ test('active scoped deployment defers image checks and invalidates earlier ackno
     return result.json?.result;
   }, { timeout: 20_000 }).toBe('superseded');
   expect(await acknowledge(old)).toContain(stack.project);
-  await waitForOperation(page, stack.project, deployment, 'nonzero');
+  try {
+    await waitForOperation(page, stack.project, deployment);
+  } finally {
+    const log = await postForm(page, exec, { action: 'getLastCmdLog', script: stack.project });
+    expect(log.json?.result, log.body).toBe('success');
+    await test.info().attach('scoped-deployment-command', {
+      body: String(log.json?.log || ''), contentType: 'text/plain',
+    });
+  }
   expect(await acknowledge(old)).toContain(stack.project);
   const fresh = await postForm(page, exec, { action: 'checkStackUpdates', script: stack.project });
   expect(fresh.json?.result, fresh.body).toBe('success');
