@@ -9,6 +9,8 @@ operations=("$@")
 COMPOSE_TERMINAL_CANCEL_FILE="$receipt.cancel"
 export COMPOSE_TERMINAL_CANCEL_FILE
 cancelled=false
+declare -A owned_processes=()
+declare -A pty_leaders=()
 
 # Invoked only during cancellation.
 # shellcheck disable=SC2317
@@ -16,15 +18,43 @@ session_members() {
     members=()
     local file pid stat rest
     local -a fields
+    local -A parents=() starts=() sessions=()
+    pty_leaders=()
     for file in /proc/[0-9]*/stat; do
         read -r stat < "$file" 2>/dev/null || continue
         pid=${stat%% *}
         rest=${stat##*) }
         read -r -a fields <<< "$rest"
-        if [ "$pid" != "$$" ] && [ "${fields[3]}" = "$$" ] &&
-            [ "${fields[0]}" != Z ] && [ "${fields[0]}" != X ]; then
-            members+=("$pid")
+        if [ "${fields[0]}" = Z ] || [ "${fields[0]}" = X ]; then continue; fi
+        parents[$pid]=${fields[1]}
+        starts[$pid]=${fields[19]}
+        sessions[$pid]=${fields[3]}
+    done
+    for pid in "${!sessions[@]}"; do
+        if [ "${sessions[$pid]}" != "$$" ] && [ "${sessions[$pid]}" != "$pid" ] &&
+            [ -n "${starts[${sessions[$pid]}]:-}" ]; then
+            pty_leaders[${sessions[$pid]}]=${starts[${sessions[$pid]}]}
         fi
+    done
+    # PTY capture creates another session. Retain descendant identities across
+    # reparenting so cancellation still drains them after their parent exits.
+    local changed=true
+    while [ "$changed" = true ]; do
+        changed=false
+        for pid in "${!parents[@]}"; do
+            [ "$pid" != "$$" ] || continue
+            if [ "${sessions[$pid]}" = "$$" ] || [ "${parents[$pid]}" = "$$" ] ||
+                { [ -n "${owned_processes[${parents[$pid]}]:-}" ] &&
+                    [ "${owned_processes[${parents[$pid]}]}" = "${starts[${parents[$pid]}]:-}" ]; }; then
+                if [ -z "${owned_processes[$pid]:-}" ]; then
+                    owned_processes[$pid]=${starts[$pid]}
+                    changed=true
+                fi
+            fi
+        done
+    done
+    for pid in "${!owned_processes[@]}"; do
+        if [ "${owned_processes[$pid]}" = "${starts[$pid]:-}" ]; then members+=("$pid"); fi
     done
 }
 
@@ -57,14 +87,18 @@ stop() {
         echo "Unable to register terminal cancellation" >&2
         exit 1
     fi
-    local pid
+    local pid process_name
     local -A signalled=()
     # Other process groups (for example GNU timeout) can belong to this session.
-    kill -TERM -- "-$$"
+    session_members
     for ((attempt=0; ; attempt++)); do
         session_members
         if [ "${#members[@]}" -eq 0 ]; then break; fi
         for pid in "${members[@]}"; do
+            # Let the PTY bridge drain naturally; killing it sends HUP to the
+            # command before its TERM cleanup can finish.
+            if read -r process_name < "/proc/$pid/comm" 2>/dev/null && [ "$process_name" = script ]; then continue; fi
+            if [ "${pty_leaders[$pid]:-}" = "${owned_processes[$pid]}" ]; then continue; fi
             if [ -z "${signalled[$pid]:-}" ]; then
                 kill -TERM -- "$pid" 2>/dev/null || true
                 signalled[$pid]=true
@@ -91,7 +125,7 @@ read -r -a fields <<< "$rest"
 printf '{"state":"running","pid":%s,"started":"%s"}\n' "$$" "${fields[19]}" > "$receipt.$$" &&
     mv -f "$receipt.$$" "$receipt" || exit 1
 # No interactive stdin is promised for managed compose actions.
-(bash -c "$command" 2>&1 |
+(TERM="${TERM:-xterm-256color}" script -qefc "$command" /dev/null < /dev/null |
     (trap '' TERM; exec php "$(dirname "$0")/compose_terminal_output.php" "$receipt.log" "$log")) &
 child=$!
 wait "$child"

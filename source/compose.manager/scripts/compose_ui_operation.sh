@@ -18,6 +18,9 @@ finish() {
 COMPOSE_UI_OPERATION_FILE="$1"
 export COMPOSE_UI_OPERATION_FILE
 shift
+if [ -n "${COMPOSE_TERMINAL_CANCEL_FILE:-}" ] && [ -f "$COMPOSE_TERMINAL_CANCEL_FILE" ]; then
+    exit 143
+fi
 temporary="${COMPOSE_UI_OPERATION_FILE}.$$"
 printf '{"state":"running"}\n' > "$temporary" &&
     mv -f "$temporary" "$COMPOSE_UI_OPERATION_FILE" || exit 1

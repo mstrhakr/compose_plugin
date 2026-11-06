@@ -12,7 +12,7 @@ Tracked finite actions (single stack, Git deploy, and bulk) run in an owned
 process session independently of ttyd. The terminal is an output viewer:
 **Continue in background** closes only that viewer; closing the window has the
 same non-cancelling behavior. **Stop command** asks for confirmation and signals
-only that session's process group, not the stack's containers. Already-applied
+only owned command processes, not the stack's containers. Already-applied
 changes are not rolled back. Stop also cancels undispatched bulk receipts.
 The cancellation confirmation describes the dispatched command's possible
 effects (detached Up, Down, Stop, Pull, Update, or Git deploy), including partial
@@ -26,7 +26,10 @@ their existing behavior.
 Managed viewers send the parent page's CSRF token for status and stop requests.
 Cancellation is owned by the supervisor: receipts remain running until live
 members of its session have exited, including separate process groups created
-by GNU `timeout`, with forced termination after a 10-second grace period.
+by GNU `timeout` and descendant PTY sessions, with forced termination after a
+10-second grace period. Commands have a pseudo-terminal even before a browser
+connects, preserving Compose colours and in-place progress. The capture bridge
+drains after command cleanup rather than sending an early hangup to its children.
 The live output spool is capped at 1 MiB and explicitly marks omitted earlier
 output; a single stack's command log retains the complete output. A viewer that
 never connects releases its listener and socket after 30 seconds. Closing an

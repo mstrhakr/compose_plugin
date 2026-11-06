@@ -68,8 +68,16 @@ class TerminalSessionTest extends TestCase
         $this->assertSame('running', \composeReadTerminalSession($this->id)['state']);
         $this->waitFor(fn() => \composeReadTerminalSession($this->id)['state'] === 'completed');
         $this->assertSame(7, \composeReadTerminalSession($this->id)['exitCode']);
-        $this->assertSame("started\nfinished\n", file_get_contents($this->directory . '/last_cmd.log'));
-        $this->assertSame("started\nfinished\n", file_get_contents($this->file . '.log'));
+        $this->assertSame("started\r\nfinished\r\n", file_get_contents($this->directory . '/last_cmd.log'));
+        $this->assertSame("started\r\nfinished\r\n", file_get_contents($this->file . '.log'));
+    }
+
+    public function testManagedCommandHasTerminalOutputAndPreservesAnsiProgress(): void
+    {
+        $this->launch('test -t 1 && test -t 2 || exit 9; printf "\\033[32mprogress\\033[0m\\rfinished\\n"');
+        $this->waitFor(fn() => \composeReadTerminalSession($this->id)['state'] === 'completed');
+        $this->assertSame(0, \composeReadTerminalSession($this->id)['exitCode']);
+        $this->assertSame("\033[32mprogress\033[0m\rfinished\r\n", file_get_contents($this->file . '.log'));
     }
 
     public function testStopCancelsRunningAndQueuedBulkReceiptsWithoutRunningNextCommand(): void
@@ -180,7 +188,7 @@ class TerminalSessionTest extends TestCase
         $stat = file_get_contents("/proc/$pid/stat");
         $fields = explode(' ', substr($stat, strrpos($stat, ')') + 2));
         $this->assertNotSame((string) $session['pid'], $fields[2], 'GNU timeout must create a separate process group.');
-        $this->assertSame((string) $session['pid'], $fields[3]);
+        $this->assertNotSame((string) $session['pid'], $fields[3], 'PTY capture owns a separate session that cancellation must also drain.');
         \composeStopTerminalSession($this->id);
         usleep(100000);
         $this->assertSame('running', \composeReadTerminalSession($this->id)['state']);
