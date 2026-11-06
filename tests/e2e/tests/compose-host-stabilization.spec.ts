@@ -1,7 +1,8 @@
 import { expect, test as base, type Page, type Route } from '@playwright/test';
+import { execFileSync } from 'node:child_process';
 import {
   buildStackName, composeDownAndWait, deleteStackWithRetries, postForm,
-  type PostFormResult, waitForOperation,
+  type PostFormResult, waitForOperation, waitForStackUnlock,
 } from './helpers/composeE2eHelpers';
 
 const exec = '/plugins/compose.manager/include/Exec.php';
@@ -10,6 +11,58 @@ const composePath = process.env.E2E_COMPOSE_PATH || '/Docker/Compose';
 const enabled = !!process.env.E2E_BASE_URL
   && ['1', 'true', 'yes'].includes((process.env.E2E_ENABLE_MUTATION_TESTS || '').toLowerCase())
   && process.env.E2E_HOST_TEST_ACK === new URL(process.env.E2E_BASE_URL!).origin;
+
+function hostCommand(command: string, input?: string): string {
+  const target = process.env.E2E_HOST_SSH;
+  if (!target) throw new Error('E2E_HOST_SSH is required for scoped metadata and wrapper host tests.');
+  return execFileSync('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', target, command], {
+    input, encoding: 'utf8', timeout: 30_000,
+  });
+}
+
+type Metadata = Record<string, string | null>;
+function fixtureMetadata(stack: Pick<HostStack, 'project' | 'path'>, writes: Metadata = {}, lock = false): Metadata {
+  expect(stack.project).toMatch(/^pw-host-[a-f0-9]{12}$/);
+  expect(stack.path.endsWith('/' + stack.project)).toBe(true);
+  const encoded = Buffer.from(JSON.stringify({ ...stack, writes, lock })).toString('base64');
+  return JSON.parse(hostCommand('php', `<?php
+    $data = json_decode(base64_decode('${encoded}'), true, 512, JSON_THROW_ON_ERROR);
+    $path = $data['path'];
+    if (basename($path) !== $data['project'] || is_link($path) || realpath($path) !== $path
+        || trim(file_get_contents($path . '/project_name')) !== $data['project']) {
+        throw new RuntimeException('Refusing metadata edits outside the exact generated stack.');
+    }
+    $allowed = ['project_identity.json', 'envpath', 'compose.override.yaml'];
+    $original = [];
+    foreach ($allowed as $name) {
+        $file = $path . '/' . $name;
+        if (is_link($file) || (file_exists($file) && !is_file($file))) {
+            throw new RuntimeException('Unexpected fixture metadata type.');
+        }
+        $original[$name] = is_file($file) ? file_get_contents($file) : null;
+    }
+    foreach ($data['writes'] as $name => $contents) {
+        if (!in_array($name, $allowed, true)) throw new RuntimeException('Unapproved metadata file.');
+        $file = $path . '/' . $name;
+        if ($contents === null) {
+            if (is_file($file) && !unlink($file)) throw new RuntimeException('Fixture removal failed.');
+        } elseif (file_put_contents($file, $contents) !== strlen($contents)) {
+            throw new RuntimeException('Fixture write failed.');
+        }
+    }
+    $lock = $path . '/project_identity.lock';
+    if ($data['lock']) {
+        if (is_file($lock) && !is_link($lock) && file_get_contents($lock) === '') {
+            if (!unlink($lock)) throw new RuntimeException('Cannot replace the inactive fixture identity lock.');
+        }
+        if (file_exists($lock) && !is_dir($lock)) throw new RuntimeException('Unexpected existing identity lock.');
+        if (!is_dir($lock) && !mkdir($lock)) throw new RuntimeException('Cannot induce fixture lock failure.');
+    } elseif (is_dir($lock) && !rmdir($lock)) {
+        throw new RuntimeException('Cannot remove induced fixture lock failure.');
+    }
+    echo json_encode($original, JSON_THROW_ON_ERROR);
+  `)) as Metadata;
+}
 
 type Snapshot = { service?: string; name?: string; id?: string; state?: string; health?: string };
 interface UpdateCheckWindow extends Window {
@@ -80,6 +133,7 @@ const test = base.extend<{ stack: HostStack }>({
         'getStackSettings', 'checkStackLock', 'getPendingRechecks',
         'getPendingRecheckStacks', 'getPersistentContainerCache', 'getComposeLoadSnapshot',
         'getDescription', 'getGitStackStatus', 'getYml', 'getEnvPath', 'getEnv', 'getOverride',
+        'getProjectIdentities',
       ]);
       if (request.method() === 'GET' || readOnly.has(action)) {
         await route.continue();
@@ -143,6 +197,7 @@ const test = base.extend<{ stack: HostStack }>({
       const stack: HostStack = {
         project, path,
         async save(content) {
+          await waitForStackUnlock(page, project);
           const result = await postForm(page, exec, { action: 'saveYml', script: project, scriptContents: content });
           expect(result.response.ok(), result.body).toBeTruthy();
           expect(result.body.toLowerCase()).toContain('saved');
@@ -200,6 +255,114 @@ async function start(page: Page, stack: HostStack, extra: Record<string, string>
   const response = await stack.action('composeUp', extra);
   await waitForOperation(page, stack.project, response);
 }
+
+test('global wrapper list and ps succeed without a project name', async ({ stack }) => {
+  expect(stack.project).toMatch(/^pw-host-/);
+  for (const command of ['list', 'ps']) {
+    const output = hostCommand(`bash /usr/local/emhttp/plugins/compose.manager/scripts/compose.sh -c ${command}`);
+    expect(output).not.toContain('Invalid resolved project name');
+    if (command === 'list') expect(Array.isArray(JSON.parse(output))).toBe(true);
+    else output.trim().split('\n').filter(Boolean).forEach(line => expect(JSON.parse(line)).toHaveProperty('ID'));
+    await test.info().attach('global-' + command, { body: output, contentType: 'text/plain' });
+  }
+});
+
+test('Maintenance reports live identities without changing pins or showing settings apply controls', async ({ page, stack }) => {
+  const before = fixtureMetadata(stack);
+  await page.goto('/Settings/compose.manager.settings', { waitUntil: 'domcontentloaded' });
+  await page.locator('.compose-tab[data-tab="maintenance"]').click();
+  await expect(page.locator('#global-settings-actions')).toBeHidden();
+  await expect(page.locator('#compose-tab-maintenance input[onclick="clearAllIconCache()"]')).toBeVisible();
+  await expect(page.locator('#compose-tab-maintenance input[onclick="clearUpdateCache()"]')).toBeVisible();
+  await page.locator('#compose-identity-check').click();
+  const row = page.locator('#compose-identity-report tbody tr').filter({ has: page.getByText(stack.project, { exact: true }) });
+  await expect(row).toHaveCount(1);
+  await expect(row).toContainText('No runtime evidence');
+  await expect(page.locator('#compose-identity-check')).toBeEnabled();
+  expect(fixtureMetadata(stack)).toEqual(before);
+});
+
+test('override saves register frozen inputs and registration failures restore file and revision', async ({ page, stack }) => {
+  const original = fixtureMetadata(stack);
+  const receipt = JSON.stringify({
+    version: 1, projectName: stack.project, source: 'new', origin: 'plus',
+    composeFiles: [stack.path + '/compose.yaml'], composeFilesSource: 'runtime-labels',
+  });
+  try {
+    fixtureMetadata(stack, { 'project_identity.json': receipt, 'compose.override.yaml': null });
+    const content = 'services:\n  app:\n    labels:\n      compose.host-test: "registered"\n';
+    const save = await postForm(page, exec, { action: 'saveOverride', script: stack.project, scriptContents: content });
+    expect(save.response.ok(), save.body).toBeTruthy();
+    expect(save.body).toContain('saved');
+    const loaded = await postForm(page, exec, { action: 'getOverride', script: stack.project });
+    expect(loaded.json?.content).toBe(content);
+    const registered = fixtureMetadata(stack);
+    expect(JSON.parse(registered['project_identity.json']!).composeFiles).toContain(stack.path + '/compose.override.yaml');
+    const config = hostCommand('php', `<?php
+      require '/usr/local/emhttp/plugins/compose.manager/include/Util.php';
+      $stack = StackInfo::fromProject(${JSON.stringify(stack.path.slice(0, -stack.project.length - 1))}, '${stack.project}');
+      $args = $stack->buildComposeArgs();
+      if (!chdir($args['projectDirectory'])) throw new RuntimeException('Fixture working directory unavailable.');
+      $command = 'docker compose -p ' . escapeshellarg($args['projectName']);
+      foreach ($args['filePaths'] as $file) $command .= ' -f ' . escapeshellarg($file);
+      exec($command . ' config --format json', $output, $status);
+      if ($status !== 0) throw new RuntimeException('Fixture effective config failed.');
+      echo implode("\\n", $output);
+    `);
+    expect(JSON.parse(config).services.app.labels['compose.host-test']).toBe('registered');
+    const revision = String(loaded.json?.revision);
+    expect(revision).toMatch(/^[a-f0-9]{64}$/);
+    fixtureMetadata(stack, {}, true);
+    const failed = await postForm(page, exec, { action: 'saveOverride', script: stack.project,
+      scriptContents: content.replace('registered', 'must-not-save'), expectedRevision: revision });
+    expect(failed.json?.result, failed.body).toBe('error');
+    expect(failed.json?.message).toContain('registration');
+    const unchanged = await postForm(page, exec, { action: 'getOverride', script: stack.project });
+    expect(unchanged.json?.content).toBe(content);
+    expect(unchanged.json?.revision).toBe(revision);
+    expect(fixtureMetadata(stack, {}, true)).toEqual(registered);
+  } finally {
+    fixtureMetadata(stack, original);
+  }
+});
+
+test('missing imported env refuses single dispatch and isolates mixed bulk dispatch', async ({ page, stack }) => {
+  const original = fixtureMetadata(stack);
+  const name = buildStackName('pw-host');
+  let healthy: Pick<HostStack, 'project' | 'path'> | undefined;
+  try {
+    const created = await postForm(page, exec, { action: 'addStack', stackName: name });
+    expect(created.json?.result, created.body).toBe('success');
+    expect(created.json?.project).toBe(name);
+    const settings = await postForm(page, exec, { action: 'getStackSettings', script: name });
+    healthy = { project: name, path: String(settings.json?.projectPath) };
+    expect(healthy.path.endsWith('/' + name)).toBe(true);
+    const saved = await postForm(page, exec, { action: 'saveYml', script: name, scriptContents: yaml });
+    expect(saved.body).toContain('saved');
+    fixtureMetadata(stack, {
+      'envpath': stack.path + '/deliberately-missing.env',
+      'project_identity.json': JSON.stringify({ version: 1, projectName: stack.project,
+        source: 'owner', origin: 'dcflachs', composeFiles: [stack.path + '/compose.yaml'],
+        composeFilesSource: 'runtime-labels' }),
+    });
+    const single = await stack.action('composeUp');
+    expect(single.json?.error, single.body).toBe('configuration');
+    expect(single.json?.message).toContain('env file is unavailable');
+    expect(single.json).not.toHaveProperty('operations');
+    const dispatch = await postForm(page, util, { action: 'composeUpMultiple',
+      paths: JSON.stringify([stack.path, healthy.path]), background: '1', trackOperation: '1' });
+    expect(dispatch.json?.failures).toHaveProperty(stack.project);
+    expect(dispatch.json?.operations).not.toHaveProperty(stack.project);
+    await waitForOperation(page, healthy.project, dispatch);
+    expect(hostCommand(`docker ps -aq --filter label=com.docker.compose.project=${stack.project}`).trim()).toBe('');
+  } finally {
+    fixtureMetadata(stack, original);
+    if (healthy) {
+      expect(await composeDownAndWait(page, healthy.project, healthy.path)).toBeNull();
+      expect(await deleteStackWithRetries(page, healthy.project)).toBeNull();
+    }
+  }
+});
 
 test('scoped image checks acknowledge only the captured pending generation', async ({ page, stack }) => {
   const mark = async () => {

@@ -8,6 +8,9 @@ if (!baseURL || !['1', 'true', 'yes'].includes((process.env.E2E_ENABLE_MUTATION_
 if (process.env.E2E_HOST_TEST_ACK !== new URL(baseURL).origin) {
   throw new Error('Set E2E_HOST_TEST_ACK to the exact server origin to acknowledge isolated host mutations.');
 }
+if (!process.env.E2E_HOST_SSH) {
+  throw new Error('Host validation requires E2E_HOST_SSH for scoped fixture metadata and read-only wrapper checks.');
+}
 
 export default defineConfig(config, {
   testMatch: '**/compose-host-stabilization.spec.ts',

@@ -24,6 +24,7 @@ cd tests/e2e
 E2E_BASE_URL="https://your-unraid-host" \
 E2E_HOST_TEST_ACK="https://your-unraid-host" \
 E2E_ENABLE_MUTATION_TESTS=1 \
+E2E_HOST_SSH="root@your-unraid-host" \
 E2E_STORAGE_STATE=".auth/storage-state.json" \
 E2E_COMPOSE_PATH="/Docker/Compose" \
 npm run test:host
@@ -34,8 +35,9 @@ of the candidate being validated. Do not use the deploying wrapper without
 `-SkipDeploy` on a shared server. Prefer Chromium first: each additional browser
 repeats real mutations.
 
-The gate creates one `pw-host-<random>` stack at a time, verifies the returned
-identity/path, and targets only that stack. Fixtures use no published ports,
+The gate creates generated `pw-host-<random>` stacks, verifies each returned
+identity/path, and targets only those stacks. The mixed-input dispatch case uses
+two disposable stacks. Fixtures use no published ports,
 host paths, external networks, privileged mode, restart policies, or named
 volumes; running services have memory/CPU/PID limits. They use Alpine and small
 inline builds. Image downloads and build cache/local test images may remain;
@@ -64,6 +66,18 @@ No global preferences, autostart, scheduled updates, existing stacks, or
 publisher processes are changed. Cleanup waits for the exact Down receipt and
 container removal before deleting metadata; failures are explicit and leave
 evidence rather than attempting broader cleanup.
+
+The review regression cases require `E2E_HOST_SSH` with noninteractive SSH access.
+They run the installed wrapper's global `list`/`ps` read-only commands, inspect
+the Maintenance report without changing identities, verify a saved override in
+effective Compose configuration, and induce registration/missing-env failures
+only in generated fixture metadata. Original fixture metadata is restored before
+cleanup. The registration test checks unchanged file contents, revision and
+receipt; mixed bulk dispatch checks a healthy fixture receipt and no deployment
+of the bad-input fixture. No cache-clear control is clicked.
+Normal fixture saves wait for operation-lock release, independently of receipt
+completion. The explicit busy-save regression still asserts rejection while an
+operation is active.
 
 `E2E_DASHBOARD_PATH` optionally selects the Dashboard URL (default `/Dashboard`).
 The Dashboard Compose tile must be enabled already; tests do not alter it.
