@@ -38,6 +38,9 @@ Missing configured inputs return a single-stack configuration error or an explic
 bulk skip rather than aborting dispatch for healthy stacks. Background bulk skips
 are shown as warnings; foreground bulk skips appear in the terminal output.
 
+The wrapper's global read-only `list` and `ps` commands do not require a project
+name. Stack-scoped commands still reject missing or invalid resolved names.
+
 The archived indirect wrapper used filesystem enumeration order. Runtime labels now preserve its historical ordered inputs when available. A live multi-file stack with missing/contradictory order evidence is blocked. Without any labelled resources, current archived-style discovery is pinned once; lost historical configuration cannot be reconstructed from absent evidence. When only volumes remain and multiple files could have contributed, restore the historical inputs/evidence before attempting migration.
 
 Back up configuration/project metadata before installing a test build. The per-pin backup is not a backup of application data, all stack metadata or external Compose directories. Do not delete conflicting Docker resources merely to make migration proceed.

@@ -338,7 +338,7 @@ if [ -n "$project_directory" ]; then
   compose_base+=(--project-directory "$project_directory")
 fi
 
-if ! validate_project_name "$name"; then
+if [[ "$command" != list && "$command" != ps ]] && ! validate_project_name "$name"; then
   log_msg "ERROR" "Invalid resolved project name"
   exit 1
 fi

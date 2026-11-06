@@ -115,6 +115,24 @@ test_setup() {
     assert_logged "Invalid resolved project name"
 }
 
+@test "global list and ps commands do not require a project identity" {
+    export -f _mock_docker_compose
+    export MOCK_DOCKER_COMPOSE_EXIT
+    run bash "$COMPOSE_SCRIPT" -c list
+    assert_success
+    assert_mock_called "docker" "compose ls -a --format json"
+
+    run bash "$COMPOSE_SCRIPT" -c ps
+    assert_success
+    assert_mock_called "docker" "ps -a --filter label=com.docker.compose.project --format json"
+}
+
+@test "stack scoped commands still require a project identity" {
+    run bash "$COMPOSE_SCRIPT" -c stop
+    assert_failure
+    assert_logged "Invalid resolved project name"
+}
+
 # ============================================================
 # --ignore-buildable Flag Tests
 # ============================================================
