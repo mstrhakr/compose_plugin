@@ -108,6 +108,28 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         --compose-settings-anchor: 35%;
     }
 
+    #compose-tab-maintenance .backup-section {
+        margin-bottom: 20px;
+    }
+
+    #compose-identity-report {
+        margin-top: 16px;
+        overflow-x: auto;
+    }
+
+    #compose-identity-report table {
+        width: 100%;
+    }
+
+    #compose-identity-report td {
+        vertical-align: top;
+        white-space: normal;
+    }
+
+    #compose-identity-report button {
+        margin: 4px 8px 4px 0;
+    }
+
     /* Button styling */
     #compose-tab-settings .orange-button,
     #compose-tab-backup .orange-button {
@@ -1340,7 +1362,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 }, 'user', 'debug', 'settings');
             }
 
-            if (settingsUnifiedState.activeTab === 'credits' || settingsUnifiedState.activeTab === 'log' || settingsUnifiedState.activeTab === 'credentials') {
+            if (settingsUnifiedState.activeTab === 'credits' || settingsUnifiedState.activeTab === 'log' || settingsUnifiedState.activeTab === 'credentials' || settingsUnifiedState.activeTab === 'maintenance') {
                 $('#global-settings-actions').addClass('hidden');
             } else {
                 $('#global-settings-actions').removeClass('hidden');
@@ -2582,6 +2604,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
     <div class="compose-tab active" data-tab="settings"><i class="fa fa-cog fa-fw"></i> _(Settings)_</div>
     <div class="compose-tab" data-tab="updates"><i class="fa fa-refresh fa-fw"></i> _(Updates)_</div>
     <div class="compose-tab" data-tab="backup"><i class="fa fa-archive fa-fw"></i> _(Backup / Restore)_</div>
+    <div class="compose-tab" data-tab="maintenance"><i class="fa fa-wrench fa-fw"></i> _(Maintenance)_</div>
     <div class="compose-tab" data-tab="credentials"><i class="fa fa-key fa-fw"></i> _(Credentials)_</div>
     <div class="compose-tab" data-tab="log"><i class="fa fa-file-text-o fa-fw"></i> _(Log)_</div>
     <div class="compose-tab" data-tab="credits"><i class="fa fa-star fa-fw"></i> _(Credits)_</div>
@@ -2941,10 +2964,45 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dd>
         </dl>
     </form>
-    <h2>_(Maintenance)_</h2>
-    <p>_(Compare saved project names with Docker resource evidence. This check does not change identities or restart containers.)_</p>
-    <button type="button" id="compose-identity-check">_(Check stack project identities)_</button>
-    <div id="compose-identity-report" role="status" aria-live="polite"></div>
+</div>
+
+<!-- Maintenance Tab -->
+<div id="compose-tab-maintenance" class="compose-tab-content">
+    <blockquote class="inline_help" style="margin-bottom:20px;">
+        <strong>Maintenance Tab</strong> — Run explicit diagnostic checks and clear plugin caches. These actions run independently of Settings changes.
+    </blockquote>
+    <div class="backup-section">
+        <div class="title"><span class="left"><i class="fa fa-shield icon"></i>_(Stack Project Identities)_</span></div>
+        <dl>
+            <dt>_(Project Identity Check)_:</dt>
+            <dd>
+                <button type="button" id="compose-identity-check">_(Check stack project identities)_</button>
+                <p>_(Compare saved project names with Docker resource evidence. This check does not change identities or restart containers.)_</p>
+            </dd>
+        </dl>
+        <div id="compose-identity-report" role="status" aria-live="polite"></div>
+    </div>
+    <div class="backup-section">
+        <div class="title"><span class="left"><i class="fa fa-eraser icon"></i>_(Plugin Caches)_</span></div>
+        <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Clear Icon Cache)_:</dt>
+            <dd>
+                <input type="button" value="_(Clear Cache)_" onclick="clearAllIconCache()" class="orange-button">
+                <blockquote class="inline_help">
+                    Delete all locally cached icon files. Icons are re-downloaded and re-converted on next page load.
+                </blockquote>
+            </dd>
+        </dl>
+        <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Clear Update Cache)_:</dt>
+            <dd>
+                <input type="button" value="_(Clear Cache)_" onclick="clearUpdateCache()" class="orange-button">
+                <blockquote class="inline_help">
+                    Clear cached update status. Use if update checks show incorrect results.
+                </blockquote>
+            </dd>
+        </dl>
+    </div>
 </div>
 
 <!-- Updates Tab -->
@@ -3052,25 +3110,6 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dd>
         </dl>
 
-        <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Clear Icon Cache)_:</dt>
-            <dd>
-                <input type="button" value="_(Clear Cache)_" onclick="clearAllIconCache()" class="orange-button">
-                <blockquote class="inline_help">
-                    Delete all locally cached icon files. Icons are re-downloaded and re-converted on next page load.
-                </blockquote>
-            </dd>
-        </dl>
-
-        <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Clear Update Cache)_:</dt>
-            <dd>
-                <input type="button" value="_(Clear Cache)_" onclick="clearUpdateCache()" class="orange-button">
-                <blockquote class="inline_help">
-                    Clear cached update status. Use if update checks show incorrect results.
-                </blockquote>
-            </dd>
-        </dl>
     </div>
 
     <!-- Per-Stack Configuration Section -->

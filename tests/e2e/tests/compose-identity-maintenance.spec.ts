@@ -34,6 +34,15 @@ test.describe('Project identity maintenance', () => {
     expect(settings).toContain('javascript/composeIdentityMaintenance.js');
     expect(main).not.toContain('composeAddIdentityAuditLauncher');
     expect(main).not.toContain('Every stack\'s saved project name matches');
+    const maintenance = settings.slice(settings.indexOf('<div id="compose-tab-maintenance"'), settings.indexOf('<!-- Updates Tab -->'));
+    expect(settings).toContain('data-tab="maintenance"');
+    expect(settings).toContain("settingsUnifiedState.activeTab === 'maintenance'");
+    expect(maintenance).toContain('class="title"');
+    expect(maintenance).toContain('<dl>');
+    expect(maintenance).toContain('onclick="clearAllIconCache()"');
+    expect(maintenance).toContain('onclick="clearUpdateCache()"');
+    expect(settings.match(/onclick="clearAllIconCache\(\)"/g)).toHaveLength(1);
+    expect(settings.match(/onclick="clearUpdateCache\(\)"/g)).toHaveLength(1);
   });
 
   test('checks only on demand and reports all outcomes without HTML injection', async ({ page }) => {
@@ -50,7 +59,9 @@ test.describe('Project identity maintenance', () => {
       });
       requests[0].always();
     `)());
-    await expect(page.locator('#compose-identity-report section')).toHaveCount(5);
+    await expect(page.locator('#compose-identity-report tbody tr')).toHaveCount(5);
+    await expect(page.locator('#compose-identity-report tbody tr').first()).toContainText('Ownership needs review');
+    await expect(page.locator('#compose-identity-report')).toContainText('5 stacks checked; 2 need ownership review.');
     await expect(page.locator('#compose-identity-report img')).toHaveCount(0);
     await expect(page.getByText('Unable to verify', { exact: false })).toBeVisible();
     await expect(page.getByText('No runtime evidence', { exact: false })).toBeVisible();

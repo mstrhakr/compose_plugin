@@ -33,7 +33,18 @@ Access settings via **Settings → Compose** in the Unraid web UI.
 |---------|---------|-------------|
 | **Auto Check for Updates** | No | Automatically check for container image updates when the Compose page loads. |
 | **Auto Check Interval (days)** | 1 | How often to check for updates (examples: 0.04 hourly, 1 daily, 7 weekly). |
-| **Clear Update Cache** | — | Clear cached update status if update checks show incorrect results. |
+
+### Maintenance
+
+The **Maintenance** tab contains explicit actions, not settings to apply. The
+Apply / Default / Reset bar is hidden on this tab. Cache clearing retains its
+existing confirmation dialogs.
+
+| Action | Description |
+|--------|-------------|
+| **Check stack project identities** | Compare saved project names with Docker resource evidence. Results needing ownership review appear first. The check never changes identities or restarts containers; choosing a candidate requires separate confirmation. |
+| **Clear Icon Cache** | Delete locally cached icons so they are downloaded and converted again on the next page load. |
+| **Clear Update Cache** | Clear cached update status if update checks show incorrect results. |
 
 ### Advanced
 

@@ -44,14 +44,34 @@
                 report.textContent = 'No stacks found.';
                 return;
             }
-            identities.forEach(function (identity) {
-                var section = document.createElement('section');
-                var heading = document.createElement('h3');
-                heading.textContent = (identity.displayName || identity.projectFolder) + ' - ' + labels[identity.auditStatus];
-                section.appendChild(heading);
-                var detail = document.createElement('p');
-                detail.textContent = 'Project name: ' + identity.projectName + '. ' + identity.auditMessage;
-                section.appendChild(detail);
+            var attentionCount = identities.filter(function (identity) {
+                return identity.auditStatus === 'attention' || identity.auditStatus === 'blocked';
+            }).length;
+            var summary = document.createElement('p');
+            summary.textContent = identities.length + ' stacks checked; ' + attentionCount + ' need ownership review.';
+            report.appendChild(summary);
+            var table = document.createElement('table');
+            table.className = 'tablesorter';
+            var header = table.createTHead().insertRow();
+            ['Stack', 'Project name', 'Result', 'Details / Actions'].forEach(function (label) {
+                var cell = document.createElement('th');
+                cell.scope = 'col';
+                cell.textContent = label;
+                header.appendChild(cell);
+            });
+            var body = table.createTBody();
+            var priority = { blocked: 0, attention: 1, unavailable: 2, 'no-evidence': 3, matched: 4 };
+            identities.slice().sort(function (left, right) {
+                return priority[left.auditStatus] - priority[right.auditStatus];
+            }).forEach(function (identity) {
+                var row = body.insertRow();
+                row.insertCell().textContent = identity.displayName || identity.projectFolder;
+                row.insertCell().textContent = identity.projectName;
+                row.insertCell().textContent = labels[identity.auditStatus];
+                var detail = row.insertCell();
+                var message = document.createElement('p');
+                message.textContent = identity.auditMessage;
+                detail.appendChild(message);
                 if (identity.canChoose && identity.auditStatus === 'attention') {
                     (identity.candidates || []).forEach(function (candidate) {
                         var button = document.createElement('button');
@@ -85,11 +105,11 @@
                                     });
                             });
                         });
-                        section.appendChild(button);
+                        detail.appendChild(button);
                     });
                 }
-                report.appendChild(section);
             });
+            report.appendChild(table);
         }
 
         function runCheck() {
