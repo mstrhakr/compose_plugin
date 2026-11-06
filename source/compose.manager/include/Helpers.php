@@ -288,15 +288,24 @@ function echoComposeCommand($action, array $options = [])
             return;
         }
 
-        if ($action === 'update') {
-            $updateOptions = ['recreate' => $recreate];
-            if (isset($_POST['includeStopped'])) {
-                $updateOptions['includeStopped'] = (string) $_POST['includeStopped'] === '1';
+        $args = [];
+        try {
+            if ($action === 'update') {
+                $updateOptions = ['recreate' => $recreate];
+                if (isset($_POST['includeStopped'])) {
+                    $updateOptions['includeStopped'] = (string) $_POST['includeStopped'] === '1';
+                }
+                $composeCommand = StackUpdateService::buildUpdateCommand($stackInfo, $cfg, $updateOptions);
+            } else {
+                $args = $stackInfo->buildComposeArgs();
             }
-            $composeCommand = StackUpdateService::buildUpdateCommand($stackInfo, $cfg, $updateOptions);
-        } else {
-            $args = $stackInfo->buildComposeArgs();
+        } catch (\RuntimeException $error) {
+            composeLogger('Cannot build Compose command', ['action' => $action, 'path' => $path, 'error' => $error->getMessage()], 'user', 'error', 'compose');
+            echo json_encode(['error' => 'configuration', 'project' => $stackInfo->projectFolder, 'message' => $error->getMessage()]);
+            return;
+        }
 
+        if ($action !== 'update') {
             $composeCommand[] = "-c" . $action;
             $composeCommand[] = "-p" . $args['projectName'];
             appendComposeFileArgs($composeCommand, $args);
@@ -625,6 +634,7 @@ function echoComposeCommandMultiple($action, array $options = [])
     $commands = array();
     $stackNames = array();
     $blockedStacks = array();
+    $configurationFailures = [];
     $commandProjects = [];
 
     foreach ($paths as $path) {
@@ -654,18 +664,25 @@ function echoComposeCommandMultiple($action, array $options = [])
             continue;
         }
 
-        $stackNames[] = $stackInfo->getName();
-        if ($action === 'update') {
-            $updateOptions = [
-                'recreate' => !empty($options['recreate']),
-            ];
-            if (isset($_POST['includeStopped'])) {
-                $updateOptions['includeStopped'] = (string) $_POST['includeStopped'] === '1';
+        $args = [];
+        try {
+            if ($action === 'update') {
+                $updateOptions = ['recreate' => !empty($options['recreate'])];
+                if (isset($_POST['includeStopped'])) {
+                    $updateOptions['includeStopped'] = (string) $_POST['includeStopped'] === '1';
+                }
+                $composeCommand = StackUpdateService::buildUpdateCommand($stackInfo, $cfg, $updateOptions);
+            } else {
+                $args = $stackInfo->buildComposeArgs();
             }
-            $composeCommand = StackUpdateService::buildUpdateCommand($stackInfo, $cfg, $updateOptions);
-        } else {
-            $args = $stackInfo->buildComposeArgs();
+        } catch (\RuntimeException $error) {
+            $configurationFailures[$stackInfo->projectFolder] = $stackInfo->getName() . ': ' . $error->getMessage();
+            composeLogger('Skipping stack with invalid Compose inputs', ['action' => $action, 'path' => $path, 'error' => $error->getMessage()], 'user', 'error', 'compose-multi');
+            continue;
+        }
 
+        $stackNames[] = $stackInfo->getName();
+        if ($action !== 'update') {
             $composeCommand[] = "-c" . $action;
             $composeCommand[] = "-p" . $args['projectName'];
             appendComposeFileArgs($composeCommand, $args);
@@ -707,6 +724,11 @@ function echoComposeCommandMultiple($action, array $options = [])
 
     if (empty($commands)) {
         composeLogger("Multi Compose operation aborted: no valid stacks resolved", ['action' => $action, 'blocked' => $blockedStacks], 'user', 'warning', 'compose-multi');
+        if ($configurationFailures !== []) {
+            echo json_encode(['error' => 'configuration', 'failures' => $configurationFailures,
+                'stacks' => $blockedStacks, 'message' => implode("\n", $configurationFailures)]);
+            return;
+        }
         if (!empty($blockedStacks)) {
             echo json_encode([
                 'error' => 'identity',
@@ -744,7 +766,7 @@ function echoComposeCommandMultiple($action, array $options = [])
         chmod($tmpScript, 0700);
         exec(escapeshellarg($tmpScript) . ' > /dev/null 2>&1 &');
         composeLogger("Background multi-stack queued: " . $tmpScript, ['script' => $tmpScript, 'stacks' => count($commands)], 'user', 'debug', 'compose-multi');
-        echo json_encode(['background' => true, 'operations' => $operations]);
+        echo json_encode(['background' => true, 'operations' => $operations, 'failures' => $configurationFailures]);
         return;
     }
 
@@ -755,6 +777,9 @@ function echoComposeCommandMultiple($action, array $options = [])
     $scriptContent .= "# Multi-stack compose script (ttyd) - auto-generated\n\n";
     $scriptContent .= 'trap ' . escapeshellarg('rm -f ' . escapeshellarg($tmpScript)) . " EXIT\n";
     $scriptContent .= "result=0\n";
+    foreach ($configurationFailures as $failure) {
+        $scriptContent .= 'printf \'%s\\n\' ' . escapeshellarg('! Skipped ' . $failure) . "\n";
+    }
 
     foreach ($blockedStacks as $blocked) {
         $blockedTitle = str_replace(['\\', '"'], ['\\\\', '\\"'], $blocked);

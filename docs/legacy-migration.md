@@ -34,6 +34,10 @@ Each explicit audit request refreshes Docker evidence once and shares that snaps
 across its stacks. Override saves register new frozen inputs only after writing the
 file; registration failures restore the source and return an editor error.
 
+Missing configured inputs return a single-stack configuration error or an explicit
+bulk skip rather than aborting dispatch for healthy stacks. Background bulk skips
+are shown as warnings; foreground bulk skips appear in the terminal output.
+
 The archived indirect wrapper used filesystem enumeration order. Runtime labels now preserve its historical ordered inputs when available. A live multi-file stack with missing/contradictory order evidence is blocked. Without any labelled resources, current archived-style discovery is pinned once; lost historical configuration cannot be reconstructed from absent evidence. When only volumes remain and multiple files could have contributed, restore the historical inputs/evidence before attempting migration.
 
 Back up configuration/project metadata before installing a test build. The per-pin backup is not a backup of application data, all stack metadata or external Compose directories. Do not delete conflicting Docker resources merely to make migration proceed.

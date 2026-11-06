@@ -68,7 +68,7 @@ test.describe('Operation state ownership', () => {
 
   test('foreground single and bulk dispatches keep progress until their own receipts finish', async ({ page }) => {
     const result = await page.evaluate(({ state, dispatch }) => new Function(`
-      var composeStackActionInProgress = {}, requests = [], opened = [], polls = [], refreshed = [], compURL = '/compose';
+      var composeStackActionInProgress = {}, requests = [], opened = [], polls = [], refreshed = [], notices = [], compURL = '/compose';
       var $ = () => ({ length: 0 });
       $.ajax = options => {
         var request = { options };
@@ -81,21 +81,25 @@ test.describe('Operation state ownership', () => {
       function pollBackgroundCompletion(project, delay, operation) { polls.push([project, operation.receipt]); }
       function queuePendingComposeReloads(projects) { refreshed.push(...projects); }
       function openBox(url) { opened.push(url); }
+      function swal(options) { notices.push(options); }
       ${state}
       ${dispatch}
       var url = '/plugins/compose.manager/include/ShowTtyd.php?done=1';
       performComposeAction({ stackName: 'single', actionName: 'up' });
       requests[0].done({ url, operations: { single: 'single-receipt' } });
       performMultipleComposeAction([{ project: 'first' }, { project: 'second' }, { project: 'skipped' }], { actionName: 'up' });
-      requests[1].done({ url, operations: { first: 'first-receipt', second: 'second-receipt' } });
+      requests[1].done({ url, operations: { first: 'first-receipt', second: 'second-receipt' },
+        failures: { skipped: 'skipped: configured env file is unavailable' } });
       return { active: Object.keys(composeStackActionInProgress), opened, polls, refreshed,
-        tracking: requests.map(request => request.options.data.trackOperation) };
+        notices, tracking: requests.map(request => request.options.data.trackOperation) };
     `)(), { state, dispatch });
     expect(result.active).toEqual(['single', 'first', 'second']);
     expect(result.polls).toEqual([['single', 'single-receipt'], ['first', 'first-receipt'], ['second', 'second-receipt']]);
     expect(result.opened).toHaveLength(2);
     expect(result.refreshed).toEqual(['skipped']);
     expect(result.tracking).toEqual(['1', '1']);
+    expect(result.notices).toEqual([{ title: 'Some stacks were skipped',
+      text: 'skipped: configured env file is unavailable', type: 'warning' }]);
   });
 
   test('viewer startup warnings preserve single and bulk receipt tracking', async ({ page }) => {
@@ -373,6 +377,28 @@ ${fn('beginStackRuntimeRequest', 'prefetchStackDetailsInBackground')}`;
       return { active: Object.keys(composeStackActionInProgress), same: current === composeStackActionInProgress.b };
     `)(), { state, dispatch });
     expect(result).toEqual({ active: ['b'], same: true });
+  });
+
+  test('late bulk configuration skips cannot warn about a newer stack action', async ({ page }) => {
+    const result = await page.evaluate(({ state, dispatch }) => new Function(`
+      var composeStackActionInProgress = {}, done, notices = [], compURL = '/compose';
+      var $ = () => ({ length: 0 });
+      $.ajax = () => ({ done(callback) { done = callback; return this; }, fail() { return this; } });
+      function composeLogger() {}
+      function beginStackRuntimeRequest() {}
+      function composeActionStateText() { return 'working'; }
+      function queuePendingComposeReloads() {}
+      function notifyBackgroundStarted() {}
+      function swal(options) { notices.push(options); }
+      function pollBackgroundCompletion() {}
+      ${state}
+      ${dispatch}
+      performMultipleComposeAction([{ project: 'a' }], { actionName: 'up' });
+      var current = setStackActionInProgress('a', true, 'stopping');
+      done({background: true, operations: {}, failures: {a: 'Old configuration error'}});
+      return { notices, same: current === composeStackActionInProgress.a };
+    `)(), { state, dispatch });
+    expect(result).toEqual({ notices: [], same: true });
   });
 
   test('Update All refuses empty, malformed and failed preparation instead of dispatching', async ({ page }) => {

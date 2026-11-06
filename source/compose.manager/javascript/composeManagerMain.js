@@ -4422,10 +4422,14 @@ function performMultipleComposeAction(stacks, opts, operations) {
     });
     opts.onComplete = function(parsed, data) {
         var refresh = [];
+        var failures = [];
         stacks.forEach(function(stack) {
             var project = stack.project;
             var operation = operations[project];
             if (composeStackActionInProgress[project] !== operation) return;
+            if (parsed && !parsed.error && parsed.failures && parsed.failures[project]) {
+                failures.push(parsed.failures[project]);
+            }
             if (parsed && parsed.operations && parsed.operations[project]) {
                 operation.receipt = parsed.operations[project];
                 pollBackgroundCompletion(project, 0, operation);
@@ -4436,6 +4440,9 @@ function performMultipleComposeAction(stacks, opts, operations) {
                 if (data && !(parsed && parsed.error)) refresh.push(project);
             }
         });
+        if (failures.length) {
+            swal({ title: 'Some stacks were skipped', text: failures.join('\n'), type: 'warning' });
+        }
         if (refresh.length) queuePendingComposeReloads(refresh);
     };
     performComposeAction(opts);

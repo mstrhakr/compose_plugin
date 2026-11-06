@@ -34,6 +34,67 @@ require_once '/usr/local/emhttp/plugins/compose.manager/include/Defines.php';
  */
 class ComposeUtilTest extends TestCase
 {
+    public static function configurationActions(): array
+    {
+        return [['up'], ['update'], ['down']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('configurationActions')]
+    public function testMissingConfiguredEnvIsExplicitAndBulkDispatchContinues(string $action): void
+    {
+        global $compose_root;
+        $compose_root = $this->createTempDir();
+        $paths = [];
+        foreach (['bad-input', 'healthy-input'] as $project) {
+            $path = $compose_root . '/' . $project;
+            mkdir($path);
+            file_put_contents($path . '/compose.yaml', "services:\n  app:\n    image: nginx\n");
+            file_put_contents($path . '/project_name', $project);
+            file_put_contents($path . '/project_identity.json', json_encode([
+                'version' => \ProjectIdentity::MIGRATION_VERSION, 'projectName' => $project,
+                'source' => 'owner', 'origin' => 'dcflachs',
+                'composeFiles' => [$path . '/compose.yaml'], 'composeFilesSource' => 'runtime-labels',
+            ]));
+            $paths[] = $path;
+        }
+        file_put_contents($paths[0] . '/envpath', $paths[0] . '/missing.env');
+        $varFile = $this->createTempDir() . '/var.ini';
+        file_put_contents($varFile, "mdState=STARTED\n");
+        \PluginTests\StreamWrapper\UnraidStreamWrapper::addMapping('/var/local/emhttp/var.ini', $varFile);
+        $_POST['path'] = $paths[0];
+        $before = glob('/tmp/compose_multi_*.sh') ?: [];
+        try {
+            ob_start();
+            echoComposeCommand($action);
+            $response = json_decode((string) ob_get_clean(), true);
+            $this->assertSame('configuration', $response['error']);
+            $this->assertStringContainsString('env file is unavailable', $response['message']);
+            $this->assertTrue(\StackInfo::fromProject($compose_root, 'bad-input')->hasResolvedIdentity());
+
+            ob_start();
+            echoComposeCommandMultiple($action, ['paths' => [$paths[0]]]);
+            $response = json_decode((string) ob_get_clean(), true);
+            $this->assertSame('configuration', $response['error']);
+            $this->assertArrayHasKey('bad-input', $response['failures']);
+
+            ob_start();
+            echoComposeCommandMultiple($action, ['paths' => $paths]);
+            $response = (string) ob_get_clean();
+            $this->assertStringContainsString('ShowTtyd.php', $response);
+            $scripts = array_values(array_diff(glob('/tmp/compose_multi_*.sh') ?: [], $before));
+            $this->assertCount(1, $scripts);
+            $script = file_get_contents($scripts[0]);
+            $this->assertStringContainsString('! Skipped bad-input:', $script);
+            $this->assertStringContainsString('healthy-input', $script);
+            $this->assertStringNotContainsString("'-pbad-input'", $script);
+        } finally {
+            foreach (array_diff(glob('/tmp/compose_multi_*.sh') ?: [], $before) as $file) {
+                unlink($file);
+            }
+            unset($_POST['path']);
+        }
+    }
+
     public function testTrackedBulkDispatchQueuesEveryAcceptedStackBeforeTerminalConnection(): void
     {
         global $compose_root;
