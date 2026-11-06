@@ -2,6 +2,24 @@
 
 This document describes the testing infrastructure for the Compose Manager plugin.
 
+Source ownership regressions cover editor/template/settings writes, real Git
+conversion/dry-run/reclone, failed writes, canonical project contention, and
+acknowledgement invalidation. Container regressions verify immutable ID execution,
+native containers, lock contention, identity changes, and real CLI exit errors.
+The isolated Dashboard suite checks error/malformed/network responses and
+duplicate requests in Chromium and Firefox.
+
+Compose is pinned to 5.7.0, whose required-health-deadline handling replaces the
+false-success path observed in 5.5.0. The official checksum-verified Linux x86_64
+binary passed standalone version/config and Engine project-enumeration probes
+on Unraid 7.3.2 / Docker 29.5.3 (API 1.40–1.54), without replacing the installed
+binary or changing containers. These read-only probes are not a substitute for
+the guarded candidate gate: it asserts a five-second required health deadline
+produces both a nonzero operation receipt and a failed saved command result.
+Other Unraid/Engine combinations have not been live-tested by this probe.
+The bundled Moby client negotiates API versions down to 1.40; Compose shapes
+requests using the negotiated version rather than its SDK's maximum of 1.56.
+
 ## Quick Start
 
 ### Running PHP Tests (Native)

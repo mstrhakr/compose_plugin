@@ -259,6 +259,11 @@ test('active scoped deployment defers image checks and invalidates earlier ackno
     }
     return result.json?.result;
   }, { timeout: 20_000 }).toBe('superseded');
+  const busySave = await postForm(page, exec, {
+    action: 'saveYml', script: stack.project, scriptContents: yaml,
+  });
+  expect(busySave.json?.result, busySave.body).toBe('error');
+  expect(String(busySave.json?.message)).toContain('operation is in progress');
   expect(await acknowledge(old)).toContain(stack.project);
   try {
     await waitForOperation(page, stack.project, deployment);
@@ -276,6 +281,56 @@ test('active scoped deployment defers image checks and invalidates earlier ackno
   expect(token).toMatch(/^[a-f0-9]{64}$/);
   expect(token).not.toBe(old);
   expect(await acknowledge(token)).not.toContain(stack.project);
+});
+
+test('required health deadline produces a failed Up receipt and saved command result', async ({ page, stack }) => {
+  await stack.save(yaml.replace('test: ["CMD", "true"]', 'test: ["CMD", "false"]')
+    .replace('start_period: 30s', 'start_period: 120s'));
+  const started = Date.now();
+  const deployment = await postForm(page, util, {
+    action: 'composeUp', path: stack.path, background: '1', trackOperation: '1',
+    waitForHealthy: '1', waitTimeout: '5',
+  });
+  await waitForOperation(page, stack.project, deployment, 'nonzero');
+  expect(Date.now() - started).toBeLessThan(60_000);
+  const result = await postForm(page, exec, { action: 'getStackResult', script: stack.project });
+  expect(result.json?.result, result.body).toBe('success');
+  expect(result.json?.lastResult, result.body).toMatchObject({ result: 'failed', operation: 'up' });
+  const log = await postForm(page, exec, { action: 'getLastCmdLog', script: stack.project });
+  expect(log.json?.result, log.body).toBe('success');
+  expect(String(log.json?.log)).toContain('--wait-timeout 5');
+  await test.info().attach('required-health-deadline', {
+    body: String(log.json?.log || ''), contentType: 'text/plain',
+  });
+});
+
+test('scoped source edit preserves a newer pending mark and does not introduce automatic checks', async ({ page, stack }) => {
+  await postForm(page, exec, { action: 'markStackForRecheck', stacks: JSON.stringify([stack.project]) });
+  const before = await postForm(page, exec, { action: 'checkStackUpdates', script: stack.project });
+  expect(before.json?.result, before.body).toBe('success');
+  const old = String(before.json?.recheckToken);
+  expect(old).toMatch(/^[a-f0-9]{64}$/);
+  await stack.save(yaml + '\n# scoped ownership edit\n');
+  const staleAck = await postForm(page, exec, {
+    action: 'clearStackRecheck', stacks: JSON.stringify([stack.project]),
+    tokens: JSON.stringify({ [stack.project]: old }),
+  });
+  expect(staleAck.json?.result, staleAck.body).toBe('success');
+  expect(staleAck.json?.remaining).toContain(stack.project);
+  const fresh = await postForm(page, exec, { action: 'checkStackUpdates', script: stack.project });
+  expect(fresh.json?.result, fresh.body).toBe('success');
+  const token = String(fresh.json?.recheckToken);
+  expect(token).not.toBe(old);
+  expect(token).toMatch(/^[a-f0-9]{64}$/);
+  const accepted = await postForm(page, exec, {
+    action: 'clearStackRecheck', stacks: JSON.stringify([stack.project]),
+    tokens: JSON.stringify({ [stack.project]: token }),
+  });
+  expect(accepted.json?.remaining).not.toContain(stack.project);
+  await stack.save(yaml + '\n# ordinary edit without a pending mark\n');
+  const pending = await postForm(page, exec, { action: 'getPendingRecheckStacks' });
+  expect(pending.json?.result, pending.body).toBe('success');
+  expect(pending.json?.pending).not.toHaveProperty(stack.project);
 });
 
 test('late saved evidence cannot replace a fresh scoped image check', async ({ page, stack }) => {
