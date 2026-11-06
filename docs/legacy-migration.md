@@ -28,6 +28,8 @@ Existing pins predate provenance tracking, so an explicit old choice cannot reli
 
 Working-directory labels can be absent, particularly when only volumes or networks remain. Matching resource names then remain weaker evidence. No automatic algorithm can reconstruct an arbitrarily renamed historical project from a lost metadata directory.
 
+The explicit identity report also checks existing pins for competing stack claims and contradictory container working-directory labels, including configured indirect sources. These conflicts are report-only: they do not rewrite saved pins or alter normal action resolution.
+
 The archived indirect wrapper used filesystem enumeration order. Runtime labels now preserve its historical ordered inputs when available. A live multi-file stack with missing/contradictory order evidence is blocked. Without any labelled resources, current archived-style discovery is pinned once; lost historical configuration cannot be reconstructed from absent evidence. When only volumes remain and multiple files could have contributed, restore the historical inputs/evidence before attempting migration.
 
 Back up configuration/project metadata before installing a test build. The per-pin backup is not a backup of application data, all stack metadata or external Compose directories. Do not delete conflicting Docker resources merely to make migration proceed.

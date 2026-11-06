@@ -183,7 +183,7 @@ class ProjectIdentityTest extends TestCase
         $this->assertFalse($stack->identity->toArray()['canChoose']);
 
         // ...but an explicit, owner-triggered audit surfaces the mismatch.
-        $audit = $stack->identity->auditAgainstRuntime();
+        $audit = $stack->identity->auditAgainstRuntime($stack->path);
         $this->assertTrue($audit['canChoose']);
         $this->assertSame('attention', $audit['auditStatus']);
         $this->assertSame(\ProjectIdentity::CONFLICT_PIN_MISMATCH, $audit['conflictReason']);
@@ -201,7 +201,7 @@ class ProjectIdentityTest extends TestCase
         \ProjectIdentity::setProbe(fn(): array => $this->containers(['folder' => 2]));
 
         $stack = \StackInfo::fromProject($this->tempRoot, 'folder');
-        $audit = $stack->identity->auditAgainstRuntime();
+        $audit = $stack->identity->auditAgainstRuntime($stack->path);
 
         $this->assertFalse($audit['canChoose']);
         $this->assertNull($audit['conflictReason']);
@@ -215,13 +215,13 @@ class ProjectIdentityTest extends TestCase
         $stack = \StackInfo::fromProject($this->tempRoot, 'folder');
 
         \ProjectIdentity::setProbe(static fn(): ?array => null);
-        $offline = $stack->identity->auditAgainstRuntime();
+        $offline = $stack->identity->auditAgainstRuntime($stack->path);
         $this->assertSame('unavailable', $offline['auditStatus']);
         $this->assertFalse($offline['canChoose']);
         $this->assertTrue($stack->hasResolvedIdentity());
 
         \ProjectIdentity::setProbe(static fn(): array => []);
-        $empty = $stack->identity->auditAgainstRuntime();
+        $empty = $stack->identity->auditAgainstRuntime($stack->path);
         $this->assertSame('no-evidence', $empty['auditStatus']);
         $this->assertSame('folder', file_get_contents($path . '/project_name'));
     }
@@ -233,7 +233,7 @@ class ProjectIdentityTest extends TestCase
         \ProjectIdentity::setProbe(fn(): array => $this->containers(['moodle-ctgaia2' => 1, 'moodle_ctgaia2' => 2]));
 
         $stack = \StackInfo::fromProject($this->tempRoot, 'moodle-ctgaia2');
-        $audit = $stack->identity->auditAgainstRuntime();
+        $audit = $stack->identity->auditAgainstRuntime($stack->path);
 
         $this->assertSame('blocked', $audit['auditStatus']);
         $this->assertFalse($audit['canChoose']);
@@ -248,7 +248,7 @@ class ProjectIdentityTest extends TestCase
         }
         \ProjectIdentity::setProbe(fn(): array => $this->containers(['shared_project' => 1]));
         $stack = \StackInfo::fromProject($this->tempRoot, 'first');
-        $audit = $stack->identity->auditAgainstRuntime();
+        $audit = $stack->identity->auditAgainstRuntime($stack->path);
 
         $this->assertSame('blocked', $audit['auditStatus']);
         $this->assertSame(\ProjectIdentity::CONFLICT_SHARED_IDENTITY, $audit['conflictReason']);
@@ -265,6 +265,58 @@ class ProjectIdentityTest extends TestCase
         $this->assertFalse($stack->hasResolvedIdentity());
         $this->assertSame(\ProjectIdentity::CONFLICT_INVALID_PIN, $stack->identity->conflictReason);
         $this->assertSame('../Other Stack', file_get_contents($path . '/project_name'));
+    }
+
+    public function testAuditDetectsDuplicatePersistedPinsWithoutChangingActionResolution(): void
+    {
+        foreach (['first', 'second'] as $folder) {
+            $path = $this->makeStack($folder, $folder);
+            file_put_contents($path . '/project_name', 'shared');
+        }
+        \ProjectIdentity::setProbe(fn(): array => $this->containers(['shared' => 1]));
+        foreach (['first', 'second'] as $folder) {
+            $stack = \StackInfo::fromProject($this->tempRoot, $folder);
+            $audit = $stack->identity->auditAgainstRuntime($stack->path);
+            $this->assertSame('blocked', $audit['auditStatus']);
+            $this->assertSame(\ProjectIdentity::CONFLICT_SHARED_IDENTITY, $audit['conflictReason']);
+            $this->assertFalse($audit['canChoose']);
+            $this->assertTrue($stack->hasResolvedIdentity());
+            $this->assertNull($stack->identity->conflictReason);
+            $this->assertSame('shared', file_get_contents($stack->path . '/project_name'));
+        }
+    }
+
+    public function testAuditDetectsForeignDirectoryWithoutChangingPersistedPin(): void
+    {
+        $path = $this->makeStack('my-stack', 'my-stack');
+        file_put_contents($path . '/project_name', 'my_stack');
+        \ProjectIdentity::setProbe(static fn(): ?array => \ProjectIdentity::parseProbeOutput(
+            'containers {"project":"my_stack","workingDir":"/another/compose/directory"}' . "\n__rc=0"
+        ));
+        $stack = \StackInfo::fromProject($this->tempRoot, 'my-stack');
+        $audit = $stack->identity->auditAgainstRuntime($stack->path);
+        $this->assertSame('blocked', $audit['auditStatus']);
+        $this->assertSame(\ProjectIdentity::CONFLICT_DIRECTORY_MISMATCH, $audit['conflictReason']);
+        $this->assertFalse($audit['canChoose']);
+        $this->assertTrue($stack->hasResolvedIdentity());
+        $this->assertSame('my_stack', file_get_contents($path . '/project_name'));
+    }
+
+    public function testAuditAcceptsConfiguredIndirectDirectoryEvidence(): void
+    {
+        $path = $this->makeStack('folder', 'folder');
+        file_put_contents($path . '/project_name', 'folder');
+        $target = $this->tempRoot . '/source';
+        mkdir($target);
+        file_put_contents($path . '/indirect', $target);
+        file_put_contents($target . '/compose.yaml', "services:\n");
+        \ProjectIdentity::setProbe(static fn(): ?array => \ProjectIdentity::parseProbeOutput(
+            'containers ' . json_encode(['project' => 'folder', 'workingDir' => $target]) . "\n__rc=0"
+        ));
+        $stack = \StackInfo::fromProject($this->tempRoot, 'folder');
+        $audit = $stack->identity->auditAgainstRuntime($stack->path);
+        $this->assertSame('matched', $audit['auditStatus']);
+        $this->assertSame('folder', file_get_contents($path . '/project_name'));
     }
 
     public function testUnversionedStablePinDoesNotRequireDocker(): void

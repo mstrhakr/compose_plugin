@@ -457,7 +457,7 @@ final class ProjectIdentity
      *
      * @return array<string, mixed> toArray() plus auditStatus and auditMessage; never changes the saved pin
      */
-    public function auditAgainstRuntime(): array
+    public function auditAgainstRuntime(string $stackPath): array
     {
         $result = $this->toArray();
         self::clearProbeCache();
@@ -477,6 +477,22 @@ final class ProjectIdentity
             }
         }
         $result['evidence'] = $evidence;
+        if (self::hasCompetingClaim($stackPath, $this->projectName)) {
+            $result['auditStatus'] = 'blocked';
+            $result['auditMessage'] = 'Another stack folder also claims this project name. Review the duplicate stack metadata before changing identities.';
+            $result['conflictReason'] = self::CONFLICT_SHARED_IDENTITY;
+            $result['canChoose'] = false;
+            return $result;
+        }
+        foreach ($owners as $owner) {
+            if (!self::matchesResourceDirectory($stackPath, $owner)) {
+                $result['auditStatus'] = 'blocked';
+                $result['auditMessage'] = "Docker resources for '$owner' reference a different Compose directory. Review ownership before changing the saved identity.";
+                $result['conflictReason'] = self::CONFLICT_DIRECTORY_MISMATCH;
+                $result['canChoose'] = false;
+                return $result;
+            }
+        }
         if ($this->resolved && $this->conflictReason === null
             && count($owners) === 1 && $owners[0] !== $this->projectName) {
             $result['canChoose'] = true;

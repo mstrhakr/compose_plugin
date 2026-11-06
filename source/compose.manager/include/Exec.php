@@ -2667,7 +2667,7 @@ switch ($_POST['action']) {
         // identities, so an old bad pin from #183 can still be recovered.
         $identities = [];
         foreach (StackInfo::allFromRoot($compose_root, true) as $stackInfo) {
-            $identity = $stackInfo->identity->auditAgainstRuntime();
+            $identity = $stackInfo->identity->auditAgainstRuntime($stackInfo->path);
             $identity['displayName'] = $stackInfo->getName();
             $identities[] = $identity;
         }
