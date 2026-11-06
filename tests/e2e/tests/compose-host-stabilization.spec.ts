@@ -487,6 +487,10 @@ test(`foreground terminal ${control} preserves explicit command lifecycle`, asyn
       await terminal.getByRole('button', { name: 'Stop command' }).click();
       await waitForOperation(page, stack.project, dispatch, 'nonzero');
       await expect(terminal.getByRole('status')).toContainText('exit code 143');
+      const failureNotice = page.locator('.sweet-alert:visible');
+      await expect(failureNotice.locator('h2')).toHaveText('Compose Action Failed');
+      await expect(failureNotice.locator('p').first()).toContainText(`The operation for ${stack.project} exited with code 143.`);
+      await failureNotice.locator('button.confirm').click();
       await terminal.getByRole('button', { name: 'Done', exact: true }).click();
     } else {
       await terminal.getByRole('button', { name: 'Continue in background' }).click();
