@@ -24,8 +24,9 @@ its notification behavior are unchanged. Legacy untracked terminals retain
 their existing behavior.
 
 Managed viewers send the parent page's CSRF token for status and stop requests.
-Cancellation is owned by the supervisor: receipts remain running until its
-descendants have exited, with forced termination after a 10-second grace period.
+Cancellation is owned by the supervisor: receipts remain running until live
+members of its session have exited, including separate process groups created
+by GNU `timeout`, with forced termination after a 10-second grace period.
 The live output spool is capped at 1 MiB and explicitly marks omitted earlier
 output; a single stack's command log retains the complete output. A viewer that
 never connects releases its listener and socket after 30 seconds. Closing an
@@ -101,10 +102,18 @@ empty file. Updated editors submit that revision with Compose/env/override,
 Labels, and template saves. A mismatch preserves unsaved edits and asks the
 user to review the current file; it never automatically reloads or overwrites
 the other change. A short, nonblocking source-edit lock serializes plugin
-compare-and-save operations across path/symlink/hard-link aliases. This does not
-lock external editors or coordinate Git checkouts with other projects' checks.
+compare-and-save operations across path/symlink/hard-link aliases. For dangling
+symlinks, relative/absolute link chains resolve to the missing
+target for both edit locks and sharing notices; cyclic chains fail explicitly.
+This does not lock external editors or coordinate Git checkouts with other
+projects' checks.
 Legacy API callers without a revision retain their existing response contract
 and do not gain optimistic stale-content protection.
+
+Pending-recheck and presentation-cache readers and writers acquire a stable
+sidecar lock before opening or creating the data file. Existing data-inode
+transaction locks remain in place. First-use initialization is serialized;
+preexisting empty/corrupt data still requires explicit recovery.
 
 Individual container actions resolve the actual Compose project label, acquire
 its lock, and execute against the inspected immutable container ID. Native

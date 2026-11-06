@@ -6,14 +6,6 @@ require_once __DIR__ . '/StackSourceEditor.php';
 
 final class SharedStackSources
 {
-    private static function key(string $path): string
-    {
-        $real = realpath($path);
-        if ($real !== false) return $real;
-        $parent = realpath(dirname($path));
-        return ($parent === false ? dirname($path) : $parent) . '/' . basename($path);
-    }
-
     public static function dismissed(StackInfo $stack): bool
     {
         $file = $stack->path . '/shared_source_warning_dismissed';
@@ -32,7 +24,7 @@ final class SharedStackSources
         $keys = [];
         $inodes = [];
         foreach ($paths as $path) {
-            $keys[self::key($path)] = $path;
+            $keys[StackSourceEditor::sourcePathKey($path)] = $path;
             $stat = @stat($path);
             if ($stat !== false) $inodes[$stat['dev'] . ':' . $stat['ino']] = $path;
         }
@@ -44,7 +36,7 @@ final class SharedStackSources
                 $other = StackInfo::fromProject($root, $folder);
                 foreach ($other->getSourceFilePaths() as $path) {
                     $stat = @stat($path);
-                    $match = $keys[self::key($path)] ?? ($stat !== false ? ($inodes[$stat['dev'] . ':' . $stat['ino']] ?? null) : null);
+                    $match = $keys[StackSourceEditor::sourcePathKey($path)] ?? ($stat !== false ? ($inodes[$stat['dev'] . ':' . $stat['ino']] ?? null) : null);
                     if ($match !== null) $matches[$match][$folder] = true;
                 }
             } catch (RuntimeException $error) {

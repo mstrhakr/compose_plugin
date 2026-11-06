@@ -49,4 +49,17 @@ final class SharedStackSourcesTest extends TestCase
         $this->assertSame([], $result['incomplete']);
         $this->assertNotContains(COMPOSE_ICON_NORMALIZE_DIR . '/' . $a->projectName . '.yaml', $a->getSourceFilePaths());
     }
+
+    public function testDanglingEnvAliasesAreReportedBeforeTargetExists(): void
+    {
+        $root = $this->createTempDir();
+        $a = \StackInfo::createNew($root, 'a');
+        $b = \StackInfo::createNew($root, 'b');
+        symlink('../missing.env', $a->path . '/.env');
+        symlink($a->path . '/.env', $b->path . '/.env');
+        \StackInfo::clearCache();
+        $result = \SharedStackSources::inspect($root, \StackInfo::fromProject($root, 'a'), $a->path . '/.env');
+        $this->assertSame([['path' => $a->path . '/.env', 'stacks' => ['b']]], $result['shared']);
+        $this->assertSame([], $result['incomplete']);
+    }
 }

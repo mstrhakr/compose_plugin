@@ -35,6 +35,38 @@ final class StackSourceEditor
         }
     }
 
+    public static function sourcePathKey(string $path): string
+    {
+        clearstatcache(true);
+        $real = realpath($path);
+        if ($real !== false) return $real;
+        if (!str_starts_with($path, '/')) {
+            $cwd = getcwd();
+            if ($cwd === false) throw new RuntimeException('Unable to resolve source working directory.');
+            $path = $cwd . '/' . $path;
+        }
+        $remaining = explode('/', $path);
+        $resolved = [];
+        $links = 0;
+        while ($remaining !== []) {
+            $part = array_shift($remaining);
+            if ($part === '' || $part === '.') continue;
+            if ($part === '..') {
+                array_pop($resolved);
+                continue;
+            }
+            $link = @readlink('/' . implode('/', [...$resolved, $part]));
+            if ($link !== false) {
+                if (++$links > 40) throw new RuntimeException('Unable to resolve source path: too many symbolic links.');
+                if (str_starts_with($link, '/')) $resolved = [];
+                $remaining = [...explode('/', $link), ...$remaining];
+            } else {
+                $resolved[] = $part;
+            }
+        }
+        return '/' . implode('/', $resolved);
+    }
+
     /** @template T
      *  @param list<string> $paths
      *  @param callable(): T $work
@@ -44,8 +76,7 @@ final class StackSourceEditor
     {
         $keys = [];
         foreach ($paths as $path) {
-            $real = realpath($path);
-            $keys[] = hash('sha256', 'path:' . ($real === false ? (realpath(dirname($path)) ?: dirname($path)) . '/' . basename($path) : $real));
+            $keys[] = hash('sha256', 'path:' . self::sourcePathKey($path));
             $stat = @stat($path);
             if ($stat !== false) $keys[] = hash('sha256', 'inode:' . $stat['dev'] . ':' . $stat['ino']);
         }

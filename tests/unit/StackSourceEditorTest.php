@@ -110,4 +110,44 @@ final class StackSourceEditorTest extends TestCase
         });
         $this->assertTrue(\StackSourceEditor::withFileLocks([$directory . '/source'], static fn() => true));
     }
+
+    public function testDanglingSourceAliasesShareLocksAndRejectStaleMissingRevisions(): void
+    {
+        $directory = $this->createTempDir();
+        mkdir($directory . '/a');
+        mkdir($directory . '/b');
+        symlink('../missing', $directory . '/a/.env');
+        symlink($directory . '/a/.env', $directory . '/b/.env');
+        symlink($directory . '/a', $directory . '/parent');
+        $paths = [$directory . '/a/.env', $directory . '/b/.env', $directory . '/parent/.env'];
+        $missing = \StackSourceEditor::read($paths[0])['revision'];
+        foreach ($paths as $path) {
+            $this->assertSame($directory . '/missing', \StackSourceEditor::sourcePathKey($path));
+        }
+        \StackSourceEditor::withFileLocks([$paths[0]], function () use ($paths): void {
+            foreach (array_slice($paths, 1) as $path) {
+                try {
+                    \StackSourceEditor::withFileLocks([$path], static fn() => true);
+                    $this->fail('Dangling alias bypassed source lock.');
+                } catch (\RuntimeException $error) {
+                    $this->assertStringContainsString('Another editor is saving', $error->getMessage());
+                }
+            }
+            \StackSourceEditor::write($paths[0], 'first save');
+        });
+        $this->expectException(\StaleSourceRevision::class);
+        \StackSourceEditor::withFileLocks([$paths[1]], static function () use ($paths, $missing): void {
+            \StackSourceEditor::assertRevision($paths[1], $missing);
+        });
+    }
+
+    public function testCyclicSourceLinksFailExplicitly(): void
+    {
+        $directory = $this->createTempDir();
+        symlink('b', $directory . '/a');
+        symlink('a', $directory . '/b');
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('too many symbolic links');
+        \StackSourceEditor::sourcePathKey($directory . '/a');
+    }
 }
