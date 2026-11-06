@@ -26,6 +26,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 <script src="<?php autov('/plugins/compose.manager/javascript/common.js'); ?>" type="text/javascript"></script>
 <script src="<?php autov('/plugins/compose.manager/javascript/qrcode/qrcode.min.js'); ?>" type="text/javascript"></script>
 <script src="<?php autov('/plugins/compose.manager/javascript/credentialManager.js'); ?>" type="text/javascript"></script>
+<script src="<?php autov('/plugins/compose.manager/javascript/composeIdentityMaintenance.js'); ?>" type="text/javascript"></script>
 <style>
     /* Toggle switch overrides */
     #compose-tab-settings .switch-button-background,
@@ -2940,6 +2941,10 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dd>
         </dl>
     </form>
+    <h2>_(Maintenance)_</h2>
+    <p>_(Compare saved project names with Docker resource evidence. This check does not change identities or restart containers.)_</p>
+    <button type="button" id="compose-identity-check">_(Check stack project identities)_</button>
+    <div id="compose-identity-report" role="status" aria-live="polite"></div>
 </div>
 
 <!-- Updates Tab -->

@@ -185,6 +185,7 @@ class ProjectIdentityTest extends TestCase
         // ...but an explicit, owner-triggered audit surfaces the mismatch.
         $audit = $stack->identity->auditAgainstRuntime();
         $this->assertTrue($audit['canChoose']);
+        $this->assertSame('attention', $audit['auditStatus']);
         $this->assertSame(\ProjectIdentity::CONFLICT_PIN_MISMATCH, $audit['conflictReason']);
         $this->assertContains('moodle_ctgaia2', $audit['candidates']);
 
@@ -204,6 +205,54 @@ class ProjectIdentityTest extends TestCase
 
         $this->assertFalse($audit['canChoose']);
         $this->assertNull($audit['conflictReason']);
+        $this->assertSame('matched', $audit['auditStatus']);
+    }
+
+    public function testAuditDoesNotConfirmOfflineOrUnusedPins(): void
+    {
+        $path = $this->makeStack('folder', 'folder');
+        file_put_contents($path . '/project_name', 'folder');
+        $stack = \StackInfo::fromProject($this->tempRoot, 'folder');
+
+        \ProjectIdentity::setProbe(static fn(): ?array => null);
+        $offline = $stack->identity->auditAgainstRuntime();
+        $this->assertSame('unavailable', $offline['auditStatus']);
+        $this->assertFalse($offline['canChoose']);
+        $this->assertTrue($stack->hasResolvedIdentity());
+
+        \ProjectIdentity::setProbe(static fn(): array => []);
+        $empty = $stack->identity->auditAgainstRuntime();
+        $this->assertSame('no-evidence', $empty['auditStatus']);
+        $this->assertSame('folder', file_get_contents($path . '/project_name'));
+    }
+
+    public function testAuditReportsMultipleRuntimeOwnersWithoutReinterpretingPin(): void
+    {
+        $path = $this->makeStack('moodle-ctgaia2', 'moodle-ctgaia2');
+        file_put_contents($path . '/project_name', 'moodle-ctgaia2');
+        \ProjectIdentity::setProbe(fn(): array => $this->containers(['moodle-ctgaia2' => 1, 'moodle_ctgaia2' => 2]));
+
+        $stack = \StackInfo::fromProject($this->tempRoot, 'moodle-ctgaia2');
+        $audit = $stack->identity->auditAgainstRuntime();
+
+        $this->assertSame('blocked', $audit['auditStatus']);
+        $this->assertFalse($audit['canChoose']);
+        $this->assertTrue($stack->hasResolvedIdentity());
+        $this->assertSame('moodle-ctgaia2', file_get_contents($path . '/project_name'));
+    }
+
+    public function testAuditPreservesSharedIdentityConflictDespiteMatchingResources(): void
+    {
+        foreach (['first', 'second'] as $folder) {
+            $this->makeStack($folder, 'Shared-Project');
+        }
+        \ProjectIdentity::setProbe(fn(): array => $this->containers(['shared_project' => 1]));
+        $stack = \StackInfo::fromProject($this->tempRoot, 'first');
+        $audit = $stack->identity->auditAgainstRuntime();
+
+        $this->assertSame('blocked', $audit['auditStatus']);
+        $this->assertSame(\ProjectIdentity::CONFLICT_SHARED_IDENTITY, $audit['conflictReason']);
+        $this->assertFalse($audit['canChoose']);
     }
 
     public function testInvalidPinBlocksRatherThanChangingIdentity(): void

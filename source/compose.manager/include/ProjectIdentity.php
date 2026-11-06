@@ -455,17 +455,17 @@ final class ProjectIdentity
      * changes the persisted identity itself; `chooseIdentity()` still does
      * that.
      *
-     * @return array<string, mixed> Same shape as toArray()
+     * @return array<string, mixed> toArray() plus auditStatus and auditMessage; never changes the saved pin
      */
     public function auditAgainstRuntime(): array
     {
         $result = $this->toArray();
-        if ($this->source !== self::SOURCE_PERSISTED) {
-            return $result;
-        }
         self::clearProbeCache();
         $probe = self::probe();
         if ($probe === null) {
+            $result['auditStatus'] = 'unavailable';
+            $result['auditMessage'] = 'Docker could not be queried. The saved project identity has not been verified.';
+            $result['canChoose'] = false;
             return $result;
         }
         $owners = [];
@@ -477,11 +477,25 @@ final class ProjectIdentity
             }
         }
         $result['evidence'] = $evidence;
-        if (count($owners) === 1 && $owners[0] !== $this->projectName) {
+        if ($this->resolved && $this->conflictReason === null
+            && count($owners) === 1 && $owners[0] !== $this->projectName) {
             $result['canChoose'] = true;
             $result['conflictReason'] = self::CONFLICT_PIN_MISMATCH;
             $result['message'] = "The saved project name '$this->projectName' owns no Docker resources, but "
                 . "'{$owners[0]}' does. Choose the existing runtime identity before running any action.";
+        }
+        if (!$result['resolved'] || $result['conflictReason'] !== null) {
+            $result['auditStatus'] = $result['canChoose'] ? 'attention' : 'blocked';
+            $result['auditMessage'] = $result['message'];
+        } elseif (count($owners) > 1) {
+            $result['auditStatus'] = 'blocked';
+            $result['auditMessage'] = 'Multiple candidate project names own Docker resources. Review ownership before changing the saved identity.';
+        } elseif ($owners === []) {
+            $result['auditStatus'] = 'no-evidence';
+            $result['auditMessage'] = 'No Docker resources were found for the candidate project names. The saved identity is unchanged, but cannot be verified against runtime evidence.';
+        } else {
+            $result['auditStatus'] = 'matched';
+            $result['auditMessage'] = 'The saved project name matches the available Docker resource evidence.';
         }
         return $result;
     }
