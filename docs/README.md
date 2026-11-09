@@ -9,6 +9,7 @@ Documentation for the Compose Manager plugin for Unraid.
 - [Configuration](configuration.md) - Settings and options
 - [Profiles](profiles.md) - Docker Compose profiles support
 - [Git Stacks](git-stacks.md) - Deploy stacks from a git repository
+- [Behavioral Contracts](contracts/README.md) - Draft specifications, evidence, and owner-review decisions
 
 ## Screenshots
 
