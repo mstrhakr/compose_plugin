@@ -130,6 +130,10 @@ cleanup_docker_config() {
 
 cleanup() {
     local status=$?
+    if [ -n "${update_pull_output:-}" ] && ! rm -f -- "$update_pull_output"; then
+        log_msg ERROR "Unable to remove registry pull diagnostics"
+        status=1
+    fi
     if ! finish_mutation; then
         status=1
         save_result failed "$status" "$command"

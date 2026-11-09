@@ -281,7 +281,7 @@ test_setup() {
     # Local-only images (build: + image:) fail a plain pull; retry skipping them and rebuild.
     run cat "$UPDATE_ENGINE"
     assert_success
-    [[ "$output" == *'update_compose pull --ignore-buildable'* ]]
+    [[ "$output" == *'pull_stack_images --ignore-buildable'* ]]
     [[ "$output" == *'[ "$automatic_update" != true ]; then'* ]]
 }
 

@@ -6,6 +6,7 @@ COMPOSE_SCRIPT="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose.
 test_setup() {
     unset -f docker php timeout 2>/dev/null || true
     export CALLS="$TEST_TEMP_DIR/calls"
+    export PULL_COUNT_FILE="$TEST_TEMP_DIR/pull-count"
     export UPDATE_STATE="$TEST_TEMP_DIR/changed" UPDATE_UP="$TEST_TEMP_DIR/up"
     export OLD_ID="sha256:$(printf 'a%.0s' {1..64})" NEW_ID="sha256:$(printf 'b%.0s' {1..64})"
     export COMPOSE_LOCK_DIR="$TEST_TEMP_DIR/locks" COMPOSE_LOCK_TIMEOUT=0
@@ -22,6 +23,7 @@ test_setup() {
     : > "$NOTIFICATIONS"
     export PATH="$TEST_TEMP_DIR/bin:$PATH"
     setup_mutation_php
+    unset PULL_FAILURES PULL_ERROR ASSERT_PULL_TTY
 }
 
 run_update() {
@@ -32,6 +34,133 @@ run_update() {
 run_auto_adapter() {
     run bash "$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh" \
         -cupdate -pstack -s "$TEST_TEMP_DIR/stack" "$@"
+}
+
+setup_retry_sleep() {
+    sleep() { echo "retry-sleep $*" >> "$CALLS"; }
+    export -f sleep
+}
+
+@test "registry rate limit retries twice with minimum delay and reconciles only after success" {
+    setup_retry_sleep
+    export PULL_FAILURES=2
+    run_update
+    assert_success
+    [ "$(grep -c ' pull ' "$CALLS")" = 3 ]
+    [ "$(grep -c '^retry-sleep 3$' "$CALLS")" = 2 ]
+    [ "$(grep -c ' up ' "$CALLS")" = 1 ]
+    if grep -F ' build' "$CALLS"; then return 1; fi
+    assert_output_contains "pull retry 2 of 2"
+    grep -F '"result":"success"' "$TEST_TEMP_DIR/stack/last_result.json"
+    [ -z "$(find "$TEST_TEMP_DIR" -mindepth 1 -maxdepth 1 -name 'tmp.*' -print)" ]
+}
+
+@test "persistent registry limit stops at three attempts without fallback builds or recreation" {
+    setup_retry_sleep
+    export PULL_FAILURES=99
+    run_update
+    [ "$status" = 7 ]
+    [ "$(grep -c ' pull ' "$CALLS")" = 3 ]
+    [ "$(grep -c '^retry-sleep ' "$CALLS")" = 2 ]
+    if grep -E ' (build|up|rmi)( |$)' "$CALLS"; then return 1; fi
+    assert_output_contains "persists after 3 attempts"
+    grep -F '"result":"failed"' "$TEST_TEMP_DIR/stack/last_result.json"
+}
+
+@test "registry wait honors rounded-up delay and accepts exactly thirty seconds" {
+    setup_retry_sleep
+    export PULL_FAILURES=1 PULL_ERROR='toomanyrequests: retry-after: 29.5s, allowed: 44000/minute'
+    run_update --automatic-update
+    assert_success
+    grep -Fx 'retry-sleep 30' "$CALLS"
+    [ "$(grep -c ' pull ' "$CALLS")" = 2 ]
+}
+
+@test "registry delay beyond thirty seconds stops immediately with visible warning" {
+    setup_retry_sleep
+    export PULL_FAILURES=99 PULL_ERROR='toomanyrequests: retry-after: 30.01s, allowed: 44000/minute'
+    run_update --build
+    [ "$status" = 7 ]
+    [ "$(grep -c ' pull ' "$CALLS")" = 1 ]
+    if grep -E 'retry-sleep| (build|up|rmi)( |$)' "$CALLS"; then return 1; fi
+    assert_output_contains "longer than 30 seconds"
+}
+
+@test "ordinary pull failures do not use rate-limit retries or delays" {
+    setup_retry_sleep
+    export PULL_FAILURES=99 PULL_ERROR='unauthorized: authentication required'
+    run_update --automatic-update
+    [ "$status" = 7 ]
+    [ "$(grep -c ' pull ' "$CALLS")" = 1 ]
+    if grep -F retry-sleep "$CALLS"; then return 1; fi
+    if grep -E ' (build|up)( |$)' "$CALLS"; then return 1; fi
+}
+
+@test "non-rate-limit failure on final attempt does not start another fallback pull" {
+    setup_retry_sleep
+    export PULL_FAILURES=2 PULL_EXIT=8
+    run_update
+    [ "$status" = 8 ]
+    [ "$(grep -c ' pull ' "$CALLS")" = 3 ]
+    if grep -E ' (build|up)( |$)' "$CALLS"; then return 1; fi
+}
+
+@test "interrupted registry wait stops without another pull or recreation" {
+    sleep() { echo "retry-sleep $*" >> "$CALLS"; return 1; }
+    export -f sleep
+    export PULL_FAILURES=99
+    run_update
+    [ "$status" = 7 ]
+    [ "$(grep -c ' pull ' "$CALLS")" = 1 ]
+    if grep -E ' (build|up)( |$)' "$CALLS"; then return 1; fi
+}
+
+@test "registry backoff retains the existing stack operation lock" {
+    sleep() {
+        if flock -n "$COMPOSE_LOCK_DIR/stack.lock" true; then
+            echo "lock unexpectedly released" >> "$CALLS"
+            return 1
+        fi
+        echo "lock retained during retry-sleep $*" >> "$CALLS"
+    }
+    export -f sleep
+    export PULL_FAILURES=1
+    run_update
+    assert_success
+    grep -Fx 'lock retained during retry-sleep 3' "$CALLS"
+    if grep -F 'lock unexpectedly released' "$CALLS"; then return 1; fi
+}
+
+@test "image preparing up and scheduled adapter share bounded registry recovery" {
+    setup_retry_sleep
+    export PULL_FAILURES=1
+    run bash "$COMPOSE_SCRIPT" -c up -p stack -s "$TEST_TEMP_DIR/stack" --prepare-images
+    assert_success
+    [ "$(grep -c ' pull ' "$CALLS")" = 2 ]
+    grep -Fx 'retry-sleep 3' "$CALLS"
+    : > "$CALLS"
+    rm "$TEST_TEMP_DIR/pull-count"
+    run_auto_adapter
+    assert_success
+    [ "$(grep -c ' pull ' "$CALLS")" = 2 ]
+    grep -Fx 'retry-sleep 3' "$CALLS"
+}
+
+@test "registry capture preserves terminal streams ANSI progress and exit status" {
+    setup_retry_sleep
+    export ASSERT_PULL_TTY=true PULL_FAILURES=1
+    printf -v command '%q ' bash "$COMPOSE_SCRIPT" -c update -p stack -s "$TEST_TEMP_DIR/stack"
+    run script -qefc "$command" /dev/null
+    assert_success
+    [ "$(grep -c ' pull ' "$CALLS")" = 2 ]
+    [[ "$output" == *$'\033[32mprogress\033[0m\rfinished'* ]]
+    : > "$CALLS"
+    rm "$PULL_COUNT_FILE"
+    export PULL_FAILURES=99
+    run script -qefc "$command" /dev/null
+    [ "$status" = 7 ]
+    [ "$(grep -c ' pull ' "$CALLS")" = 3 ]
+    if grep -E ' (up|build)( |$)' "$CALLS"; then return 1; fi
 }
 
 @test "prepare images and up deploys selected profiles without existing containers" {

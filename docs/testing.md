@@ -355,6 +355,14 @@ a fake ttyd to test connected cleanup and the real 30-second connection deadline
 These local tests do not invoke Docker or real ttyd.
 The host stabilization gate separately covers the installed terminal controls.
 
+`registry_retry.bats` checks rate-limit evidence and bounded-tail parsing of
+numeric, duration and HTTP-date Retry-After hints, including microseconds and
+the 30-second cutoff. `update.bats` uses fake Docker pulls to verify three total
+attempts, exact requested sleeps, recovery/exhaustion, interrupted waits, retained
+operation locks and no recreation after pull failure. The same tests cover
+manual/scheduled updates and Pull/Build & Up, and run a real PTY capture to check
+terminal detection, ANSI progress and exit-code preservation.
+
 These tests control browser callbacks; they do not prove real Docker or ttyd
 completion.
 

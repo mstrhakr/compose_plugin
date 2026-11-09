@@ -84,6 +84,19 @@ preparation step. Empty, malformed, refused, or failed preparation prevents
 dispatch with an explicit error. Mark/clear endpoints report persistence failure
 rather than claiming a saved change.
 
+Image preparation retries confirmed registry pull rate limits at most twice
+(three total attempts), waiting at least 3 seconds or the longer reported delay,
+rounded up. A suggested wait over 30 seconds stops immediately with a warning;
+the delay is never shortened to fit the limit. Missing hints use 3 seconds.
+Docker duration hints and exposed HTTP Retry-After seconds/dates are understood;
+Compose does not necessarily expose the original HTTP header. Only the pull is
+retried, with the operation lock held, never the whole update or container
+recreation. Exhausted rate limits do not trigger the buildable-image fallback.
+Foreground capture preserves terminal streams and ANSI progress. Manual updates,
+scheduled updates, and Pull/Build & Up use the same policy.
+An unrecognized explicit retry hint refuses automatic retry instead of risking
+a request before the registry's required delay.
+
 `PendingRechecks` owns every pending-store read and mutation, including deletion.
 Readers take a shared lock; writers hold an exclusive lock across validation,
 read-modify-write, and flush. Missing storage is empty; malformed, invalid,

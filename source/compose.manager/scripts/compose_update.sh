@@ -3,14 +3,74 @@
 # shellcheck disable=SC2154
 
 update_compose() {
+  local -a pull_command=("${compose_base[@]}" "${update_profile_args[@]}" -p "$name" "$@")
   if [ "$debug" = true ]; then
     log_msg DEBUG "${compose_base[*]} ${update_profile_args[*]} -p $name $*" >&2
   fi
   if [ "$automatic_update" = true ]; then
-    timeout "${COMPOSE_COMMAND_TIMEOUT:-1800}" "${compose_base[@]}" "${update_profile_args[@]}" -p "$name" "$@"
-  else
-    "${compose_base[@]}" "${update_profile_args[@]}" -p "$name" "$@"
+    pull_command=(timeout "${COMPOSE_COMMAND_TIMEOUT:-1800}" "${pull_command[@]}")
   fi
+  if [ -n "${update_pull_output:-}" ] && [ "${1:-}" = pull ]; then
+    if [ -t 1 ] && [ -t 2 ]; then
+      # Preserve Compose's interactive progress while recording retry evidence.
+      local quoted
+      printf -v quoted '%q ' "${pull_command[@]}"
+      SHELL=/bin/bash script -qefc "$quoted" "$update_pull_output"
+    else
+      "${pull_command[@]}" 2>&1 | tee "$update_pull_output"
+      local -a codes=("${PIPESTATUS[@]}")
+      if [ "${codes[1]}" -ne 0 ]; then
+        log_msg ERROR "Unable to capture registry pull output"
+        pull_retry_refused=true
+        return 1
+      fi
+      return "${codes[0]}"
+    fi
+  else
+    "${pull_command[@]}"
+  fi
+}
+
+pull_stack_images() {
+  local rc delay parsed
+  pull_retry_refused=false
+  if [ -z "${update_pull_output:-}" ]; then
+    if ! update_pull_output=$(mktemp); then
+      log_msg ERROR "Unable to create registry pull diagnostics"
+      pull_retry_refused=true
+      return 1
+    fi
+  fi
+  while true; do
+    pull_attempts=$((pull_attempts + 1))
+    update_compose pull "$@"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then return 0; fi
+    if [ "$pull_retry_refused" = true ]; then return "$rc"; fi
+    delay=$("${COMPOSE_MANAGER_PHP:-php}" "$script_directory/registry_retry.php" "$update_pull_output")
+    parsed=$?
+    if [ "$parsed" -eq 1 ]; then return "$rc"; fi
+    pull_retry_refused=true
+    if [ "$parsed" -ne 0 ] || [[ ! "$delay" =~ ^([3-9]|[12][0-9]|3[01])$ ]]; then
+      log_msg ERROR "Unable to determine registry retry delay; refusing an automatic retry"
+      echo "Unable to determine registry retry delay; refusing an automatic retry. Review the registry error above."
+      return "$rc"
+    fi
+    if [ "$delay" -gt 30 ]; then
+      log_msg WARNING "Registry rate limit requests a wait longer than 30 seconds; stopping without retrying. Try the update later."
+      echo "Registry rate limit requests a wait longer than 30 seconds; stopping without retrying. Try the update later."
+      return "$rc"
+    fi
+    if [ "$pull_attempts" -ge 3 ]; then
+      log_msg WARNING "Registry rate limit persists after 2 retries; stopping. Try the update later."
+      echo "Registry rate limit persists after 3 attempts; stopping. Try the update later."
+      return "$rc"
+    fi
+    log_msg WARNING "Registry rate limit; waiting $delay seconds before pull retry $pull_attempts of 2."
+    echo "Registry rate limit; waiting $delay seconds before pull retry $pull_attempts of 2."
+    sleep "$delay" || return "$rc"
+    pull_retry_refused=false
+  done
 }
 
 update_outcome() {
@@ -53,7 +113,7 @@ foreach ($config["services"] as $service => $definition) {
 }
 
 prepare_stack_images() {
-  local rc
+  local rc pull_attempts=0
   preparation_phase=pull
   local -a scope=() pull_args=()
   if [ "$#" -gt 0 ]; then scope=(-- "$@"); fi
@@ -64,11 +124,12 @@ prepare_stack_images() {
     pull_args+=(--ignore-buildable)
   fi
   echo "Pulling latest images..."
-  update_compose pull "${pull_args[@]}" "${scope[@]}"
+  pull_stack_images "${pull_args[@]}" "${scope[@]}"
   rc=$?
-  if [ "$rc" -ne 0 ] && [ "$build_on_update" != true ] && [ "$automatic_update" != true ]; then
+  if [ "$rc" -ne 0 ] && [ "$pull_retry_refused" != true ] && [ "$pull_attempts" -lt 3 ] &&
+      [ "$build_on_update" != true ] && [ "$automatic_update" != true ]; then
     log_msg WARNING "Pull failed for $name; retrying without buildable services and rebuilding"
-    update_compose pull --ignore-buildable "${scope[@]}"
+    pull_stack_images --ignore-buildable "${scope[@]}"
     rc=$?
     if [ "$rc" -eq 0 ]; then rebuild=true; fi
   fi

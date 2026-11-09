@@ -57,6 +57,20 @@ else
         if [ -f "$UPDATE_UP" ] && [ -f "$UPDATE_STATE" ]; then echo "$NEW_ID"; else echo "$OLD_ID"; fi
         exit 0 ;;
       pull)
+        if [ -n "${PULL_FAILURES:-}" ]; then
+          count=0
+          if [ -f "$PULL_COUNT_FILE" ]; then read -r count < "$PULL_COUNT_FILE"; fi
+          count=$((count + 1))
+          echo "$count" > "$PULL_COUNT_FILE"
+          if [ "$count" -le "$PULL_FAILURES" ]; then
+            echo "${PULL_ERROR:-toomanyrequests: retry-after: 533.64µs, allowed: 44000/minute}" >&2
+            exit 7
+          fi
+        fi
+        if [ "${ASSERT_PULL_TTY:-false}" = true ]; then
+          [[ -t 1 && -t 2 ]] || exit 91
+          printf '\033[32mprogress\033[0m\rfinished\n'
+        fi
         if [ "${PULL_EXIT:-0}" != 0 ]; then
           if [ "${FALLBACK_PULL:-false}" != true ] || [ "${2:-}" != --ignore-buildable ]; then
             exit "$PULL_EXIT"
