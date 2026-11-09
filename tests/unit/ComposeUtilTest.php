@@ -328,16 +328,16 @@ class ComposeUtilTest extends TestCase
         $GLOBALS['composeLoggerMessages'] = [];
 
         ob_start();
-        echoComposeCommand('up', ['followLogs' => true]);
+        echoComposeCommand('up', ['followLogs' => true, 'background' => true]);
         $output = ob_get_clean();
 
-        $this->assertStringContainsString('/plugins/compose.manager/include/ShowTtyd.php?done=1', $output);
-        $this->assertStringContainsString('path=', $output);
-        $this->assertStringNotContainsString('/plugins/compose.manager/include/ShowTtyd.php?socket=', $output);
+        $response = json_decode($output, true, 512, JSON_THROW_ON_ERROR);
+        $this->assertStringContainsString('session=', $response['url']);
+        $this->assertStringContainsString('&follow=1', $response['url']);
+        $this->assertArrayNotHasKey('background', $response);
         $commands = implode("\n", $GLOBALS['composeLoggerMessages']);
-        $this->assertStringContainsString("'--follow-logs'", $commands);
-        $this->assertStringNotContainsString("'--wait'", $commands);
-        $this->assertStringNotContainsString("'--wait-timeout'", $commands);
+        $this->assertStringContainsString('--follow-logs', $commands);
+        $this->assertStringNotContainsString('--wait', $commands);
         $this->assertSame($stackWait, is_file("$stackDir/wait_for_healthy") ? file_get_contents("$stackDir/wait_for_healthy") : null);
         $this->assertSame('17', file_get_contents("$stackDir/wait_timeout"));
 

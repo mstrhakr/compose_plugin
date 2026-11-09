@@ -410,11 +410,11 @@ case $command in
     fi
 
     if [ "$follow_logs" = true ]; then
-      save_follow_pid "$$"
+      if [ -z "${COMPOSE_TERMINAL_FOLLOW_RECEIPT:-}" ]; then save_follow_pid "$$"; fi
       if [ "$debug" = true ]; then
         log_msg "DEBUG" "${compose_base[*]} -p $name up ${cmd_args[*]}"
       fi
-      "${compose_base[@]}" -p "$name" up "${cmd_args[@]}"
+      COMPOSE_MENU=true "${compose_base[@]}" -p "$name" up "${cmd_args[@]}"
     else
       if [ "$debug" = true ]; then
         log_msg "DEBUG" "${compose_base[*]} -p $name up ${cmd_args[*]} -d"

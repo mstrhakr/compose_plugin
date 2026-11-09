@@ -227,6 +227,7 @@ function echoComposeCommand($action, array $options = [])
         }
         if ($followLogs) {
             $waitForHealthy = false;
+            $background = false;
         }
     }
     $unRaidVars = parse_ini_file("/var/local/emhttp/var.ini");
@@ -365,8 +366,8 @@ function echoComposeCommand($action, array $options = [])
                 return escapeshellarg($item);
             }, $composeCommand);
             $composeCommandStr = join(" ", $composeCommandEscaped);
-            if ($operations && !$followLogs) {
-                composeEchoTerminalSession($composeCommandStr, $operations, $debug, $logFile, $action);
+            if ($operations || $followLogs) {
+                composeEchoTerminalSession($composeCommandStr, $operations, $debug, $logFile, $action, $followLogs);
                 return;
             }
             // Use a per-stack socket for logs so viewing logs doesn't conflict
@@ -381,11 +382,8 @@ function echoComposeCommand($action, array $options = [])
                 $composeCommand = "/plugins/compose.manager/include/ShowTtyd.php?socket=" . urlencode($logsSocket);
             } else {
                 $composeCommand = "/plugins/compose.manager/include/ShowTtyd.php?done=1";
-                if ($action === 'up' && $followLogs) {
-                    $composeCommand .= '&path=' . urlencode($path);
-                }
             }
-            echo $operations ? json_encode(['url' => $composeCommand, 'operations' => $operations]) : $composeCommand;
+            echo $composeCommand;
         }
         composeLogger("Final compose command: " . $composeCommand, ['command' => $composeCommand], 'user', 'debug', 'compose');
     }

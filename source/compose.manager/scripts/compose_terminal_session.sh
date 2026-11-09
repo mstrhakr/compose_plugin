@@ -5,6 +5,11 @@ receipt=$1
 command=$2
 log=$3
 shift 3
+follow_logs=false
+if [ "${1:-}" = --follow-logs ]; then
+    follow_logs=true
+    shift
+fi
 operations=("$@")
 COMPOSE_TERMINAL_CANCEL_FILE="$receipt.cancel"
 export COMPOSE_TERMINAL_CANCEL_FILE
@@ -74,9 +79,17 @@ finish() {
                 mv -f "$file.$$" "$file" || echo "Unable to cancel queued operation receipt" >&2
         fi
     done
-    printf '{"state":"completed","exitCode":%s}\n' "$code" > "$receipt.$$" &&
+    local follow_field='' detached_field=''
+    if [ "$follow_logs" = true ]; then follow_field=',"followLogs":true'; fi
+    if [ "$code" -eq 0 ] && [ -f "$receipt.detach-requested" ]; then detached_field=',"detached":true'; fi
+    exec 8>&-
+    if ! rm -f "$COMPOSE_TERMINAL_CANCEL_FILE" "$receipt.input" "$receipt.detach-ready"; then
+        echo "Unable to clean up terminal control files" >&2
+        code=1
+        detached_field=''
+    fi
+    printf '{"state":"completed","exitCode":%s%s%s}\n' "$code" "$follow_field" "$detached_field" > "$receipt.$$" &&
         mv -f "$receipt.$$" "$receipt" || echo "Unable to save terminal receipt" >&2
-    rm -f "$COMPOSE_TERMINAL_CANCEL_FILE"
 }
 
 # shellcheck disable=SC2317
@@ -118,14 +131,23 @@ stop() {
 trap finish EXIT
 child=''
 trap stop TERM
+follow_field=''
+if [ "$follow_logs" = true ]; then
+    follow_field=',"followLogs":true'
+    export COMPOSE_TERMINAL_FOLLOW_RECEIPT="$receipt"
+    mkfifo -m 600 "$receipt.input" || exit 1
+    exec 8<>"$receipt.input"
+else
+    exec 8< /dev/null
+fi
 # /proc stat's comm field may contain spaces or parentheses.
 stat=$(cat "/proc/$$/stat")
 rest=${stat##*) }
 read -r -a fields <<< "$rest"
-printf '{"state":"running","pid":%s,"started":"%s"}\n' "$$" "${fields[19]}" > "$receipt.$$" &&
+printf '{"state":"running","pid":%s,"started":"%s"%s}\n' "$$" "${fields[19]}" "$follow_field" > "$receipt.$$" &&
     mv -f "$receipt.$$" "$receipt" || exit 1
-# No interactive stdin is promised for managed compose actions.
-(SHELL=/bin/bash TERM=xterm-256color script -qefc "$command" /dev/null < /dev/null |
+# Only the native detach shortcut is accepted through the private follow input.
+(SHELL=/bin/bash TERM=xterm-256color script -qefc "$command" /dev/null <&8 |
     (trap '' TERM; exec php "$(dirname "$0")/compose_terminal_output.php" "$receipt.log" "$log")) &
 child=$!
 wait "$child"

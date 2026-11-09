@@ -2316,6 +2316,7 @@ switch ($_POST['action']) {
 
     case 'getTerminalSession':
     case 'stopTerminalSession':
+    case 'detachTerminalSession':
     case 'connectTerminalViewer':
     case 'getTerminalOutput':
         require_once __DIR__ . '/TerminalSession.php';
@@ -2323,6 +2324,9 @@ switch ($_POST['action']) {
             $id = (string) ($_POST['session'] ?? '');
             if ($_POST['action'] === 'stopTerminalSession') {
                 composeStopTerminalSession($id);
+            }
+            if ($_POST['action'] === 'detachTerminalSession') {
+                composeDetachTerminalSession($id);
             }
             $response = ['result' => 'success', 'session' => composeReadTerminalSession($id)];
             $response['session']['viewerConnected'] = is_file(composeUiOperationFile('terminal-session', $id) . '.log.connected');

@@ -205,6 +205,24 @@ test_setup() {
     assert_mock_called "docker" "compose -p follow-test up"
 }
 
+@test "managed follow enables the native menu without publishing a legacy suspend PID" {
+    export COMPOSE_LOCK_DIR="$TEST_TEMP_DIR/compose-locks"
+    export COMPOSE_TERMINAL_FOLLOW_RECEIPT="$TEST_TEMP_DIR/owned-receipt"
+    export FOLLOW_STACK="$TEST_TEMP_DIR/follow-stack"
+    export MENU_CAPTURE="$TEST_TEMP_DIR/menu-setting"
+    mkdir -p "$COMPOSE_LOCK_DIR" "$FOLLOW_STACK"
+    docker() {
+        [[ "$1" == compose ]] || return 1
+        printf '%s\n' "${COMPOSE_MENU:-unset}" > "$MENU_CAPTURE"
+        [[ ! -e "$FOLLOW_STACK/.compose_follow.pid" ]]
+    }
+    export -f docker
+    run bash "$COMPOSE_SCRIPT" -c up -p follow-test --stack-path "$FOLLOW_STACK" --follow-logs
+    assert_success
+    [[ "$(cat "$MENU_CAPTURE")" == true ]]
+    [[ ! -e "$FOLLOW_STACK/.compose_follow.pid" ]]
+}
+
 @test "autostart script honors wait-for-healthy defaults and stack overrides" {
     local autostart_script="$BATS_TEST_DIRNAME/../../source/compose.manager/event/docker_started"
     run grep -F 'resolve_stack_wait_settings' "$autostart_script"

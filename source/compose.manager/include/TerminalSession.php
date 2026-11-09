@@ -44,6 +44,9 @@ function composeReadTerminalSession(string $id): array
     if (!is_array($session) || !in_array($session['state'] ?? '', ['queued', 'running', 'completed'], true)) {
         throw new RuntimeException('Terminal session receipt is invalid.');
     }
+    if (($session['followLogs'] ?? false) === true) {
+        $session['detachReady'] = is_file($file . '.detach-ready');
+    }
     return $session;
 }
 
@@ -56,11 +59,22 @@ function composeStopTerminalSession(string $id): void
     if ($session['state'] !== 'running' || !is_int($session['pid'] ?? null) || $session['pid'] < 2) {
         throw new RuntimeException('The command has not started yet. Try again shortly.');
     }
-    $pid = $session['pid'];
+    $pid = composeTerminalProcessId($id, $session);
+    exec('/bin/kill -TERM -- ' . $pid . ' 2>&1', $output, $code);
+    if ($code !== 0) {
+        throw new RuntimeException('Unable to stop terminal command: ' . implode("\n", $output));
+    }
+}
+
+/** @param array<string, mixed> $session */
+function composeTerminalProcessId(string $id, array $session): int
+{
+    $pid = $session['pid'] ?? null;
+    if (!is_int($pid) || $pid < 2) throw new RuntimeException('Invalid command process receipt.');
     $stat = @file_get_contents("/proc/$pid/stat");
     $command = @file_get_contents("/proc/$pid/cmdline");
     if ($stat === false || $command === false) {
-        throw new RuntimeException('The command exited while stopping it. Refresh its status.');
+        throw new RuntimeException('The command exited. Refresh its status.');
     }
     $fields = explode(' ', substr($stat, strrpos($stat, ')') + 2));
     $arguments = explode("\0", $command);
@@ -68,22 +82,62 @@ function composeStopTerminalSession(string $id): void
         || ($fields[19] ?? '') !== ($session['started'] ?? '')
         || !in_array(dirname(__DIR__) . '/scripts/compose_terminal_session.sh', $arguments, true)
         || !in_array(composeUiOperationFile('terminal-session', $id), $arguments, true)) {
-        throw new RuntimeException('Terminal process identity changed; refusing to signal it.');
+        throw new RuntimeException('Terminal process identity changed; refusing to control it.');
     }
-    exec('/bin/kill -TERM -- ' . $pid . ' 2>&1', $output, $code);
-    if ($code !== 0) {
-        throw new RuntimeException('Unable to stop terminal command: ' . implode("\n", $output));
+    return $pid;
+}
+
+function composeDetachTerminalSession(string $id): void
+{
+    $session = composeReadTerminalSession($id);
+    if (($session['followLogs'] ?? false) !== true) {
+        throw new RuntimeException('This command is not an attached log session.');
+    }
+    if ($session['state'] === 'completed') return;
+    if ($session['state'] !== 'running') throw new RuntimeException('The command is still starting. Try detaching shortly.');
+    composeTerminalProcessId($id, $session);
+    $file = composeUiOperationFile('terminal-session', $id);
+    if (!is_file($file . '.detach-ready')) {
+        throw new RuntimeException('Compose has not advertised native detach yet. Keep the viewer open; this Compose version may not support it.');
+    }
+    $lock = fopen($file . '.detach.lock', 'c+');
+    if ($lock === false) throw new RuntimeException('Unable to open detach lock.');
+    try {
+        if (!flock($lock, LOCK_EX | LOCK_NB)) throw new RuntimeException('Another detach request is in progress.');
+        if (is_file($file . '.detach-requested')) return;
+        if (is_link($file . '.input') || filetype($file . '.input') !== 'fifo') {
+            throw new RuntimeException('The owned terminal input is unavailable.');
+        }
+        $input = fopen($file . '.input', 'r+');
+        if ($input === false) throw new RuntimeException('Unable to open owned terminal input.');
+        try {
+            if (!stream_set_blocking($input, false)) throw new RuntimeException('Unable to configure owned terminal input.');
+            composeTerminalProcessId($id, composeReadTerminalSession($id));
+            if (file_put_contents($file . '.detach-requested', 'requested', LOCK_EX) === false) {
+                throw new RuntimeException('Unable to record detach request.');
+            }
+            if (fwrite($input, 'd') !== 1 || !fflush($input)) {
+                if (!unlink($file . '.detach-requested')) throw new RuntimeException('Unable to clear failed detach request.');
+                throw new RuntimeException('Unable to send native detach. The command has not been stopped.');
+            }
+        } finally {
+            fclose($input);
+        }
+    } finally {
+        flock($lock, LOCK_UN);
+        fclose($lock);
     }
 }
 
 /**
  * @param array<string, string> $operations
  */
-function composeEchoTerminalSession(string $command, array $operations, bool $debug, string $logFile = '', string $action = ''): void
+function composeEchoTerminalSession(string $command, array $operations, bool $debug, string $logFile = '', string $action = '', bool $followLogs = false): void
 {
     $accepted = false;
     try {
-        $url = composeStartTerminalSession($command, $operations, $debug, $logFile, $accepted);
+        $url = composeStartTerminalSession($command, $operations, $debug, $logFile, $accepted, $followLogs);
+        if ($followLogs) $url .= '&follow=1';
         $url .= '&command=' . rawurlencode($action) . '&bulk=' . (count($operations) > 1 ? '1' : '0');
         echo json_encode(['url' => $url, 'operations' => $operations]);
     } catch (RuntimeException $error) {
@@ -104,7 +158,7 @@ function composeEchoTerminalSession(string $command, array $operations, bool $de
  *
  * @param array<string, string> $operations
  */
-function composeStartTerminalSession(string $command, array $operations, bool $debug, string $logFile = '', bool &$accepted = false): string
+function composeStartTerminalSession(string $command, array $operations, bool $debug, string $logFile = '', bool &$accepted = false, bool $followLogs = false): string
 {
     // Use the same private directory and unguessable identifiers as operation receipts.
     $id = composeCreateUiOperation('terminal-session');
@@ -115,6 +169,7 @@ function composeStartTerminalSession(string $command, array $operations, bool $d
         throw new RuntimeException('Unable to create terminal output log.');
     }
     $args = ['setsid', 'bash', dirname(__DIR__) . '/scripts/compose_terminal_session.sh', $file, $command, $logFile];
+    if ($followLogs) $args[] = '--follow-logs';
     foreach ($operations as $project => $operationId) {
         $args[] = composeUiOperationFile($project, $operationId);
     }

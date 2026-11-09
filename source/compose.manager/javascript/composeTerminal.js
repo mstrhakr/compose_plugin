@@ -5,6 +5,19 @@
     var background = document.getElementById('terminal-background');
     var stop = document.getElementById('terminal-stop');
     var done = document.getElementById('done-btn');
+    var detach = document.getElementById('terminal-detach');
+    var followLogs = window.composeTerminalFollow === true;
+    var detaching = false;
+    var detachUntil = 0;
+    var detachError = '';
+    var modal = window.top.Shadowbox;
+    var pendingClose = window.top.composeTerminalPendingClose;
+    if (modal && pendingClose && pendingClose.session === session && modal.close === pendingClose.guard) {
+        modal.close = pendingClose.originalClose;
+        window.top.composeTerminalPendingClose = null;
+    }
+    var originalClose = modal && modal.close;
+    var guardedClose;
     var status = document.getElementById('terminal-status');
     var completed = false;
     var stopping = false;
@@ -36,14 +49,34 @@
         gitdeploy: 'This interrupts the Git deployment. Repository files may already have changed, and containers may already have been stopped or recreated. The stack may be partially deployed.'
     };
     var stopWarning = 'Stop this command?\n\n' +
-        (stopEffects[window.composeTerminalCommand] ||
+        (followLogs ? 'This Up is attached. Stopping it can stop the stack containers. Use Detach instead to leave them running.' : stopEffects[window.composeTerminalCommand] ||
             'Cancelling interrupts the current operation. Depending on the command, containers may be stopped or left partially changed.') +
         (window.composeTerminalBulk ? '\n\nThis applies to the whole batch: the current action is interrupted and remaining queued actions are cancelled. Earlier actions are not undone.' : '') +
         '\n\nThe exact execution phase is not tracked. Changes already made will not be undone. Check the stack state afterward.';
 
     function closeViewer() {
         dispose();
-        window.top.Shadowbox.close();
+        if (originalClose) originalClose.call(modal);
+    }
+
+    async function detachViewer() {
+        if (completed) { closeViewer(); return; }
+        if (detaching || disposed) return;
+        detaching = true;
+        detachUntil = Date.now() + 10000;
+        detachError = '';
+        if (detach) detach.disabled = true;
+        stop.disabled = true;
+        status.textContent = 'Detaching from logs...';
+        try {
+            var result = await request('detachTerminalSession');
+            if (!disposed) render(result.session);
+        } catch (error) {
+            if (disposed) return;
+            detaching = false;
+            detachError = 'Unable to detach: ' + error.message + ' The command has not been stopped.';
+            status.textContent = detachError;
+        }
     }
 
     async function request(action, extra) {
@@ -169,13 +202,32 @@
         }
         if (completed && receipt.state !== 'completed') return;
         completed = receipt.state === 'completed';
-        background.hidden = completed;
+        followLogs = followLogs || receipt.followLogs === true;
+        background.hidden = completed || followLogs;
         stop.hidden = completed;
         done.hidden = !completed;
-        stop.disabled = stopping || receipt.state !== 'running';
+        stop.disabled = stopping || detaching || receipt.state !== 'running';
+        if (detach) {
+            detach.hidden = completed || !followLogs;
+            detach.disabled = detaching || stopping || receipt.detachReady !== true;
+        }
+        if (completed && detaching) {
+            detaching = false;
+            if (receipt.exitCode === 0) { closeViewer(); return; }
+            detachError = '';
+        }
+        if (detaching && Date.now() >= detachUntil) {
+            detaching = false;
+            detachError = 'Detach was not confirmed within 10 seconds. The command has not been stopped. Keep this viewer open and check the output.';
+            if (detach) detach.disabled = receipt.detachReady !== true;
+            stop.disabled = stopping || receipt.state !== 'running';
+        }
         status.textContent = completed
             ? (receipt.exitCode === 0 ? 'Command completed.' : 'Command ended with exit code ' + receipt.exitCode + '. Review the output.')
-            : (stopping ? 'Stopping command...' : 'Closing this viewer will leave the command running.');
+            : (detaching ? 'Detaching from logs...' : detachError || (stopping ? 'Stopping command...' :
+                followLogs ? (receipt.detachReady === true ? 'Following stack logs. Detach closes this session without stopping containers.' :
+                    'Starting or following logs. Native Detach becomes available when Compose advertises d Detach; older versions may not support it.') :
+                    'Closing this viewer will leave the command running.'));
     }
 
     async function poll() {
@@ -183,6 +235,7 @@
             var result = await request('getTerminalSession');
             if (disposed) return;
             render(result.session);
+            if (disposed) return;
             if (frame && !connecting) {
             if (waitingUntil && (result.session.viewerConnected === true ||
                 completed && result.session.viewerViewed === true)) {
@@ -200,7 +253,11 @@
             }
         } catch (error) {
             if (!completed) {
-                status.textContent = 'Unable to check command status: ' + error.message + ' Retrying...';
+                if (detaching && Date.now() >= detachUntil) {
+                    detaching = false;
+                    detachError = 'Unable to confirm detach. The command has not been stopped. ';
+                }
+                status.textContent = detachError + 'Unable to check command status: ' + error.message + ' Retrying...';
                 stop.disabled = true;
             }
         }
@@ -209,8 +266,9 @@
 
     background.addEventListener('click', closeViewer);
     done.addEventListener('click', closeViewer);
+    if (detach) detach.addEventListener('click', detachViewer);
     stop.addEventListener('click', async function () {
-        if (completed || stopping || !window.confirm(stopWarning)) return;
+        if (completed || stopping || detaching || !window.confirm(stopWarning)) return;
         stopping = true;
         stop.disabled = true;
         status.textContent = 'Stopping command...';
@@ -229,6 +287,7 @@
         clearTimeout(timer);
         clearTimeout(outputTimer);
         controllers.forEach(function (controller) { controller.abort(); });
+        if (modal && modal.close === guardedClose) modal.close = originalClose;
     }
     if (retry) retry.addEventListener('click', function () {
         if (connecting) return;
@@ -238,5 +297,13 @@
         timer = setTimeout(poll, 1000);
     });
     window.addEventListener('pagehide', dispose);
+    if (followLogs && modal && originalClose) {
+        guardedClose = function () {
+            if (completed) closeViewer();
+            else detachViewer();
+        };
+        modal.close = guardedClose;
+        background.hidden = true;
+    }
     poll();
 }());

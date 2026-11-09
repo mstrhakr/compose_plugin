@@ -50,8 +50,9 @@ function composeExpireUiOperations(string $directory): void
             $receipt = json_decode($contents, true);
             if (($receipt['state'] ?? '') === 'running') continue;
             if ($modified < time() - 3600) {
-                foreach (['.log', '.stderr', '.log.generation', '.log.viewed', '.viewer.json', '.viewer.lock'] as $suffix) {
-                    if (is_file($file . $suffix) && !unlink($file . $suffix)) {
+                foreach (['.log', '.stderr', '.log.generation', '.log.viewed', '.viewer.json', '.viewer.lock',
+                    '.detach-requested', '.detach-ready', '.detach.lock', '.input'] as $suffix) {
+                    if (file_exists($file . $suffix) && !unlink($file . $suffix)) {
                         throw new RuntimeException('Unable to expire terminal output.');
                     }
                 }

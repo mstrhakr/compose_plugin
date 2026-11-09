@@ -148,7 +148,7 @@ const test = base.extend<{ stack: HostStack }>({
         await route.continue();
         return;
       }
-      if (['getTerminalSession', 'stopTerminalSession', 'getTerminalOutput', 'connectTerminalViewer'].includes(action)
+      if (['getTerminalSession', 'stopTerminalSession', 'detachTerminalSession', 'getTerminalOutput', 'connectTerminalViewer'].includes(action)
         && terminalSessions.has(params.get('session') || '')) {
         await route.continue();
         return;

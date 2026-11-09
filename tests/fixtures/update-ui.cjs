@@ -5,6 +5,8 @@ const source = fs.readFileSync(`${__dirname}/../../source/compose.manager/javasc
 
 function harness(config = {}) {
     const checked = {};
+    const disabled = {};
+    const handlers = {};
     const events = [];
     const context = {
         console,
@@ -32,7 +34,8 @@ function harness(config = {}) {
         $: selector => ({
             length: 1,
             is: () => !!checked[selector],
-            prop: (key, value) => { checked[selector] = value; },
+            prop: (key, value) => { (key === 'disabled' ? disabled : checked)[selector] = value; },
+            on: (event, handler) => { handlers[`${selector}:${event}`] = handler; },
             toggle: () => {},
         }),
     };
@@ -62,7 +65,25 @@ function harness(config = {}) {
         assert.ok(match, `Missing function ${name}`);
         vm.runInContext(match[0], context);
     }
-    return { context, checked, events };
+    return { context, checked, disabled, handlers, events };
+}
+
+{
+    const { context, checked, disabled, handlers, events } = harness({ RUN_IN_BACKGROUND_DEFAULT: 'true' });
+    context.renderStackActionDialog('up', 'Stack', '/stacks/test', '', [], true, false);
+    assert.match(events[0].dialog.text, /Saved settings are unchanged/);
+    assert.equal(checked['#swal-run-bg-checkbox'], true);
+    const change = handlers['#swal-follow-logs-checkbox:change'];
+    checked['#swal-follow-logs-checkbox'] = true;
+    change.call({ checked: true });
+    assert.equal(disabled['#swal-run-bg-checkbox'], true);
+    assert.equal(checked['#swal-run-bg-checkbox'], false);
+    events[0].callback(true);
+    assert.equal(events.at(-1).payload.followLogs, true);
+    assert.equal(events.at(-1).background, false);
+    change.call({ checked: false });
+    assert.equal(disabled['#swal-run-bg-checkbox'], false);
+    assert.equal(checked['#swal-run-bg-checkbox'], true);
 }
 
 for (const disableWarnings of [false, true]) {

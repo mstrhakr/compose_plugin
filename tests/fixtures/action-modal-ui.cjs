@@ -19,6 +19,7 @@ function harness(response) {
     const events = [];
     const timers = [];
     const context = {
+        URL, window: { location: { href: 'http://compose.test/' } },
         caURL: 'exec', compURL: 'compose', pendingComposeReloadStacks: [], composeStackActionInProgress: {},
         composeActionStateText: () => 'working',
         basename: path => path.split('/').pop(),

@@ -92,15 +92,22 @@ class UiOperationTest extends TestCase
         foreach ([$completed, $active, $old] as $file) {
             file_put_contents($file, $file === $active ? '{"state":"running"}' : '{"state":"completed","exitCode":0}');
             file_put_contents($file . '.log', 'log');
+            file_put_contents($file . '.detach-requested', 'requested');
+            file_put_contents($file . '.detach.lock', '');
+            $this->assertTrue(posix_mkfifo($file . '.input', 0600));
             touch($file, time() - ($file === $old || $file === $active ? 90000 : 4000));
         }
         \composeExpireUiOperations($directory);
         $this->assertFileExists($completed);
         $this->assertFileDoesNotExist($completed . '.log');
+        $this->assertFileDoesNotExist($completed . '.input');
+        $this->assertFileDoesNotExist($completed . '.detach-requested');
+        $this->assertFileDoesNotExist($completed . '.detach.lock');
         $this->assertFileDoesNotExist($old);
         $this->assertFileDoesNotExist($old . '.log');
         $this->assertFileExists($active);
         $this->assertFileExists($active . '.log');
+        $this->assertFileExists($active . '.input');
         file_put_contents($old, '{"state":"completed","exitCode":0}');
         touch($old, time() - 90000);
         \composeExpireUiOperations($directory);

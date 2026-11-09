@@ -188,9 +188,9 @@ ${fn('beginStackRuntimeRequest', 'prefetchStackDetailsInBackground')}`;
     }
   });
 
-  test('follow-logs retains its existing attached terminal path instead of polling an endless command', async ({ page }) => {
+  test('follow-logs keeps its managed receipt active until native detachment completes', async ({ page }) => {
     const result = await page.evaluate(({ state, dispatch }) => new Function(`
-      var composeStackActionInProgress = {}, request, opened = [], refresh = [], compURL = '/compose';
+      var composeStackActionInProgress = {}, request, opened = [], refresh = [], polls = [], compURL = '/compose';
       var $ = () => ({ length: 0 });
       $.ajax = options => {
         request = { options };
@@ -202,17 +202,19 @@ ${fn('beginStackRuntimeRequest', 'prefetchStackDetailsInBackground')}`;
       function tryParseJson() { return null; }
       function queuePendingComposeReloads(projects) { refresh.push(...projects); }
       function openBox(url) { opened.push(url); }
+      function pollBackgroundCompletion(project, delay, operation) { polls.push([project, operation.receipt]); }
       ${state}
       ${dispatch}
       performComposeAction({ stackName: 'stack', actionName: 'up', pendingReload: true, payload: { followLogs: true } });
-      var url = '/plugins/compose.manager/include/ShowTtyd.php?done=1&path=stack';
-      request.done(url);
-      return { tracking: request.options.data.trackOperation, active: !!composeStackActionInProgress.stack, opened, refresh };
+      var url = '/plugins/compose.manager/include/ShowTtyd.php?session=test&follow=1';
+      request.done({ url, operations: { stack: 'follow-receipt' } });
+      return { tracking: request.options.data.trackOperation, active: !!composeStackActionInProgress.stack, opened, refresh, polls };
     `)(), { state, dispatch });
-    expect(result.tracking).toBe('0');
-    expect(result.active).toBe(false);
-    expect(result.opened).toEqual(['/plugins/compose.manager/include/ShowTtyd.php?done=1&path=stack']);
-    expect(result.refresh).toEqual(['stack']);
+    expect(result.tracking).toBe('1');
+    expect(result.active).toBe(true);
+    expect(result.opened).toEqual(['/plugins/compose.manager/include/ShowTtyd.php?session=test&follow=1']);
+    expect(result.refresh).toEqual([]);
+    expect(result.polls).toEqual([['stack', 'follow-receipt']]);
   });
 
   test('an old dispatch response or transport failure cannot finish a newer action', async ({ page }) => {

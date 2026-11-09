@@ -4,10 +4,13 @@ import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 const source = readFileSync(resolve(__dirname, '../../../source/compose.manager/javascript/composeTerminal.js'), 'utf8');
+const mainSource = readFileSync(resolve(__dirname, '../../../source/compose.manager/javascript/composeManagerMain.js'), 'utf8');
+const openActionBox = mainSource.slice(mainSource.indexOf('function openComposeActionBox('), mainSource.indexOf('function performComposeAction('));
 const markup = `
   <p id="terminal-status" role="status"></p>
   <button id="terminal-background">Continue in background</button>
   <button id="terminal-stop" disabled>Stop command</button>
+  <button id="terminal-detach" hidden disabled>Detach</button>
   <button id="done-btn" hidden>Done</button>`;
 const terminalPage = readFileSync(resolve(__dirname, '../../../source/compose.manager/include/ShowTtyd.php'), 'utf8');
 const terminalStyles = terminalPage.match(/<style>([\s\S]*?)<\/style>/)![1];
@@ -18,6 +21,7 @@ ${terminalStyles}</style>
   <span class="ui-dialog-buttonset">
     <button type="button" id="terminal-background">Continue in background</button>
     <button type="button" id="terminal-stop" disabled>Stop command</button>
+    <button type="button" id="terminal-detach" hidden disabled>Detach</button>
     <button type="button" id="done-btn" hidden>Done</button>
     <button type="button" id="terminal-retry" hidden>Retry live connection</button>
   </span>
@@ -431,7 +435,7 @@ test('status failures remain visible and retry without presenting false completi
     expect(styles.output).toBe('bitstream');
   });
 
-test('attached log viewer Done requests safe detach rather than stopping the stack', async ({ page }) => {
+test('legacy attached log viewer Done retains the older detach endpoint', async ({ page }) => {
   const html = execFileSync('php', ['-r', [
     'function autov($file, $ret=false) { if ($ret) return $file; echo $file; }',
     `require ${JSON.stringify(resolve(__dirname, '../../bootstrap.php'))};`,
@@ -459,3 +463,115 @@ test('attached log viewer Done requests safe detach rather than stopping the sta
   expect(requests[0].get('path')).toBe('/stacks/follow-test');
   expect(requests[0].get('csrf_token')).toBe('synthetic-terminal-csrf');
 });
+
+for (const trigger of ['button', 'modal X']) {
+  test(`native log detach through ${trigger} waits for command completion and restores close ownership`, async ({ page }) => {
+    let finished = false;
+    const actions: string[] = [];
+    await page.route('http://terminal.test/**', async route => {
+      if (route.request().method() === 'GET') return route.fulfill({ contentType: 'text/html', body: markup });
+      const params = new URLSearchParams(route.request().postData() || '');
+      expect(params.get('csrf_token')).toBe('synthetic-terminal-csrf');
+      actions.push(params.get('action') || '');
+      return route.fulfill({ json: { result: 'success', session: finished
+        ? { state: 'completed', exitCode: 0, followLogs: true, detached: true }
+        : { state: 'running', followLogs: true, detachReady: true } } });
+    });
+    await page.goto('http://terminal.test/');
+    await page.evaluate(() => {
+      const original = () => { document.body.dataset.closed = 'yes'; };
+      Object.assign(window, {
+        composeTerminalSession: 'a'.repeat(32), composeTerminalFollow: true,
+        Shadowbox: { close: original }, originalClose: original,
+      });
+    });
+    await page.addScriptTag({ content: source });
+    await expect(page.getByRole('button', { name: 'Detach', exact: true })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Continue in background' })).toBeHidden();
+    if (trigger === 'button') await page.getByRole('button', { name: 'Detach', exact: true }).click();
+    else await page.evaluate(() => (window as unknown as { Shadowbox: { close(): void } }).Shadowbox.close());
+    await expect(page.getByRole('status')).toHaveText('Detaching from logs...');
+    expect(await page.locator('body').getAttribute('data-closed')).toBeNull();
+    expect(actions.filter(action => action === 'detachTerminalSession')).toHaveLength(1);
+    finished = true;
+    await expect(page.locator('body')).toHaveAttribute('data-closed', 'yes');
+    expect(actions).not.toContain('stopTerminalSession');
+    expect(await page.evaluate(() => {
+      const w = window as unknown as { Shadowbox: { close(): void }; originalClose: () => void };
+      return w.Shadowbox.close === w.originalClose;
+    })).toBe(true);
+  });
+}
+
+test('popup close is guarded before the iframe controls load and transfers ownership without recursion', async ({ page }) => {
+  let finished = false;
+  const actions: string[] = [];
+  await page.route('http://terminal.test/**', async route => {
+    if (route.request().method() === 'GET') return route.fulfill({ contentType: 'text/html', body: markup });
+    const action = new URLSearchParams(route.request().postData() || '').get('action') || '';
+    actions.push(action);
+    if (action === 'detachTerminalSession') finished = true;
+    return route.fulfill({ json: { result: 'success', session: finished
+      ? { state: 'completed', exitCode: 0, followLogs: true, detached: true }
+      : { state: 'running', followLogs: true, detachReady: true } } });
+  });
+  await page.goto('http://terminal.test/');
+  await page.evaluate(() => Object.assign(window, {
+    composeTerminalSession: 'a'.repeat(32), composeTerminalFollow: true,
+    openBox() {}, swal() { document.body.dataset.startingNotice = 'yes'; },
+    Shadowbox: { close() { document.body.dataset.closed = 'yes'; } },
+  }));
+  await page.addScriptTag({ content: openActionBox });
+  await page.evaluate(() => {
+    const w = window as unknown as { openComposeActionBox(url: string, title: string, projects: string[]): void; Shadowbox: { close(): void } };
+    w.openComposeActionBox('/plugins/compose.manager/include/ShowTtyd.php?follow=1&session=' + 'a'.repeat(32), 'Up', ['test']);
+    w.Shadowbox.close();
+  });
+  await expect(page.locator('body')).toHaveAttribute('data-starting-notice', 'yes');
+  expect(await page.locator('body').getAttribute('data-closed')).toBeNull();
+  await page.addScriptTag({ content: source });
+  await expect(page.getByRole('button', { name: 'Detach', exact: true })).toBeEnabled();
+  await page.evaluate(() => (window as unknown as { Shadowbox: { close(): void } }).Shadowbox.close());
+  await expect(page.locator('body')).toHaveAttribute('data-closed', 'yes');
+  expect(actions.filter(action => action === 'detachTerminalSession')).toHaveLength(1);
+  expect(actions).not.toContain('stopTerminalSession');
+});
+
+for (const failure of ['unsupported', 'timeout', 'command failure']) {
+  test(`native detach ${failure} leaves the viewer open and never sends stop`, async ({ page }) => {
+    await page.clock.install();
+    const actions: string[] = [];
+    let requested = false;
+    await page.route('http://terminal.test/**', async route => {
+      if (route.request().method() === 'GET') return route.fulfill({ contentType: 'text/html', body: markup });
+      const action = new URLSearchParams(route.request().postData() || '').get('action') || '';
+      actions.push(action);
+      if (action === 'detachTerminalSession') {
+        requested = true;
+        if (failure === 'unsupported') return route.fulfill({ json: { result: 'error', message: 'Compose has not advertised native detach yet.' } });
+      }
+      return route.fulfill({ json: { result: 'success', session: requested && failure === 'command failure'
+        ? { state: 'completed', exitCode: 7, followLogs: true }
+        : { state: 'running', followLogs: true, detachReady: failure !== 'unsupported' } } });
+    });
+    await page.goto('http://terminal.test/');
+    await page.evaluate(() => Object.assign(window, {
+      composeTerminalSession: 'a'.repeat(32), composeTerminalFollow: true,
+      Shadowbox: { close() { document.body.dataset.closed = 'yes'; } },
+    }));
+    await page.addScriptTag({ content: source });
+    await expect(page.getByRole('button', { name: 'Detach', exact: true })).toBeVisible();
+    if (failure === 'unsupported') await expect(page.getByRole('button', { name: 'Detach', exact: true })).toBeDisabled();
+    await page.evaluate(() => (window as unknown as { Shadowbox: { close(): void } }).Shadowbox.close());
+    await expect.poll(() => actions.includes('detachTerminalSession')).toBe(true);
+    if (failure === 'timeout') {
+      await expect(page.getByRole('status')).toHaveText('Detaching from logs...');
+      await page.clock.fastForward(11000);
+      await expect(page.getByRole('status')).toContainText('not confirmed within 10 seconds');
+    } else {
+      await expect(page.getByRole('status')).toContainText(failure === 'unsupported' ? 'not advertised native detach' : 'exit code 7');
+    }
+    expect(await page.locator('body').getAttribute('data-closed')).toBeNull();
+    expect(actions).not.toContain('stopTerminalSession');
+  });
+}

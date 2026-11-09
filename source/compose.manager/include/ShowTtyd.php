@@ -147,6 +147,7 @@ $themeSheetJson = json_encode("themes/{$themeFile}.css");
             <span class="ui-dialog-buttonset">
                 <button type="button" id="terminal-background">Continue in background</button>
                 <button type="button" id="terminal-stop" disabled>Stop command</button>
+                <button type="button" id="terminal-detach" hidden disabled>Detach</button>
                 <button type="button" id="terminal-retry" hidden>Retry live connection</button>
                 <button type="button" id="done-btn" hidden>Done</button>
             </span>
@@ -156,6 +157,7 @@ $themeSheetJson = json_encode("themes/{$themeFile}.css");
             window.composeTerminalUrl = <?= json_encode($url) ?>;
             window.composeTerminalCommand = <?= json_encode((string) ($_GET['command'] ?? ''), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
             window.composeTerminalBulk = <?= ($_GET['bulk'] ?? '') === '1' ? 'true' : 'false' ?>;
+            window.composeTerminalFollow = <?= ($_GET['follow'] ?? '') === '1' ? 'true' : 'false' ?>;
         </script>
         <script src="<?php autov('/plugins/compose.manager/javascript/composeTerminal.js'); ?>"></script>
     <?php elseif ($showDone): ?>

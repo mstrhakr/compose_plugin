@@ -10,11 +10,24 @@ if ($spool === false || $log === false) {
 }
 $size = 0;
 $generation = 0;
+$followReceipt = getenv('COMPOSE_TERMINAL_FOLLOW_RECEIPT');
+$menuBuffer = '';
 while (!feof(STDIN)) {
     $chunk = fread(STDIN, 8192);
     if ($chunk === false) {
         fwrite(STDERR, "Unable to read command output.\n");
         exit(1);
+    }
+    if ($followReceipt !== false) {
+        $menuBuffer = substr($menuBuffer . $chunk, -8192);
+        $plain = preg_replace('/\x1b\[[0-?]*[ -\/]*[@-~]/', '', $menuBuffer);
+        if ($plain !== null && preg_match('/\bd\s+Detach\b/', $plain) === 1) {
+            if (file_put_contents($followReceipt . '.detach-ready', 'ready') === false) {
+                fwrite(STDERR, "Unable to publish native detach readiness.\n");
+                exit(1);
+            }
+            $followReceipt = false;
+        }
     }
     if ($log !== null && (fwrite($log, $chunk) !== strlen($chunk) || !fflush($log))) {
         fwrite(STDERR, "Unable to save stack command log.\n");

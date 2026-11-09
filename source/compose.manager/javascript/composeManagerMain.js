@@ -4295,6 +4295,19 @@ function openComposeActionBox(url, title, stackNames) {
         return encodeURIComponent(project);
     }).join(',');
     openBox(url, title, 800, 1200, true, 'composeActionBoxClosed', projects);
+    var query = new URL(url, window.location.href).searchParams;
+    if (query.get('follow') === '1' && typeof Shadowbox !== 'undefined') {
+        var owner = { session: query.get('session'), originalClose: Shadowbox.close };
+        owner.guard = function() {
+            swal({
+                title: 'Terminal starting',
+                text: 'Wait for the terminal controls before detaching. The command has not been stopped.',
+                type: 'info'
+            });
+        };
+        window.composeTerminalPendingClose = owner;
+        Shadowbox.close = owner.guard;
+    }
 }
 
 function performComposeAction(opts) {
@@ -4313,8 +4326,7 @@ function performComposeAction(opts) {
     var operation = stackName ? setStackActionInProgress(stackName, true, actionStateText) : null;
 
     payload.background = background ? 1 : 0;
-    // Attached "up" follows logs indefinitely; preserve its existing close/detach path.
-    payload.trackOperation = payload.followLogs ? '0' : '1';
+    payload.trackOperation = '1';
     if (Object.prototype.hasOwnProperty.call(payload, 'removeOrphans')) {
         payload.removeOrphans = payload.removeOrphans ? 1 : 0;
     }
@@ -5859,7 +5871,7 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
         followLogsHtml = '<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--dynamix-box-inner-div-border-color);display:flex;align-items:center;gap:8px;">' +
             '<input type="checkbox" id="swal-follow-logs-checkbox" aria-describedby="swal-follow-logs-note" style="width:16px;height:16px;cursor:pointer;">' +
             '<div><label for="swal-follow-logs-checkbox" style="cursor:pointer;user-select:none;margin:0;font-size:0.95em;">Follow stack logs</label>' +
-            '<div id="swal-follow-logs-note" class="compose-text-muted" style="font-size:0.85em;">Disables wait-for-healthy for this run. Your saved setting is unchanged.</div></div>' +
+            '<div id="swal-follow-logs-note" class="compose-text-muted" style="font-size:0.85em;">Opens a live viewer instead of running in background and disables wait-for-healthy for this run. Saved settings are unchanged. Native Detach requires a Compose version that offers the d shortcut.</div></div>' +
             '</div>';
     }
 
@@ -5916,6 +5928,7 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
                 var runInBackground = $('#swal-run-bg-checkbox').is(':checked');
                 var removeOrphans = $('#swal-remove-orphans-checkbox').is(':checked');
                 var followLogs = action === 'up' && $('#swal-follow-logs-checkbox').is(':checked');
+                if (followLogs) runInBackground = false;
                 // when running in background, suppress the extra notifyBackgroundStarted popup
                 cfg.confirmedFn(path, {
                     profile: profile,
@@ -5943,6 +5956,10 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
             var $followCb = $('#swal-follow-logs-checkbox');
             if ($followCb.length) {
                 $followCb.prop('checked', false);
+                $followCb.on('change', function() {
+                    $cb.prop('disabled', this.checked);
+                    $cb.prop('checked', this.checked ? false : bgDefault);
+                });
             }
         }, 50);
     });

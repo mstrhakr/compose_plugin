@@ -59,16 +59,24 @@ Viewer connection failures never cancel accepted work; receipt polling continues
 independently. A confirmed command-launch failure instead completes only
 still-queued receipts as failed.
 
-Attached Up/log-following with safe detach and reconnect is deferred beyond
-this beta in [feature request #197](https://github.com/mstrhakr/compose_plugin/issues/197).
-The new finite-action controls do not implement that long-running lifecycle.
-
 Selecting **Follow stack logs** for Up disables wait-for-healthy for that run,
 including inherited stack/global defaults or an explicit wait request. It does
 not modify saved wait settings; a subsequent Up without following logs uses the
 normal wait policy again. The dialog explains this override beside the checkbox.
-Attached log following retains its existing safe-detach path, separate from the
-managed finite-action viewer and its explicit Stop command.
+It also overrides Run in background for this run, opening a managed viewer.
+Attached Up uses the same owned PTY and output recovery as finite actions.
+The viewer remains read-only. When Compose advertises its native `d Detach`
+menu, **Detach** becomes available; the popup's X uses the same request.
+The server validates session/process ownership and writes only lowercase `d`
+to a private FIFO feeding that PTY. It sends no signal. The viewer waits up to
+10 seconds for a successful final receipt before closing, never a fixed sleep
+or a visual output heuristic. Failure or timeout stays visible and leaves the
+command alone. Older Compose versions without the native menu explicitly lack
+Detach; closing is refused rather than pretending the follower ended.
+**Stop command** is separate and warns that attached Up can stop containers.
+Closing an entire browser tab cannot be intercepted reliably; accepted work
+still runs independently, and native detach is not guaranteed after navigation.
+General reattachment/interactive terminal controls remain outside this scope.
 
 Pull/Build & Up persists a post-operation image recheck before dispatch; ordinary
 Up does not. Update, Force Update, and Update All share the same validated
@@ -395,10 +403,10 @@ This is a live-testing checkpoint, not a completed lifecycle migration:
 
 - Test real ttyd completion and early modal closure on Unraid; isolated tests
   validate command receipts and browser reconciliation, not host signal delivery.
-- **Follow stack logs** deliberately retains its existing attached-up/Done/detach
-  behavior. It is not a finite command, so this slice does not keep a completion
-  spinner waiting for the log stream to end or change how Compose attaches.
-  Its lifecycle remains an explicit follow-up before declaring all modes aligned.
+- **Follow stack logs** now shares managed receipts and viewer recovery, with
+  explicit native Detach and a matching popup-close guard. Its receipt remains
+  running until Compose actually exits; detachment does not stop the stack.
+  Native shortcut compatibility still needs a guarded real-host soak.
 - Main-view git deploys opt into the same receipts; scheduled/CLI deployments
   keep existing behavior. Dashboard rendering remains page-specific even though
   finite-action completion now shares the receipt contract.

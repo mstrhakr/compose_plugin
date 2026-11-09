@@ -326,6 +326,9 @@ stylesheet links, and requires loaded font faces for controls and saved output;
 checking a computed `font-family` name alone cannot detect missing font resources.
 Native button selectors and `type="button"` attributes are included in the fixture.
 Terminal teardown uses `pagehide`, including when the host forbids `unload`.
+Follow-mode tests exercise Detach and the popup X, requiring actual command
+completion before closing, close-hook restoration, and visible unsupported-menu,
+timeout and nonzero-exit failures without sending Stop.
 `TerminalSessionTest.php` executes real disposable process sessions locally:
 viewer termination leaves a command alive, nonzero exits and output are
 preserved, cancellation stops nested commands and queued bulk receipts, and
@@ -334,6 +337,13 @@ limit against a byte-complete stack log, output-write failures, refused launches
 and accepted commands whose viewer cannot start. PTY regressions check actual
 stdout/stderr terminal detection, Bash semantics and TERM, preserved ANSI colour
 and carriage-return bytes, and output arriving before command completion.
+Native-detach tests send `d` through the real private FIFO/PTY to a disposable
+raw-input command, require all three standard streams to be terminals, and check
+final receipts and input cleanup while unrelated work stays alive. Early menu
+requests and changed process identity are refused; repeated requests send at most
+one shortcut, and an unresponsive follower is not killed. These use a synthetic
+menu/consumer, not Docker Compose's keyboard implementation; version-matched
+native detach still requires a guarded host soak.
 Additional regressions cover the final socket polling interval, 10-second viewer
 readiness, owned-listener replacement, bounded incremental output and rotation.
 The live-connection regression starts a fresh PHP process at the real `Exec.php`

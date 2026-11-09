@@ -32,10 +32,10 @@ class TerminalSessionTest extends TestCase
     }
 
     /** @param string[] $operations */
-    private function launch(string $command, array $operations = [], string $log = ''): void
+    private function launch(string $command, array $operations = [], string $log = '', bool $follow = false): void
     {
         $script = dirname(__DIR__, 2) . '/source/compose.manager/scripts/compose_terminal_session.sh';
-        $this->process = proc_open(['setsid', 'bash', $script, $this->file, $command, $log, ...$operations], [
+        $this->process = proc_open(['setsid', 'bash', $script, $this->file, $command, $log, ...($follow ? ['--follow-logs'] : []), ...$operations], [
             0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w'],
         ], $this->pipes);
         $this->assertIsResource($this->process);
@@ -52,6 +52,17 @@ class TerminalSessionTest extends TestCase
             usleep(10000);
         }
         $this->fail('Timed out waiting for isolated terminal process.');
+    }
+
+    private function detach(): void
+    {
+        // The Unraid file wrapper does not implement nonblocking stream options.
+        \PluginTests\StreamWrapper\UnraidStreamWrapper::unregister();
+        try {
+            \composeDetachTerminalSession($this->id);
+        } finally {
+            \PluginTests\StreamWrapper\UnraidStreamWrapper::register();
+        }
     }
 
     public function testClosingViewerDoesNotKillCommandAndPreservesOutputAndFailure(): void
@@ -78,6 +89,72 @@ class TerminalSessionTest extends TestCase
         $this->waitFor(fn() => \composeReadTerminalSession($this->id)['state'] === 'completed');
         $this->assertSame(0, \composeReadTerminalSession($this->id)['exitCode']);
         $this->assertSame("\033[32mprogress\033[0m\rfinished\r\n", file_get_contents($this->file . '.log'));
+    }
+
+    public function testNativeDetachUsesOwnedPtyAndCompletesWithoutStoppingExternalWork(): void
+    {
+        $external = proc_open(['sleep', '30'], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        $this->assertIsResource($external);
+        try {
+            $this->launch('[[ -t 0 && -t 1 && -t 2 ]] || exit 9; stty -echo -icanon; printf "\\033[32md\\033[0m Detach\\n"; IFS= read -r -n 1 key; [[ $key == d ]]', [], '', true);
+            $this->waitFor(fn() => is_file($this->file . '.detach-ready'));
+            $this->detach();
+            $this->waitFor(fn() => \composeReadTerminalSession($this->id)['state'] === 'completed');
+            $receipt = \composeReadTerminalSession($this->id);
+            $this->assertSame(0, $receipt['exitCode']);
+            $this->assertTrue($receipt['detached']);
+            $this->assertTrue(proc_get_status($external)['running']);
+            clearstatcache();
+            $this->assertFileDoesNotExist($this->file . '.input');
+            $this->detach();
+        } finally {
+            proc_terminate($external);
+            foreach ($pipes as $pipe) fclose($pipe);
+            proc_close($external);
+        }
+    }
+
+    public function testDetachBeforeNativeMenuIsRejectedWithoutSignallingCommand(): void
+    {
+        $this->launch('sleep 30', [], '', true);
+        try {
+            $this->detach();
+            $this->fail('A native menu is required before sending input.');
+        } catch (\RuntimeException $error) {
+            $this->assertStringContainsString('not advertised native detach', $error->getMessage());
+        }
+        $this->assertSame('running', \composeReadTerminalSession($this->id)['state']);
+        $this->assertFileDoesNotExist($this->file . '.detach-requested');
+    }
+
+    public function testDetachIsIdempotentAndDoesNotKillUnresponsiveFollower(): void
+    {
+        $this->launch('printf "d Detach\\n"; sleep 30', [], '', true);
+        $this->waitFor(fn() => is_file($this->file . '.detach-ready'));
+        $this->detach();
+        $this->detach();
+        usleep(100000);
+        $this->assertSame('running', \composeReadTerminalSession($this->id)['state']);
+        $this->assertFileExists($this->file . '.detach-requested');
+    }
+
+    public function testDetachRejectsAlteredOwnershipEvenAfterMenuAppears(): void
+    {
+        $this->launch('printf "d Detach\\n"; sleep 30', [], '', true);
+        $this->waitFor(fn() => is_file($this->file . '.detach-ready'));
+        $original = file_get_contents($this->file);
+        $receipt = \composeReadTerminalSession($this->id);
+        $receipt['started'] = '0';
+        file_put_contents($this->file, json_encode($receipt));
+        try {
+            $this->detach();
+            $this->fail('Reused process identity must not receive input.');
+        } catch (\RuntimeException $error) {
+            $this->assertStringContainsString('identity changed', $error->getMessage());
+        } finally {
+            file_put_contents($this->file, $original);
+        }
+        $this->assertFileDoesNotExist($this->file . '.detach-requested');
     }
 
     public function testPtyOutputArrivesBeforeTheCommandCompletes(): void
@@ -426,6 +503,9 @@ class TerminalSessionTest extends TestCase
             @unlink($file . '.log.viewed');
             @unlink($file . '.viewer.json');
             @unlink($file . '.viewer.lock');
+            @unlink($file . '.detach-requested');
+            @unlink($file . '.detach-ready');
+            @unlink($file . '.detach.lock');
         }
         unset($_POST['trackOperation']);
         parent::tearDown();
