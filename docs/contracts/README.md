@@ -28,7 +28,7 @@ until resolved.
 ## Contract index
 
 | ID | Boundary | Status |
-|---|---|---|
+| --- | --- | --- |
 | BOU | [Rebuild-on-update preference](build-on-update.md): storage, editor round trip, resolution, and update-command handoff | Draft / awaiting owner review |
 
 The [source register](sources.md) records research coverage, relevant historical

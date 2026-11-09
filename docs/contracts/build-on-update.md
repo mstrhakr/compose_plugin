@@ -38,7 +38,7 @@ pull failures. Force recreation is not permission to override build policy.
 Paths below are relative to the repository root.
 
 | Responsibility | Existing owner / evidence |
-|---|---|
+| --- | --- |
 | Shipped global default | [`default.cfg`](../../source/compose.manager/default.cfg): `BUILD_ON_UPDATE_DEFAULT="false"` |
 | Global checkbox and serialization | [`compose.manager.settings.page`](../../source/compose.manager/compose.manager.settings.page): global checkbox; `serializeSettingsForm()` submits string `true`/`false` to the host settings form |
 | Global persistence dependency | Unraid's settings form/update infrastructure; not implemented or independently verified by this plugin-only trace |
@@ -78,7 +78,7 @@ handling or inconsistent normalization.
 `G` means the supplied global config value is exactly the string `true`.
 
 | Per-stack file after trimming | Global disabled or absent | Global enabled |
-|---|---:|---:|
+| --- | ---: | ---: |
 | Missing / empty / whitespace-only | false | true |
 | `true` or `1` | true | true |
 | `false` or `0` | false | false |
@@ -117,7 +117,7 @@ unrelated field:
 ## Round trips and contradictions: observed, not approved
 
 | Starting state / action | What currently happens | Why review is needed |
-|---|---|---|
+| --- | --- | --- |
 | Global enabled; no override; open editor | Checkbox is unchecked; effective update preference is true | UI suggests a different effective behavior from execution |
 | Global enabled; uncheck and save | File is absent; effective preference remains true | Unchecked cannot force disable |
 | Global enabled; explicit file `false`; save grouped settings | API reads checkbox false; browser posts false; server removes file; next resolution is true | Saving a different grouped field can change effective rebuild policy |
@@ -168,7 +168,7 @@ All rows are **Proposed**. "Aligned" means supported by inspected code, not a
 newly executed test or formal approval.
 
 | ID | Candidate requirement | Current assessment |
-|---|---|---|
+| --- | --- | --- |
 | BOU-01 | The shipped and missing global default is disabled. A valid per-stack choice takes precedence over that default. | Aligned for supported stored inputs |
 | BOU-02 | The preference has explicit `inherit`, `enabled`, and `disabled` meanings; users can select all three, and the UI distinguishes stored choice from effective behavior. | Storage resolution supports three meanings; API/UI do not; depends on D1 |
 | BOU-03 | Loading and saving a setting preserves its meaning unless the user deliberately changes it. A grouped save of another setting must not erase an explicit false override. | Not satisfied by the traced round trip |
@@ -191,7 +191,7 @@ These cases define how to validate the proposed boundary. Existing tests below
 were inspected, **not executed** for this documentation-only task.
 
 | Case | Expected outcome / requirement | Existing evidence or gap |
-|---|---|---|
+| --- | --- | --- |
 | No override, global absent/false/true | false / false / true; BOU-01 | [`ComposeProjectDirectoryArgsTest.php`](../../tests/unit/ComposeProjectDirectoryArgsTest.php): `testBuildOnUpdateDefaultsToGlobalSetting` |
 | Override true/false against opposite default | Override wins; BOU-01 | Same file: `testBuildOnUpdateStackOverrideWinsOverGlobal` |
 | Empty override with global enabled | Inherits true | Same test covers empty, but not all whitespace/legacy/error cases |
@@ -239,7 +239,7 @@ claimed. These limitations matter even if all existing tests pass.
 ## Decisions for the owner
 
 | ID | Decision | Recommendation, not an assumption |
-|---|---|---|
+| --- | --- | --- |
 | D1 | Does a stack need inherit / explicitly enable / explicitly disable, or is unchecked intentionally inherit? | Expose three states, matching the resolver's existing precedence and preventing ambiguous false round trips. |
 | D2 | Is `setStackSettings` a partial-update API for this field, or does omission intentionally reset it? | Preserve omitted fields; make inherit explicit. Assess compatibility before changing the endpoint. |
 | D3 | Which legacy inputs remain supported, and what happens for malformed/unreadable data? | Retain documented `true`/`false` and `1`/`0` file compatibility; explicitly reject invalid new requests and block command preparation on unreadable/malformed policy. Define migration before rejecting existing malformed files. |

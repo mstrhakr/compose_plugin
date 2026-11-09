@@ -21,7 +21,7 @@ Both repositories were queried for **all states**, not just open items. The
 1,000-item listing limit exceeded every returned inventory size:
 
 | Repository | Issues | Pull requests | Issue/PR conversation comments | Submitted reviews | Inline review comments |
-|---|---:|---:|---:|---:|---:|
+| --- | ---: | ---: | ---: | ---: | ---: |
 | [mstrhakr/compose_plugin](https://github.com/mstrhakr/compose_plugin) | 127 | 73 | 355 | 145 | 302 |
 | [dcflachs/compose_plugin](https://github.com/dcflachs/compose_plugin) | 19 | 18 | 88 | 27 | 49 |
 
@@ -49,7 +49,7 @@ remain current.
 ## Evidence directly relevant to the pilot
 
 | Source | Evidence and interpretation |
-|---|---|
+| --- | --- |
 | [#37](https://github.com/mstrhakr/compose_plugin/issues/37) | Users need a way to rebuild locally built application images through the UI. Does not establish that all updates must rebuild. |
 | [#94](https://github.com/mstrhakr/compose_plugin/issues/94) | Request to skip pulling buildable images; discussion initially favored making this universal. Later opt-in policy and the current shared engine qualify that older statement. |
 | [#149](https://github.com/mstrhakr/compose_plugin/issues/149) | Complex projects motivated compatibility work. The current regression tests explicitly associate this issue with avoiding unconditional builds for published images that also declare an unusable build context. |
