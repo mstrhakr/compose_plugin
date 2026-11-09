@@ -3,6 +3,35 @@
 require_once __DIR__ . '/UiOperation.php';
 
 /**
+ * Wait for ttyd UNIX socket to exist.
+ *
+ * @param string $socketName Base name of socket file (without path)
+ * @param int $timeoutMs How long to wait in milliseconds (default 2000)
+ * @param int $intervalMs Poll interval in milliseconds (default 100)
+ * @return bool True if socket existed within timeout, false otherwise
+ */
+function waitForTtydSocket($socketName, $timeoutMs = 2000, $intervalMs = 100, $tmpDir = COMPOSE_TTYD_SOCKET_DIR)
+{
+    $socketPath = rtrim($tmpDir, '/') . "/$socketName.sock";
+    if ($timeoutMs < 0 || $intervalMs <= 0) {
+        throw new InvalidArgumentException('Invalid terminal readiness timeout.');
+    }
+    $deadline = hrtime(true) + $timeoutMs * 1000000;
+    for ($i = 0; ; $i++) {
+        clearstatcache(true, $socketPath);
+        if (file_exists($socketPath)) {
+            composeLogger("ttyd socket ready: $socketPath", ['socket' => $socketPath, 'attempt' => $i], 'user', 'debug', 'ttyd');
+            return true;
+        }
+        $remaining = $deadline - hrtime(true);
+        if ($remaining <= 0) break;
+        usleep((int) min($intervalMs * 1000, max(1, ceil($remaining / 1000))));
+    }
+    composeLogger("ttyd socket timeout: $socketPath", ['socket' => $socketPath, 'timeoutMs' => $timeoutMs], 'user', 'warning', 'ttyd');
+    return false;
+}
+
+/**
  * @return array<string, mixed>
  */
 function composeReadTerminalSession(string $id): array

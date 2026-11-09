@@ -7,7 +7,6 @@ namespace ComposeManager\Tests;
 use PluginTests\TestCase;
 
 require_once '/usr/local/emhttp/plugins/compose.manager/include/TerminalSession.php';
-require_once '/usr/local/emhttp/plugins/compose.manager/include/Helpers.php';
 
 class TerminalSessionTest extends TestCase
 {
@@ -160,7 +159,7 @@ class TerminalSessionTest extends TestCase
         \composeConnectTerminalViewer($this->id, true);
     }
 
-    public function testViewerRetriesReplaceOnlyTheOwnedListenerAndUseTenSecondDeadline(): void
+    public function testStandaloneViewerRetriesReplaceOnlyTheOwnedListener(): void
     {
         file_put_contents($this->file, '{"state":"completed","exitCode":0}');
         file_put_contents($this->file . '.log', 'completed output');
@@ -169,12 +168,14 @@ class TerminalSessionTest extends TestCase
         file_put_contents($bin . '/ttyd', "#!/bin/bash\ntouch \"\$4\"\nsleep 0.5\n");
         chmod($bin . '/ttyd', 0700);
         $code = 'require ' . var_export(dirname(__DIR__) . '/bootstrap.php', true) . ';'
-            . 'function waitForTtydSocket($socket, $timeout) {'
-            . 'if ($timeout !== 10000) throw new RuntimeException("Wrong timeout");'
-            . 'for ($i=0; $i<100; $i++) { if (file_exists(COMPOSE_TTYD_SOCKET_DIR . "/" . $socket . ".sock")) return true; usleep(10000); } return false; }'
-            . 'require ' . var_export(dirname(__DIR__, 2) . '/source/compose.manager/include/TerminalSession.php', true) . ';'
             . '$id=' . var_export($this->id, true) . ';'
-            . '$first=composeConnectTerminalViewer($id);'
+            . 'if (function_exists("composeStartTerminalSession") || function_exists("waitForTtydSocket"))'
+            . 'throw new RuntimeException("Terminal dependencies were preloaded before the endpoint");'
+            . '$_POST=["action"=>"connectTerminalViewer","session"=>$id];'
+            . 'ob_start(); require ' . var_export(dirname(__DIR__, 2) . '/source/compose.manager/include/Exec.php', true) . ';'
+            . '$response=json_decode(ob_get_clean(),true);'
+            . 'if (($response["result"]??"")!=="success") throw new RuntimeException("Viewer endpoint failed");'
+            . '$first=$response["viewer"];'
             . '$metadata=composeUiOperationFile("terminal-session",$id).".viewer.json";'
             . '$firstPid=json_decode(file_get_contents($metadata),true)["pid"];'
             . '$again=composeConnectTerminalViewer($id);'
@@ -370,7 +371,6 @@ class TerminalSessionTest extends TestCase
         }
         $before = glob(dirname($this->file) . '/*.json');
         $code = 'define("COMPOSE_SKIP_TTYD_EXEC", false); require ' . var_export(dirname(__DIR__) . '/bootstrap.php', true) . ';'
-            . 'function waitForTtydSocket($socket) { return false; }'
             . 'require ' . var_export(dirname(__DIR__, 2) . '/source/compose.manager/include/TerminalSession.php', true) . ';'
             . '$_POST["trackOperation"] = "1"; $operations = [];'
             . '$command = composeTrackUiCommand(["sh", "-c", ' . var_export('sleep 0.1; touch ' . escapeshellarg($this->directory . '/executed'), true) . '], "startup-test", $operations);'

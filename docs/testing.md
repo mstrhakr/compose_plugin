@@ -331,6 +331,9 @@ stdout/stderr terminal detection, Bash semantics and TERM, preserved ANSI colour
 and carriage-return bytes, and output arriving before command completion.
 Additional regressions cover the final socket polling interval, 10-second viewer
 readiness, owned-listener replacement, bounded incremental output and rotation.
+The live-connection regression starts a fresh PHP process at the real `Exec.php`
+endpoint without preloading dispatch helpers or stubbing socket readiness. This
+checks the dependency boundary used by the browser's separate connection request.
 `terminal_session.bats` uses
 a fake ttyd to test connected cleanup and the real 30-second connection deadline.
 `UiOperationTest.php` verifies output/receipt retention and throttled housekeeping.
