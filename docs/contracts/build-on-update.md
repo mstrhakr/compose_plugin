@@ -1,7 +1,9 @@
 # BOU: Rebuild-on-update preference
 
-**Status:** Draft / awaiting owner review  
-**Recovered:** 2026-11-09  
+**Status:** Draft / awaiting owner review
+
+**Recovered:** 2026-11-09
+
 **Baseline and historical coverage:** [Source register](sources.md)
 
 No requirements in this draft have owner approval yet. No application code,
