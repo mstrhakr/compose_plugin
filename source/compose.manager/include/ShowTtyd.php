@@ -64,6 +64,7 @@ $themeSheetJson = json_encode("themes/{$themeFile}.css");
 <html class="Theme--<?= htmlspecialchars($themeFile, ENT_QUOTES, 'UTF-8') ?>" style="height:100%;margin:0;padding:0">
 
 <head>
+    <link rel="stylesheet" href="<?php autov('/webGui/styles/default-fonts.css'); ?>">
     <link rel="stylesheet" href="<?php autov('/webGui/styles/default-base.css'); ?>">
     <link rel="stylesheet" href="<?php autov('/webGui/styles/default-dynamix.css'); ?>">
     <link rel="stylesheet" href="<?php autov('/webGui/styles/default-color-palette.css'); ?>">
@@ -133,12 +134,6 @@ $themeSheetJson = json_encode("themes/{$themeFile}.css");
             flex-wrap: wrap;
         }
 
-        .ui-dialog-buttonset button {
-            font-family: inherit;
-            font-size: inherit;
-            text-transform: none;
-            letter-spacing: normal;
-        }
     </style>
 </head>
 

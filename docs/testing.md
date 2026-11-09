@@ -321,6 +321,11 @@ confirmed cancellation, completion-only Done, failed-status retry, three bounded
 viewer connection attempts, manual retry without command redispatch, safe
 saved-output fallback, late-response disposal, fast-viewer acknowledgement,
 and button font inheritance.
+The standalone terminal-page font test renders the actual PHP page, follows its
+stylesheet links, and requires loaded font faces for controls and saved output;
+checking a computed `font-family` name alone cannot detect missing font resources.
+Native button selectors and `type="button"` attributes are included in the fixture.
+Terminal teardown uses `pagehide`, including when the host forbids `unload`.
 `TerminalSessionTest.php` executes real disposable process sessions locally:
 viewer termination leaves a command alive, nonzero exits and output are
 preserved, cancellation stops nested commands and queued bulk receipts, and

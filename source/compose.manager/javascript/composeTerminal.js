@@ -237,6 +237,6 @@
         clearTimeout(timer);
         timer = setTimeout(poll, 1000);
     });
-    window.addEventListener('unload', dispose);
+    window.addEventListener('pagehide', dispose);
     poll();
 }());

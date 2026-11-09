@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 const source = readFileSync(resolve(__dirname, '../../../source/compose.manager/javascript/composeTerminal.js'), 'utf8');
 const markup = `
@@ -10,14 +11,15 @@ const markup = `
   <button id="done-btn" hidden>Done</button>`;
 const terminalPage = readFileSync(resolve(__dirname, '../../../source/compose.manager/include/ShowTtyd.php'), 'utf8');
 const terminalStyles = terminalPage.match(/<style>([\s\S]*?)<\/style>/)![1];
-const recoveryMarkup = `<style>.ui-dialog-buttonset button { font-family: "Times New Roman"; }
+const recoveryMarkup = `<style>
+button[type="button"] { font-family: clear-sans; font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: 2px; }
 ${terminalStyles}</style>
   <p id="terminal-status" role="status"></p>
   <span class="ui-dialog-buttonset">
-    <button id="terminal-background">Continue in background</button>
-    <button id="terminal-stop" disabled>Stop command</button>
-    <button id="done-btn" hidden>Done</button>
-    <button id="terminal-retry" hidden>Retry live connection</button>
+    <button type="button" id="terminal-background">Continue in background</button>
+    <button type="button" id="terminal-stop" disabled>Stop command</button>
+    <button type="button" id="done-btn" hidden>Done</button>
+    <button type="button" id="terminal-retry" hidden>Retry live connection</button>
   </span>
   <p id="terminal-connection"></p>
   <iframe id="ttyd-frame" hidden></iframe>
@@ -257,6 +259,30 @@ test('status failures remain visible and retry without presenting false completi
     expect(await page.locator('#ttyd-frame').getAttribute('src')).toBeNull();
   });
 
+  test('pagehide disposes terminal requests without using the restricted unload event', async ({ page }) => {
+    const actions: string[] = [];
+    await page.route('http://terminal.test/**', async route => {
+      if (route.request().method() === 'GET') return route.fulfill({ contentType: 'text/html', body: markup });
+      actions.push(new URLSearchParams(route.request().postData() || '').get('action') || '');
+      await route.fulfill({ json: { result: 'success', session: { state: 'running' } } });
+    });
+    await page.goto('http://terminal.test/');
+    await page.evaluate(() => {
+      Object.assign(window, { composeTerminalSession: 'a'.repeat(32), Shadowbox: { close() {} } });
+      const add = window.addEventListener.bind(window);
+      window.addEventListener = function (...args: Parameters<typeof window.addEventListener>) {
+        if (args[0] === 'unload') throw new Error('unload is forbidden by the host permissions policy');
+        return add(...args);
+      };
+    });
+    await page.addScriptTag({ content: source });
+    await expect(page.getByRole('button', { name: 'Stop command' })).toBeEnabled();
+    await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+    const before = actions.length;
+    await page.waitForTimeout(1200);
+    expect(actions).toHaveLength(before);
+  });
+
   test('a ready socket without browser attachment retries then shows completed saved output', async ({ page }) => {
     await page.clock.install();
     let attempts = 0;
@@ -357,4 +383,49 @@ test('status failures remain visible and retry without presenting false completi
     release();
     await expect(page.locator('#terminal-output')).toHaveText('rotated\n');
     await expect(page.locator('#terminal-status')).toHaveText('Command completed.');
+  });
+
+  test('standalone terminal page loads native font definitions for buttons and saved output', async ({ page }) => {
+    const html = execFileSync('php', ['-r', [
+      'function autov($file, $ret=false) { if ($ret) return $file; echo $file; }',
+      `require ${JSON.stringify(resolve(__dirname, '../../bootstrap.php'))};`,
+      '\\PluginTests\\StreamWrapper\\UnraidStreamWrapper::addMockContent("/usr/local/emhttp/webGui/include/Wrappers.php", "<?php\\n");',
+      '$_SERVER["DOCUMENT_ROOT"]="/usr/local/emhttp";',
+      '$_GET=["done"=>"1","session"=>str_repeat("a",32)];',
+      `require ${JSON.stringify(resolve(__dirname, '../../../source/compose.manager/include/ShowTtyd.php'))};`,
+    ].join('\n')], { encoding: 'utf8' });
+    let fontDefinitionsRequested = false;
+    await page.route('http://terminal.test/**', async route => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === '/webGui/styles/default-fonts.css') {
+        fontDefinitionsRequested = true;
+        const localFonts = "local('Arial'),local('Liberation Sans'),local('DejaVu Sans'),local('WenQuanYi Zen Hei')";
+        return route.fulfill({ contentType: 'text/css', body: `
+          @font-face { font-family: clear-sans; src: ${localFonts}; }
+          @font-face { font-family: bitstream; src: ${localFonts}; }
+        ` });
+      }
+      if (path.endsWith('.css')) return route.fulfill({ contentType: 'text/css', body: `
+        :root { --font-sans: clear-sans, sans-serif; --font-bitstream: bitstream; }
+        button[type="button"] { font-family: clear-sans; font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: 2px; }
+      ` });
+      if (path.endsWith('.js')) return route.fulfill({ contentType: 'text/javascript', body: '' });
+      return route.fulfill({ contentType: 'text/html', body: html });
+    });
+    await page.goto('http://terminal.test/ShowTtyd.php', { waitUntil: 'networkidle' });
+    expect(fontDefinitionsRequested).toBe(true);
+    const fonts = await page.evaluate(async () => {
+      await document.fonts.load('14px clear-sans');
+      await document.fonts.load('14px bitstream');
+      return Array.from(document.fonts).map(font => ({ family: font.family, status: font.status }));
+    });
+    expect(fonts).toEqual(expect.arrayContaining([
+      { family: 'clear-sans', status: 'loaded' }, { family: 'bitstream', status: 'loaded' },
+    ]));
+    const styles = await page.evaluate(() => ({
+      button: getComputedStyle(document.getElementById('terminal-background')!).fontFamily,
+      output: getComputedStyle(document.getElementById('terminal-output')!).fontFamily,
+    }));
+    expect(styles.button).toBe('clear-sans');
+    expect(styles.output).toBe('bitstream');
   });
