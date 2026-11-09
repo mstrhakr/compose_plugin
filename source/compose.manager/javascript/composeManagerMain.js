@@ -5857,8 +5857,9 @@ function renderStackActionDialog(action, displayName, path, profile, containers,
     var followLogsHtml = '';
     if (action === 'up') {
         followLogsHtml = '<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--dynamix-box-inner-div-border-color);display:flex;align-items:center;gap:8px;">' +
-            '<input type="checkbox" id="swal-follow-logs-checkbox" style="width:16px;height:16px;cursor:pointer;">' +
-            '<label for="swal-follow-logs-checkbox" style="cursor:pointer;user-select:none;margin:0;font-size:0.95em;">Follow stack logs</label>' +
+            '<input type="checkbox" id="swal-follow-logs-checkbox" aria-describedby="swal-follow-logs-note" style="width:16px;height:16px;cursor:pointer;">' +
+            '<div><label for="swal-follow-logs-checkbox" style="cursor:pointer;user-select:none;margin:0;font-size:0.95em;">Follow stack logs</label>' +
+            '<div id="swal-follow-logs-note" class="compose-text-muted" style="font-size:0.85em;">Disables wait-for-healthy for this run. Your saved setting is unchanged.</div></div>' +
             '</div>';
     }
 

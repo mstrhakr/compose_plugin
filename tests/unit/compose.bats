@@ -192,6 +192,19 @@ test_setup() {
     assert_success
 }
 
+@test "compose.sh forwards detached wait and timeout while follow mode stays attached" {
+    export -f _mock_docker_compose
+    export MOCK_DOCKER_COMPOSE_EXIT
+    export COMPOSE_LOCK_DIR="$TEST_TEMP_DIR/compose-locks"
+    mkdir -p "$COMPOSE_LOCK_DIR"
+    run bash "$COMPOSE_SCRIPT" -c up -p wait-test --wait --wait-timeout 17
+    assert_success
+    assert_mock_called "docker" "compose -p wait-test up --wait --wait-timeout 17 -d"
+    run bash "$COMPOSE_SCRIPT" -c up -p follow-test --follow-logs
+    assert_success
+    assert_mock_called "docker" "compose -p follow-test up"
+}
+
 @test "autostart script honors wait-for-healthy defaults and stack overrides" {
     local autostart_script="$BATS_TEST_DIRNAME/../../source/compose.manager/event/docker_started"
     run grep -F 'resolve_stack_wait_settings' "$autostart_script"

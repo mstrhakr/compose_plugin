@@ -298,7 +298,8 @@ class ComposeUtilTest extends TestCase
     /**
      * Test echoComposeCommand can launch a live follow-logs session without detach.
      */
-    public function testEchoComposeCommandFollowLogsUpUsesLiveLogSocket(): void
+    #[\PHPUnit\Framework\Attributes\DataProvider('followWaitModes')]
+    public function testEchoComposeCommandFollowLogsUpUsesLiveLogSocket(bool $globalWait, ?string $stackWait, ?string $requestWait): void
     {
         global $compose_root;
         $tempDir = $this->createTempDir();
@@ -309,6 +310,12 @@ class ComposeUtilTest extends TestCase
         mkdir($stackDir, 0755, true);
         file_put_contents("$stackDir/" . COMPOSE_FILE_NAMES[0], "services:\n  web:\n    image: nginx\n");
         file_put_contents("$stackDir/name", $stackName);
+        FunctionMocks::setPluginConfig('compose.manager', [
+            'DEBUG_TO_LOG' => 'false', 'WAIT_FOR_HEALTHY_DEFAULT' => $globalWait ? 'true' : 'false',
+            'WAIT_FOR_HEALTHY_TIMEOUT_DEFAULT' => '45',
+        ]);
+        if ($stackWait !== null) file_put_contents("$stackDir/wait_for_healthy", $stackWait);
+        file_put_contents("$stackDir/wait_timeout", '17');
 
         $varIniDir = sys_get_temp_dir() . '/emhttp_test_' . uniqid();
         mkdir($varIniDir, 0755, true);
@@ -317,6 +324,8 @@ class ComposeUtilTest extends TestCase
 
         $_POST['path'] = $stackDir;
         $_POST['profile'] = '';
+        if ($requestWait !== null) $_POST['waitForHealthy'] = $requestWait;
+        $GLOBALS['composeLoggerMessages'] = [];
 
         ob_start();
         echoComposeCommand('up', ['followLogs' => true]);
@@ -325,10 +334,41 @@ class ComposeUtilTest extends TestCase
         $this->assertStringContainsString('/plugins/compose.manager/include/ShowTtyd.php?done=1', $output);
         $this->assertStringContainsString('path=', $output);
         $this->assertStringNotContainsString('/plugins/compose.manager/include/ShowTtyd.php?socket=', $output);
+        $commands = implode("\n", $GLOBALS['composeLoggerMessages']);
+        $this->assertStringContainsString("'--follow-logs'", $commands);
+        $this->assertStringNotContainsString("'--wait'", $commands);
+        $this->assertStringNotContainsString("'--wait-timeout'", $commands);
+        $this->assertSame($stackWait, is_file("$stackDir/wait_for_healthy") ? file_get_contents("$stackDir/wait_for_healthy") : null);
+        $this->assertSame('17', file_get_contents("$stackDir/wait_timeout"));
+
+        unset($_POST['waitForHealthy']);
+        $GLOBALS['composeLoggerMessages'] = [];
+        ob_start();
+        echoComposeCommand('up');
+        ob_end_clean();
+        $commands = implode("\n", $GLOBALS['composeLoggerMessages']);
+        $expectedWait = $stackWait !== null ? $stackWait === 'true' : $globalWait;
+        if ($expectedWait) {
+            $this->assertStringContainsString("'--wait' '--wait-timeout' '17'", $commands);
+        } else {
+            $this->assertStringNotContainsString("'--wait'", $commands);
+        }
+        $this->assertStringNotContainsString("'--follow-logs'", $commands);
 
         unlink("$varIniDir/var.ini");
         rmdir($varIniDir);
         unset($_POST['path'], $_POST['profile']);
+    }
+
+    public static function followWaitModes(): array
+    {
+        return [
+            'global wait' => [true, null, null],
+            'stack wait' => [false, 'true', null],
+            'explicit request wait' => [false, null, '1'],
+            'stack overrides global off' => [true, 'false', null],
+            'request cannot force wait with follow' => [true, 'true', 'true'],
+        ];
     }
 
     /**

@@ -63,6 +63,13 @@ Attached Up/log-following with safe detach and reconnect is deferred beyond
 this beta in [feature request #197](https://github.com/mstrhakr/compose_plugin/issues/197).
 The new finite-action controls do not implement that long-running lifecycle.
 
+Selecting **Follow stack logs** for Up disables wait-for-healthy for that run,
+including inherited stack/global defaults or an explicit wait request. It does
+not modify saved wait settings; a subsequent Up without following logs uses the
+normal wait policy again. The dialog explains this override beside the checkbox.
+Attached log following retains its existing safe-detach path, separate from the
+managed finite-action viewer and its explicit Stop command.
+
 Pull/Build & Up persists a post-operation image recheck before dispatch; ordinary
 Up does not. Update, Force Update, and Update All share the same validated
 preparation step. Empty, malformed, refused, or failed preparation prevents

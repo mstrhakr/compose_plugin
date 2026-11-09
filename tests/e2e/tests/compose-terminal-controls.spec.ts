@@ -412,6 +412,7 @@ test('status failures remain visible and retry without presenting false completi
       if (path.endsWith('.js')) return route.fulfill({ contentType: 'text/javascript', body: '' });
       return route.fulfill({ contentType: 'text/html', body: html });
     });
+
     await page.goto('http://terminal.test/ShowTtyd.php', { waitUntil: 'networkidle' });
     expect(fontDefinitionsRequested).toBe(true);
     const fonts = await page.evaluate(async () => {
@@ -429,3 +430,32 @@ test('status failures remain visible and retry without presenting false completi
     expect(styles.button).toBe('clear-sans');
     expect(styles.output).toBe('bitstream');
   });
+
+test('attached log viewer Done requests safe detach rather than stopping the stack', async ({ page }) => {
+  const html = execFileSync('php', ['-r', [
+    'function autov($file, $ret=false) { if ($ret) return $file; echo $file; }',
+    `require ${JSON.stringify(resolve(__dirname, '../../bootstrap.php'))};`,
+    '\\PluginTests\\StreamWrapper\\UnraidStreamWrapper::addMockContent("/usr/local/emhttp/webGui/include/Wrappers.php", "<?php\\n");',
+    '$_SERVER["DOCUMENT_ROOT"]="/usr/local/emhttp";',
+    '$_GET=["done"=>"1","path"=>"/stacks/follow-test"];',
+    `require ${JSON.stringify(resolve(__dirname, '../../../source/compose.manager/include/ShowTtyd.php'))};`,
+  ].join('\n')], { encoding: 'utf8' });
+  const requests: URLSearchParams[] = [];
+  await page.addInitScript(() => Object.assign(window, { Shadowbox: { close() {} }, close() {} }));
+  await page.route('http://terminal.test/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === 'POST') {
+      requests.push(new URLSearchParams(request.postData() || ''));
+      return route.fulfill({ json: { result: 'success' } });
+    }
+    if (path === '/viewer') return route.fulfill({ contentType: 'text/html', body: html });
+    await route.fulfill({ contentType: 'text/plain', body: '' });
+  });
+  await page.goto('http://terminal.test/viewer', { waitUntil: 'load' });
+  await page.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect.poll(() => requests.length).toBe(1);
+  expect(requests[0].get('action')).toBe('composeDetachFollow');
+  expect(requests[0].get('path')).toBe('/stacks/follow-test');
+  expect(requests[0].get('csrf_token')).toBe('synthetic-terminal-csrf');
+});

@@ -225,6 +225,9 @@ function echoComposeCommand($action, array $options = [])
         if (isset($_POST['waitTimeout']) && trim((string) $_POST['waitTimeout']) !== '') {
             $waitTimeout = trim((string) $_POST['waitTimeout']);
         }
+        if ($followLogs) {
+            $waitForHealthy = false;
+        }
     }
     $unRaidVars = parse_ini_file("/var/local/emhttp/var.ini");
     if ($unRaidVars['mdState'] != "STARTED") {
@@ -335,11 +338,6 @@ function echoComposeCommand($action, array $options = [])
         }
 
         if ($action === 'up' && $waitForHealthy) {
-            if ($followLogs) {
-                composeLogger("Blocked wait-for-healthy with follow logs enabled", ['action' => $action, 'path' => $path], 'user', 'warning', 'compose');
-                echo json_encode(['error' => 'wait_conflict', 'message' => 'Follow stack logs and wait-for-healthy cannot be enabled at the same time.']);
-                return;
-            }
             $composeCommand[] = "--wait";
             $composeCommand[] = "--wait-timeout";
             $composeCommand[] = (string) $waitTimeout;
