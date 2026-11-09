@@ -17,11 +17,14 @@ for (const viewport of [
   { width: 1280, height: 720 },
   { width: 1920, height: 1080 },
   { width: 390, height: 844 },
+  { width: 320, height: 568 },
+  { width: 442, height: 904 },
   { width: 854, height: 480 },
 ]) {
   for (const theme of ['dark', 'light']) {
   for (const count of [1, 2, 18]) {
-    test(`${theme} update dialog fits ${count} services at ${viewport.width}x${viewport.height}`, async ({ page }) => {
+  for (const action of ['update', 'forceUpdate']) {
+    test(`${theme} ${action} dialog fits ${count} services at ${viewport.width}x${viewport.height}`, async ({ page }) => {
       await page.setViewportSize(viewport);
       // Reproduce host-theme rules that previously squeezed the modal and overlapped its columns.
       await page.setContent(`<style>
@@ -37,13 +40,14 @@ for (const viewport of [
           margin-left: -300px; margin-top: -200px; background: ${theme === 'light' ? '#fafafa' : '#222'}; border: 1px solid #888; }
         .sweet-alert p { text-align: center; }
         table td, table th { white-space: nowrap; }
+        table:where(:not(.unapi *)) tbody td { height: 2.6rem; line-height: 2.6rem; }
         table { margin: 8px 0; border-spacing: 2px; }
         dt { float: left; width: 160px; font-weight: bold; }
         dd { margin-left: 160px; }
         .sweet-alert button { margin: 16px 5px 0; padding: 8px 16px; }
         ${styles}
       </style><main></main>`);
-      await page.evaluate(({ functions, statusSource, count }) => {
+      await page.evaluate(({ functions, statusSource, count, action }) => {
         const escapeHtml = (value: string) => {
           const element = document.createElement('span');
           element.textContent = value;
@@ -69,17 +73,18 @@ for (const viewport of [
           },
         };
         const containers = Array.from({ length: count }, (_, index) => ({
-          name: `servarr-service-${index}`, service: `service-${index}`,
+          name: `servarr-service-${index}`, service: `application-with-a-long-service-name-${index}`,
           image: `ghcr.io/a-very-long-organization/a-long-application-image-${index}:latest`,
           state: 'running', hasUpdate: index % 2 === 0,
           updateReadiness: index % 2 === 0 ? 'download-required' : 'current',
           updateKind: index === 1 ? 'build-base' : 'image',
-          localSha: '428769644eda', localImageSha: '428769644eda', remoteSha: '7284f3c712af',
+          localSha: '428769644eda', localImageSha: '428769644eda',
+          remoteSha: index === 1 ? 'sha256:' + 'abcdef0123456789'.repeat(4) : '7284f3c712af',
         }));
         const invoke = new Function(...Object.keys(scope), 'containers', `${statusSource}\n${functions}\n
-          renderStackActionDialog('update', 'servarr-001', '/stacks/test', '', containers, true, false);`);
+          renderStackActionDialog('${action}', 'servarr-001', '/stacks/test', '', containers, true, false);`);
         invoke(...Object.values(scope), containers);
-      }, { functions, statusSource, count });
+      }, { functions, statusSource, count, action });
 
       const modal = page.locator('.compose-update-dialog');
       await expect(modal).toBeVisible();
@@ -92,6 +97,7 @@ for (const viewport of [
         const body = element.querySelector(':scope > p')!.getBoundingClientRect();
         const buttons = element.querySelector('.sa-button-container')!.getBoundingClientRect();
         const overflows: string[] = [];
+        const verticalOverflows: string[] = [];
         element.querySelectorAll('td').forEach(cell => {
           const bounds = cell.getBoundingClientRect();
           const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
@@ -102,6 +108,9 @@ for (const viewport of [
             for (const textRect of Array.from(range.getClientRects())) {
               if (textRect.left < bounds.left - 1 || textRect.right > bounds.right + 1) {
                 overflows.push(walker.currentNode.textContent!);
+              }
+              if (textRect.top < bounds.top - 1 || textRect.bottom > bounds.bottom + 1) {
+                verticalOverflows.push(walker.currentNode.textContent!);
               }
             }
           }
@@ -119,7 +128,7 @@ for (const viewport of [
           optionsBelowList: options.top >= listRect.bottom,
           footerGap: buttons.top - body.bottom,
           buttonsVisible: buttons.bottom <= innerHeight,
-          overflows, overlappingIds,
+          overflows, verticalOverflows, overlappingIds,
         };
       });
       expect(layout.top).toBeGreaterThanOrEqual(0);
@@ -132,6 +141,7 @@ for (const viewport of [
       expect(layout.footerGap).toBeGreaterThanOrEqual(-1);
       expect(layout.buttonsVisible).toBe(true);
       expect(layout.overflows).toEqual([]);
+      expect(layout.verticalOverflows).toEqual([]);
       expect(layout.overlappingIds).toBe(false);
       const colors = await modal.evaluate(element => {
         const theme = getComputedStyle(document.documentElement);
@@ -190,6 +200,7 @@ for (const viewport of [
       });
       await expect(modal).toBeHidden();
     });
+  }
   }
   }
 }

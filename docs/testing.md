@@ -180,6 +180,13 @@ npm test -- tests/compose-update-state.spec.ts tests/compose-update-evidence-flo
 
 These execute production frontend functions using isolated DOM/transport adapters:
 
+- Update and Force Update layout tests include Unraid's fixed table-cell height
+  and line-height rules. At phone widths the stacked cells must grow with their
+  content: text must stay inside each cell vertically as well as horizontally.
+  Chromium and Firefox cover light/dark themes, 1/2/18 services, long service
+  names and image references, full digests, 320px and screenshot-sized 442px
+  phones, desktop and landscape. Options and confirmation controls remain
+  accessible while the service list scrolls.
 - The Node fixture (`node tests/fixtures/update-ui.cjs`, also run by update Bats)
   deterministically completes details/check responses in both orders for published
   and build-base images. Fresh unknown results must win over older browser history.

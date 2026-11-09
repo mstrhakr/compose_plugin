@@ -406,6 +406,8 @@ if ($cpuCount <= 0) {
     .sweet-alert.compose-update-dialog .compose-update-table td {
         box-sizing: border-box;
         padding: 12px;
+        height: auto;
+        line-height: 1.5;
         vertical-align: top;
         border-bottom: 1px solid var(--dynamix-box-inner-div-border-color, #666);
         white-space: normal !important;
