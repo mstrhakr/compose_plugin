@@ -149,6 +149,7 @@ if (!function_exists('composePurgeDeletedStackCaches')) {
             if (is_file($iconOverridePath) && @unlink($iconOverridePath)) {
                 $purged['iconNormalizeOverride'] = true;
             }
+            @unlink(rtrim(COMPOSE_ICON_NORMALIZE_DIR, '/') . '/' . $projectName . '.container-names.yaml');
         }
 
         try {
@@ -1241,6 +1242,8 @@ switch ($_POST['action']) {
         $buildOnUpdateFile = "$compose_root/$script/build_on_update";
         $buildOnUpdate = is_file($buildOnUpdateFile) ? trim(file_get_contents($buildOnUpdateFile)) : "";
 
+        $autoContainerName = $stackInfo->usesAutoContainerNames();
+
         // Get additional compose files (one path per line)
         $extraComposeFilesFile = "$compose_root/$script/extra_compose_files";
         $extraComposeFiles = is_file($extraComposeFilesFile) ? trim(file_get_contents($extraComposeFilesFile)) : "";
@@ -1334,6 +1337,7 @@ switch ($_POST['action']) {
             'waitForHealthy' => ($waitForHealthy === 'true' || $waitForHealthy === '1'),
             'waitTimeout' => $waitTimeout,
             'buildOnUpdate' => ($buildOnUpdate === 'true' || $buildOnUpdate === '1'),
+            'autoContainerName' => $autoContainerName,
             'extraComposeFiles' => $extraComposeFiles,
             'credentialId' => $credentialId,
             'composeFileCandidates' => $composeFileCandidates,
@@ -1519,6 +1523,12 @@ switch ($_POST['action']) {
         $credentialId = $credentialIdProvided ? trim((string) $_POST['credentialId']) : '';
         $useDefaultComposeFiles = isset($_POST['useDefaultComposeFiles'])
             && strtolower(trim((string) $_POST['useDefaultComposeFiles'])) === 'true';
+        $autoContainerName = isset($_POST['autoContainerName'])
+            && strtolower(trim((string) $_POST['autoContainerName'])) === 'true';
+        if ($autoContainerName && $useDefaultComposeFiles) {
+            echo json_encode(['result' => 'error', 'message' => 'Automatic container names cannot be used with default compose file discovery.']);
+            break;
+        }
 
         $externalComposePath = isset($_POST['externalComposePath']) ? trim($_POST['externalComposePath']) : "";
         $externalComposePath = rtrim($externalComposePath, '/');
@@ -1748,6 +1758,14 @@ switch ($_POST['action']) {
             if (is_file($buildOnUpdateFile)) {
                 StackSourceEditor::remove($buildOnUpdateFile);
             }
+        }
+
+        // Set automatic container names
+        $autoContainerNameFile = "$compose_root/$script/auto_container_name";
+        if ($autoContainerName) {
+            file_put_contents($autoContainerNameFile, 'true');
+        } elseif (is_file($autoContainerNameFile)) {
+            @unlink($autoContainerNameFile);
         }
 
         // Set additional compose files (skipped entirely when the field was not sent)
