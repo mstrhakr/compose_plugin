@@ -343,6 +343,13 @@ Contributions are welcome — we added issue and PR templates to guide reports a
 - [GitHub Issues](https://github.com/mstrhakr/compose_plugin/issues)
 - [unRAID Forums](https://forums.unraid.net/)
 
+### Sponsor development
+
+If Compose Manager Plus makes managing your Unraid server easier, you can
+[support my work through GitHub Sponsors](https://github.com/sponsors/mstrhakr).
+Sponsorship is optional and helps support ongoing maintenance, bug fixes, and
+development.
+
 ## License
 
 Original material owned and licensable by **Nick Szittai (mstrhakr)** is offered
