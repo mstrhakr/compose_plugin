@@ -36,12 +36,168 @@
 >
 
 <CHANGES>
-###2026.11.13.0929
+###2026.11.13
+- Features (terminal): detach attached Up through owned native PTY input
+- Features (terminal): recover live connections with bounded saved-output fallback
+- Features (settings): organize diagnostic and cache actions in maintenance tab
+- Features (editor): warn about shared sources with per-stack dismissal
+- Features: continue tracked terminal actions in background safely
+- Features (git): turn a git stack's recreate-on-folder-change on or off in the web UI
+- Features (git): turn a git stack's recreate-on-folder-change on or off from the command line
+- Features (deploy): allow explicitly skipping pre-build tests
+- Features (updates): present compact image readiness details
+- Features (updates): distinguish downloaded images from remote updates
+- Features (updates): configure manual stopped-service inclusion
+- Features (updates): check build-only services against their Dockerfile base image
+- Bug Fixes (updates): retry registry rate limits with bounded server-aware delays
+- Bug Fixes (up): let explicit log following override saved wait policy
+- Bug Fixes (terminal): load native font faces and dispose with pagehide
+- Bug Fixes (terminal): load socket readiness with standalone viewer endpoint
+- Bug Fixes (updates): let mobile dialog cells grow with their content
+- Bug Fixes (terminal): restore PTY progress while preserving owned cancellation
+- Bug Fixes (compose): allow global read-only commands without a project name
+- Bug Fixes (dispatch): isolate invalid Compose inputs during stack actions
+- Bug Fixes (identities): propagate registration failures and share audit evidence
+- Bug Fixes (identities): report conflicting ownership for saved project pins
+- Bug Fixes (settings): move identity checks into maintenance with evidence reports
+- Bug Fixes (editor): resolve dangling source aliases consistently
+- Bug Fixes (storage): serialize first-use cache initialization
+- Bug Fixes (terminal): drain all owned session groups on cancellation
+- Bug Fixes (editor): target icon previews by exact service ID
+- Bug Fixes (updates): isolate stack configuration failures during bulk checks
+- Bug Fixes (updates): inspect mutually exclusive profiles without deployment validation
+- Bug Fixes (editor): reject stale source contents without discarding edits
+- Bug Fixes: coordinate Compose evidence with mutation and cache owners
+- Bug Fixes: centralize ownership of single bulk and cached image checks
+- Bug Fixes: preserve corrupt evidence until explicit cache clearing
+- Bug Fixes: gate image evidence publication by project generation
+- Bug Fixes: own image-check acknowledgements and surface pending-store failures
+- Bug Fixes: transact pending rechecks and acknowledge exact generations
+- Bug Fixes: preserve Docker membership changes during filter requests
+- Bug Fixes: isolate runtime dictionaries from inherited project keys
+- Bug Fixes: validate image recheck preparation before dispatch
+- Bug Fixes: finalize cancelled operations only after session shutdown
+- Bug Fixes: authenticate terminal controls and require removal evidence
+- Bug Fixes: explain command-specific terminal cancellation effects
+- Bug Fixes (ui): reconcile transient detail state and retry starting health
+- Bug Fixes (dashboard): preserve operation ownership and reject stale snapshots
+- Bug Fixes (ui): preserve open context menus across option refreshes
+- Bug Fixes (ui): preserve unchanged runtime animations and context menus
+- Bug Fixes (ui): share receipt completion tracking with Dashboard
+- Bug Fixes (ui): invalidate Docker filtering only when membership changes
+- Bug Fixes (ui): defer pending update checks until operations finish
+- Bug Fixes (ui): reconcile recreated container metrics and settling health
+- Bug Fixes (ui): allow independent Compose header and Docker visibility
+- Bug Fixes (ui): refresh action views without reloading on terminal close
+- Bug Fixes (git): ignore setting save callbacks after editor switches
+- Bug Fixes (updates): keep one-off jobs out of actionable update evidence
+- Bug Fixes (updates): preserve evidence when runtime enumeration fails
+- Bug Fixes (updates): accept and delimit all valid Compose services
+- Bug Fixes (updates): resolve relative project directories once
+- Bug Fixes (updates): preserve target platforms in manifest and base checks
+- Bug Fixes (updates): resolve base contexts and consume all heredoc bodies
+- Bug Fixes (updates): preserve application identity and registry failure evidence
+- Bug Fixes (updates): preserve explicit automatic project directories
+- Bug Fixes (updates): preserve inspected build image references across reloads
+- Bug Fixes (ui): seal sticky update header and reuse themed row stripes
+- Bug Fixes (ui): keep update action footer outside scrolling content
+- Bug Fixes (updates): reject old image evidence during runtime refresh races
+- Bug Fixes (ui): polish update dialog layout and isolate service scrolling
+- Bug Fixes (updates): clear cached pending evidence on authoritative unknown results
+- Bug Fixes (ui): compact update details into a responsive service table
+- Bug Fixes (updates): synchronize expanded checking state and fresh detail evidence
+- Bug Fixes (updates): discard legacy metadata evidence on cache reads
+- Bug Fixes (updates): resolve keyed image targets without dependency ambiguity
+- Bug Fixes (updates): persist canonical per-container update evidence
+- Bug Fixes (updates): surface build configuration resolution failures
+- Bug Fixes (updates): compare configured targets and batch runtime inspection
+- Bug Fixes (updates): keep fresh evidence ahead of unknown cached results
+- Bug Fixes (updates): preserve unknown readiness across refresh surfaces
+- Bug Fixes (updates): normalize managed services across check entry points
+- Bug Fixes (updates): target eligible deployed services under lock
+- Bug Fixes (lint): resolve shared update engine relative to wrapper for ShellCheck
+- Bug Fixes (updates): only follow registry redirects to http(s)
+- Bug Fixes (updates): check build services that sit behind profiles
+- Bug Fixes (compose): keep updating stacks whose base image is local-only
+- Bug Fixes (updates): stop shell redirects from hiding the final Dockerfile stage
+- Bug Fixes (ui): reconcile finite actions only after their dispatch completes
+- Bug Fixes (ui): track queued and running commands with dispatch receipts
+- Bug Fixes (ui): preserve action ownership and recover failed bulk dispatches
+- Bug Fixes (ui): guard progressive lists and replay pending detail refreshes
+- Bug Fixes (ui): reconcile runtime snapshots and recover live connections
+- Bug Fixes (updates): use stack credentials for private registry checks
+- Bug Fixes (updates): preserve config digest provenance in shared cache
+- Bug Fixes: address update cache review findings
+- Bug Fixes (ui): reconcile update badges and recover action refreshes
+- Bug Fixes (autoupdate): detect containers behind already-pulled images
+- Bug Fixes (updates): compare container images and replace stale cache results
+- Bug Fixes: resolve relative and trailing-slash exclusive-share symlink targets
+- Bug Fixes: add shellcheck directive for PHP variable handling in validate_project_name function
+- Bug Fixes: address Copilot review follow-ups on PR #184
+- Bug Fixes: poll migrated stack locks by exact identity
+- Bug Fixes: retain migrated input order across unrelated settings saves
+- Bug Fixes: preserve explicit clearing of legacy env selections
+- Bug Fixes: keep migrated stacks visible when inputs need repair
+- Bug Fixes: honor ownership confirmation without weakening input guards
+- Bug Fixes: serialize project ownership across stack folders
+- Bug Fixes: preserve existing Plus pins during version upgrades
+- Bug Fixes: harden legacy migration inputs and automation
+- Performance: drain pending image rechecks in linear time
+- Performance (ui): scope detail enhancements and own Dashboard hiding retries
+- Performance (ui): keep runtime refreshes out of whole-list enhancements
+- Performance (updates): reuse remote evidence and index frontend merges
+- Refactoring (updates): remove unused compatibility paths and profile preparation
+- Refactoring (updates): own saved status lifecycle in stack service
+- Refactoring (updates): centralize update operation preparation
+- Refactoring (updates): unify read-only stack checks
+- Refactoring (updates): route every update caller through the shared pipeline
+- Refactoring (updates): centralize update execution with explicit automatic policy
 - Documentation: add optional sponsorship link
+- Documentation: align contract tables with Markdown lint
+- Documentation: remove contract header trailing whitespace
+- Documentation: recover rebuild-on-update preference contract
+- Documentation: require end-to-end ownership review invariants
+- Documentation: clarify image-check publication coordination boundary
+- Documentation: require related-path and contract-aware review
+- Documentation (agents): make maintainability and clear ownership explicit requirements
+- Documentation (agents): require canonical validation and incremental commits
+- Documentation (updates): describe the shared pipeline and automatic update policies
+- Documentation: update manual testing gates for UI completion receipts
+- Documentation: define UI stabilization live testing checkpoint
+- Tests (host): cover identity review fixes in guarded stabilization suite
+- Tests (terminal): acknowledge expected cancellation failure notice
+- Tests (e2e): retain scoped terminal dispatch diagnostics
+- Tests: make guarded ownership wait deterministic and retain diagnostics
+- Tests: cover active deployment image-check ownership on guarded host
+- Tests: cover scoped recheck ownership on guarded real hosts
+- Tests: guard live terminal continuation and cancellation cases
+- Tests: align guarded host cases with live UI lifecycle
+- Tests (e2e): verify recreated row identities and tighten container scope
+- Tests (e2e): add opt-in isolated Unraid stabilization gate
+- Tests (e2e): wait for exact operation receipts before host cleanup
+- Tests (ui): cover stale retry owners and removed Dashboard membership
+- Tests (updates): preserve build-only Rebuild evidence through repeated reloads
+- Tests (updates): cover expanded checking feedback during Check All
+- Tests (ui): verify bulk receipt isolation and private storage
+- Tests: avoid filesystem-order assumptions in migration regressions
+- Tests: isolate compose operation lock directory
+- Chores: update changelog for v2026.11.13.0929 [skip ci]
+- Chores: sync pluginURL+README for dev branch [skip ci]
 - Chores: add GitHub Sponsors funding
-- Chores: update changelog for v2026.10.27 [skip ci]
-- [PR #187](https://github.com/mstrhakr/compose_plugin/pull/187)
-- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.10.27...v2026.11.13.0929)
+- Chores: update changelog for v2026.11.09.1050 [skip ci]
+- Chores: update changelog for v2026.11.06.1329 [skip ci]
+- Chores: update changelog for v2026.11.06.1244 [skip ci]
+- Chores: update changelog for v2026.11.04.1553 [skip ci]
+- Chores: update changelog for v2026.11.03.1021 [skip ci]
+- Chores: update changelog for v2026.11.02.1533 [skip ci]
+- Chores: update changelog for v2026.11.02.1049 [skip ci]
+- Upgrade Compose to 5.7.0 with guarded required-health deadline regression
+- Guard source edits and direct container actions against concurrent operations
+- Coordinate PHP and Git source mutations with check epochs
+- Use configured stack paths for Dashboard actions and logs
+- Bound managed terminal resources and preserve accepted startup tracking
+- Fix profile-aware Pull/Build &amp; Up deployment
+- [View all changes](https://github.com/mstrhakr/compose_plugin/compare/v2026.10.27...v2026.11.13)
 </CHANGES>
 
 <!-- The 'pre-install' script. -->
