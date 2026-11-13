@@ -30,6 +30,7 @@ until resolved.
 | ID | Boundary | Status |
 | --- | --- | --- |
 | BOU | [Rebuild-on-update preference](build-on-update.md): storage, editor round trip, resolution, and update-command handoff | Draft / awaiting owner review |
+| STATE-META | [Shared metadata/state inventory and cleanup addendum](state-metadata.md): canonical store catalog, owner boundaries, and proposed Required/Optional delete cleanup classes | Draft / awaiting owner review |
 
 The [source register](sources.md) records research coverage, relevant historical
 evidence, and limitations. Other capabilities have not yet been specified.
