@@ -18,7 +18,8 @@ switch ($_POST['action']) {
         echoComposeCommand('up', [
             'background' => $background,
             'removeOrphans' => $removeOrphans,
-            'followLogs' => $followLogs
+            'followLogs' => $followLogs,
+            'prepareImages' => ($_POST['prepareImages'] ?? '') === '1'
         ]);
         break;
     case 'composeDetachFollow':
@@ -43,7 +44,8 @@ switch ($_POST['action']) {
         break;
     case 'composeUpPullBuild':
         echoComposeCommand('update', [
-            'background' => $background
+            'background' => $background,
+            'recreate' => ($_POST['recreate'] ?? '') === '1',
         ]);
         break;
     case 'composeGitDeploy':

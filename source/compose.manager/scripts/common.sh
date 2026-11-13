@@ -80,6 +80,18 @@ echo compose_manager_sanitize_project_name((string) ($argv[2] ?? ""));
     echo "$canonical_name"
 }
 
+validate_project_name() {
+    local project_name="${1-}"
+    local php_cmd="${COMPOSE_MANAGER_PHP:-php}"
+    local helper_file
+    helper_file="$(dirname "${BASH_SOURCE[0]}")/../include/ProjectNameSanitizer.php"
+    # shellcheck disable=SC2016  # $argv[] are PHP variables, not shell — single quotes are intentional.
+    "$php_cmd" -r '
+require_once $argv[1];
+exit(compose_manager_is_valid_project_name((string) ($argv[2] ?? "")) ? 0 : 1);
+' "$helper_file" "$project_name" 2>/dev/null
+}
+
 # Find the compose file in a directory using Docker Compose spec priority.
 # Returns the full path to the first matching file, or exits with 1 if none found.
 # Priority: compose.yaml > compose.yml > docker-compose.yaml > docker-compose.yml

@@ -84,13 +84,21 @@ $hideComposeContainersJs = $hideDockerComposeContainers ? 'true' : 'false';
 $iconsJsSrc = '/plugins/compose.manager/javascript/composeIcons.js';
 $iconsJsVer = @filemtime('/usr/local/emhttp' . $iconsJsSrc);
 if ($iconsJsVer) $iconsJsSrc .= '?v=' . $iconsJsVer;
+$updatesJsSrc = '/plugins/compose.manager/javascript/composeUpdateStatus.js';
+$updatesJsVer = @filemtime('/usr/local/emhttp' . $updatesJsSrc);
+if ($updatesJsVer) $updatesJsSrc .= '?v=' . $updatesJsVer;
 // CSS and JavaScript
+$operationsJsSrc = '/plugins/compose.manager/javascript/composeOperations.js';
+$operationsJsVer = @filemtime('/usr/local/emhttp' . $operationsJsSrc);
+if ($operationsJsVer) $operationsJsSrc .= '?v=' . $operationsJsVer;
 $dashboardJsSrc = '/plugins/compose.manager/javascript/composeDashboard.js';
 $dashboardJsVer = @filemtime('/usr/local/emhttp' . $dashboardJsSrc);
 if ($dashboardJsVer) $dashboardJsSrc .= '?v=' . $dashboardJsVer;
 
 $configScript = <<<EOT
 <script src="$iconsJsSrc"></script>
+<script src="$updatesJsSrc"></script>
+<script src="$operationsJsSrc"></script>
 <script src="$dashboardJsSrc"></script>
 <script>
 window.composeDashDebug = $debugEnabled;

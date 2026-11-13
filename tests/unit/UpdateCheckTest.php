@@ -1,0 +1,657 @@
+<?php
+
+declare(strict_types=1);
+
+namespace ComposeManager\Tests;
+
+use PluginTests\TestCase;
+
+require_once '/usr/local/emhttp/plugins/compose.manager/include/UpdateCheck.php';
+
+class UpdateCheckTest extends TestCase
+{
+    private string|false $originalNativeCache;
+    private string $nativeCacheBytes = "{\n  \"library/postgres:18\": {\"local\":\"native-local\",\"remote\":\"native-remote\",\"status\":\"false\"},\n  \"unrelated:latest\": {\"status\":\"true\"}\n}\n";
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        @unlink(COMPOSE_CREDENTIAL_VAULT_FILE);
+        @unlink(COMPOSE_CREDENTIAL_KEY_FILE);
+        $this->originalNativeCache = is_file(UNRAID_UPDATE_STATUS_FILE)
+            ? file_get_contents(UNRAID_UPDATE_STATUS_FILE) : false;
+        file_put_contents(UNRAID_UPDATE_STATUS_FILE, $this->nativeCacheBytes);
+    }
+
+    protected function tearDown(): void
+    {
+        try {
+            $this->assertSame($this->nativeCacheBytes, file_get_contents(UNRAID_UPDATE_STATUS_FILE), 'Checks must leave native Docker update cache bytes unchanged.');
+        } finally {
+            if ($this->originalNativeCache === false) {
+                @unlink(UNRAID_UPDATE_STATUS_FILE);
+            } else {
+                file_put_contents(UNRAID_UPDATE_STATUS_FILE, $this->originalNativeCache);
+            }
+            parent::tearDown();
+        }
+    }
+
+    public function testAttachedCredentialsAreScopedToTheirRegistryAndChecker(): void
+    {
+        $vault = new \CredentialVault();
+        $first = $vault->saveCredential([
+            'name' => 'First', 'provider' => 'github', 'registry' => 'ghcr.io',
+            'username' => 'first', 'secret' => 'first-test-token',
+        ]);
+        $second = $vault->saveCredential([
+            'name' => 'Second', 'provider' => 'github', 'registry' => 'ghcr.io',
+            'username' => 'second', 'secret' => 'second-test-token',
+        ]);
+        $hub = $vault->saveCredential([
+            'name' => 'Hub', 'provider' => 'docker', 'registry' => 'docker.io',
+            'username' => 'hub', 'secret' => 'hub-test-token',
+        ]);
+        $resolve = new \ReflectionMethod(\ComposeUpdateCheck::class, 'resolveRegistryAuth');
+        foreach ([$first, $second, $first] as $credential) {
+            $auth = $resolve->invoke(new \ComposeUpdateCheck($credential['id']), 'ghcr.io/org/private:latest');
+            $this->assertSame(strtolower($credential['name']), $auth['username']);
+            $this->assertSame(strtolower($credential['name']) . '-test-token', $auth['password']);
+        }
+        $checker = new \ComposeUpdateCheck($first['id']);
+        $this->assertSame(
+            $resolve->invoke(new \ComposeUpdateCheck(), 'quay.io/org/public:latest'),
+            $resolve->invoke($checker, 'quay.io/org/public:latest')
+        );
+        foreach (['postgres:18', 'docker.io/library/postgres:18'] as $image) {
+            $auth = $resolve->invoke(new \ComposeUpdateCheck($hub['id']), $image);
+            $this->assertSame('hub', $auth['username']);
+            $this->assertSame('hub-test-token', $auth['password']);
+        }
+        $this->assertStringNotContainsString('test-token', implode("\n", $GLOBALS['composeLoggerMessages'] ?? []));
+    }
+
+    public static function registryAuthCases(): array
+    {
+        return [
+            'basic' => ['basic', false],
+            'bearer' => ['bearer', false],
+            'rejected basic' => ['basic', true],
+            'rejected bearer' => ['bearer', true],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('registryAuthCases')]
+    public function testPrivateRegistryHandshakeUsesAttachedCredential(string $mode, bool $reject): void
+    {
+        $directory = $this->createTempDir();
+        $socket = stream_socket_server('tcp://127.0.0.1:0', $errno, $error);
+        $this->assertNotFalse($socket, $error);
+        $address = stream_socket_get_name($socket, false);
+        fclose($socket);
+        $this->assertIsString($address);
+        $router = $directory . '/registry.php';
+        $hostPlatform = explode('/', (new \ReflectionMethod(\ComposeUpdateCheck::class, 'hostPlatform'))->invoke(null));
+        file_put_contents($router, '<?php
+            file_put_contents(' . var_export($directory . '/requests', true) . ', "request\n", FILE_APPEND);
+            $authorization = $_SERVER["HTTP_AUTHORIZATION"] ?? "";
+            $basic = "Basic " . base64_encode("registry-user:fixture-token");
+            $mode = ' . var_export($mode, true) . ';
+            $reject = ' . var_export($reject, true) . ';
+            if ($mode === "bearer" && str_starts_with($_SERVER["REQUEST_URI"], "/token")) {
+                if ($reject || $authorization !== $basic) { http_response_code(401); exit; }
+                echo json_encode(["token" => "fixture-bearer"]);
+                exit;
+            }
+            if ($reject || $authorization !== ($mode === "basic" ? $basic : "Bearer fixture-bearer")) {
+                http_response_code(401);
+                header($mode === "basic" ? \'WWW-Authenticate: Basic realm="fixture"\'
+                    : \'WWW-Authenticate: Bearer realm="http://' . $address . '/token",service="fixture",scope="repository:org/private:pull"\');
+                exit;
+            }
+            if (str_contains($_SERVER["REQUEST_URI"], "/blobs/")) {
+                echo json_encode(' . var_export([
+                    'os' => $hostPlatform[0], 'architecture' => $hostPlatform[1], 'variant' => $hostPlatform[2] ?? '',
+                ], true) . ');
+                exit;
+            }
+            echo json_encode(["config" => ["digest" => "sha256:new"]]);
+        ');
+        $process = proc_open([PHP_BINARY, '-S', $address, $router], [
+            0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w'],
+        ], $pipes);
+        $this->assertIsResource($process);
+        fclose($pipes[0]);
+        try {
+            $ready = false;
+            for ($attempt = 0; $attempt < 50; $attempt++) {
+                $connection = @stream_socket_client('tcp://' . $address, $errno, $error, 0.1);
+                if ($connection !== false) {
+                    fclose($connection);
+                    $ready = true;
+                    break;
+                }
+                usleep(20000);
+            }
+            $this->assertTrue($ready, 'Fixture registry did not start.');
+            $saved = (new \CredentialVault())->saveCredential([
+                'name' => 'Private registry', 'provider' => 'github', 'registry' => 'ghcr.io',
+                'username' => 'registry-user', 'secret' => 'fixture-token',
+            ]);
+            $checker = new class($saved['id']) extends \ComposeUpdateCheck {
+                public string $endpoint;
+                protected function resolveRegistryAuth(string $image): array
+                {
+                    $auth = parent::resolveRegistryAuth($image);
+                    $auth['apiUrl'] = $this->endpoint . '/v2/';
+                    return $auth;
+                }
+            };
+            $checker->endpoint = 'http://' . $address;
+            \DockerClient::setMockResponse('/images/' . rawurlencode('ghcr.io/org/private:latest') . '/json', ['Id' => 'sha256:new']);
+            \DockerClient::setMockResponse('/containers/private-app/json', ['Image' => 'sha256:old']);
+            $results = $checker->checkContainers([['Name' => 'private-app', 'Image' => 'ghcr.io/org/private:latest']]);
+            $this->assertSame($reject ? 'unknown' : 'update-available', $results['private-app']['status']);
+            $this->assertSame(!$reject, $results['private-app']['hasUpdate']);
+            $this->assertSame($reject ? '' : 'sha256:new', $results['private-app']['remote']);
+            $this->assertSame($this->nativeCacheBytes, file_get_contents(UNRAID_UPDATE_STATUS_FILE));
+            $requestCount = count(file($directory . '/requests'));
+            \DockerClient::setMockResponse('/containers/private-app/json', ['Image' => 'sha256:new']);
+            for ($stack = 0; $stack < 10; $stack++) {
+                $recheck = $checker->checkContainers([['Name' => 'private-app', 'Image' => 'ghcr.io/org/private:latest']]);
+                $this->assertFalse($recheck['private-app']['hasUpdate'], 'Local runtime evidence must not be memoized.');
+            }
+            $this->assertCount($requestCount, file($directory . '/requests'), 'Remote evidence is fetched once per checker.');
+            $class = get_class($checker);
+            $isolated = new $class('missing');
+            $isolated->endpoint = $checker->endpoint;
+            $isolatedResult = $isolated->checkContainers([['Name' => 'private-app', 'Image' => 'ghcr.io/org/private:latest']]);
+            $this->assertSame('unknown', $isolatedResult['private-app']['status'], 'A different credential cannot reuse authenticated results.');
+            $this->assertStringNotContainsString('fixture-token', file_get_contents(UNRAID_UPDATE_STATUS_FILE));
+            $this->assertStringNotContainsString('fixture-token', implode("\n", $GLOBALS['composeLoggerMessages'] ?? []));
+        } finally {
+            proc_terminate($process);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            proc_close($process);
+        }
+    }
+
+    public function testMissingAttachedCredentialFailsExplicitlyWithoutAnonymousFallback(): void
+    {
+        $checker = new \ComposeUpdateCheck('missing');
+        $result = $checker->checkMany(['ghcr.io/org/private:latest'])['ghcr.io/org/private:latest'];
+        $this->assertSame('unknown', $result['status']);
+        $this->assertContains('Unable to load attached registry credential for update check', $GLOBALS['composeLoggerMessages']);
+    }
+
+    public function testCheckDoesNotCreateAMissingNativeCache(): void
+    {
+        unlink(UNRAID_UPDATE_STATUS_FILE);
+        try {
+            $checker = new \ComposeUpdateCheck('missing');
+            $result = $checker->checkMany(['ghcr.io/org/private:latest'])['ghcr.io/org/private:latest'];
+            $this->assertSame('unknown', $result['status']);
+            $this->assertFileDoesNotExist(UNRAID_UPDATE_STATUS_FILE);
+        } finally {
+            file_put_contents(UNRAID_UPDATE_STATUS_FILE, $this->nativeCacheBytes);
+        }
+    }
+
+    public function testGitCredentialCannotBeUsedAsARegistryLogin(): void
+    {
+        $credential = (new \CredentialVault())->saveCredential([
+            'name' => 'Repository only', 'provider' => 'git', 'registry' => 'ghcr.io',
+            'username' => 'user', 'secret' => 'repository-only-token',
+        ]);
+        $checker = new \ComposeUpdateCheck($credential['id']);
+        $result = $checker->checkMany(['ghcr.io/org/private:latest'])['ghcr.io/org/private:latest'];
+        $this->assertSame('unknown', $result['status']);
+        $this->assertContains('Unable to load attached registry credential for update check', $GLOBALS['composeLoggerMessages']);
+        $this->assertStringNotContainsString('repository-only-token', implode("\n", $GLOBALS['composeLoggerMessages']));
+    }
+
+    public function testContainersUsingTheSameTagAreComparedByTheirActualImageIds(): void
+    {
+        $checker = new class extends \ComposeUpdateCheck {
+            public array $checkedImages = [];
+
+            public function checkMany(array $images, ?string $platform = null): array
+            {
+                $this->checkedImages = $images;
+                return ['library/postgres:18' => [
+                    'local' => 'sha256:current',
+                    'remote' => 'sha256:current',
+                    'status' => 'up-to-date',
+                    'hasUpdate' => false,
+                ]];
+            }
+        };
+        \DockerClient::setMockResponse('/containers/old-db/json', ['Image' => 'sha256:old']);
+        \DockerClient::setMockResponse('/containers/current-db/json', ['Image' => 'sha256:current']);
+
+        $results = $checker->checkContainers([
+            ['Name' => 'old-db', 'Image' => 'postgres:18'],
+            ['Name' => 'current-db', 'Image' => 'docker.io/library/postgres:18'],
+            ['Name' => 'missing-db', 'Image' => 'postgres:18'],
+        ]);
+
+        $this->assertSame(['postgres:18', 'docker.io/library/postgres:18', 'postgres:18'], $checker->checkedImages);
+        $this->assertTrue($results['old-db']['hasUpdate']);
+        $this->assertSame('sha256:old', $results['old-db']['local']);
+        $this->assertSame('update-available', $results['old-db']['status']);
+        $this->assertSame('ready-to-apply', $results['old-db']['updateReadiness']);
+        $this->assertSame('current', $results['current-db']['updateReadiness']);
+        $this->assertSame('unknown', $results['missing-db']['updateReadiness']);
+        $this->assertFalse($results['current-db']['hasUpdate']);
+        $this->assertSame('up-to-date', $results['current-db']['status']);
+        $this->assertSame('unknown', $results['missing-db']['status']);
+        $this->assertContains('Container image digest unavailable', $GLOBALS['composeLoggerMessages']);
+    }
+
+    public static function readinessCases(): array
+    {
+        return [
+            'current' => ['a', 'a', 'a', 'current'],
+            'current despite moved local tag' => ['a', 'b', 'a', 'current'],
+            'downloaded' => ['a', 'b', 'b', 'ready-to-apply'],
+            'remote newer' => ['a', 'a', 'b', 'download-required'],
+            'local intermediate' => ['a', 'b', 'c', 'download-required'],
+            'local missing' => ['a', null, 'b', 'download-required'],
+            'remote unavailable' => ['a', 'b', null, 'unknown'],
+            'container unavailable' => [null, 'b', 'b', 'unknown'],
+            'full digest comparison' => ['sha256:123456789012a', 'sha256:123456789012b', 'sha256:123456789012c', 'download-required'],
+        ];
+    }
+
+    public function testPinnedContainersNeverCheckOrOfferTheMutableTag(): void
+    {
+        $checker = new class extends \ComposeUpdateCheck {
+            public function checkMany(array $images, ?string $platform = null): array
+            {
+                throw new \LogicException('Pinned images must not query mutable tags.');
+            }
+        };
+        \DockerClient::setMockResponse('/containers/pinned/json', ['Image' => 'sha256:old']);
+        $result = $checker->checkContainers([[
+            'Name' => 'pinned', 'Image' => 'alpine:latest@sha256:pinned',
+        ]])['pinned'];
+        $this->assertFalse($result['hasUpdate']);
+        $this->assertSame('up-to-date', $result['status']);
+        $this->assertSame('current', $result['updateReadiness']);
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('readinessCases')]
+    public function testImageReadinessUsesThreeIndependentImageIds(?string $container, ?string $local, ?string $remote, string $expected): void
+    {
+        $this->assertSame($expected, \ComposeUpdateCheck::imageReadiness($container, $local, $remote));
+    }
+
+    public function testManifestJsonDoesNotIncludeHttpHeaders(): void
+    {
+        $file = $this->createTempDir() . '/manifest.json';
+        $manifest = ['config' => ['digest' => 'sha256:config']];
+        file_put_contents($file, json_encode($manifest));
+        $checker = new \ComposeUpdateCheck();
+        $getJson = new \ReflectionMethod($checker, 'httpGetJson');
+
+        $this->assertSame($manifest, $getJson->invoke($checker, 'file://' . $file, [], null));
+    }
+
+    public function testDifferentConfigDigestsHaveAnUpdate(): void
+    {
+        $checker = new \ComposeUpdateCheck();
+        $summarize = new \ReflectionMethod($checker, 'summarize');
+        $result = $summarize->invoke($checker, 'sha256:old', 'sha256:new');
+
+        $this->assertTrue($result['result']['hasUpdate']);
+        $this->assertSame('update-available', $result['result']['status']);
+    }
+
+    public function testSameConfigDigestDoesNotHaveAnUpdate(): void
+    {
+        $checker = new \ComposeUpdateCheck();
+        $summarize = new \ReflectionMethod($checker, 'summarize');
+        $result = $summarize->invoke($checker, 'sha256:same', 'sha256:same');
+
+        $this->assertFalse($result['result']['hasUpdate']);
+        $this->assertSame('up-to-date', $result['result']['status']);
+    }
+
+    public function testMissingDigestIsUnknownRatherThanUpToDate(): void
+    {
+        $checker = new \ComposeUpdateCheck();
+        $summarize = new \ReflectionMethod($checker, 'summarize');
+        foreach ([[null, 'sha256:remote'], ['sha256:local', null]] as [$local, $remote]) {
+            $result = $summarize->invoke($checker, $local, $remote);
+            $this->assertSame('unknown', $result['result']['status']);
+            $this->assertFalse($result['result']['hasUpdate']);
+        }
+    }
+
+    public static function dockerfileBaseCases(): array
+    {
+        return [
+            'single stage with syntax directive' => [
+                "# syntax=docker/dockerfile:1.7\nFROM lscr.io/linuxserver/code-server:latest\n\nARG TARGETARCH\nRUN echo \\\n  FROM nope\n",
+                [], 'lscr.io/linuxserver/code-server:latest',
+            ],
+            'multi-stage follows final stage alias' => [
+                "FROM golang:1.22 AS build\nRUN go build\nFROM alpine:3.20 AS base\nFROM base AS final\nCOPY --from=build /app /app\n",
+                [], 'alpine:3.20',
+            ],
+            'target selects stage' => [
+                "FROM node:20 AS dev\nFROM nginx:1.27 AS prod\n",
+                ['target' => 'dev'], 'node:20',
+            ],
+            'global arg default and compose override' => [
+                "ARG BASE=debian\nARG TAG=12\nFROM --platform=\$BUILDPLATFORM \${BASE}:\${TAG:-11}\n",
+                ['args' => ['TAG' => 'bookworm']], 'debian:bookworm',
+            ],
+            'unresolved arg is unknown' => ["FROM \${MISSING}\n", [], null],
+            'scratch' => ["FROM alpine AS a\nFROM scratch\nCOPY --from=a / /\n", [], 'scratch'],
+            'heredoc body is ignored' => ["FROM alpine:3\nRUN <<EOF\nFROM ubuntu\nEOF\n", [], 'alpine:3'],
+            'multiple heredocs are consumed in order' => [
+                "FROM alpine:3\nCOPY <<FIRST <<SECOND /app/\nhello\nFIRST\nFROM ubuntu:24.04\nSECOND\n",
+                [], 'alpine:3',
+            ],
+            'multiple quoted tab stripped heredocs allow a later real stage' => [
+                "FROM alpine:3\nRUN <<'FIRST' 3<<-\"SECOND\"\nFROM fake:first\nFIRST\n\tFROM fake:second\n\tSECOND\nFROM redis:8\n",
+                [], 'redis:8',
+            ],
+            'image backed named context' => [
+                "FROM base\n", ['additional_contexts' => ['base' => 'docker-image://alpine:3.20']], 'alpine:3.20',
+            ],
+            'service backed named context is unknown' => [
+                "FROM base\n", ['additional_contexts' => ['base' => 'service:builder']], null,
+            ],
+            'directory backed named context is unknown' => [
+                "FROM base\n", ['additional_contexts' => ['base' => '/tmp/base']], null,
+            ],
+            'named context reached through stage alias' => [
+                "FROM base AS builder\nFROM builder\n",
+                ['additional_contexts' => ['base' => 'docker-image://alpine:3.20']], 'alpine:3.20',
+            ],
+            'quoted dash heredoc is ignored' => ["FROM golang:1 AS b\nCOPY <<-\"END\" /x\n\tFROM ubuntu\n\tEND\nFROM alpine:3\n", [], 'alpine:3'],
+            'here-string is not a heredoc' => ["FROM golang:1 AS b\nRUN read x <<<hello\nFROM alpine:3.20\n", [], 'alpine:3.20'],
+            'shell shift is not a heredoc' => ["FROM golang:1 AS b\nRUN echo \$((1<<2))\nFROM alpine:3.20\n", [], 'alpine:3.20'],
+            'blank line inside continuation' => ["FROM alpine:3.20\nRUN echo \\\n\n    FROM ubuntu\n", [], 'alpine:3.20'],
+            'arg default uses earlier arg' => ["ARG TAG=3.20\nARG IMG=alpine:\${TAG}\nFROM \${IMG}\n", [], 'alpine:3.20'],
+            'compose arg feeds chained default' => ["ARG TAG=3.20\nARG IMG=alpine:\${TAG}\nFROM \${IMG}\n", ['args' => ['TAG' => '3.19']], 'alpine:3.19'],
+            'empty arg default' => ["ARG SUFFIX=\nFROM alpine\${SUFFIX}:3\n", [], 'alpine:3'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('dockerfileBaseCases')]
+    public function testDockerfileBaseImageResolution(string $dockerfile, array $build, ?string $expected): void
+    {
+        $context = $this->createTempDir();
+        file_put_contents($context . '/Dockerfile', $dockerfile);
+        $this->assertSame($expected, \ComposeUpdateCheck::resolveDockerfileBaseImage($build + ['context' => $context]));
+        $this->assertSame($expected, \ComposeUpdateCheck::resolveDockerfileBaseImage($build + ['dockerfile_inline' => $dockerfile]));
+    }
+
+    public function testCustomDockerfilePathAndMissingContext(): void
+    {
+        $context = $this->createTempDir();
+        mkdir($context . '/docker');
+        file_put_contents($context . '/docker/app.Dockerfile', "FROM redis:8\n");
+        $this->assertSame('redis:8', \ComposeUpdateCheck::resolveDockerfileBaseImage(['context' => $context, 'dockerfile' => 'docker/app.Dockerfile']));
+        $this->assertNull(\ComposeUpdateCheck::resolveDockerfileBaseImage(['context' => 'https://github.com/org/repo.git']));
+    }
+
+    public function testPinnedBaseNeverReportsApplicationDigestAsRemoteBase(): void
+    {
+        $checker = new class extends \ComposeUpdateCheck {
+            protected function fetchRemoteImageConfig(string $image, ?string $platform = null): ?array
+            {
+                throw new \LogicException('Pinned base must not query a mutable tag.');
+            }
+        };
+        \DockerClient::setMockResponse('/containers/app/json', ['Image' => 'sha256:application']);
+        $result = $checker->checkContainers([['Name' => 'app', 'Service' => 'app', 'Image' => 'stack-app']], [
+            'app' => ['build' => ['dockerfile_inline' => 'FROM alpine@sha256:pinned-base'], 'image' => null],
+        ])['app'];
+        $this->assertSame('up-to-date', $result['status']);
+        $this->assertSame('current', $result['updateReadiness']);
+        $this->assertSame('', $result['remote']);
+        $this->assertSame('sha256:application', $result['local']);
+    }
+
+    public function testBuildOnlyContainersAreCheckedAgainstTheirBaseImage(): void
+    {
+        $context = $this->createTempDir();
+        file_put_contents($context . '/Dockerfile', "FROM lscr.io/linuxserver/code-server:latest\nRUN true\n");
+        $checker = new class extends \ComposeUpdateCheck {
+            public array $checkedImages = [];
+            public array $fetched = [];
+
+            public function checkMany(array $images, ?string $platform = null): array
+            {
+                $this->checkedImages = $images;
+                return [];
+            }
+
+            protected function fetchRemoteImageConfig(string $image, ?string $platform = null): ?array
+            {
+                $this->fetched[] = $image;
+                return ['digest' => 'sha256:base-new', 'diffIds' => ['sha256:l1', 'sha256:l2']];
+            }
+        };
+        \DockerClient::setMockResponse('/containers/current/json', ['Image' => 'sha256:built-current']);
+        \DockerClient::setMockResponse('/containers/stale/json', [
+            'Image' => 'sha256:built-stale', 'Config' => ['Image' => 'stack-worker'],
+        ]);
+        \DockerClient::setMockResponse('/images/' . rawurlencode('sha256:built-current') . '/json', ['RootFS' => ['Layers' => ['sha256:l1', 'sha256:l2', 'sha256:mine']]]);
+        \DockerClient::setMockResponse('/images/' . rawurlencode('sha256:built-stale') . '/json', ['RootFS' => ['Layers' => ['sha256:l1', 'sha256:old', 'sha256:mine']]]);
+
+        $build = ['build' => ['context' => $context, 'dockerfile' => 'Dockerfile'], 'image' => null];
+        \DockerClient::setMockResponse('/images/' . rawurlencode('stack-worker') . '/json', ['Id' => 'sha256:built-stale']);
+        \DockerClient::setMockResponse('/images/' . rawurlencode('lscr.io/linuxserver/code-server:latest') . '/json', ['Id' => 'sha256:base-new']);
+        $results = $checker->checkContainers([
+            ['Name' => 'current', 'Service' => 'app', 'Image' => 'stack-app'],
+            ['Names' => 'stale', 'Labels' => 'com.docker.compose.service=worker,com.docker.compose.project=stack', 'Image' => 'built-stale'],
+        ], ['app' => $build, 'worker' => $build]);
+
+        $this->assertSame([], $checker->checkedImages, 'Build-only images must not be looked up on a registry.');
+        $this->assertSame(['lscr.io/linuxserver/code-server:latest'], $checker->fetched);
+        $this->assertSame('up-to-date', $results['current']['status']);
+        $this->assertFalse($results['current']['hasUpdate']);
+        $this->assertSame('update-available', $results['stale']['status']);
+        $this->assertTrue($results['stale']['hasUpdate']);
+        $this->assertSame('sha256:base-new', $results['stale']['remote']);
+        $this->assertSame('sha256:built-stale', $results['stale']['local']);
+        $this->assertSame('rebuild-required', $results['stale']['updateReadiness']);
+        $this->assertSame('build-base', $results['stale']['updateKind']);
+        $this->assertSame('stack-worker', $results['stale']['image']);
+        $this->assertSame('current', $results['current']['updateReadiness']);
+        $this->assertNotSame('ready-to-apply', $results['stale']['updateReadiness'], 'A downloaded base alone is not a rebuilt application.');
+
+        \DockerClient::setMockResponse('/images/' . rawurlencode('stack-worker') . '/json', ['Id' => 'sha256:rebuilt']);
+        \DockerClient::setMockResponse('/images/' . rawurlencode('sha256:rebuilt') . '/json', [
+            'RootFS' => ['Layers' => ['sha256:l1', 'sha256:l2', 'sha256:new-app']],
+        ]);
+        $rebuilt = $checker->checkContainers([
+            ['Names' => 'stale', 'labels' => ['com.docker.compose.service' => 'worker'], 'Image' => 'stack-worker'],
+        ], ['worker' => $build]);
+        $this->assertSame('ready-to-apply', $rebuilt['stale']['updateReadiness']);
+        $this->assertSame('sha256:rebuilt', $rebuilt['stale']['localImage']);
+        $this->assertTrue($rebuilt['stale']['hasUpdate']);
+        for ($stack = 0; $stack < 10; $stack++) {
+            $checker->checkContainers([
+                ['Name' => 'stale', 'Service' => 'worker', 'Image' => 'stack-worker'],
+            ], ['worker' => $build]);
+        }
+        $this->assertSame(['lscr.io/linuxserver/code-server:latest'], $checker->fetched, 'Base lookups are shared across stacks.');
+    }
+
+    public function testNamedBuildImageRegistryFailureNeverFallsBackToBase(): void
+    {
+        $context = $this->createTempDir();
+        file_put_contents($context . '/Dockerfile', "FROM alpine:3.20\n");
+        $checker = new class extends \ComposeUpdateCheck {
+            public function checkMany(array $images, ?string $platform = null): array
+            {
+                return ['ghcr.io/org/published:latest' => ['local' => '', 'remote' => 'sha256:published', 'status' => 'up-to-date', 'hasUpdate' => false]];
+            }
+
+            protected function fetchRemoteImageConfig(string $image, ?string $platform = null): ?array
+            {
+                throw new \LogicException('A failed application lookup must not check its base.');
+            }
+        };
+        \DockerClient::setMockResponse('/containers/published/json', ['Image' => 'sha256:published']);
+        \DockerClient::setMockResponse('/containers/local-only/json', ['Image' => 'sha256:local-only']);
+        \DockerClient::setMockResponse('/images/' . rawurlencode('sha256:local-only') . '/json', ['RootFS' => ['Layers' => ['sha256:other']]]);
+
+        $build = ['context' => $context];
+        $results = $checker->checkContainers([
+            ['Name' => 'published', 'Service' => 'pub', 'Image' => 'ghcr.io/org/published:latest'],
+            ['Name' => 'local-only', 'Service' => 'loc', 'Image' => 'myapp:dev'],
+        ], [
+            'pub' => ['build' => $build, 'image' => 'ghcr.io/org/published:latest'],
+            'loc' => ['build' => $build, 'image' => 'myapp:dev'],
+        ]);
+
+        $this->assertSame('up-to-date', $results['published']['status']);
+        $this->assertSame('sha256:published', $results['published']['remote']);
+        $this->assertSame('unknown', $results['local-only']['status']);
+        $this->assertSame('', $results['local-only']['remote']);
+    }
+
+    public function testPublishedContainerUsesInspectedReferenceWhenPsShowsAnImageId(): void
+    {
+        $checker = new class extends \ComposeUpdateCheck {
+            public function checkMany(array $images, ?string $platform = null): array
+            {
+                \PHPUnit\Framework\Assert::assertSame(['registry.example/app:latest'], $images);
+                return ['registry.example/app:latest' => [
+                    'local' => 'sha256:new', 'remote' => 'sha256:new',
+                    'status' => 'up-to-date', 'hasUpdate' => false,
+                ]];
+            }
+        };
+        \DockerClient::setMockResponse('/containers/app/json', [
+            'Image' => 'sha256:old', 'Config' => ['Image' => 'registry.example/app:latest'],
+        ]);
+        $result = $checker->checkContainers([['Name' => 'app', 'Image' => 'abc123']])['app'];
+        $this->assertSame('registry.example/app:latest', $result['image']);
+        $this->assertSame('update-available', $result['status']);
+        $this->assertSame('ready-to-apply', $result['updateReadiness']);
+    }
+
+    public function testPlatformSelectionNeverFallsBackToAnotherArchitectureOrVariant(): void
+    {
+        $select = new \ReflectionMethod(\ComposeUpdateCheck::class, 'pickPlatformManifestDigest');
+        $checker = new \ComposeUpdateCheck();
+        $manifests = [
+            ['platform' => ['os' => 'unknown', 'architecture' => 'unknown'], 'digest' => 'attestation'],
+            ['platform' => ['os' => 'linux', 'architecture' => 'arm', 'variant' => 'v6'], 'digest' => 'arm-v6'],
+            ['platform' => ['os' => 'linux', 'architecture' => 'arm', 'variant' => 'v7'], 'digest' => 'arm-v7'],
+            ['platform' => ['os' => 'linux', 'architecture' => 'arm64', 'variant' => 'v8'], 'digest' => 'arm64'],
+        ];
+        $this->assertNull($select->invoke($checker, $manifests, 'linux/amd64'));
+        $this->assertNull($select->invoke($checker, $manifests, 'windows/arm64'));
+        $this->assertNull($select->invoke($checker, $manifests, 'linux/arm/v8'));
+        $this->assertNull($select->invoke($checker, $manifests, '${UNRESOLVED}'));
+        $this->assertSame('arm-v6', $select->invoke($checker, $manifests, 'linux/arm/v6'));
+        $this->assertSame('arm-v7', $select->invoke($checker, $manifests, 'linux/arm/v7'));
+        $this->assertSame('arm64', $select->invoke($checker, $manifests, 'linux/arm64'));
+    }
+
+    public function testPlatformFlowsThroughBaseResolutionRegistrySelectionAndRequestCaches(): void
+    {
+        $directory = $this->createTempDir();
+        mkdir($directory . '/base/manifests', 0755, true);
+        mkdir($directory . '/base/blobs');
+        $manifests = [];
+        foreach (['amd64', 'arm64'] as $arch) {
+            $manifests[] = [
+                'platform' => ['os' => 'linux', 'architecture' => $arch],
+                'digest' => 'sha256:manifest-' . $arch,
+            ];
+            file_put_contents($directory . '/base/manifests/sha256:manifest-' . $arch, json_encode([
+                'config' => ['digest' => 'sha256:config-' . $arch],
+            ]));
+            file_put_contents($directory . '/base/blobs/sha256:config-' . $arch, json_encode([
+                'os' => 'linux', 'architecture' => $arch,
+                'rootfs' => ['diff_ids' => ['sha256:layer-' . $arch]],
+            ]));
+        }
+        file_put_contents($directory . '/base/manifests/latest', json_encode(['manifests' => $manifests]));
+        $checker = new class extends \ComposeUpdateCheck {
+            public string $endpoint;
+            protected function resolveRegistryAuth(string $image): array
+            {
+                return ['apiUrl' => $this->endpoint, 'repository' => '', 'imageName' => 'base', 'imageTag' => 'latest'];
+            }
+        };
+        $checker->endpoint = 'file://' . $directory . '/';
+        foreach (['amd64', 'arm64'] as $arch) {
+            \DockerClient::setMockResponse('/containers/' . $arch . '/json', ['Image' => 'sha256:app-' . $arch]);
+            \DockerClient::setMockResponse('/images/' . rawurlencode('sha256:app-' . $arch) . '/json', [
+                'RootFS' => ['Layers' => ['sha256:layer-' . $arch, 'sha256:application']],
+            ]);
+        }
+        $rows = [
+            ['Name' => 'amd64', 'Service' => 'amd64', 'Image' => 'stack-amd64'],
+            ['Name' => 'arm64', 'Service' => 'arm64', 'Image' => 'stack-arm64'],
+        ];
+        $builds = [
+            'amd64' => ['build' => ['dockerfile_inline' => 'FROM --platform=linux/amd64 base:latest'], 'image' => null],
+            'arm64' => ['build' => ['dockerfile_inline' => "ARG TARGETPLATFORM\nFROM --platform=\$TARGETPLATFORM base:latest AS first\nFROM first"], 'image' => null, 'platform' => 'linux/arm64'],
+        ];
+        foreach ([0, 1] as $repeat) {
+            $result = $checker->checkContainers($rows, $builds);
+            foreach (['amd64', 'arm64'] as $arch) {
+                $this->assertSame('up-to-date', $result[$arch]['status']);
+                $this->assertSame('sha256:config-' . $arch, $result[$arch]['remote']);
+                $this->assertSame('current', $result[$arch]['updateReadiness']);
+            }
+        }
+        foreach (['amd64', 'arm64'] as $arch) {
+            $result = $checker->checkMany(['base:latest'], 'linux/' . $arch);
+            $this->assertSame('sha256:config-' . $arch, $result['library/base:latest']['remote']);
+        }
+        $this->assertSame('', $checker->checkMany(['base:latest'], 'linux/arm/v7')['library/base:latest']['remote']);
+        $this->assertSame($this->nativeCacheBytes, file_get_contents(UNRAID_UPDATE_STATUS_FILE));
+
+        $unknown = $checker->checkContainers([$rows[0]], [
+            'amd64' => ['build' => ['dockerfile_inline' => 'FROM --platform=${UNRESOLVED} base:latest'], 'image' => null],
+        ]);
+        $this->assertSame('unknown', $unknown['amd64']['status']);
+
+        $published = $checker->checkContainers([$rows[1]], [
+            'arm64' => ['build' => ['dockerfile_inline' => 'FROM base:latest'], 'image' => 'base:latest', 'platform' => 'linux/arm64'],
+        ]);
+        $this->assertSame('sha256:config-arm64', $published['arm64']['remote']);
+        $this->assertSame('image', $published['arm64']['updateKind']);
+
+        foreach ([
+            'FROM base:latest',
+            'FROM --platform=linux/arm64 base:latest',
+            "ARG BASEPLATFORM=linux/amd64\nFROM --platform=\$BASEPLATFORM base:latest",
+        ] as $dockerfile) {
+            $result = $checker->checkContainers([$rows[1]], [
+                'arm64' => [
+                    'build' => ['dockerfile_inline' => $dockerfile, 'args' => ['BASEPLATFORM' => 'linux/arm64']],
+                    'image' => null, 'platform' => 'linux/arm64',
+                ],
+            ]);
+            $this->assertSame('up-to-date', $result['arm64']['status']);
+            $this->assertSame('sha256:config-arm64', $result['arm64']['remote']);
+        }
+
+        file_put_contents($directory . '/base/manifests/latest', json_encode([
+            'config' => ['digest' => 'sha256:config-amd64'],
+        ]));
+        $class = get_class($checker);
+        $single = new $class();
+        $single->endpoint = $checker->endpoint;
+        $this->assertSame('', $single->checkMany(['base:latest'], 'linux/arm64')['library/base:latest']['remote']);
+        $this->assertSame(
+            'sha256:config-amd64',
+            $single->checkMany(['base:latest'], 'linux/amd64')['library/base:latest']['remote']
+        );
+    }
+}

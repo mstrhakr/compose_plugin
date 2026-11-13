@@ -23,7 +23,7 @@ Access settings via **Settings → Compose** in the Unraid web UI.
 | **Show in Header Menu** | No | Display Compose Manager as a separate page in the header navigation bar. |
 | **Show Dashboard Tile** | Yes | Display a Compose Stacks tile on the Dashboard showing stack status at a glance. |
 | **Hide Compose Containers (Dashboard Tile)** | No | Hide containers managed by Compose stacks from Unraid's Docker Containers dashboard tile. This avoids duplicate entries when both tiles are visible. Requires "Show Dashboard Tile". |
-| **Hide Compose Containers (Docker Page)** | No | Hide Compose-managed containers from the Docker Containers table to avoid duplicate entries when Compose stacks appear on the same page. Requires "Show in Header Menu" to be disabled (inline mode). |
+| **Hide Compose Containers (Docker Page)** | No | Hide Compose-managed containers from the Docker Containers table, with either the separate Compose header menu or the inline Compose section. Independent of Dashboard tile visibility. |
 | **Show Compose Above Docker Containers** | No | When the Docker page is displayed without tabs, move the Compose Stacks section above the built-in Docker Containers section. |
 | **Expand Stacks by Default** | No | Automatically expand all stack detail rows when the page loads. |
 
@@ -33,7 +33,18 @@ Access settings via **Settings → Compose** in the Unraid web UI.
 |---------|---------|-------------|
 | **Auto Check for Updates** | No | Automatically check for container image updates when the Compose page loads. |
 | **Auto Check Interval (days)** | 1 | How often to check for updates (examples: 0.04 hourly, 1 daily, 7 weekly). |
-| **Clear Update Cache** | — | Clear cached update status if update checks show incorrect results. |
+
+### Maintenance
+
+The **Maintenance** tab contains explicit actions, not settings to apply. The
+Apply / Default / Reset bar is hidden on this tab. Cache clearing retains its
+existing confirmation dialogs.
+
+| Action | Description |
+|--------|-------------|
+| **Check stack project identities** | Compare saved project names with Docker resource evidence. Results needing ownership review appear first. The check never changes identities or restarts containers; choosing a candidate requires separate confirmation. |
+| **Clear Icon Cache** | Delete locally cached icons so they are downloaded and converted again on the next page load. |
+| **Clear Update Cache** | Clear cached update status if update checks show incorrect results. |
 
 ### Advanced
 

@@ -1754,7 +1754,9 @@ class OverrideInfo
         }
 
         if (!empty($result['migrations'])) {
-            file_put_contents($overridePath, $newOverrideContent);
+            if (@file_put_contents($overridePath, $newOverrideContent) !== strlen($newOverrideContent)) {
+                throw new RuntimeException('Unable to save migrated override ' . $overridePath . '.');
+            }
             $result['migrated'] = true;
 
             $migrationLog = array_map(fn($m) => "{$m['from']} -> {$m['to']}", $result['migrations']);
@@ -1871,6 +1873,8 @@ class ContainerInfo
     public string $state = '';
     /** @var bool Whether the container is currently running */
     public bool $isRunning = false;
+    /** @var bool Whether this container is a Compose run job, not an update target */
+    public bool $oneOff = false;
     /** @var bool Whether an image update is available */
     public bool $hasUpdate = false;
     /** @var string Update status text (unknown/up-to-date/update-available) */
@@ -1879,6 +1883,10 @@ class ContainerInfo
     public string $localSha = '';
     /** @var string Remote image SHA (truncated) */
     public string $remoteSha = '';
+    public string $localImageSha = '';
+    /** @var string image or build-base; base digests are not application digests */
+    public string $updateKind = 'image';
+    public string $updateReadiness = 'unknown';
     /** @var bool Whether the image is pinned to a specific digest */
     public bool $isPinned = false;
     /** @var string|null Pinned digest if isPinned is true */
@@ -1903,6 +1911,32 @@ class ContainerInfo
     public string $health = '';
 
     private function __construct() {}
+
+    public static function resolveService(array $raw): string
+    {
+        $service = trim((string) ($raw['Service'] ?? $raw['service'] ?? ''));
+        return $service !== '' ? $service : self::composeLabel($raw, 'service');
+    }
+
+    public static function isOneOff(array $raw): bool
+    {
+        return filter_var($raw['oneOff'] ?? false, FILTER_VALIDATE_BOOLEAN)
+            || strtolower(self::composeLabel($raw, 'oneoff')) === 'true';
+    }
+
+    private static function composeLabel(array $raw, string $key): string
+    {
+        $key = 'com.docker.compose.' . $key;
+        $labels = $raw['Labels'] ?? $raw['labels'] ?? [];
+        if (is_array($labels)) {
+            return trim((string) ($labels[$key] ?? ''));
+        }
+        if (is_string($labels)
+            && preg_match('/(?:^|,)\s*' . preg_quote($key, '/') . '=([^,]+)/', $labels, $matches)) {
+            return trim($matches[1]);
+        }
+        return '';
+    }
 
     /**
      * Normalize Docker image name for update checking.
@@ -1933,9 +1967,10 @@ class ContainerInfo
     public static function fromDockerInspect(array $raw): self
     {
         $info = new self();
+        $info->oneOff = self::isOneOff($raw);
         $info->name = $raw['Name'] ?? $raw['name'] ?? '';
         $info->id = $raw['ID'] ?? $raw['Id'] ?? $raw['id'] ?? '';
-        $info->service = $raw['Service'] ?? $raw['service'] ?? '';
+        $info->service = self::resolveService($raw);
         $info->image = $raw['Image'] ?? $raw['image'] ?? '';
         $info->state = strtolower($raw['State'] ?? $raw['state'] ?? '');
         $info->isRunning = ($info->state === 'running');
@@ -1953,11 +1988,15 @@ class ContainerInfo
         $info->updateStatus = $raw['updateStatus'] ?? $raw['UpdateStatus'] ?? $raw['status'] ?? 'unknown';
         $info->localSha = $raw['localSha'] ?? $raw['LocalSha'] ?? '';
         $info->remoteSha = $raw['remoteSha'] ?? $raw['RemoteSha'] ?? '';
+        $info->localImageSha = $raw['localImageSha'] ?? '';
+        $info->updateKind = $raw['updateKind'] ?? 'image';
+        $info->updateReadiness = $raw['updateReadiness'] ?? 'unknown';
         $info->hasUpdate = $raw['hasUpdate']
             ?? ($info->updateStatus === 'update-available');
 
         // Derive pinned status from @sha256: in image reference
         $info->derivePinned();
+        $info->excludeOneOffUpdate();
 
         return $info;
     }
@@ -1974,6 +2013,7 @@ class ContainerInfo
     public static function fromUpdateResponse(array $raw): self
     {
         $info = new self();
+        $info->oneOff = self::isOneOff($raw);
         $info->name = $raw['container'] ?? $raw['name'] ?? $raw['Name'] ?? '';
         $info->id = $raw['ID'] ?? $raw['Id'] ?? $raw['id'] ?? '';
         $info->service = $raw['service'] ?? $raw['Service'] ?? '';
@@ -1983,8 +2023,12 @@ class ContainerInfo
         $info->updateStatus = $raw['status'] ?? $raw['updateStatus'] ?? 'unknown';
         $info->localSha = $raw['localSha'] ?? '';
         $info->remoteSha = $raw['remoteSha'] ?? '';
+        $info->localImageSha = $raw['localImageSha'] ?? '';
+        $info->updateKind = $raw['updateKind'] ?? 'image';
+        $info->updateReadiness = $raw['updateReadiness'] ?? 'unknown';
 
         $info->derivePinned();
+        $info->excludeOneOffUpdate();
 
         return $info;
     }
@@ -1997,18 +2041,31 @@ class ContainerInfo
      */
     public function mergeUpdateStatus(ContainerInfo $update): void
     {
-        if ($update->hasUpdate) {
-            $this->hasUpdate = true;
+        if ($this->oneOff || $update->oneOff) {
+            $this->excludeOneOffUpdate();
+            return;
         }
-        if ($update->updateStatus !== '' && $update->updateStatus !== 'unknown') {
-            $this->updateStatus = $update->updateStatus;
+        if ($this->name !== '' && $update->name !== '' && $this->name !== $update->name) {
+            return;
         }
-        if ($update->localSha !== '') {
-            $this->localSha = $update->localSha;
+        if ($this->image !== '' && $update->image !== ''
+            && (self::normalizeImageForUpdateCheck($this->image) !== self::normalizeImageForUpdateCheck($update->image)
+                || $this->pinnedDigest !== $update->pinnedDigest)) {
+            return;
         }
-        if ($update->remoteSha !== '') {
-            $this->remoteSha = $update->remoteSha;
+        if ($update->updateStatus === '' || $update->updateStatus === 'unknown') {
+            $this->updateReadiness = 'unknown';
+            $this->localImageSha = '';
+            return;
         }
+
+        $this->hasUpdate = $update->hasUpdate;
+        $this->updateStatus = $update->updateStatus;
+        $this->localSha = $update->localSha;
+        $this->remoteSha = $update->remoteSha;
+        $this->localImageSha = $update->localImageSha;
+        $this->updateKind = $update->updateKind;
+        $this->updateReadiness = $update->updateReadiness;
         if ($update->isPinned) {
             $this->isPinned = $update->isPinned;
             $this->pinnedDigest = $update->pinnedDigest;
@@ -2029,10 +2086,14 @@ class ContainerInfo
             'image' => $this->image,
             'state' => $this->state,
             'isRunning' => $this->isRunning,
+            'oneOff' => $this->oneOff,
             'hasUpdate' => $this->hasUpdate,
             'updateStatus' => $this->updateStatus,
             'localSha' => $this->localSha,
             'remoteSha' => $this->remoteSha,
+            'localImageSha' => $this->localImageSha,
+            'updateKind' => $this->updateKind,
+            'updateReadiness' => $this->updateReadiness,
             'isPinned' => $this->isPinned,
             'pinnedDigest' => $this->pinnedDigest,
             'icon' => $this->icon,
@@ -2056,6 +2117,7 @@ class ContainerInfo
     {
         return [
             'name' => $this->name,
+            'oneOff' => $this->oneOff,
             'service' => $this->service,
             'image' => $this->image,
             'icon' => $this->icon,
@@ -2063,9 +2125,20 @@ class ContainerInfo
             'updateStatus' => $this->updateStatus,
             'localSha' => $this->localSha,
             'remoteSha' => $this->remoteSha,
+            'localImageSha' => $this->localImageSha,
+            'updateKind' => $this->updateKind,
+            'updateReadiness' => $this->updateReadiness,
             'isPinned' => $this->isPinned,
             'pinnedDigest' => $this->pinnedDigest,
         ];
+    }
+
+    public function toMetadataArray(): array
+    {
+        return array_diff_key($this->toArray(), array_flip([
+            'hasUpdate', 'updateStatus', 'localSha', 'remoteSha',
+            'localImageSha', 'updateKind', 'updateReadiness',
+        ]));
     }
 
     /**
@@ -2080,13 +2153,28 @@ class ContainerInfo
     public static function fromDockerPs(array $raw): self
     {
         $info = new self();
+        $info->oneOff = self::isOneOff($raw);
         $info->name = ltrim(trim($raw['Names'] ?? $raw['Name'] ?? $raw['name'] ?? ''), '/');
+        $info->service = self::resolveService($raw);
         $info->id = $raw['ID'] ?? $raw['Id'] ?? $raw['id'] ?? '';
         $info->image = $raw['Image'] ?? $raw['image'] ?? '';
         $info->state = strtolower($raw['State'] ?? $raw['state'] ?? '');
         $info->isRunning = ($info->state === 'running');
         $info->derivePinned();
         return $info;
+    }
+
+    private function excludeOneOffUpdate(): void
+    {
+        if (!$this->oneOff) {
+            return;
+        }
+        $this->hasUpdate = false;
+        $this->updateStatus = 'unknown';
+        $this->updateReadiness = 'unknown';
+        $this->localSha = '';
+        $this->remoteSha = '';
+        $this->localImageSha = '';
     }
 
     /**
@@ -2144,6 +2232,9 @@ class StackInfo
     public string $projectName;
     /** @var ProjectIdentity Resolved (and pinned) runtime project identity */
     public ProjectIdentity $identity;
+    public ?string $inputMigrationError = null;
+    /** @var list<string> */
+    private array $legacyComposeCandidates = [];
     /** @var string Display name (from ./name) */
     public string $displayName;
     /** @var string Full path to the stack directory ($composeRoot/$project) */
@@ -2251,9 +2342,23 @@ class StackInfo
             $this->invalidIndirectPath = $this->indirectPath;
         }
 
+        try {
+            $legacyFiles = $this->getLegacyComposeFilePaths();
+            if ($legacyFiles !== null) {
+                $this->composeFilePath = $legacyFiles[0] ?? null;
+                if ($legacyFiles !== [] && $this->readInvalidIndirect() === null) {
+                    $this->invalidIndirectPath = null;
+                }
+            }
+        } catch (\RuntimeException $error) {
+            $this->inputMigrationError = $error->getMessage();
+            $this->composeFilePath = $this->legacyComposeCandidates[0] ?? $this->composeFilePath;
+            composeLogger('Imported stack inputs need repair', ['project' => $projectFolder, 'error' => $error->getMessage()], 'user', 'warning', 'migration');
+        }
+
         // Resolve compose file
         if ($this->composeFilePath === null) {
-            if ($this->invalidIndirectPath !== null) {
+            if ($this->invalidIndirectPath !== null || $this->inputMigrationError !== null) {
                 // Stack has a broken indirect reference — allow degraded construction
                 // so the user can fix it in the Settings editor.
                 composeLogger('Preparing degraded stack load due to invalid indirect path', [
@@ -2562,6 +2667,9 @@ class StackInfo
     public function getDisplayName(): string
     {
         $displayName = $this->readMetadata('name') ?? null;
+        if ($displayName === null && ProjectIdentity::hasLegacyOrigin()) {
+            $displayName = $this->readMetadata('Name');
+        }
         if ($displayName === null || $displayName === '') {
             // If no display name is set, initialize it from the project folder name.
             $displayName = $this->projectFolder;
@@ -2594,7 +2702,7 @@ class StackInfo
      */
     public function hasResolvedIdentity(): bool
     {
-        return $this->identity->resolved;
+        return $this->identity->resolved && $this->inputMigrationError === null;
     }
 
     /**
@@ -2602,7 +2710,7 @@ class StackInfo
      */
     public function getIdentityBlockReason(): ?string
     {
-        return $this->identity->resolved ? null : $this->identity->getMessage();
+        return $this->inputMigrationError ?? ($this->identity->resolved ? null : $this->identity->getMessage());
     }
 
     /**
@@ -2682,7 +2790,7 @@ class StackInfo
      */
     public function getEnvFilePath(): ?string
     {
-        $val = $this->readMetadata('envpath');
+        $val = $this->getConfiguredEnvPath();
         if ($val === null || $val === '') {
             return $this->isGitStack() ? $this->gitStackDefaultEnvPath() : null;
         }
@@ -2734,7 +2842,7 @@ class StackInfo
      */
     private function getExplicitEnvFilePath(): ?string
     {
-        $rawEnvPath = $this->readMetadata('envpath');
+        $rawEnvPath = $this->getConfiguredEnvPath();
         if ($rawEnvPath === null) {
             return null;
         }
@@ -2764,6 +2872,14 @@ class StackInfo
         ], 'user', 'debug', 'stack');
         composeLogger("Ignoring invalid envpath for stack $this->projectFolder: file not found", ['envpath' => $rawEnvPath], 'user', 'warning', 'stack');
         return null;
+    }
+
+    public function getConfiguredEnvPath(): ?string
+    {
+        $path = $this->readMetadata('envpath');
+        return $path === null && $this->identity->origin === 'dcflachs'
+            ? ($this->readMetadata('envPath') ?? $this->readMetadata('envToUse'))
+            : $path;
     }
 
     /**
@@ -3077,8 +3193,37 @@ class StackInfo
         return $files;
     }
 
-    private function getComposeFilePaths(): array
+    public function getSourceFilePaths(): array
     {
+        $paths = $this->getComposeFilePaths(false);
+        $paths[] = $this->getEffectiveEnvFilePath() ?? ($this->getEnvFilePath() ?? $this->composeSource . '/.env');
+        $paths[] = $this->getPreferredOverridePath();
+        $paths[] = $this->overrideInfo->getProjectOverridePath();
+        return array_values(array_unique(array_filter($paths, 'is_string')));
+    }
+
+    private function getComposeFilePaths(bool $includeDerived = true): array
+    {
+        if ($this->inputMigrationError !== null) {
+            return array_values(array_filter($this->legacyComposeCandidates, 'is_file'));
+        }
+        $legacyFiles = $this->getLegacyComposeFilePaths();
+        if ($legacyFiles !== null) {
+            foreach ($this->getExtraComposeFiles() as $extraFile) {
+                if (!in_array($extraFile, $legacyFiles, true)) {
+                    $legacyFiles[] = $extraFile;
+                }
+            }
+            // Explicitly saved overrides are registered into the frozen list
+            // itself (see registerComposeFile()); this only adds the
+            // generated icon-normalization layer, which is derived content
+            // rather than a Compose input and so is never part of that list.
+            $iconNormalizePath = $includeDerived ? $this->getIconNormalizationOverridePath() : null;
+            if ($iconNormalizePath !== null && !in_array($iconNormalizePath, $legacyFiles, true)) {
+                $legacyFiles[] = $iconNormalizePath;
+            }
+            return $legacyFiles;
+        }
         $paths = [];
         $mainComposeFile = $this->composeFilePath ?? ($this->composeSource . '/' . COMPOSE_FILE_NAMES[0]);
         $paths[] = $mainComposeFile;
@@ -3117,7 +3262,7 @@ class StackInfo
 
         // Last (highest precedence) so it can safely override just the icon
         // label without disturbing anything else the user/other files set.
-        $iconNormalizePath = $this->getIconNormalizationOverridePath();
+        $iconNormalizePath = $includeDerived ? $this->getIconNormalizationOverridePath() : null;
         if ($iconNormalizePath !== null) {
             $paths[] = $iconNormalizePath;
         }
@@ -3133,6 +3278,47 @@ class StackInfo
         }
 
         return $normalized;
+    }
+
+    private function getLegacyComposeFilePaths(): ?array
+    {
+        if ($this->identity->origin !== 'dcflachs' || $this->isGitStack()
+            || $this->readMetadata('compose_input_mode') === 'plus') {
+            return null;
+        }
+        $files = [];
+        if ($this->isIndirect) {
+            if (!is_dir($this->composeSource)) {
+                return [];
+            }
+            $directory = @opendir($this->composeSource);
+            if ($directory === false) {
+                return [];
+            }
+            try {
+                while (($entry = readdir($directory)) !== false) {
+                    $path = $this->composeSource . '/' . $entry;
+                    if (fnmatch('*compose*.yml', $entry) && is_file($path) && !is_link($path)) {
+                        $files[] = $path;
+                    }
+                }
+            } finally {
+                closedir($directory);
+            }
+        } elseif (is_file($this->path . '/docker-compose.yml')) {
+            $files[] = $this->path . '/docker-compose.yml';
+        } elseif (is_file($this->path . '/compose.yml')) {
+            $files[] = $this->path . '/compose.yml';
+        }
+        $override = $this->path . '/docker-compose.override.yml';
+        if ($files !== [] && is_file($override) && !in_array($override, $files, true)) {
+            $files[] = $override;
+        }
+        if ($files === [] && $this->invalidIndirectPath !== null) {
+            return [];
+        }
+        $this->legacyComposeCandidates = $files;
+        return $this->identity->resolveLegacyComposeFiles($this->path, $files);
     }
 
     /**
@@ -3290,10 +3476,10 @@ class StackInfo
     }
 
     /**
-     * Get the profiles that were active when the stack was last started/updated.
+     * Get the profiles selected by the last start or Git deployment.
      *
      * Reads the `running_profiles` metadata file written by compose.sh on
-     * successful `up` or `update` operations.
+     * successful `up` or Git deployment operations. Scoped updates leave it unchanged.
      *
      * @return string[]
      */
@@ -3744,6 +3930,19 @@ class StackInfo
      */
     public function buildComposeArgs(): array
     {
+        if ($this->inputMigrationError !== null) {
+            throw new \RuntimeException($this->inputMigrationError);
+        }
+        if ($this->identity->origin === 'dcflachs') {
+            $envPath = $this->getConfiguredEnvPath();
+            if ($envPath !== null && trim($envPath) !== '' && $this->getExplicitEnvFilePath() === null) {
+                throw new \RuntimeException('The imported stack env file is unavailable. Restore it before running any action.');
+            }
+            if (($this->readMetadata('indirect') !== null && !$this->isIndirect)
+                || $this->invalidIndirectPath !== null || $this->getComposeFilePaths() === []) {
+                throw new \RuntimeException('The imported stack Compose source is unavailable. Restore it before running any action.');
+            }
+        }
         $useDefaultDiscovery = $this->useDefaultComposeFileDiscovery();
         $files = $this->buildComposeFileFlags();
         $envFile = $this->buildEnvFileFlag();
@@ -3783,6 +3982,9 @@ class StackInfo
      */
     public function buildComposeFileList(): string
     {
+        if ($this->inputMigrationError !== null) {
+            throw new \RuntimeException($this->inputMigrationError);
+        }
         if ($this->useDefaultComposeFileDiscovery()) {
             return '';
         }
@@ -3820,6 +4022,52 @@ class StackInfo
         }
 
         return $this->extractHasBuildFromCompose();
+    }
+
+    /**
+     * Resolved build sections for services that build locally, including
+     * services behind profiles (hasBuildConfig() only sees default ones).
+     *
+     * @return array<string, array{build: array<string, mixed>, image: ?string, platform?: string}> Keyed by service name
+     */
+    public function getBuildConfigs(): array
+    {
+        $args = $this->buildComposeArgs();
+        require_once __DIR__ . '/ProcessRunner.php';
+        $command = ['docker', 'compose'];
+        foreach ($args['filePaths'] as $file) {
+            array_push($command, '-f', $file);
+        }
+        if (isset($args['envFilePath'])) {
+            array_push($command, '--env-file', $args['envFilePath']);
+        }
+        // Mutually exclusive profiles can share container names; this inspects
+        // build metadata, not the validity of deploying every profile together.
+        array_push($command, '-p', $args['projectName'], '--profile', '*', 'config', '--no-consistency', '--format', 'json');
+        $result = ProcessRunner::run($command, $args['projectDirectory'], getenv(), 60);
+        if (!$result->succeeded()) {
+            throw new RuntimeException("Unable to resolve build configuration for {$this->projectFolder}: " . $result->errorSummary());
+        }
+        try {
+            $config = json_decode($result->stdout, true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException $e) {
+            throw new RuntimeException("Invalid Compose configuration for {$this->projectFolder}.", 0, $e);
+        }
+        if (!is_array($config) || !is_array($config['services'] ?? null)) {
+            throw new RuntimeException("Missing Compose services configuration for {$this->projectFolder}.");
+        }
+        $builds = [];
+        foreach ($config['services'] as $service => $definition) {
+            if (!is_array($definition) || !is_array($definition['build'] ?? null)) {
+                continue;
+            }
+            $image = trim((string) ($definition['image'] ?? ''));
+            $builds[(string) $service] = ['build' => $definition['build'], 'image' => $image !== '' ? $image : null];
+            if (is_string($definition['platform'] ?? null) && $definition['platform'] !== '') {
+                $builds[(string) $service]['platform'] = $definition['platform'];
+            }
+        }
+        return $builds;
     }
 
     /**
@@ -4037,10 +4285,7 @@ class StackInfo
         // Pin the runtime identity up front. Without this a collision-suffixed
         // folder (my-stack-001) would look like a legacy stack whose display
         // name resolves to an existing project (my-stack) and could adopt it.
-        file_put_contents(
-            $path . '/' . ProjectIdentity::METADATA_FILE,
-            self::sanitizeProjectString(basename($path))
-        );
+        ProjectIdentity::initializeNew($path, self::sanitizeProjectString(basename($path)));
         if ($description !== '') {
             file_put_contents("$path/description", $description);
         }
@@ -4223,26 +4468,46 @@ class StackInfo
      * containers.
      *
      * @param string|null $projectName One project, or null for every compose project
+     * @param bool $strict Fail rather than report an empty snapshot on command/parse errors
      * @return array<string, array[]> Rows by project name
      */
-    public static function containersByProject(?string $projectName = null): array
+    public static function containersByProject(?string $projectName = null, bool $strict = false): array
     {
         $filter = 'label=com.docker.compose.project' . ($projectName === null ? '' : '=' . $projectName);
         $containersByProject = [];
-        $psOutput = shell_exec('docker ps -a --filter ' . escapeshellarg($filter) . ' --format json 2>/dev/null');
+        if ($strict) {
+            require_once __DIR__ . '/ProcessRunner.php';
+            $result = ProcessRunner::run(
+                ['docker', 'ps', '-a', '--filter', $filter, '--format', 'json'],
+                __DIR__, getenv(), 60
+            );
+            if (!$result->succeeded()) {
+                throw new RuntimeException('Unable to enumerate Compose containers: ' . $result->errorSummary());
+            }
+            $psOutput = $result->stdout;
+        } else {
+            $psOutput = shell_exec('docker ps -a --filter ' . escapeshellarg($filter) . ' --format json 2>/dev/null');
+        }
         if ($psOutput) {
             foreach (explode("\n", trim($psOutput)) as $line) {
                 if ($line === '') {
                     continue;
                 }
-                $ct = @json_decode($line, true);
-                if (!$ct) {
+                $ct = $strict ? json_decode($line, true, 512, JSON_THROW_ON_ERROR) : @json_decode($line, true);
+                if ($strict && (!is_array($ct) || !is_string($ct['Labels'] ?? null)
+                    || !is_string($ct['Names'] ?? null) || trim($ct['Names']) === ''
+                    || !is_string($ct['Image'] ?? null) || trim($ct['Image']) === '')) {
+                    throw new RuntimeException('Invalid Docker container row in update snapshot.');
+                }
+                if (!is_array($ct) || !$ct) {
                     continue;
                 }
                 // Extract project name from Labels string
                 $labels = $ct['Labels'] ?? '';
                 if (preg_match('/com\.docker\.compose\.project=([^,]+)/', $labels, $m)) {
                     $containersByProject[$m[1]][] = $ct;
+                } elseif ($strict) {
+                    throw new RuntimeException('Missing Compose project label in update snapshot.');
                 }
             }
         }
@@ -4406,26 +4671,28 @@ class StackInfo
      */
     public static function fromComposePath(string $composeRoot, string $composePath): ?self
     {
-        // Static cache: [composeRoot => [composeSourcePath => StackInfo]]
-        static $cacheByRoot = [];
-
         $composeRoot = rtrim($composeRoot, '/');
         $normalizedPath = rtrim($composePath, '/');
-
-        if (isset($cacheByRoot[$composeRoot])) {
-            return $cacheByRoot[$composeRoot][$normalizedPath] ?? null;
-        }
-
-        $cacheByRoot[$composeRoot] = [];
-
-        foreach (self::allFromRoot($composeRoot) as $stackInfo) {
-            $sourcePath = rtrim($stackInfo->composeSource, '/');
-            if ($sourcePath !== '') {
-                $cacheByRoot[$composeRoot][$sourcePath] = $stackInfo;
+        $matches = [];
+        foreach (self::listProjectFolders($composeRoot) as $folder) {
+            $stackPath = $composeRoot . '/' . $folder;
+            $sources = [$stackPath];
+            $indirect = @file_get_contents($stackPath . '/indirect');
+            if (is_string($indirect) && trim($indirect) !== '') {
+                $target = trim($indirect);
+                $sources[] = is_file($target) || preg_match('/\.ya?ml$/i', $target) === 1 ? dirname($target) : $target;
+            }
+            foreach ($sources as $source) {
+                if ($normalizedPath === rtrim($source, '/') || Path::refersToSamePath($normalizedPath, $source)) {
+                    $matches[] = $folder;
+                    break;
+                }
             }
         }
-
-        return $cacheByRoot[$composeRoot][$normalizedPath] ?? null;
+        if (count($matches) > 1) {
+            throw new \RuntimeException('Multiple managed stacks use this Compose path. Select a stack explicitly.');
+        }
+        return $matches === [] ? null : self::fromProject($composeRoot, $matches[0]);
     }
 }
 
@@ -4503,10 +4770,16 @@ function releaseStackLock($fp)
  * @param string $stackName The stack name/folder
  * @return array|false Lock info if locked, false if not locked
  */
-function isStackLocked($stackName)
+function isStackLocked($stackName, bool $exactProjectName = false)
 {
+    $lockName = $exactProjectName
+        ? trim((string) $stackName)
+        : StackInfo::sanitizeProjectString($stackName);
+    if ($exactProjectName && !compose_manager_is_valid_project_name($lockName)) {
+        return false;
+    }
     $lockDir = getLockDir();
-    $lockFile = "$lockDir/" . StackInfo::sanitizeProjectString($stackName) . ".lock";
+    $lockFile = "$lockDir/" . $lockName . ".lock";
 
     if (!is_file($lockFile)) {
         return false;

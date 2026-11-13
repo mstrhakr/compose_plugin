@@ -13,14 +13,61 @@ require_once '/usr/local/emhttp/plugins/compose.manager/include/Util.php';
 class ComposeCommandBuilder
 {
     /**
+     * Encode an already resolved update operation; policy belongs to StackUpdateService.
+     *
+     * @param array<string, mixed> $spec
+     * @param array{build: bool, recreate: bool, automatic: bool, includeStopped: bool, debug: bool} $options
+     * @return string[]
+     */
+    public static function buildUpdateCommand(array $spec, array $options): array
+    {
+        $command = [dirname(__DIR__) . '/scripts/compose.sh', '-cupdate', '-p' . $spec['projectName']];
+        if ($spec['useDefaultFileDiscovery']) {
+            $command[] = '-w' . $spec['projectDirectory'];
+        } else {
+            foreach ($spec['composeFiles'] as $file) {
+                $command[] = '-f' . $file;
+            }
+        }
+        if (!empty($spec['envFilePath'])) {
+            $command[] = '-e' . $spec['envFilePath'];
+        }
+        if ($spec['credentialId'] !== '') {
+            $command[] = '--credential-id';
+            $command[] = $spec['credentialId'];
+        }
+        foreach ($spec['profiles'] as $profile) {
+            $command[] = '-g' . $profile;
+        }
+        $command[] = '-s' . $spec['stackPath'];
+        if ($options['build']) {
+            $command[] = '--build';
+        }
+        if (!empty($options['recreate'])) {
+            $command[] = '--recreate';
+        }
+        if (!empty($options['automatic'])) {
+            $command[] = '--automatic-update';
+        }
+        if ($options['includeStopped']) {
+            $command[] = '--include-stopped';
+        }
+        if ($options['debug']) {
+            $command[] = '--debug';
+        }
+        return $command;
+    }
+
+    /**
      * Build resolved compose runtime arguments for a specific stack/action.
      *
      * @param StackInfo $stackInfo
      * @param string $action Supported: up, down, update, pull, stop, logs
      * @param string|null $stackPath Optional explicit stack path to include in output
-        * @return array<string, mixed>
+     * @param string[]|null $profiles Profiles resolved by the operation's policy owner
+     * @return array<string, mixed>
      */
-    public static function buildForAction(StackInfo $stackInfo, string $action, ?string $stackPath = null): array
+    public static function buildForAction(StackInfo $stackInfo, string $action, ?string $stackPath = null, ?array $profiles = null): array
     {
         $action = strtolower(trim($action));
         self::assertSupportedAction($action);
@@ -38,7 +85,7 @@ class ComposeCommandBuilder
             'envFilePath' => $args['envFilePath'] ?? null,
             'projectDirectory' => $args['projectDirectory'],
             'useDefaultFileDiscovery' => $args['useDefaultFileDiscovery'],
-            'profiles' => self::resolveProfilesForAction($stackInfo, $action),
+            'profiles' => $profiles ?? self::resolveProfilesForAction($stackInfo, $action),
             'stackPath' => $stackPath ?? $stackInfo->path,
             'credentialId' => $credentialId,
         ];
@@ -67,14 +114,6 @@ class ComposeCommandBuilder
     {
         if ($action === 'down') {
             return ['*'];
-        }
-
-        if ($action === 'update') {
-            $profiles = $stackInfo->getRunningProfiles();
-            if (empty($profiles)) {
-                $profiles = $stackInfo->getDefaultProfiles();
-            }
-            return array_values($profiles);
         }
 
         return array_values($stackInfo->getDefaultProfiles());

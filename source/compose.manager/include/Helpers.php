@@ -9,31 +9,10 @@
 
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Defines.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Util.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/StackUpdateService.php");
+require_once __DIR__ . '/UiOperation.php';
+require_once __DIR__ . '/TerminalSession.php';
 require_once("/usr/local/emhttp/plugins/dynamix/include/Wrappers.php");
-
-/**
- * Wait for ttyd UNIX socket to exist.
- *
- * @param string $socketName Base name of socket file (without path)
- * @param int $timeoutMs How long to wait in milliseconds (default 2000)
- * @param int $intervalMs Poll interval in milliseconds (default 100)
- * @return bool True if socket existed within timeout, false otherwise
- */
-function waitForTtydSocket($socketName, $timeoutMs = 2000, $intervalMs = 100, $tmpDir = COMPOSE_TTYD_SOCKET_DIR)
-{
-
-    $socketPath = rtrim($tmpDir, '/') . "/$socketName.sock";
-    $attempts = max(1, (int) ceil($timeoutMs / $intervalMs));
-    for ($i = 0; $i < $attempts; $i++) {
-        if (file_exists($socketPath)) {
-            composeLogger("ttyd socket ready: $socketPath", ['socket' => $socketPath, 'attempt' => $i], 'user', 'debug', 'ttyd');
-            return true;
-        }
-        usleep($intervalMs * 1000);
-    }
-    composeLogger("ttyd socket timeout: $socketPath", ['socket' => $socketPath, 'timeoutMs' => $timeoutMs], 'user', 'warning', 'ttyd');
-    return false;
-}
 
 /**
  * Execute a compose command in a ttyd terminal, optionally capturing output to a log file.
@@ -208,29 +187,6 @@ function resolveStackWaitSettings(string $stackPath, array $cfg): array
 }
 
 /**
- * Resolve whether `update` should rebuild buildable services for a stack.
- *
- * Compose only builds automatically when an image is missing, so forcing
- * `--build` breaks stacks that publish an image alongside an unbuildable
- * `build:` section (see issue #149). Opt-in per stack, global default otherwise.
- *
- * @param array<string, mixed> $cfg
- */
-function resolveStackBuildOnUpdate(string $stackPath, array $cfg): bool
-{
-    $buildFile = rtrim($stackPath, '/') . '/build_on_update';
-
-    if (is_file($buildFile)) {
-        $raw = trim((string) file_get_contents($buildFile));
-        if ($raw !== '') {
-            return ($raw === 'true' || $raw === '1');
-        }
-    }
-
-    return (($cfg['BUILD_ON_UPDATE_DEFAULT'] ?? 'false') === 'true');
-}
-
-/**
  * Build and echo a compose command for a single stack.
  *
  * @param string $action The compose action (up, down, update, pull, stop, logs)
@@ -261,7 +217,6 @@ function echoComposeCommand($action, array $options = [])
     $followLogs = !empty($options['followLogs']);
     $waitForHealthy = false;
     $waitTimeout = (string) ($cfg['WAIT_FOR_HEALTHY_TIMEOUT_DEFAULT'] ?? '300');
-    $buildOnUpdate = ($action === 'update') && resolveStackBuildOnUpdate($path, $cfg);
     if ($action === 'up') {
         $resolvedWait = resolveStackWaitSettings($path, $cfg);
         $waitForHealthy = !empty($resolvedWait['enabled']);
@@ -269,6 +224,10 @@ function echoComposeCommand($action, array $options = [])
         $waitForHealthy = isset($_POST['waitForHealthy']) ? ((string) $_POST['waitForHealthy'] === '1' || strtolower((string) $_POST['waitForHealthy']) === 'true') : $waitForHealthy;
         if (isset($_POST['waitTimeout']) && trim((string) $_POST['waitTimeout']) !== '') {
             $waitTimeout = trim((string) $_POST['waitTimeout']);
+        }
+        if ($followLogs) {
+            $waitForHealthy = false;
+            $background = false;
         }
     }
     $unRaidVars = parse_ini_file("/var/local/emhttp/var.ini");
@@ -302,72 +261,84 @@ function echoComposeCommand($action, array $options = [])
                 'project' => $stackInfo->projectFolder,
                 'folderCandidate' => $stackInfo->identity->folderCandidate,
                 'legacyCandidate' => $stackInfo->identity->legacyCandidate,
+                'candidates' => $stackInfo->identity->candidates,
+                'canChoose' => $stackInfo->identity->toArray()['canChoose'],
                 'message' => $stackInfo->getIdentityBlockReason(),
             ]);
             return;
         }
 
-        $args = $stackInfo->buildComposeArgs();
-
-        $composeCommand[] = "-c" . $action;
-        $composeCommand[] = "-p" . $args['projectName'];
-        appendComposeFileArgs($composeCommand, $args);
-
-        // Prune orphaned services from override before compose up
-        if ($action === 'up') {
-            $stackInfo->pruneOrphanOverrideServices();
-        }
-
-        if ($removeOrphans && ($action === 'up' || $action === 'down')) {
-            $composeCommand[] = '--remove-orphans';
-        }
-
-        appendComposeEnvFileArg($composeCommand, $args);
-
-        if (in_array($action, ['up', 'update', 'pull'], true)) {
-            $credentialId = trim((string) ($stackInfo->getCredentialId() ?? ''));
-            if ($credentialId !== '') {
-                $composeCommand[] = '--credential-id';
-                $composeCommand[] = $credentialId;
+        $args = [];
+        try {
+            if ($action === 'update') {
+                $updateOptions = ['recreate' => $recreate];
+                if (isset($_POST['includeStopped'])) {
+                    $updateOptions['includeStopped'] = (string) $_POST['includeStopped'] === '1';
+                }
+                $composeCommand = StackUpdateService::buildUpdateCommand($stackInfo, $cfg, $updateOptions);
+            } else {
+                $args = $stackInfo->buildComposeArgs();
             }
+        } catch (\RuntimeException $error) {
+            composeLogger('Cannot build Compose command', ['action' => $action, 'path' => $path, 'error' => $error->getMessage()], 'user', 'error', 'compose');
+            echo json_encode(['error' => 'configuration', 'project' => $stackInfo->projectFolder, 'message' => $error->getMessage()]);
+            return;
         }
 
-        // Support multiple profiles (comma-separated)
-        if ($profile) {
-            $profileList = array_map('trim', explode(',', $profile));
-            foreach ($profileList as $p) {
-                if ($p) {
-                    $composeCommand[] = "-g" . $p;
+        if ($action !== 'update') {
+            $composeCommand[] = "-c" . $action;
+            $composeCommand[] = "-p" . $args['projectName'];
+            appendComposeFileArgs($composeCommand, $args);
+
+            // Prune orphaned services from override before compose up
+            if ($action === 'up') {
+                $stackInfo->pruneOrphanOverrideServices();
+            }
+
+            if ($removeOrphans && ($action === 'up' || $action === 'down')) {
+                $composeCommand[] = '--remove-orphans';
+            }
+
+            appendComposeEnvFileArg($composeCommand, $args);
+
+            if (in_array($action, ['up', 'pull'], true)) {
+                $credentialId = trim((string) ($stackInfo->getCredentialId() ?? ''));
+                if ($credentialId !== '') {
+                    $composeCommand[] = '--credential-id';
+                    $composeCommand[] = $credentialId;
                 }
             }
-        }
 
-        // Pass stack path for timestamp saving
-        $composeCommand[] = "-s$path";
+            // Support multiple profiles (comma-separated)
+            if ($profile) {
+                $profileList = array_map('trim', explode(',', $profile));
+                foreach ($profileList as $p) {
+                    if ($p) {
+                        $composeCommand[] = "-g" . $p;
+                    }
+                }
+            }
 
-        // Add recreate flag if requested
-        if ($recreate) {
-            $composeCommand[] = "--recreate";
-        }
+            // Pass stack path for timestamp saving
+            $composeCommand[] = "-s$path";
 
-        if ($debug) {
-            $composeCommand[] = "--debug";
-        }
+            if ($recreate) {
+                $composeCommand[] = "--recreate";
+            }
 
-        if ($action === 'up' && $followLogs) {
-            $composeCommand[] = "--follow-logs";
-        }
+            if ($debug) {
+                $composeCommand[] = "--debug";
+            }
 
-        if ($buildOnUpdate) {
-            $composeCommand[] = "--build";
+            if ($action === 'up' && $followLogs) {
+                $composeCommand[] = "--follow-logs";
+            }
+            if ($action === 'up' && !empty($options['prepareImages'])) {
+                $composeCommand[] = '--prepare-images';
+            }
         }
 
         if ($action === 'up' && $waitForHealthy) {
-            if ($followLogs) {
-                composeLogger("Blocked wait-for-healthy with follow logs enabled", ['action' => $action, 'path' => $path], 'user', 'warning', 'compose');
-                echo json_encode(['error' => 'wait_conflict', 'message' => 'Follow stack logs and wait-for-healthy cannot be enabled at the same time.']);
-                return;
-            }
             $composeCommand[] = "--wait";
             $composeCommand[] = "--wait-timeout";
             $composeCommand[] = (string) $waitTimeout;
@@ -377,21 +348,28 @@ function echoComposeCommand($action, array $options = [])
             // Run fully in the background using compose_background.sh.
             // Output is captured to last_cmd.log; notification sent on completion.
             $bgScript = $plugin_root . "scripts/compose_background.sh";
-            $bgCmd = escapeshellarg($bgScript);
-            foreach ($composeCommand as $arg) {
-                $bgCmd .= ' ' . escapeshellarg($arg);
-            }
+            $operations = [];
+            $trackedCommand = composeTrackUiCommand(array_merge([$bgScript], $composeCommand), $stackInfo->projectFolder, $operations);
+            $bgCmd = implode(' ', array_map('escapeshellarg', $trackedCommand));
             $bgCmd .= ' > /dev/null 2>&1 &';
             exec($bgCmd);
             composeLogger("Background command: " . $bgCmd, ['command' => $bgCmd], 'user', 'debug', 'compose');
             // Signal to JS that this ran in background (no terminal window to open)
-            echo json_encode(['background' => true]);
+            echo json_encode(['background' => true, 'operations' => $operations]);
         } else {
             $logFile = getLastCmdLogFileForComposeAction($action, $path);
+            $operations = [];
+            if ($action !== 'logs') {
+                $composeCommand = composeTrackUiCommand($composeCommand, $stackInfo->projectFolder, $operations);
+            }
             $composeCommandEscaped = array_map(function ($item) {
                 return escapeshellarg($item);
             }, $composeCommand);
             $composeCommandStr = join(" ", $composeCommandEscaped);
+            if ($operations || $followLogs) {
+                composeEchoTerminalSession($composeCommandStr, $operations, $debug, $logFile, $action, $followLogs);
+                return;
+            }
             // Use a per-stack socket for logs so viewing logs doesn't conflict
             // with action operations (up/update/pull) that share the default socket.
             $logsSocket = '';
@@ -404,9 +382,6 @@ function echoComposeCommand($action, array $options = [])
                 $composeCommand = "/plugins/compose.manager/include/ShowTtyd.php?socket=" . urlencode($logsSocket);
             } else {
                 $composeCommand = "/plugins/compose.manager/include/ShowTtyd.php?done=1";
-                if ($action === 'up' && $followLogs) {
-                    $composeCommand .= '&path=' . urlencode($path);
-                }
             }
             echo $composeCommand;
         }
@@ -556,6 +531,8 @@ function echoGitDeployCommand(array $options = []): void
             'project' => $stack->projectFolder,
             'folderCandidate' => $stack->identity->folderCandidate,
             'legacyCandidate' => $stack->identity->legacyCandidate,
+            'candidates' => $stack->identity->candidates,
+            'canChoose' => $stack->identity->toArray()['canChoose'],
             'message' => $stack->getIdentityBlockReason(),
         ]);
         return;
@@ -580,19 +557,25 @@ function echoGitDeployCommand(array $options = []): void
 
     if ($background) {
         // As echoComposeCommand(): output goes to last_cmd.log and a notification is sent at the end.
-        $bgCmd = escapeshellarg($plugin_root . "scripts/compose_background.sh");
-        foreach ($composeCommand as $arg) {
-            $bgCmd .= ' ' . escapeshellarg($arg);
-        }
+        $operations = [];
+        $trackedCommand = composeTrackUiCommand(array_merge([$plugin_root . "scripts/compose_background.sh"], $composeCommand), $stack->projectFolder, $operations);
+        $bgCmd = implode(' ', array_map('escapeshellarg', $trackedCommand));
         exec($bgCmd . ' > /dev/null 2>&1 &');
         composeLogger("Background command: " . $bgCmd, ['command' => $bgCmd], 'user', 'debug', 'compose');
-        echo json_encode(['background' => true]);
+        echo json_encode(['background' => true, 'operations' => $operations]);
         return;
     }
 
+    $operations = [];
+    $composeCommand = composeTrackUiCommand($composeCommand, $stack->projectFolder, $operations);
     $composeCommandString = implode(' ', array_map('escapeshellarg', $composeCommand));
+    if ($operations) {
+        composeEchoTerminalSession($composeCommandString, $operations, $debug, getLastCmdLogFileForComposeAction('gitdeploy', $stack->path), 'gitdeploy');
+        return;
+    }
     execComposeCommandInTTY($composeCommandString, $debug, getLastCmdLogFileForComposeAction('gitdeploy', $stack->path));
-    echo "/plugins/compose.manager/include/ShowTtyd.php?done=1";
+    $url = "/plugins/compose.manager/include/ShowTtyd.php?done=1";
+    echo $url;
 }
 
 /**
@@ -623,6 +606,8 @@ function echoComposeCommandMultiple($action, array $options = [])
     $commands = array();
     $stackNames = array();
     $blockedStacks = array();
+    $configurationFailures = [];
+    $commandProjects = [];
 
     foreach ($paths as $path) {
         composeLogger("Processing stack for multi-compose action: " . $path, ['path' => $path, 'action' => $action], 'user', 'debug', 'compose-multi');
@@ -651,68 +636,71 @@ function echoComposeCommandMultiple($action, array $options = [])
             continue;
         }
 
+        $args = [];
+        try {
+            if ($action === 'update') {
+                $updateOptions = ['recreate' => !empty($options['recreate'])];
+                if (isset($_POST['includeStopped'])) {
+                    $updateOptions['includeStopped'] = (string) $_POST['includeStopped'] === '1';
+                }
+                $composeCommand = StackUpdateService::buildUpdateCommand($stackInfo, $cfg, $updateOptions);
+            } else {
+                $args = $stackInfo->buildComposeArgs();
+            }
+        } catch (\RuntimeException $error) {
+            $configurationFailures[$stackInfo->projectFolder] = $stackInfo->getName() . ': ' . $error->getMessage();
+            composeLogger('Skipping stack with invalid Compose inputs', ['action' => $action, 'path' => $path, 'error' => $error->getMessage()], 'user', 'error', 'compose-multi');
+            continue;
+        }
+
         $stackNames[] = $stackInfo->getName();
-        $args = $stackInfo->buildComposeArgs();
+        if ($action !== 'update') {
+            $composeCommand[] = "-c" . $action;
+            $composeCommand[] = "-p" . $args['projectName'];
+            appendComposeFileArgs($composeCommand, $args);
 
-        $composeCommand[] = "-c" . $action;
-        $composeCommand[] = "-p" . $args['projectName'];
-        appendComposeFileArgs($composeCommand, $args);
-
-        // Prune orphaned services from override before compose up
-        if ($action === 'up') {
-            $stackInfo->pruneOrphanOverrideServices();
-        }
-
-        if ($removeOrphans && ($action === 'up' || $action === 'down')) {
-            $composeCommand[] = '--remove-orphans';
-        }
-
-        appendComposeEnvFileArg($composeCommand, $args);
-
-        if (in_array($action, ['up', 'update', 'pull'], true)) {
-            $credentialId = trim((string) ($stackInfo->getCredentialId() ?? ''));
-            if ($credentialId !== '') {
-                $composeCommand[] = '--credential-id';
-                $composeCommand[] = $credentialId;
+            if ($action === 'up') {
+                $stackInfo->pruneOrphanOverrideServices();
             }
-        }
 
-        // Profile selection per action:
-        //  - up:     use user-configured default profiles (running_profiles
-        //            is stale/absent when the stack isn't running).
-        //  - update: preserve the currently active profile set so the same
-        //            services are recreated; fall back to defaults on first run.
-        //  - down:   wildcard * ensures every profiled service is torn down,
-        //            regardless of what was recorded or configured.
-        if ($action === 'down') {
-            $composeCommand[] = "-g*";
-        } elseif ($action === 'update') {
-            $profiles = $stackInfo->getRunningProfiles();
-            if (empty($profiles)) {
-                $profiles = $stackInfo->getDefaultProfiles();
+            if ($removeOrphans && ($action === 'up' || $action === 'down')) {
+                $composeCommand[] = '--remove-orphans';
             }
+
+            appendComposeEnvFileArg($composeCommand, $args);
+
+            if (in_array($action, ['up', 'pull'], true)) {
+                $credentialId = trim((string) ($stackInfo->getCredentialId() ?? ''));
+                if ($credentialId !== '') {
+                    $composeCommand[] = '--credential-id';
+                    $composeCommand[] = $credentialId;
+                }
+            }
+
+            // Down includes all profiles; starting uses the configured defaults.
+            $profiles = $action === 'down' ? ['*'] : $stackInfo->getDefaultProfiles();
             foreach ($profiles as $p) {
                 $composeCommand[] = "-g" . $p;
             }
-        } else {
-            // 'up' and any future actions
-            foreach ($stackInfo->getDefaultProfiles() as $p) {
-                $composeCommand[] = "-g" . $p;
+
+            $composeCommand[] = "-s" . $path;
+
+            if ($debug) {
+                $composeCommand[] = "--debug";
             }
         }
 
-        // Pass stack path for timestamp saving
-        $composeCommand[] = "-s" . $path;
-
-        if ($debug) {
-            $composeCommand[] = "--debug";
-        }
-
         $commands[] = $composeCommand;
+        $commandProjects[] = $stackInfo->projectFolder;
     }
 
     if (empty($commands)) {
         composeLogger("Multi Compose operation aborted: no valid stacks resolved", ['action' => $action, 'blocked' => $blockedStacks], 'user', 'warning', 'compose-multi');
+        if ($configurationFailures !== []) {
+            echo json_encode(['error' => 'configuration', 'failures' => $configurationFailures,
+                'stacks' => $blockedStacks, 'message' => implode("\n", $configurationFailures)]);
+            return;
+        }
         if (!empty($blockedStacks)) {
             echo json_encode([
                 'error' => 'identity',
@@ -739,11 +727,10 @@ function echoComposeCommandMultiple($action, array $options = [])
         $bgScript = $plugin_root . "scripts/compose_background.sh";
         $tmpScript = "/tmp/compose_multi_bg_" . uniqid() . ".sh";
         $scriptContent = "#!/bin/bash\n";
-        foreach ($commands as $cmd) {
-            $line = escapeshellarg($bgScript);
-            foreach ($cmd as $arg) {
-                $line .= ' ' . escapeshellarg($arg);
-            }
+        $operations = [];
+        foreach ($commands as $index => $cmd) {
+            $trackedCommand = composeTrackUiCommand(array_merge([$bgScript], $cmd), $commandProjects[$index], $operations);
+            $line = implode(' ', array_map('escapeshellarg', $trackedCommand));
             $scriptContent .= "$line\n";
         }
         $scriptContent .= "rm -f " . escapeshellarg($tmpScript) . "\n";
@@ -751,7 +738,7 @@ function echoComposeCommandMultiple($action, array $options = [])
         chmod($tmpScript, 0700);
         exec(escapeshellarg($tmpScript) . ' > /dev/null 2>&1 &');
         composeLogger("Background multi-stack queued: " . $tmpScript, ['script' => $tmpScript, 'stacks' => count($commands)], 'user', 'debug', 'compose-multi');
-        echo json_encode(['background' => true]);
+        echo json_encode(['background' => true, 'operations' => $operations, 'failures' => $configurationFailures]);
         return;
     }
 
@@ -760,13 +747,20 @@ function echoComposeCommandMultiple($action, array $options = [])
     $tmpScript = "/tmp/compose_multi_" . uniqid() . ".sh";
     $scriptContent = "#!/bin/bash\n";
     $scriptContent .= "# Multi-stack compose script (ttyd) - auto-generated\n\n";
+    $scriptContent .= 'trap ' . escapeshellarg('rm -f ' . escapeshellarg($tmpScript)) . " EXIT\n";
+    $scriptContent .= "result=0\n";
+    foreach ($configurationFailures as $failure) {
+        $scriptContent .= 'printf \'%s\\n\' ' . escapeshellarg('! Skipped ' . $failure) . "\n";
+    }
 
     foreach ($blockedStacks as $blocked) {
         $blockedTitle = str_replace(['\\', '"'], ['\\\\', '\\"'], $blocked);
         $scriptContent .= "echo \"! Skipped " . $blockedTitle . ": compose project identity is unresolved\"\n";
     }
 
+    $operations = [];
     foreach ($commands as $idx => $cmd) {
+        $cmd = composeTrackUiCommand($cmd, $commandProjects[$idx], $operations);
         $cmdStr = implode(" ", array_map('escapeshellarg', $cmd));
         $stackTitle = str_replace(['\\', '"'], ['\\\\', '\\"'], $stackNames[$idx]);
 
@@ -776,6 +770,7 @@ function echoComposeCommandMultiple($action, array $options = [])
         $scriptContent .= $cmdStr . "\n";
         $scriptContent .= "rc=$?\n";
         $scriptContent .= "if [ \$rc -ne 0 ]; then\n";
+        $scriptContent .= "  result=\$rc\n";
         $scriptContent .= "  echo \"X Stack " . $stackTitle . " failed to " . strtolower($actionLabel) . " (exit code: \$rc)\"\n";
         $scriptContent .= "fi\n";
         $scriptContent .= "echo \"\"\n";
@@ -784,13 +779,18 @@ function echoComposeCommandMultiple($action, array $options = [])
     $scriptContent .= "echo \"========================================\"\n";
     $scriptContent .= "echo \"=== All operations complete ===\"\n";
     $scriptContent .= "echo \"========================================\"\n";
-    $scriptContent .= "rm -f " . escapeshellarg($tmpScript) . "\n";
+    $scriptContent .= "exit \$result\n";
 
     file_put_contents($tmpScript, $scriptContent);
     chmod($tmpScript, 0755);
 
     $ttydCommand = "bash " . escapeshellarg($tmpScript);
+    if ($operations) {
+        composeEchoTerminalSession($ttydCommand, $operations, $debug, '', $action);
+        return;
+    }
     execComposeCommandInTTY($ttydCommand, $debug);
     composeLogger("Multi-stack script created: " . $tmpScript, null, 'user', 'debug', 'compose-multi');
-    echo "/plugins/compose.manager/include/ShowTtyd.php?done=1";
+    $url = "/plugins/compose.manager/include/ShowTtyd.php?done=1";
+    echo $url;
 }

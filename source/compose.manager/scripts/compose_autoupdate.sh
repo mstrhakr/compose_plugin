@@ -1,61 +1,12 @@
 #!/bin/bash
-# Compose auto-update runner
-# Args: <compose_yml_path> <project_name>
-#   or: <project_name> with COMPOSE_FILE_LIST / COMPOSE_ENV_FILE set.
+# Notification adapter. All Docker operations and stack locking belong to compose.sh.
+# Preferred args: the shared builder's compose.sh update arguments.
+# Legacy args: <compose_file> <project_name>, or <project_name> with COMPOSE_FILE_LIST.
 
 # shellcheck disable=SC1091
 . "$(dirname "$0")/common.sh"
 
-COMPOSE_FILE_ARG="$1"
-PROJECT_NAME="$2"
-COMPOSE_FILE_LIST="${COMPOSE_FILE_LIST:-}"
-COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE:-}"
-COMPOSE_PROJECT_DIR="${COMPOSE_PROJECT_DIR:-}"
-COMPOSE_CREDENTIAL_ID="${COMPOSE_CREDENTIAL_ID:-}"
-COMPOSE_FILE="${COMPOSE_FILE_ARG:-${COMPOSE_FILE:-}}"
-DOCKER_CONFIG_DIR=""
-
-# shellcheck disable=SC2317  # Invoked by EXIT trap.
-cleanup_docker_config() {
-  if [ -n "$DOCKER_CONFIG_DIR" ]; then
-    php "$(dirname "$0")/credential_config.php" --remove "$DOCKER_CONFIG_DIR" >/dev/null 2>&1 || true
-  fi
-}
-trap cleanup_docker_config EXIT
-
-# If this script is invoked by the background runner, the first positional
-# argument is the project name and compose files are supplied through env vars.
-if [ -z "$PROJECT_NAME" ] && [ -n "$COMPOSE_FILE_LIST" ]; then
-  PROJECT_NAME="$COMPOSE_FILE_ARG"
-  COMPOSE_FILE_ARG=""
-fi
-
-# If the script is invoked with a single arg and COMPOSE_FILE is set via
-# the environment, treat the first arg as project name.
-if [ -z "$PROJECT_NAME" ] && [ -n "$COMPOSE_FILE" ]; then
-  PROJECT_NAME="$COMPOSE_FILE_ARG"
-  COMPOSE_FILE_ARG=""
-fi
-
-if [ -n "$COMPOSE_CREDENTIAL_ID" ]; then
-  if ! credential_output=$(php "$(dirname "$0")/credential_config.php" --credential-id "$COMPOSE_CREDENTIAL_ID"); then
-    composeLogger "Selected registry credential could not be loaded for '$PROJECT_NAME'" error autoupdate daemon
-    exit 1
-  fi
-  DOCKER_CONFIG_DIR=$(printf '%s\n' "$credential_output" | sed -n '1p')
-  credential_label=$(printf '%s\n' "$credential_output" | sed -n '2p')
-  export DOCKER_CONFIG="$DOCKER_CONFIG_DIR"
-  composeLogger "Using registry credential '${credential_label:-$COMPOSE_CREDENTIAL_ID}' for '$PROJECT_NAME'" debug autoupdate daemon
-else
-  composeLogger "No registry credential configured for '$PROJECT_NAME'; using default Docker credentials" debug autoupdate daemon
-fi
-
-NOTIFY="/usr/local/emhttp/webGui/scripts/notify"
-LOCK_DIR="/var/run/compose.manager"
-LOCK_TIMEOUT=${COMPOSE_LOCK_TIMEOUT:-30}
-COMMAND_TIMEOUT=${COMPOSE_COMMAND_TIMEOUT:-1800}
 COMPOSE_PARALLEL_LIMIT=${COMPOSE_PARALLEL_LIMIT:-4}
-
 case "$COMPOSE_PARALLEL_LIMIT" in
   ''|*[!0-9]*) COMPOSE_PARALLEL_LIMIT=4 ;;
 esac
@@ -64,200 +15,76 @@ if [ "$COMPOSE_PARALLEL_LIMIT" -lt 1 ] || [ "$COMPOSE_PARALLEL_LIMIT" -gt 16 ]; 
 fi
 export COMPOSE_PARALLEL_LIMIT
 
-trim() {
-  local var="$*"
-  # Remove leading whitespace
-  var="${var#"${var%%[![:space:]]*}"}"
-  # Remove trailing whitespace
-  var="${var%"${var##*[![:space:]]}"}"
-  echo "$var"
-}
-
-compose_file_args=()
-env_file_args=()
-project_dir_args=()
-build_compose_file_args() {
-  local file_spec
-  file_spec="$(trim "$1")"
-  local sep="${COMPOSE_PATH_SEPARATOR:-:}"
-  local parts
-
-  if [ -z "$file_spec" ]; then
-    return 0
+if [ "${1:-}" != -cupdate ]; then
+  project_name="${2:-${1:-}}"
+  file_list="${COMPOSE_FILE_LIST:-${COMPOSE_FILE:-}}"
+  if [ -n "${2:-}" ]; then file_list="$1"; fi
+  if [ -z "$project_name" ] || { [ -z "$file_list" ] && [ -z "${COMPOSE_PROJECT_DIR:-}" ]; }; then
+    echo "Usage: $0 -cupdate <compose.sh arguments>, or <compose_file> <project_name>" >&2
+    exit 2
   fi
-
-  case "$file_spec" in
-    *"$sep"*)
-      IFS="$sep" read -r -a parts <<< "$file_spec"
-      ;;
-    *)
-      parts=("$file_spec")
-      ;;
-  esac
-
-  for file in "${parts[@]}"; do
-    file="$(trim "$file")"
-    if [ -n "$file" ]; then
-      compose_file_args+=("-f" "$file")
-    fi
-  done
-}
-
-build_env_file_args() {
-  local path
-  path="$(trim "$1")"
-  if [ -n "$path" ] && [ -f "$path" ]; then
-    env_file_args+=(--env-file "$path")
+  args=(-cupdate "-p$project_name")
+  if [ -n "$file_list" ]; then
+    IFS="${COMPOSE_PATH_SEPARATOR:-:}" read -r -a files <<< "$file_list"
+    for file in "${files[@]}"; do args+=("-f$file"); done
   fi
-}
-
-if [ -z "$PROJECT_NAME" ]; then
-  echo "Usage: $0 <compose_yml_path> <project_name>" >&2
-  echo "   or: COMPOSE_FILE_LIST=... COMPOSE_ENV_FILE=... $0 <project_name>" >&2
-  exit 2
+  if [ -n "${COMPOSE_PROJECT_DIR:-}" ]; then
+    args+=("-w$COMPOSE_PROJECT_DIR")
+  fi
+  if [ -n "${COMPOSE_ENV_FILE:-}" ]; then args+=("-e$COMPOSE_ENV_FILE"); fi
+  if [ -n "${COMPOSE_CREDENTIAL_ID:-}" ]; then args+=(--credential-id "$COMPOSE_CREDENTIAL_ID"); fi
+  set -- "${args[@]}"
 fi
 
-if [ -n "$COMPOSE_FILE_LIST" ]; then
-  build_compose_file_args "$COMPOSE_FILE_LIST"
-elif [ -n "$COMPOSE_FILE_ARG" ]; then
-  build_compose_file_args "$COMPOSE_FILE_ARG"
-fi
-
-build_env_file_args "$COMPOSE_ENV_FILE"
-
-if [ -n "$COMPOSE_PROJECT_DIR" ] && [ -d "$COMPOSE_PROJECT_DIR" ]; then
-  project_dir_args=("--project-directory" "$COMPOSE_PROJECT_DIR")
-fi
-
-if [ ${#compose_file_args[@]} -eq 0 ] && [ ${#project_dir_args[@]} -eq 0 ]; then
-  echo "No compose file paths or project directory were provided" >&2
-  exit 2
-fi
-
-# Create lock directory if needed
-mkdir -p "$LOCK_DIR" 2>/dev/null || true
-
-# Acquire lock to prevent concurrent operations on the same stack
-LOCK_FILE="$LOCK_DIR/${PROJECT_NAME}.lock"
-exec 9>"$LOCK_FILE"
-
-waited=0
-while ! flock -n 9 2>/dev/null; do
-    if [ "$waited" -ge "$LOCK_TIMEOUT" ]; then
-        echo "Could not acquire lock for $PROJECT_NAME after ${LOCK_TIMEOUT}s - another operation may be in progress" >&2
-        exit 1
-    fi
-    sleep 1
-    waited=$((waited + 1))
+project_name=""
+for arg in "$@"; do
+  case "$arg" in -p?*) project_name="${arg#-p}" ;; esac
 done
 
-# Write lock info
-echo "{\"pid\":$$,\"command\":\"autoupdate\",\"time\":\"$(date -Iseconds)\"}" >&9
-
-OUT=$(mktemp 2>/dev/null || echo "")
-if [ -z "$OUT" ]; then
-  echo "Failed to create temporary output file" >&2
+if ! output_dir=$(mktemp -d); then
+  composeLogger "Could not create auto-update output files" error autoupdate daemon
   exit 1
 fi
-RC=0
+trap 'rm -f "$output_dir/output" "$output_dir/outcome"; rmdir "$output_dir"' EXIT
 
-summarize_output() {
-  # Keep notifications readable and avoid huge untrusted payloads.
-  tail -n 40 "$OUT" 2>/dev/null | tr -cd '[:print:]\n\t'
-}
-
-# Get current image config digests by declared compose image refs.
-# This mirrors the plugin-local update-check approach: compare content-addressed
-# image config IDs (.Id), not container-bound image IDs returned by
-# `docker compose images -q`.
-get_image_digests() {
-  docker compose "${project_dir_args[@]}" "${compose_file_args[@]}" "${env_file_args[@]}" -p "$PROJECT_NAME" config --images 2>/dev/null | while read -r img_ref; do
-    img_ref="$(trim "$img_ref")"
-    if [ -n "$img_ref" ]; then
-      docker image inspect --format='{{.Id}}' "$img_ref" 2>/dev/null || echo "$img_ref"
-    fi
-  done | sort
-}
-
-get_running_container_count() {
-  docker compose "${project_dir_args[@]}" "${compose_file_args[@]}" "${env_file_args[@]}" -p "$PROJECT_NAME" ps -q 2>/dev/null | awk 'NF { count++ } END { print count+0 }'
-}
-
-# Remove old image IDs that are no longer referenced by this stack.
-# Plain `docker rmi` deliberately leaves images used by any other container alone.
-remove_superseded_images() {
-  local -a stale_images=()
-  mapfile -t stale_images < <(
-    comm -23 \
-      <(printf '%s\n' "$OLD_DIGESTS" | sort -u) \
-      <(printf '%s\n' "$NEW_DIGESTS" | sort -u) |
-      grep -E '^sha256:[[:xdigit:]]+$' || true
-  )
-
-  if (( ${#stale_images[@]} )); then
-    docker rmi "${stale_images[@]}" >/dev/null 2>&1 || true
+bash "$(dirname "$0")/compose.sh" "$@" --automatic-update \
+  --update-outcome-file "$output_dir/outcome" > "$output_dir/output" 2>&1
+rc=$?
+outcome=""
+if [ "$rc" -eq 0 ]; then
+  if [ -f "$output_dir/outcome" ]; then
+    outcome=$(cat "$output_dir/outcome")
   fi
-}
-
-OLD_DIGESTS=$(get_image_digests || true)
-
-# Run pull and capture output (timeout prevents indefinite hangs on unresponsive registries)
-# --ignore-buildable: skip services with build sections (they should be rebuilt, not pulled)
-timeout "$COMMAND_TIMEOUT" docker compose "${project_dir_args[@]}" "${compose_file_args[@]}" "${env_file_args[@]}" -p "$PROJECT_NAME" pull --ignore-buildable > "$OUT" 2>&1 || RC=$?
-
-if [ "$RC" -ne 0 ]; then
-  ERRMSG="Auto-update pull failed for '$PROJECT_NAME'. Recent output: $(summarize_output)"
-  composeLogger "$ERRMSG" error autoupdate daemon
-  echo "$ERRMSG" >&2
-  if [ -x "$NOTIFY" ]; then
-    "$NOTIFY" -e 'Compose Manager' -s "Auto-update failed: $PROJECT_NAME" -d "$ERRMSG" -i 'warning'
+  case "$outcome" in
+    updated|unchanged|skipped|partial) ;;
+    *)
+      echo "Auto-update returned an invalid outcome: $outcome" >> "$output_dir/output"
+      rc=1
+      ;;
+  esac
+fi
+cat "$output_dir/output"
+notify="${COMPOSE_NOTIFY_SCRIPT:-/usr/local/emhttp/webGui/scripts/notify}"
+if [ "$rc" -ne 0 ]; then
+  message="Auto-update failed for '$project_name'. Recent output: $(tail -n 40 "$output_dir/output" | tr -cd '[:print:]\n\t')"
+  composeLogger "$message" error autoupdate daemon
+  if [ -x "$notify" ]; then
+    "$notify" -e 'Compose Manager' -s "Auto-update failed: $project_name" -d "$message" -i warning
   fi
-  rm -f "$OUT"
-  exit 1
+  exit "$rc"
 fi
 
-# Get new image digests after pull
-NEW_DIGESTS=$(get_image_digests || true)
-
-# Compare digests to determine if any images were updated
-if [ "$OLD_DIGESTS" != "$NEW_DIGESTS" ]; then
-  RUNNING_COUNT=$(get_running_container_count)
-  if [ "${RUNNING_COUNT:-0}" -eq 0 ]; then
-    MSG="Stack '$PROJECT_NAME' has image updates but is not running; skipping up -d."
-    composeLogger "$MSG" info autoupdate daemon
-    echo "$MSG"
-    rm -f "$OUT"
-    exit 0
-  fi
-
-  # Images changed - run recreate/up
-  timeout "$COMMAND_TIMEOUT" docker compose "${project_dir_args[@]}" "${compose_file_args[@]}" "${env_file_args[@]}" -p "$PROJECT_NAME" up -d >> "$OUT" 2>&1 || RC=$?
-  
-  if [ "$RC" -ne 0 ]; then
-    ERRMSG="Auto-update up failed for '$PROJECT_NAME'. Recent output: $(summarize_output)"
-    composeLogger "$ERRMSG" error autoupdate daemon
-    echo "$ERRMSG" >&2
-    if [ -x "$NOTIFY" ]; then
-      "$NOTIFY" -e 'Compose Manager' -s "Auto-update failed: $PROJECT_NAME" -d "$ERRMSG" -i 'warning'
+case "$outcome" in
+  partial)
+    if [ -x "$notify" ]; then
+      "$notify" -e 'Compose Manager' -s "Stack update incomplete: $project_name" -d "Some services in '$project_name' were skipped for safety. Review the update log." -i warning
     fi
-    rm -f "$OUT"
-    exit 1
-  fi
-
-  # Mirror the manual Update action: remove superseded images only after up succeeds.
-  remove_superseded_images
-  
-  MSG="Stack '$PROJECT_NAME' was updated successfully."
-  composeLogger "$MSG" info autoupdate daemon
-  echo "$MSG"
-  if [ -x "$NOTIFY" ]; then
-    "$NOTIFY" -e 'Compose Manager' -s "Stack updated: $PROJECT_NAME" -d "$MSG"
-  fi
-else
-  MSG="No updates for stack '$PROJECT_NAME'."
-  composeLogger "$MSG" info autoupdate daemon
-  echo "$MSG"
-fi
-
-rm -f "$OUT"
+    ;;
+  updated)
+    if [ -x "$notify" ]; then
+      "$notify" -e 'Compose Manager' -s "Stack updated: $project_name" -d "Stack '$project_name' was updated successfully."
+    fi
+    ;;
+  unchanged|skipped) ;;
+esac
 exit 0

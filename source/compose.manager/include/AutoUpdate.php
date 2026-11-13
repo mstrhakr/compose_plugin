@@ -1,6 +1,7 @@
 <?php
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Defines.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/Util.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/StackUpdateService.php");
 
 $compose_root = $compose_root ?? locate_compose_root('compose.manager');
 
@@ -144,7 +145,14 @@ switch ($action) {
             break;
         }
         // Resolve project name - always use compose-safe sanitized projectName.
-        $stackInfo = StackInfo::fromComposePath($compose_root, $path);
+        try {
+            $stackInfo = StackInfo::fromComposePath($compose_root, $path);
+        } catch (\Throwable $error) {
+            composeLogger('Blocked manual auto-update: ' . $error->getMessage(), ['path' => $path], 'user', 'warning', 'autoupdate');
+            http_response_code(409);
+            echo json_encode(['error' => $error->getMessage()]);
+            break;
+        }
         if ($stackInfo !== null) {
             if (!$stackInfo->hasResolvedIdentity()) {
                 composeLogger(
@@ -169,44 +177,22 @@ switch ($action) {
 
         composeLogger("Running manual auto-update for: $projectName", null, 'user', 'info', 'autoupdate');
 
-        $script = $plugin_root . "scripts/compose_autoupdate.sh";
-        if ($stackInfo !== null) {
-            $args = $stackInfo->buildComposeArgs();
-            $composeFileList = $stackInfo->buildComposeFileList();
-            $envFilePath = $args['envFilePath'] ?? null;
-            $projectDirectory = $args['projectDirectory'];
-            $credentialId = $stackInfo->getCredentialId();
-        } else {
-            $composeFileList = $composeFile;
-            $envFilePath = null;
-            $projectDirectory = $path;
-            $credentialIdFile = rtrim($path, '/') . '/credential_id';
-            $credentialId = is_file($credentialIdFile)
-                ? trim((string) file_get_contents($credentialIdFile))
-                : null;
-        }
-
-        // Allow overriding the shell command via environment for tests; default to sh
-        $shCmd = getenv('COMPOSE_MANAGER_SH') ? getenv('COMPOSE_MANAGER_SH') : 'sh';
         $autoUpdateConfig = is_file($autofile) ? json_decode((string) file_get_contents($autofile), true) : array();
         $parallelLimit = compose_get_autoupdate_parallel_limit(is_array($autoUpdateConfig) ? $autoUpdateConfig : array());
-
-        $envPrefix = 'COMPOSE_PARALLEL_LIMIT=' . escapeshellarg((string) $parallelLimit) . ' ';
-        if ($composeFileList !== '') {
-            $envPrefix .= 'COMPOSE_FILE_LIST=' . escapeshellarg($composeFileList) . ' ';
+        try {
+            $stackInfo ??= StackInfo::fromProject(dirname(rtrim($path, '/')), basename($path));
+            $cmd = StackUpdateService::automaticUpdateInvocation(
+                $stackInfo,
+                parse_plugin_cfg('compose.manager'),
+                $parallelLimit
+            );
+        } catch (\Throwable $error) {
+            composeLogger('Blocked manual auto-update: ' . $error->getMessage(), ['path' => $path], 'user', 'warning', 'autoupdate');
+            http_response_code(409);
+            echo json_encode(['error' => $error->getMessage()]);
+            break;
         }
-        if ($envFilePath !== null && $envFilePath !== '') {
-            $envPrefix .= 'COMPOSE_ENV_FILE=' . escapeshellarg($envFilePath) . ' ';
-        }
-        if ($composeFileList === '' && $projectDirectory !== '') {
-            $envPrefix .= 'COMPOSE_PROJECT_DIR=' . escapeshellarg($projectDirectory) . ' ';
-        }
-        if ($credentialId !== null && $credentialId !== '') {
-            $envPrefix .= 'COMPOSE_CREDENTIAL_ID=' . escapeshellarg($credentialId) . ' ';
-        }
-
-        $cmd = $envPrefix . $shCmd . ' ' . escapeshellarg($script) . " " . escapeshellarg($projectName) . " 2>&1";
-        exec($cmd, $output, $rc);
+        exec($cmd . " 2>&1", $output, $rc);
         echo json_encode(array('rc' => $rc, 'output' => $output));
         break;
     default:

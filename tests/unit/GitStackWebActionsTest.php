@@ -422,6 +422,32 @@ final class GitStackWebActionsTest extends TestCase
         }
     }
 
+    public function testSetRecreateOnFolderChangeSavesTheChoice(): void
+    {
+        $folder = $this->addGitStack('whoami');
+        $stackDir = $this->composeRoot . '/' . $folder;
+        $this->assertTrue(GitStackSettings::load($stackDir)->recreateOnFolderChange);
+
+        $result = $this->executeAction('setGitRecreateOnFolderChange', ['script' => $folder, 'recreateOnFolderChange' => 'false']);
+        $this->assertSame('success', $result['result'], $result['message'] ?? '');
+        $this->assertFalse(GitStackSettings::load($stackDir)->recreateOnFolderChange);
+
+        // The Sources tab reads the setting back from the stack's status.
+        $status = $this->executeAction('getGitStackStatus', ['script' => $folder]);
+        $this->assertFalse($status['git']['recreateOnFolderChange']);
+
+        $result = $this->executeAction('setGitRecreateOnFolderChange', ['script' => $folder, 'recreateOnFolderChange' => 'true']);
+        $this->assertSame('success', $result['result'], $result['message'] ?? '');
+        $this->assertTrue(GitStackSettings::load($stackDir)->recreateOnFolderChange);
+
+        // Anything but true or false is refused, and changes nothing.
+        foreach (['', 'off', '0'] as $refusedValue) {
+            $refused = $this->executeAction('setGitRecreateOnFolderChange', ['script' => $folder, 'recreateOnFolderChange' => $refusedValue]);
+            $this->assertSame('error', $refused['result']);
+        }
+        $this->assertTrue(GitStackSettings::load($stackDir)->recreateOnFolderChange);
+    }
+
     public function testResumeClearsAFailedDeploy(): void
     {
         $folder = $this->addGitStack('whoami');
@@ -548,6 +574,32 @@ final class GitStackWebActionsTest extends TestCase
             . " '-ggpu' '-gtools' '--git-commit' '$commit' '--save-local-changes' '--wait' '--wait-timeout' '60' '--debug'",
             $this->terminalCommand()
         );
+    }
+
+    public function testTrackedGitDeployUsesManagedTerminalAndKeepsItsOperationReceipt(): void
+    {
+        $folder = $this->addGitStack('whoami');
+        $response = json_decode($this->deploy([
+            'path' => $this->composeRoot . '/' . $folder, 'trackOperation' => '1',
+        ]), true);
+        $this->assertStringStartsWith('/plugins/compose.manager/include/ShowTtyd.php?done=1&socket=compose_action_', $response['url']);
+        parse_str(parse_url($response['url'], PHP_URL_QUERY), $query);
+        $this->assertSame('gitdeploy', $query['command']);
+        $this->assertSame('0', $query['bulk']);
+        $session = \composeUiOperationFile('terminal-session', $query['session']);
+        $operation = \composeUiOperationFile($folder, $response['operations'][$folder]);
+        try {
+            $this->assertSame(['state' => 'queued'], \composeReadTerminalSession($query['session']));
+            $this->assertSame(['state' => 'queued'], json_decode((string) file_get_contents($operation), true));
+            $logs = implode("\n", $GLOBALS['composeLoggerMessages']);
+            $this->assertStringContainsString('compose_terminal_session.sh', $logs);
+            $this->assertStringContainsString('-cgitdeploy', $logs);
+            $this->assertStringContainsString($operation, $logs);
+        } finally {
+            unlink($session . '.log');
+            unlink($session);
+            unlink($operation);
+        }
     }
 
     public function testTheWebDeployUsesTheRunningProfilesWhenNoneWereChosen(): void

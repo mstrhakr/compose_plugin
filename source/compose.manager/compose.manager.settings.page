@@ -26,6 +26,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 <script src="<?php autov('/plugins/compose.manager/javascript/common.js'); ?>" type="text/javascript"></script>
 <script src="<?php autov('/plugins/compose.manager/javascript/qrcode/qrcode.min.js'); ?>" type="text/javascript"></script>
 <script src="<?php autov('/plugins/compose.manager/javascript/credentialManager.js'); ?>" type="text/javascript"></script>
+<script src="<?php autov('/plugins/compose.manager/javascript/composeIdentityMaintenance.js'); ?>" type="text/javascript"></script>
 <style>
     /* Toggle switch overrides */
     #compose-tab-settings .switch-button-background,
@@ -105,6 +106,28 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
     #compose-tab-settings {
         --compose-settings-anchor: 35%;
+    }
+
+    #compose-tab-maintenance .backup-section {
+        margin-bottom: 20px;
+    }
+
+    #compose-identity-report {
+        margin-top: 16px;
+        overflow-x: auto;
+    }
+
+    #compose-identity-report table {
+        width: 100%;
+    }
+
+    #compose-identity-report td {
+        vertical-align: top;
+        white-space: normal;
+    }
+
+    #compose-identity-report button {
+        margin: 4px 8px 4px 0;
     }
 
     /* Button styling */
@@ -875,7 +898,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             }
         }
 
-        // Handle header menu toggle -> disable/enable compose-on-top and hide-from-docker
+        // Handle header menu toggle -> disable/enable compose-on-top
         // Saves and restores the original checked state of dependent settings so toggling
         // the header menu on then off preserves the user's previous selections.
         function toggleComposeOnTop() {
@@ -905,40 +928,6 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 if (typeof saved !== 'undefined') {
                     $onTop.prop('checked', saved).change();
                     $onTop.removeData('saved-state');
-                }
-            }
-            // Also toggle hide-from-docker (only available in non-tabbed mode)
-            toggleHideFromDocker();
-        }
-
-        // Handle header menu toggle -> disable/enable hide compose from docker tab
-        function toggleHideFromDocker() {
-            var headerMenuEnabled = $('#SHOW_COMPOSE_IN_HEADER_MENU').is(':checked');
-            var $wrapper = $('#docker-page-hide-wrapper');
-            if (headerMenuEnabled) {
-                // Save current state before disabling
-                var $hide = $('#HIDE_COMPOSE_FROM_DOCKER');
-                if (typeof $hide.data('saved-state') === 'undefined') {
-                    $hide.data('saved-state', $hide.is(':checked'));
-                }
-                if ($hide.is(':checked')) {
-                    $hide.prop('checked', false).change();
-                }
-                $wrapper.css({
-                    opacity: 0.4,
-                    pointerEvents: 'none'
-                });
-            } else {
-                $wrapper.css({
-                    opacity: 1,
-                    pointerEvents: ''
-                });
-                // Restore previously saved state
-                var $hide = $('#HIDE_COMPOSE_FROM_DOCKER');
-                var saved = $hide.data('saved-state');
-                if (typeof saved !== 'undefined') {
-                    $hide.prop('checked', saved).change();
-                    $hide.removeData('saved-state');
                 }
             }
         }
@@ -1373,7 +1362,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                 }, 'user', 'debug', 'settings');
             }
 
-            if (settingsUnifiedState.activeTab === 'credits' || settingsUnifiedState.activeTab === 'log' || settingsUnifiedState.activeTab === 'credentials') {
+            if (settingsUnifiedState.activeTab === 'credits' || settingsUnifiedState.activeTab === 'log' || settingsUnifiedState.activeTab === 'credentials' || settingsUnifiedState.activeTab === 'maintenance') {
                 $('#global-settings-actions').addClass('hidden');
             } else {
                 $('#global-settings-actions').removeClass('hidden');
@@ -1433,7 +1422,6 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
 
         function clearDependentToggleSavedStateCache() {
             $('#SHOW_COMPOSE_ON_TOP').removeData('saved-state');
-            $('#HIDE_COMPOSE_FROM_DOCKER').removeData('saved-state');
             $('#HIDE_DOCKER_COMPOSE_CONTAINERS').removeData('saved-state');
             $('#ONLY_EXPAND_RUNNING_STACKS').removeData('saved-state');
         }
@@ -2616,6 +2604,7 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
     <div class="compose-tab active" data-tab="settings"><i class="fa fa-cog fa-fw"></i> _(Settings)_</div>
     <div class="compose-tab" data-tab="updates"><i class="fa fa-refresh fa-fw"></i> _(Updates)_</div>
     <div class="compose-tab" data-tab="backup"><i class="fa fa-archive fa-fw"></i> _(Backup / Restore)_</div>
+    <div class="compose-tab" data-tab="maintenance"><i class="fa fa-wrench fa-fw"></i> _(Maintenance)_</div>
     <div class="compose-tab" data-tab="credentials"><i class="fa fa-key fa-fw"></i> _(Credentials)_</div>
     <div class="compose-tab" data-tab="log"><i class="fa fa-file-text-o fa-fw"></i> _(Log)_</div>
     <div class="compose-tab" data-tab="credits"><i class="fa fa-star fa-fw"></i> _(Credits)_</div>
@@ -2737,6 +2726,19 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
         </dl>
 
         <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Include Stopped Services in Manual Updates by Default)_:</dt>
+            <dd>
+                <input type="checkbox" name="UPDATE_INCLUDE_STOPPED_DEFAULT" id="UPDATE_INCLUDE_STOPPED_DEFAULT" class="compose-toggle" <?= ($cfg['UPDATE_INCLUDE_STOPPED_DEFAULT'] ?? 'false') == 'true' ? 'checked' : '' ?>>
+                <blockquote class="inline_help">
+                    Included stopped services will be recreated and started during manual Update, Force Update, and Update All.
+                    This sets the initial choice in the update dialog; changing that choice affects only that operation.
+                    With action warnings disabled, manual updates use this default without a dialog.
+                    Automatic updates ignore this setting. Paused/restarting services, one-off jobs, and previously undeployed services remain excluded.
+                </blockquote>
+            </dd>
+        </dl>
+
+        <dl>
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Create Missing External Networks)_:</dt>
             <dd>
                 <input type="checkbox" name="CREATE_MISSING_EXTERNAL_NETWORKS" id="CREATE_MISSING_EXTERNAL_NETWORKS" class="compose-toggle" <?= ($cfg['CREATE_MISSING_EXTERNAL_NETWORKS'] ?? 'false') == 'true' ? 'checked' : '' ?>>
@@ -2846,14 +2848,14 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dd>
         </dl>
 
-        <dl style="opacity:0.7;pointer-events:none;" id="docker-page-hide-wrapper">
+        <dl id="docker-page-hide-wrapper">
             <dt style="cursor: help;" onclick="toggleHelp(this)">_(Hide Compose Containers from Docker Page)_:</dt>
             <dd>
                 <input type="checkbox" name="HIDE_COMPOSE_FROM_DOCKER" id="HIDE_COMPOSE_FROM_DOCKER" class="compose-toggle" <?= ($cfg['HIDE_COMPOSE_FROM_DOCKER'] ?? 'false') == 'true' ? 'checked' : '' ?>>
                 <blockquote class="inline_help">
                     When enabled, containers managed by Compose stacks will be hidden from the Docker Containers table on the Docker page.<br>
-                    This avoids duplicate display when Compose stacks are shown on the same page (inline mode).<br>
-                    <em>Only available when "Show Compose in Header Menu" is disabled (inline mode).</em>
+                    Works both with the separate Compose header menu and with Compose stacks on the Docker page.<br>
+                    This does not change the separate Dashboard tile visibility setting.
                 </blockquote>
             </dd>
         </dl>
@@ -2964,6 +2966,45 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
     </form>
 </div>
 
+<!-- Maintenance Tab -->
+<div id="compose-tab-maintenance" class="compose-tab-content">
+    <blockquote class="inline_help" style="margin-bottom:20px;">
+        <strong>Maintenance Tab</strong> — Run explicit diagnostic checks and clear plugin caches. These actions run independently of Settings changes.
+    </blockquote>
+    <div class="backup-section">
+        <div class="title"><span class="left"><i class="fa fa-shield icon"></i>_(Stack Project Identities)_</span></div>
+        <dl>
+            <dt>_(Project Identity Check)_:</dt>
+            <dd>
+                <button type="button" id="compose-identity-check">_(Check stack project identities)_</button>
+                <p>_(Compare saved project names with Docker resource evidence. This check does not change identities or restart containers.)_</p>
+            </dd>
+        </dl>
+        <div id="compose-identity-report" role="status" aria-live="polite"></div>
+    </div>
+    <div class="backup-section">
+        <div class="title"><span class="left"><i class="fa fa-eraser icon"></i>_(Plugin Caches)_</span></div>
+        <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Clear Icon Cache)_:</dt>
+            <dd>
+                <input type="button" value="_(Clear Cache)_" onclick="clearAllIconCache()" class="orange-button">
+                <blockquote class="inline_help">
+                    Delete all locally cached icon files. Icons are re-downloaded and re-converted on next page load.
+                </blockquote>
+            </dd>
+        </dl>
+        <dl>
+            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Clear Update Cache)_:</dt>
+            <dd>
+                <input type="button" value="_(Clear Cache)_" onclick="clearUpdateCache()" class="orange-button">
+                <blockquote class="inline_help">
+                    Clear cached update status. Use if update checks show incorrect results.
+                </blockquote>
+            </dd>
+        </dl>
+    </div>
+</div>
+
 <!-- Updates Tab -->
 <div id="compose-tab-updates" class="compose-tab-content">
     <blockquote class="inline_help" style="margin-bottom:20px;">
@@ -3069,25 +3110,6 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
             </dd>
         </dl>
 
-        <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Clear Icon Cache)_:</dt>
-            <dd>
-                <input type="button" value="_(Clear Cache)_" onclick="clearAllIconCache()" class="orange-button">
-                <blockquote class="inline_help">
-                    Delete all locally cached icon files. Icons are re-downloaded and re-converted on next page load.
-                </blockquote>
-            </dd>
-        </dl>
-
-        <dl>
-            <dt style="cursor: help;" onclick="toggleHelp(this)">_(Clear Update Cache)_:</dt>
-            <dd>
-                <input type="button" value="_(Clear Cache)_" onclick="clearUpdateCache()" class="orange-button">
-                <blockquote class="inline_help">
-                    Clear cached update status. Use if update checks show incorrect results.
-                </blockquote>
-            </dd>
-        </dl>
     </div>
 
     <!-- Per-Stack Configuration Section -->

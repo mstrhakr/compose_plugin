@@ -1,0 +1,320 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync(`${__dirname}/../../source/compose.manager/javascript/composeManagerMain.js`, 'utf8');
+const context = {
+    composeStackActionInProgress: {}, stackContainersCache: {}, stackUpdateStatus: {},
+    context: {
+        settings() {}, destroy() { destroyed++; },
+        attach(selector, options) { menus.push(options); },
+    },
+    fixContextDropdownOverflow() {},
+    refreshComposeContextMenu(id, options) { destroyed++; menus.push(options); },
+    swal() { warnings++; },
+};
+let destroyed = 0, warnings = 0, mutations = 0;
+const menus = [];
+function element(data = {}, attributes = {}) {
+    return {
+        length: 1,
+        data(key, value) {
+            if (arguments.length === 2) { data[key] = value; return this; }
+            return data[key];
+        },
+        attr(key, value) {
+            if (arguments.length === 2) { attributes[key] = value; return this; }
+            return attributes[key];
+        },
+    };
+}
+const icon = element({ stackid: '1', project: 'app', projectname: 'App', isup: '1' });
+const row = element({ path: '/app', project: 'app' }, { 'data-containers': '["app-1"]' });
+context.$ = selector => selector === '#stack-row-1' ? row : icon;
+context.ComposeStop = () => mutations++;
+vm.createContext(context);
+for (const name of ['addComposeStackContext', 'addComposeContainerContext', 'containerAction']) {
+    vm.runInContext(source.match(new RegExp(`^function ${name}\\([^]*?\\n\\}`, 'm'))[0], context);
+}
+context.addComposeStackContext('stack-1');
+context.addComposeStackContext('stack-1');
+assert.equal(destroyed, 1, 'Unchanged runtime does not destroy an open menu');
+let menu = menus.at(-1);
+const stop = menu.find(option => option.text === 'Compose Stop');
+assert.equal(stop.disabled, false, 'Health starting alone does not block commands');
+context.composeStackActionInProgress.app = {};
+stop.action({ preventDefault() {} });
+assert.equal(mutations, 0, 'An already-open menu cannot dispatch during a newer operation');
+assert.equal(warnings, 1);
+context.addComposeStackContext('stack-1');
+menu = menus.at(-1);
+assert.equal(menu.find(option => option.text === 'Compose Stop').disabled, true);
+assert.equal(menu.find(option => option.text === 'Check for Updates').disabled, true);
+assert.ok(!menu.find(option => option.text === 'View Logs').disabled);
+assert.ok(!menu.find(option => option.text === 'View Last Cmd Log').disabled);
+context.addComposeStackContext('stack-1');
+assert.equal(destroyed, 2, 'Busy polls do not repeatedly rebind the menu');
+delete context.composeStackActionInProgress.app;
+context.addComposeStackContext('stack-1');
+assert.equal(menus.at(-1).find(option => option.text === 'Compose Stop').disabled, false);
+icon.off = () => icon;
+icon.data('state', 'running');
+context.composeStackActionInProgress.app = {};
+context.addComposeContainerContext('container-1');
+assert.equal(menus.at(-1).find(option => option.text === 'Stop').disabled, true);
+assert.ok(!menus.at(-1).find(option => option.text === 'Logs').disabled);
+delete context.composeStackActionInProgress.app;
+context.addComposeContainerContext('container-1');
+assert.equal(menus.at(-1).find(option => option.text === 'Stop').disabled, false);
+icon.data('isup', '0');
+row.data('profiles', ['web']);
+context.addComposeStackContext('stack-1');
+let selectedAction;
+context.showProfileSelector = action => { selectedAction = action; };
+menus.at(-1).find(option => option.text === 'Pull/Build & Up').action({ preventDefault() {} });
+assert.equal(selectedAction, 'prepareUp', 'Stopped deployment selects profiles instead of invoking Update');
+
+let writes = 0, health = 'starting', label = 'starting', iconClass = '';
+function cell() {
+    let html = '';
+    return {
+        length: 1, find() { return { length: 0 }; },
+        html(value) {
+            if (arguments.length) { html = value; writes++; return this; }
+            return html;
+        },
+        data() {}, removeData() {},
+        text(value) { if (arguments.length) label = value; return label; },
+        attr(key, value) { if (arguments.length === 2) { iconClass = value; return this; } return iconClass; },
+    };
+}
+const healthCell = cell(), statusIcon = cell(), state = cell(), other = cell();
+const iconSpan = element();
+const parent = {
+    length: 1,
+    find(selector) {
+        return selector === 'td.col-health' ? healthCell : selector === '.state' ? state :
+            selector === '.compose-status-icon' ? statusIcon :
+            selector === 'span[data-stackid]' ? iconSpan : other;
+    },
+    data() { return this; }, attr() { return this; },
+};
+Object.assign(context, {
+    $: selector => selector.startsWith('#compose_stacks ') ? parent : { length: 0 },
+    stackStartedAtCache: {}, composeLogger() {}, reconcileStackRuntimeMetadata() {},
+    buildStackInfoFromCache: () => ({ containers: [] }),
+    deriveStackState: () => ({ label: 'starting', state: 'starting', runningCount: 1,
+        totalCount: 1, shape: 'refresh fa-spin', colorClass: 'orange-text' }),
+    updateStackUpdateUI() {},
+    composeAggregateStackHealth: () => health,
+    composeRenderHealthBadge: value => `<span>${value}</span>`,
+    composeLoadlist() { throw new Error('Unexpected fallback'); },
+});
+vm.runInContext(source.match(/^function updateParentStackFromContainers\([^]*?\n\}/m)[0], context);
+context.updateParentStackFromContainers('1', 'app');
+const before = healthCell.html();
+const originalHtml = healthCell.html;
+let healthWrites = 0;
+healthCell.html = function(...args) { if (args.length) healthWrites++; return originalHtml.apply(this, args); };
+context.updateParentStackFromContainers('1', 'app');
+assert.equal(healthWrites, 0, 'Unchanged health preserves the animated DOM');
+assert.equal(healthCell.html(), before);
+health = 'healthy';
+context.updateParentStackFromContainers('1', 'app');
+assert.equal(healthWrites, 1, 'Changed health still updates');
+
+{
+    const events = [];
+    let visible = true, focused = 'Stop', position = { top: '240px', left: '50px' }, scroll = 18;
+    const anchor = {
+        length: 1, text: () => 'Stop',
+        attr(name, value) { events.push([name, value]); return this; },
+        on(name, callback) {
+            const event = { preventDefault() { events.push('prevented'); },
+                stopImmediatePropagation() { events.push('blocked'); } };
+            callback(event);
+            return this;
+        },
+        first() { return this; },
+        filter(callback) { callback.call(this); return this; },
+        trigger(name) { focused = 'Stop'; events.push(name); return this; },
+    };
+    const item = { addClass() { return this; }, find: () => anchor };
+    const menu = {
+        is: () => visible,
+        css(key) {
+            if (typeof key === 'string') return position[key];
+            position = key;
+            return this;
+        },
+        hasClass: () => true,
+        scrollTop(value) { if (arguments.length) { scroll = value; return this; } return scroll; },
+        find: () => anchor,
+        children: () => ({ each(callback) { callback.call(item, 0); } }),
+        toggleClass(name, value) { events.push([name, value]); return this; },
+        show() { visible = true; return this; },
+    };
+    const adapter = {
+        $: value => value === item ? item : value === anchor ? anchor : menu,
+        context: { attach() {
+            visible = false;
+            focused = null;
+            position = {};
+            scroll = 0;
+        } },
+        fixContextDropdownOverflow() {},
+    };
+    vm.createContext(adapter);
+    vm.runInContext(source.match(/^function refreshComposeContextMenu\([^]*?\n\}/m)[0], adapter);
+    adapter.refreshComposeContextMenu('stack-1', [{ text: 'Stop', disabled: true }]);
+    assert.equal(visible, true, 'Changed options preserve an open menu');
+    assert.equal(position.top, '240px');
+    assert.equal(position.left, '50px');
+    assert.equal(scroll, 18);
+    assert.equal(focused, 'Stop');
+    assert.ok(events.includes('blocked'), 'Disabled options are enforced even if host ignores disabled');
+    visible = false;
+    adapter.refreshComposeContextMenu('stack-1', [{ text: 'Stop' }]);
+    assert.equal(visible, false, 'Refreshing a closed menu never opens it');
+}
+{
+    const stored = {}, menus = [], enhancements = [];
+    let writes = 0, temporary = false;
+    const table = {
+        data(key, value) { if (arguments.length === 2) { stored[key] = value; return this; } return stored[key]; },
+        html() { writes++; temporary = false; return this; },
+        find(selector) {
+            return { length: selector === '.compose-ct-table' || temporary ? 1 : 0, readmore() { return this; } };
+        },
+    };
+    const ctx = {
+        $: () => table, window: {
+            composeColCustomizer: { reapply(root) { assert.equal(root, table); enhancements.push('columns'); } },
+            composeDockerLoadRenderCached(containers, root) { assert.equal(root, table); enhancements.push(containers.length); },
+        }, setTimeout() {}, composeStackActionInProgress: {},
+        composeEscapeHtml: String, composeEscapeAttr: String, composeIconSrc: () => '',
+        composeContainerUpdateBadge: () => '', composeRenderHealthBadge: () => '',
+        composeNormalizeContainerKey: String, addComposeContainerContext: id => menus.push(id),
+    };
+    vm.createContext(ctx);
+    vm.runInContext(source.match(/^function renderContainerDetails\([^]*?\n\}/m)[0], ctx);
+    const containers = [{ id: 'one', name: 'app', state: 'running' }];
+    ctx.renderContainerDetails('1', containers, 'app');
+    ctx.renderContainerDetails('1', containers, 'app');
+    assert.equal(writes, 1, 'Unchanged runtime preserves the table');
+    ctx.composeStackActionInProgress.app = {};
+    ctx.renderContainerDetails('1', containers, 'app');
+    delete ctx.composeStackActionInProgress.app;
+    ctx.renderContainerDetails('1', containers, 'app');
+    assert.equal(menus.length, 3, 'Busy transitions reconcile menus without replacing table markup');
+    temporary = true;
+    ctx.renderContainerDetails('1', containers, 'app');
+    assert.equal(writes, 2, 'Temporary action indicators bypass the HTML cache');
+    assert.deepEqual(enhancements, ['columns', 1, 'columns', 1], 'Only changed tables request scoped enhancements');
+}
+{
+    const requests = [], timers = new Map();
+    let timerId = 0, exists = true;
+    const row = {
+        get length() { return exists ? 1 : 0; },
+        attr(key, value) { return arguments.length === 1 && key === 'id' ? 'stack-row-1' : this; }, data() { return this; },
+    };
+    const ctx = {
+        caURL: 'exec', pendingComposeRefreshCount: 0, composeUpdateCheckRevision: {},
+        stackRuntimeGeneration: {}, stackDetailsPrefetchCache: {}, composeHealthRefreshTimers: {},
+        stackContainersCache: { '1': [{ id: 'one', isRunning: true, health: 'starting' }] },
+        $: () => row, composeLogger() {}, processPendingUpdateChecks() {},
+        triggerComposeListRefreshedDebounced() {}, composeNormalizeHealthStatus: value => value,
+        setTimeout(callback) { timers.set(++timerId, callback); return timerId; },
+        clearTimeout(id) { timers.delete(id); },
+    };
+    ctx.$.ajax = () => {
+        const request = {};
+        requests.push(request);
+        return {
+            done(callback) { request.done = callback; return this; },
+            fail(callback) { request.fail = callback; return this; },
+            always(callback) { request.always = callback; return this; },
+        };
+    };
+    vm.createContext(ctx);
+    for (const name of ['beginStackRuntimeRequest', 'refreshStackRow', 'refreshStackByProject', 'reconcileStackRuntimeMetadata']) {
+        vm.runInContext(source.match(new RegExp(`^function ${name}\\([^]*?\\n\\}`, 'm'))[0], ctx);
+    }
+    ctx.reconcileStackRuntimeMetadata(row, 'app', ctx.stackContainersCache['1']);
+    const tick = () => { const [id, callback] = timers.entries().next().value; timers.delete(id); callback(); };
+    tick();
+    requests[0].fail({}, 'timeout'); requests[0].always();
+    assert.equal(timers.size, 1, 'Failed health snapshot schedules exactly one retry');
+    tick();
+    requests[1].done('{"result":"error"}'); requests[1].always();
+    assert.equal(timers.size, 1, 'Server failure also retries');
+    tick();
+    ctx.stackContainersCache['1'][0].health = 'healthy';
+    requests[2].fail({}, 'timeout'); requests[2].always();
+    assert.equal(timers.size, 0, 'Settled accepted health stops retries');
+    ctx.stackContainersCache['1'][0].health = 'starting';
+    ctx.refreshStackRow('1', 'app');
+    exists = false;
+    requests[3].fail({}, 'timeout'); requests[3].always();
+    assert.equal(timers.size, 0, 'Deleted rows never restart health polling');
+    exists = true;
+    ctx.refreshStackRow('1', 'app');
+    ctx.refreshStackRow('1', 'app');
+    requests[4].fail({}, 'timeout'); requests[4].always();
+    assert.equal(timers.size, 0, 'Superseded failures cannot schedule retries');
+    requests[5].fail({}, 'timeout'); requests[5].always();
+    assert.equal(timers.size, 1, 'Only the current failed request owns the next retry');
+    assert.equal(ctx.pendingComposeRefreshCount, 0);
+}
+{
+    const reads = [], selected = [];
+    let aggregates = 0;
+    const cache = {};
+    for (let i = 0; i < 1000; i++) {
+        Object.defineProperty(cache, String(i), { enumerable: true, get() {
+            reads.push(String(i));
+            return { cpuText: '2', mem: '1 GiB' };
+        } });
+    }
+    const cell = { removeClass() { return this; }, text() { return this; }, html() { return this; }, css() { return this; } };
+    const root = { find(selector) { selected.push(selector); return cell; } };
+    const ctx = {
+        composeLoadById: cache, composeNormalizeContainerKey: String,
+        composeEscapeSelectorFragment: String, isComposeLoadVisible: () => true,
+        formatInOutHtml: () => '', renderStackAggregates() { aggregates++; },
+        composeLoadLastRenderMs: 0, $: () => cell,
+    };
+    vm.createContext(ctx);
+    vm.runInContext(source.match(/^            function renderComposeLoadCache\([^]*?\n            \}/m)[0], ctx);
+    for (let i = 0; i < 30; i++) ctx.renderComposeLoadCache([{ id: String(i) }], root);
+    assert.equal(reads.length, 30, 'Thirty single-container renders read thirty cached metrics, not 30,000');
+    assert.equal(selected.length, 180, 'Scoped rendering touches only six cells per requested container');
+    assert.equal(aggregates, 0, 'Detail rendering does not recompute global stack aggregates');
+    ctx.renderComposeLoadCache();
+    assert.equal(reads.length, 1030, 'Global metrics refresh still renders the full cache');
+    assert.equal(aggregates, 1);
+}
+{
+    const columns = fs.readFileSync(`${__dirname}/../../source/compose.manager/javascript/composeColumnCustomizer.js`, 'utf8');
+    let globalSelections = 0, scopedSelections = 0, stackReorders = 0, serviceReorders = 0;
+    const tables = { toggleClass() {}, each() {} };
+    const ctx = {
+        prefs: { service: { cpu: true }, stack: { cpu: true } },
+        $() { globalSelections++; return tables; },
+        reorderStackTable() { stackReorders++; }, reorderServiceTables(selected) {
+            assert.equal(selected, tables); serviceReorders++;
+        },
+        forceTableLayoutReflow() {}, applyStackWidthMath() {}, syncStackColspans() {},
+    };
+    vm.createContext(ctx);
+    vm.runInContext(columns.match(/^    function applyScope\([^]*?\n    \}/m)[0], ctx);
+    const root = { find(selector) { assert.equal(selector, '.compose-ct-table'); scopedSelections++; return tables; } };
+    for (let i = 0; i < 30; i++) ctx.applyScope('service', root);
+    assert.equal(scopedSelections, 30);
+    assert.equal(globalSelections, 0, 'Per-table enhancements never select all page tables');
+    assert.equal(stackReorders, 0);
+    assert.equal(serviceReorders, 30);
+    ctx.applyScope('stack');
+    assert.equal(stackReorders, 1, 'Global preferences retain stack layout reconciliation');
+}
+console.log('Runtime redraw and busy context-menu regressions passed.');

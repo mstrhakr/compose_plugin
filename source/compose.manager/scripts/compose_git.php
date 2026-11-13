@@ -37,6 +37,7 @@ Usage:
   compose-git convert <stack> --url <url> --path <compose file> [--branch <branch>] [--clones-root <folder>] [--credential <name>]
   compose-git credential <stack> <name>|--none
   compose-git auto-deploy <stack> off|notify|deploy
+  compose-git recreate-on-folder-change <stack> on|off
   compose-git resume <stack>
   compose-git deploy-key <stack>
   compose-git trust-host <stack>
@@ -62,6 +63,8 @@ deploy waits for healthy containers when the stack's wait-for-healthy setting sa
 auto-deploy sets what the scheduled check does when a new commit changes the stack: nothing
 (off, the default), send a notification (notify), or deploy it (deploy). After a failed deploy
 the scheduled check leaves the stack alone until a deploy works; resume clears the failure.
+recreate-on-folder-change sets whether a deploy that changes the stack's folder in the
+repository recreates every container of the stack (on, the default).
 scheduled-check runs the scheduled check now (cron runs it every 15 minutes while any stack
 asks for it).
 
@@ -222,8 +225,8 @@ up itself fails, the commit is recorded as failed ('compose-git status' shows it
 is rolled back: fix the cause, usually in the repository, and deploy again.
 
 When the commit changes anything in the stack's folder in the repository, every container in
-the stack is recreated, so changed config files take effect. To turn that off, set
-"recreateOnFolderChange": false in the stack's git.json.
+the stack is recreated, so changed config files take effect. To turn that off, run
+'compose-git recreate-on-folder-change <stack> off'.
 
 If another operation on the stack is running, such as a Start from the web UI, it waits up
 to 30 seconds (COMPOSE_LOCK_TIMEOUT) for it to finish, then fails without changing anything.
@@ -299,6 +302,21 @@ branch changes the stack, that is, anything in the stack's folder in the reposit
 Each commit is tried once. A stack that is not running (stopped, or never deployed) is not
 deployed until it runs again, and one taken back to an older commit is brought forward to
 the newest. The plugin's cron line is added while any stack's setting is not off.
+TEXT,
+        'recreate-on-folder-change' => <<<'TEXT'
+Usage: compose-git recreate-on-folder-change <stack> on|off
+
+Choose what a deploy does when the new commit changes anything in the stack's folder in the
+repository:
+  on    recreate every container of the stack, so a changed config file that a container
+        mounts takes effect (the default)
+  off   leave it to docker compose up, which recreates only the containers whose compose
+        definition changed
+Off also skips the recreate after local changes were discarded (--save-local-changes), and
+after the branch was rewritten. A change to a shared folder elsewhere in the repository never
+recreates anything. The setting
+is saved in the stack's git.json as "recreateOnFolderChange". No container is changed now;
+the setting applies from the next deploy.
 TEXT,
         'resume' => <<<'TEXT'
 Usage: compose-git resume <stack>
@@ -532,7 +550,7 @@ function compose_git_dry_run(GitStackManager $manager, string $folder, array $op
         echo "Every check passed. A dry run does not pull or build the images, so a missing image or tag is\n"
             . "found only by the deploy.\n";
         if ($result['recreatesEveryContainer']) {
-            echo "Up would recreate every container of the stack (see 'recreateOnFolderChange' in 'deploy --help').\n";
+            echo "Up would recreate every container of the stack (see 'compose-git recreate-on-folder-change --help').\n";
         }
     } else {
         echo "The deploy would stop:\n- " . implode("\n- ", $result['problems']) . "\n";
@@ -595,6 +613,7 @@ function compose_git_print_status(array $status): void
         echo '  credential:   ' . $status['credential'] . "\n";
     }
     echo '  automatic:    ' . $status['autoDeploy'] . "\n";
+    echo '  recreate:     ' . ($status['recreateOnFolderChange'] ? 'on' : 'off') . " (every container, when a deploy changes the stack's folder)\n";
     echo '  deployed:     ' . $short($status['deployedCommit']) . "\n";
     if ($status['failedCommit'] !== null) {
         echo '  failed:       ' . $short($status['failedCommit']) . " (fix it and deploy again)\n";
@@ -688,6 +707,14 @@ function compose_git_main(array $argv, string $composeRoot, $errors = null): int
                     fwrite($errors, "The setting was saved, but the plugin's cron file could not be updated.\n");
                     return COMPOSE_GIT_EXIT_FAILED;
                 }
+                return COMPOSE_GIT_EXIT_OK;
+
+            case 'recreate-on-folder-change':
+                [$positional] = compose_git_parse($args, [], []);
+                if (count($positional) !== 2 || !in_array($positional[1], ['on', 'off'], true)) {
+                    throw new ComposeGitUsageError('recreate-on-folder-change needs a stack and either on or off.');
+                }
+                $manager->setRecreateOnFolderChange($positional[0], $positional[1] === 'on');
                 return COMPOSE_GIT_EXIT_OK;
 
             case 'resume':

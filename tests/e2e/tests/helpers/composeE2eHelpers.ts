@@ -75,6 +75,40 @@ export async function waitForStackUnlock(page: Page, project: string): Promise<v
     .toBe('unlocked');
 }
 
+export async function waitForOperation(
+  page: Page,
+  project: string,
+  dispatch: { response: Pick<APIResponse, 'ok'>; body: string; json: JsonValue | null },
+  expectedExitCode: number | 'nonzero' = 0
+): Promise<void> {
+  expect(dispatch.response.ok(), dispatch.body).toBeTruthy();
+  const operations = dispatch.json?.operations;
+  expect(operations, 'Server did not return dispatch-scoped operation receipts.').toBeTruthy();
+  const operationId = operations && typeof operations === 'object'
+    ? (operations as Record<string, unknown>)[project] : undefined;
+  expect(typeof operationId, 'Missing receipt for the exact generated project.').toBe('string');
+  let exitCode: unknown;
+  await expect.poll(async () => {
+    const result = await postForm(page, '/plugins/compose.manager/include/Exec.php', {
+      action: 'getUiOperation', script: project, operationId: String(operationId),
+    });
+    expect(result.response.ok(), result.body).toBeTruthy();
+    expect(result.json?.result, result.body).toBe('success');
+    const receipt = result.json?.operation;
+    if (!receipt || typeof receipt !== 'object') throw new Error('Missing operation receipt');
+    const operation = receipt as Record<string, unknown>;
+    if (operation.state === 'completed') {
+      expect(Number.isInteger(operation.exitCode), 'Completed receipt needs an integer exit code.').toBe(true);
+      exitCode = operation.exitCode;
+    } else {
+      expect(['queued', 'running']).toContain(operation.state);
+    }
+    return operation.state;
+  }, { timeout: 120_000, intervals: [500, 1000, 2000] }).toBe('completed');
+  if (expectedExitCode === 'nonzero') expect(exitCode).not.toBe(0);
+  else expect(exitCode, 'Tracked command failed; inspect the generated stack command log.').toBe(expectedExitCode);
+}
+
 export async function waitForStackContainersRemoved(page: Page, project: string): Promise<void> {
   await expect
     .poll(
@@ -86,8 +120,10 @@ export async function waitForStackContainersRemoved(page: Page, project: string)
         if (!stack.response.ok() || !stack.json || stack.json.result !== 'success') {
           return -1;
         }
-        const containers = Array.isArray(stack.json.containers) ? stack.json.containers : [];
-        return containers.length;
+        if (!Array.isArray(stack.json.containers)) {
+          throw new Error('Container removal snapshot must contain a containers array.');
+        }
+        return stack.json.containers.length;
       },
       { timeout: 120_000 }
     )
@@ -100,13 +136,14 @@ export async function composeDownAndWait(page: Page, project: string, projectPat
     path: projectPath || `/boot/config/plugins/compose.manager/projects/${project}`,
     background: '1',
     removeOrphans: '1',
+    trackOperation: '1',
   });
 
   if (!down.response.ok() || !down.json || down.json.background !== true) {
     return down.body;
   }
 
-  await waitForStackUnlock(page, project);
+  await waitForOperation(page, project, down);
   await waitForStackContainersRemoved(page, project);
   return null;
 }

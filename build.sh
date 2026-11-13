@@ -64,7 +64,7 @@ if [[ -f "$VERSIONS_FILE" ]]; then
         [[ "$line" =~ ^RESVG_SHA256=(.+)$ ]]   && [[ -z "$RESVG_SHA256" ]]   && RESVG_SHA256="${BASH_REMATCH[1]}"
     done < "$VERSIONS_FILE"
 fi
-: "${COMPOSE_VERSION:=5.5.0}"
+: "${COMPOSE_VERSION:=5.7.0}"
 : "${RESVG_VERSION:=0.48.1}"
 
 # Generate dev version with timestamp if requested

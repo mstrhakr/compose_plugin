@@ -2,9 +2,11 @@
   "name": "compose-plugin-e2e",
   "private": true,
   "version": "0.1.0",
-  "description": "Read-only Playwright smoke tests for Compose Manager against a live Unraid server",
+  "description": "Isolated regressions and guarded live-host tests for Compose Manager",
   "scripts": {
     "test": "playwright test",
+    "test:host": "playwright test --config playwright.host.config.ts --project chromium",
+    "test:helpers": "node scripts/test-operation-helpers.cjs",
     "test:headed": "playwright test --headed",
     "test:debug": "playwright test --debug",
     "report": "playwright show-report"

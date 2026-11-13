@@ -1,15 +1,90 @@
-# Playwright E2E (Live Server, Read-Only)
+# Playwright E2E
 
-This suite is designed for **non-destructive** smoke testing against a real Unraid server.
+The suite includes local deterministic regressions, live read-only smoke tests,
+and explicitly enabled live mutation tests. A passing local run is not proof
+that live-host gates passed; report skips separately.
 
 ## Safety Model
 
-- Tests are read-only by design.
-- A network guard blocks **all POST requests** to `Exec.php` and `ComposeUtil.php`.
+- Read-only specs block **all POST requests** to `Exec.php` and `ComposeUtil.php`.
 - If a blocked action is attempted, the test fails.
 - Tests run single-worker to reduce production load (`workers: 1`).
 
 This is still live-prod testing. Treat it as smoke validation, not full mutation testing.
+
+## Isolated host stabilization gate
+
+This gate is **off by default**, even if older mutation suites were enabled.
+It requires the exact host origin as a second acknowledgement. Missing or
+mismatched acknowledgement fails configuration rather than producing a green
+skipped gate:
+
+```bash
+cd tests/e2e
+E2E_BASE_URL="https://your-unraid-host" \
+E2E_HOST_TEST_ACK="https://your-unraid-host" \
+E2E_ENABLE_MUTATION_TESTS=1 \
+E2E_HOST_SSH="root@your-unraid-host" \
+E2E_STORAGE_STATE=".auth/storage-state.json" \
+E2E_COMPOSE_PATH="/Docker/Compose" \
+npm run test:host
+```
+
+This command does not deploy the plugin. First explicitly arrange installation
+of the candidate being validated. Do not use the deploying wrapper without
+`-SkipDeploy` on a shared server. Prefer Chromium first: each additional browser
+repeats real mutations.
+
+The gate creates generated `pw-host-<random>` stacks, verifies each returned
+identity/path, and targets only those stacks. The mixed-input dispatch case uses
+two disposable stacks. Fixtures use no published ports,
+host paths, external networks, privileged mode, restart policies, or named
+volumes; running services have memory/CPU/PID limits. They use Alpine and small
+inline builds. Image downloads and build cache/local test images may remain;
+there is deliberately **no image prune or global cleanup**.
+
+Coverage includes selected/default/excluded profiles for stopped/uncreated
+Pull/Build & Up; successful inline build and failed preparation; exact operation
+receipt/exit status; foreground Continue in background, explicit Stop command,
+and completion-only Done without navigation; unchanged restart
+indicator/menu recovery; a deliberately aborted health request; and a delayed
+real Dashboard snapshot arriving after action completion. Recreate checks verify
+that fresh container IDs reach the live row without a page reload; they do not
+claim that Nchan delivers fresh metric samples.
+
+Browser endpoint writes are allowlisted to the generated stack/container.
+Terminal status/stop requests additionally require an exact session ID returned
+by that stack's tracked dispatch; an arbitrary terminal cannot be stopped.
+Unrelated automatic browser actions (including global checks and publisher
+startup) are blocked and listed in a test attachment. API requests use fixed,
+scoped helper payloads; browser route guards do not intercept APIRequestContext.
+Tests override wait-for-health **per request**, not in server settings.
+Terminal-control cases explicitly wait up to 30 seconds for a disposable
+service's delayed readiness, so the controls are exercised during an active
+command rather than after a fast detached Up has already finished.
+No global preferences, autostart, scheduled updates, existing stacks, or
+publisher processes are changed. Cleanup waits for the exact Down receipt and
+container removal before deleting metadata; failures are explicit and leave
+evidence rather than attempting broader cleanup.
+
+The review regression cases require `E2E_HOST_SSH` with noninteractive SSH access.
+They run the installed wrapper's global `list`/`ps` read-only commands, inspect
+the Maintenance report without changing identities, verify a saved override in
+effective Compose configuration, and induce registration/missing-env failures
+only in generated fixture metadata. Original fixture metadata is restored before
+cleanup. The registration test checks unchanged file contents, revision and
+receipt; mixed bulk dispatch checks a healthy fixture receipt and no deployment
+of the bad-input fixture. No cache-clear control is clicked.
+Normal fixture saves wait for operation-lock release, independently of receipt
+completion. The explicit busy-save regression still asserts rejection while an
+operation is active.
+
+`E2E_DASHBOARD_PATH` optionally selects the Dashboard URL (default `/Dashboard`).
+The Dashboard Compose tile must be enabled already; tests do not alter it.
+This gate does not yet cover bulk actions, a 30-stack host fixture, metrics
+publisher recovery, real registry-change readiness, reinstall/reboot, migration,
+or scheduler/shutdown. Keep those release gates open. Build failure uses a tiny
+intentional failing build, not a deliberately unavailable external registry.
 
 ## Setup
 
@@ -107,9 +182,10 @@ cd /code/compose_plugin
 
 ## Current Scope
 
-- Compose page loads for authenticated user
-- Key table elements render
-- Basic row interaction remains read-only
+- Read-only smoke: authenticated page loads, table rendering, basic interaction.
+- Deterministic regressions: isolated production-function behavior and layouts.
+- Opt-in generated-stack lifecycle, Git, and host stabilization cases as
+  documented above. Enabling one suite does not establish coverage for another.
 
 ## Next Safe Expansions
 

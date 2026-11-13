@@ -27,10 +27,27 @@ class ExecActionsTest extends TestCase
     /** @var string[] */
     private array $externalCleanupPaths = [];
 
+    private function mergeContainerMetadata(array &$cache, \ContainerInfo $update): void
+    {
+        $original = is_file(COMPOSE_CONTAINER_CACHE_FILE) ? file_get_contents(COMPOSE_CONTAINER_CACHE_FILE) : false;
+        try {
+            file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, json_encode(['stack' => $cache], JSON_THROW_ON_ERROR));
+            $tokens = \ContainerMetadataCache::begin(['stack']);
+            $patch = ['name' => $update->name, 'service' => $update->service, 'image' => $update->image];
+            if ($update->icon !== '') $patch['icon'] = $update->icon;
+            \ContainerMetadataCache::merge(['stack' => [$update->service => $patch]], $tokens);
+            $cache = \ContainerMetadataCache::read()['stack'];
+        } finally {
+            if ($original === false) @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+            else file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, $original);
+        }
+    }
+
     protected function setUp(): void
     {
         parent::setUp();
         \StackInfo::clearCache();
+        @unlink(COMPOSE_LEGACY_ORIGIN_FILE);
         
         // Create test compose root
         $this->testComposeRoot = sys_get_temp_dir() . '/compose_exec_test_' . getmypid();
@@ -53,6 +70,7 @@ class ExecActionsTest extends TestCase
 
     protected function tearDown(): void
     {
+        @unlink(COMPOSE_LEGACY_ORIGIN_FILE);
         if (is_dir($this->testComposeRoot)) {
             $this->recursiveDelete($this->testComposeRoot);
         }
@@ -93,6 +111,7 @@ class ExecActionsTest extends TestCase
     private function executeAction(string $action, array $postData = []): string
     {
         global $compose_root, $plugin_root, $sName;
+        global $docker_label_webui, $docker_label_icon, $docker_label_shell;
         $compose_root = $this->testComposeRoot;
         $plugin_root = '/usr/local/emhttp/plugins/compose.manager';
         $sName = 'compose.manager';
@@ -106,6 +125,97 @@ class ExecActionsTest extends TestCase
         $_POST = [];
         
         return $output ?: '';
+    }
+
+    public function testRecheckPersistencePreservesResponseContractsAndReportsWriteFailure(): void
+    {
+        $original = is_file(PENDING_RECHECK_FILE) ? file_get_contents(PENDING_RECHECK_FILE) : null;
+        try {
+            file_put_contents(PENDING_RECHECK_FILE, '{"existing":1}');
+            $marked = json_decode($this->executeAction('markStackForRecheck', ['stacks' => '["constructor","app"]']), true);
+            $this->assertSame('success', $marked['result']);
+            $this->assertSame(['existing', 'constructor', 'app'], $marked['pending']);
+            $saved = json_decode((string) file_get_contents(PENDING_RECHECK_FILE), true);
+            $this->assertIsInt($saved['app']['timestamp']);
+            $token = \PendingRechecks::token('app');
+            $cleared = json_decode($this->executeAction('clearStackRecheck', [
+                'stacks' => '["app"]', 'tokens' => json_encode(['app' => $token]),
+            ]), true);
+            $this->assertSame(['result' => 'success', 'remaining' => ['existing', 'constructor']], $cleared);
+            unlink(PENDING_RECHECK_FILE);
+            mkdir(PENDING_RECHECK_FILE);
+            foreach (['markStackForRecheck', 'clearStackRecheck'] as $action) {
+                $response = json_decode($this->executeAction($action, [
+                    'stacks' => '["app"]', 'tokens' => '{"app":null}',
+                ]), true);
+                $this->assertSame('error', $response['result']);
+                $this->assertNotEmpty($response['message']);
+            }
+        } finally {
+            if (is_dir(PENDING_RECHECK_FILE)) rmdir(PENDING_RECHECK_FILE);
+            if ($original !== null) file_put_contents(PENDING_RECHECK_FILE, $original);
+            else @unlink(PENDING_RECHECK_FILE);
+        }
+    }
+
+    public function testRecheckEndpointsRejectInvalidListsAndUnownedAcknowledgements(): void
+    {
+        $original = is_file(PENDING_RECHECK_FILE) ? file_get_contents(PENDING_RECHECK_FILE) : null;
+        try {
+            file_put_contents(PENDING_RECHECK_FILE, '{"app":1}');
+            foreach (['[["app"]]', '[12]', '{"app":"app"}', 'not json'] as $stacks) {
+                foreach (['markStackForRecheck', 'clearStackRecheck'] as $action) {
+                    $result = json_decode($this->executeAction($action, ['stacks' => $stacks]), true);
+                    $this->assertSame('error', $result['result']);
+                    $this->assertSame('{"app":1}', file_get_contents(PENDING_RECHECK_FILE));
+                }
+            }
+            $missing = json_decode($this->executeAction('clearStackRecheck', ['stacks' => '["app"]']), true);
+            $this->assertSame('error', $missing['result']);
+            foreach (['broken', '"scalar"', '{"app":"bad"}', ''] as $raw) {
+                file_put_contents(PENDING_RECHECK_FILE, $raw);
+                foreach (['markStackForRecheck', 'clearStackRecheck', 'getPendingRecheckStacks'] as $action) {
+                    $result = json_decode($this->executeAction($action, [
+                        'stacks' => '["app"]', 'tokens' => '{"app":null}',
+                    ]), true);
+                    $this->assertSame('error', $result['result']);
+                    $this->assertSame($raw, file_get_contents(PENDING_RECHECK_FILE));
+                }
+            }
+        } finally {
+            if ($original !== null) file_put_contents(PENDING_RECHECK_FILE, $original);
+            else @unlink(PENDING_RECHECK_FILE);
+        }
+    }
+
+    public function testImageCheckReturnsOwnedTokenWhilePublicPendingValuesRemainTimestamps(): void
+    {
+        $original = is_file(PENDING_RECHECK_FILE) ? file_get_contents(PENDING_RECHECK_FILE) : null;
+        $this->createTestStack('token-stack');
+        $bin = $this->createTempDir();
+        file_put_contents($bin . '/docker', "#!/bin/sh\nexit 0\n");
+        chmod($bin . '/docker', 0700);
+        $path = getenv('PATH');
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        try {
+            file_put_contents(PENDING_RECHECK_FILE, '{"token-stack":12}');
+            $response = json_decode($this->executeAction('checkStackUpdates', ['script' => 'token-stack']), true);
+            $this->assertSame('success', $response['result']);
+            $this->assertSame(\PendingRechecks::token('token-stack'), $response['recheckToken']);
+            $token = $response['recheckToken'];
+            $this->executeAction('markStackForRecheck', ['stacks' => '["token-stack"]']);
+            $pending = json_decode($this->executeAction('getPendingRecheckStacks'), true);
+            $this->assertIsInt($pending['pending']['token-stack']);
+            $cleared = json_decode($this->executeAction('clearStackRecheck', [
+                'stacks' => '["token-stack"]', 'tokens' => json_encode(['token-stack' => $token]),
+            ]), true);
+            $this->assertContains('token-stack', $cleared['remaining']);
+        } finally {
+            putenv('PATH=' . $path);
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+            if ($original !== null) file_put_contents(PENDING_RECHECK_FILE, $original);
+            else @unlink(PENDING_RECHECK_FILE);
+        }
     }
 
     /**
@@ -126,6 +236,1014 @@ class ExecActionsTest extends TestCase
         }
         
         return $stackPath;
+    }
+
+    public function testUpdateEnrichmentCachesOnlyMetadataWithoutLosingRuntimeFields(): void
+    {
+        $this->executeAction('getPersistentContainerCache');
+        $cache = ['db' => [
+            'name' => 'stack-db-1',
+            'service' => 'db',
+            'image' => 'postgres:18',
+            'state' => 'running',
+            'icon' => '/existing-icon.png',
+            'hasUpdate' => true,
+            'updateStatus' => 'update-available',
+            'localSha' => 'old-local',
+            'remoteSha' => 'old-remote',
+        ]];
+        $this->mergeContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
+            'container' => 'stack-db-1',
+            'service' => 'db',
+            'image' => 'postgres:18',
+            'status' => 'up-to-date',
+            'hasUpdate' => false,
+            'localSha' => 'new',
+            'remoteSha' => 'new',
+        ]));
+
+        $this->assertArrayNotHasKey('hasUpdate', $cache['db']);
+        $this->assertArrayNotHasKey('localSha', $cache['db']);
+        $this->assertSame('running', $cache['db']['state']);
+        $this->assertSame('/existing-icon.png', $cache['db']['icon']);
+
+        $this->mergeContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
+            'container' => 'stack-db-1',
+            'service' => 'db',
+            'image' => 'postgres:18',
+            'status' => 'unknown',
+        ]));
+        $this->assertArrayNotHasKey('updateStatus', $cache['db']);
+        $this->assertArrayNotHasKey('remoteSha', $cache['db']);
+
+        $this->mergeContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
+            'container' => 'stack-db-1',
+            'service' => 'db',
+            'image' => 'postgres:19',
+            'status' => 'unknown',
+        ]));
+        $this->assertArrayNotHasKey('updateStatus', $cache['db']);
+        $this->assertArrayNotHasKey('localSha', $cache['db']);
+    }
+
+    public function testMetadataCacheNeverRetainsOldEvidenceAcrossImageChanges(): void
+    {
+        $this->executeAction('getPersistentContainerCache');
+        $cache = ['db' => [
+            'name' => 'stack-db-1',
+            'service' => 'db',
+            'image' => 'docker.io/library/postgres:18',
+            'hasUpdate' => true,
+            'updateStatus' => 'update-available',
+            'localSha' => 'old-local',
+            'remoteSha' => 'old-remote',
+        ]];
+
+        $this->mergeContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
+            'container' => 'stack-db-1',
+            'service' => 'db',
+            'image' => 'postgres:18',
+            'status' => 'unknown',
+        ]));
+
+        $this->assertArrayNotHasKey('updateStatus', $cache['db']);
+        $this->assertArrayNotHasKey('localSha', $cache['db']);
+        $this->assertArrayNotHasKey('remoteSha', $cache['db']);
+
+        $cache['db']['image'] = 'postgres:18@sha256:' . str_repeat('a', 64);
+        $this->mergeContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
+            'container' => 'stack-db-1',
+            'service' => 'db',
+            'image' => 'postgres:18@sha256:' . str_repeat('b', 64),
+            'status' => 'unknown',
+        ]));
+
+        $this->assertArrayNotHasKey('updateStatus', $cache['db']);
+        $this->assertArrayNotHasKey('localSha', $cache['db']);
+        $this->assertArrayNotHasKey('remoteSha', $cache['db']);
+    }
+
+    public function testLegacyMetadataCacheEvidenceIsNotReturnedOrWrittenOnRead(): void
+    {
+        file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, json_encode(['stack' => ['app' => [
+            'name' => 'app-1', 'service' => 'app', 'image' => 'app:latest',
+            'state' => 'running', 'icon' => '/existing.png',
+            'hasUpdate' => true, 'updateStatus' => 'update-available', 'updateReadiness' => 'ready-to-apply',
+        ]]]));
+        try {
+            $originalBytes = file_get_contents(COMPOSE_CONTAINER_CACHE_FILE);
+            $response = json_decode($this->executeAction('getPersistentContainerCache'), true);
+            $container = $response['cache']['stack']['app'];
+            $this->assertSame('running', $container['state']);
+            $this->assertSame('/existing.png', $container['icon']);
+            $this->assertArrayNotHasKey('hasUpdate', $container);
+            $this->assertArrayNotHasKey('updateReadiness', $container);
+            $this->assertArrayNotHasKey('hasUpdate', \composeLoadPersistentContainerCache()['stack']['app']);
+            $this->assertSame($originalBytes, file_get_contents(COMPOSE_CONTAINER_CACHE_FILE));
+        } finally {
+            @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+        }
+    }
+
+    public function testComposeServiceCanBeResolvedFromDockerLabels(): void
+    {
+        $this->executeAction('getPersistentContainerCache');
+
+        $this->assertSame('db', \ContainerInfo::resolveService([
+            'Names' => 'stack-db-1',
+            'Labels' => 'com.docker.compose.project=stack,com.docker.compose.service=db',
+        ]));
+        $this->assertSame('web', \ContainerInfo::resolveService([
+            'Service' => 'web',
+            'Labels' => 'com.docker.compose.service=other',
+        ]));
+        $this->assertSame('backup', \ContainerInfo::resolveService([
+            'Labels' => ['com.docker.compose.service' => 'backup'],
+        ]));
+    }
+
+    public function testPersistentCacheDoesNotCarryUpdateResultsBetweenReplicas(): void
+    {
+        $this->executeAction('getPersistentContainerCache');
+        $cache = ['db' => [
+            'name' => 'stack-db-1',
+            'image' => 'postgres:18',
+            'updateStatus' => 'up-to-date',
+            'remoteSha' => 'new',
+        ]];
+        $this->mergeContainerMetadata($cache, \ContainerInfo::fromUpdateResponse([
+            'container' => 'stack-db-2',
+            'service' => 'db',
+            'image' => 'postgres:18',
+            'status' => 'unknown',
+        ]));
+        $this->assertArrayNotHasKey('updateStatus', $cache['db']);
+        $this->assertArrayNotHasKey('remoteSha', $cache['db']);
+    }
+
+    public function testClearUpdateCacheRemovesUpdateFieldsButPreservesContainerMetadata(): void
+    {
+        $nativeBytes = "{\n  \"postgres:18\": {\"local\":\"old\",\"remote\":\"new\",\"status\":\"false\"},\n  \"unused:latest\": {\"status\":\"true\"}\n}\n";
+        file_put_contents(UNRAID_UPDATE_STATUS_FILE, $nativeBytes);
+        file_put_contents(COMPOSE_UPDATE_STATUS_FILE, '{"stack":{"hasUpdate":true}}');
+        file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, json_encode(['stack' => ['db' => [
+            'name' => 'stack-db-1',
+            'image' => 'postgres:18',
+            'icon' => '/existing-icon.png',
+            'state' => 'running',
+            'hasUpdate' => true,
+            'updateStatus' => 'update-available',
+            'localSha' => 'old',
+            'remoteSha' => 'new',
+        ]]]));
+        try {
+            $response = json_decode($this->executeAction('clearUpdateCache'), true);
+
+            $this->assertSame('success', $response['result']);
+            $this->assertSame([], \StackUpdateService::readSavedResults());
+            $this->assertSame($nativeBytes, file_get_contents(UNRAID_UPDATE_STATUS_FILE), 'Clearing plugin evidence must not prune or rewrite native Docker cache entries.');
+            $cached = \composeLoadPersistentContainerCache()['stack']['db'];
+            $this->assertSame('stack-db-1', $cached['name']);
+            $this->assertSame('running', $cached['state']);
+            $this->assertSame('/existing-icon.png', $cached['icon']);
+            foreach (['hasUpdate', 'updateStatus', 'localSha', 'remoteSha'] as $field) {
+                $this->assertArrayNotHasKey($field, $cached);
+            }
+        } finally {
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+            @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+            @unlink(UNRAID_UPDATE_STATUS_FILE);
+        }
+    }
+
+    public static function checkedContainerStates(): array
+    {
+        return array_map(static fn(string $state): array => [$state], [
+            'running', 'exited', 'paused', 'restarting', 'created',
+        ]);
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('checkedContainerStates')]
+    public function testSingleAndAllStackChecksUseAttachedRegistryCredentials(string $state): void
+    {
+        $this->createTestStack('private-stack', ['credential_id' => 'missing-private-credential']);
+        $dockerDir = $this->createTempDir();
+        $docker = $dockerDir . '/docker';
+        $row = [
+            'Name' => 'private-app', 'Names' => 'private-app', 'Service' => 'app',
+            'Image' => 'ghcr.io/org/private:latest', 'State' => 'running',
+            'Labels' => 'com.docker.compose.project=private-stack,com.docker.compose.service=app',
+        ];
+        $stopped = [
+            'Names' => 'private-backup', 'Image' => 'ghcr.io/org/private:latest', 'State' => $state,
+            'Labels' => 'com.docker.compose.project=private-stack,com.docker.compose.service=backup',
+        ];
+        $commands = $dockerDir . '/commands';
+        $job = [
+            'Names' => 'private-job', 'Image' => 'ghcr.io/org/private:latest', 'State' => 'exited',
+            'Labels' => 'com.docker.compose.project=private-stack,com.docker.compose.service=app,com.docker.compose.oneoff=True',
+        ];
+        file_put_contents($docker, "#!/bin/sh\ncase \"\$*\" in\n"
+            . "*'config --no-consistency --format json'*) printf '%s\\n' '{\"services\":{}}'; exit 0 ;;\nesac\ncase \"\$1\" in\n"
+            . "compose) printf '%s\\n' " . escapeshellarg(json_encode(array_diff_key($row, ['Labels' => true])))
+            . ' ' . escapeshellarg(json_encode(array_diff_key($stopped, ['Labels' => true])))
+            . ' ' . escapeshellarg(json_encode(array_diff_key($job, ['Labels' => true]))) . " ;;\n"
+            . "ps) printf '%s\\n' " . escapeshellarg(json_encode($row))
+            . ' ' . escapeshellarg(json_encode($stopped)) . ' ' . escapeshellarg(json_encode($job)) . " ;;\nesac\n"
+            . "printf '%s\\n' \"\$*\" >> " . escapeshellarg($commands) . "\n");
+        chmod($docker, 0755);
+        $path = getenv('PATH');
+        putenv('PATH=' . $dockerDir . PATH_SEPARATOR . $path);
+        try {
+            $singleUpdates = null;
+            foreach (['checkStackUpdates', 'checkAllStacksUpdates'] as $action) {
+                \StackInfo::clearCache();
+                file_put_contents(COMPOSE_UPDATE_STATUS_FILE, json_encode(['other-stack' => ['hasUpdate' => true]]));
+                $GLOBALS['composeLoggerMessages'] = [];
+                $response = json_decode($this->executeAction($action, ['script' => 'private-stack']), true);
+                $this->assertSame('success', $response['result']);
+                $this->assertContains('Unable to load attached registry credential for update check', $GLOBALS['composeLoggerMessages']);
+                $updates = $action === 'checkStackUpdates' ? $response['updates'] : $response['stacks']['private-stack']['containers'];
+                $this->assertCount(2, $updates);
+                $this->assertSame('unknown', $updates[0]['updateStatus']);
+                $this->assertSame('private-backup', $updates[1]['name']);
+                $this->assertSame('backup', $updates[1]['service']);
+                if ($singleUpdates === null) {
+                    $singleUpdates = $updates;
+                } else {
+                    $this->assertSame($singleUpdates, $updates);
+                }
+                $saved = \StackUpdateService::readSavedResults();
+                $this->assertSame($updates, $saved['private-stack']['containers']);
+                $this->assertIsInt($saved['private-stack']['lastChecked']);
+                $this->assertSame($action === 'checkStackUpdates', isset($saved['other-stack']));
+            }
+            $this->assertDoesNotMatchRegularExpression(
+                '/\b(pull|build|up|start|stop|restart|create|run|rm)\b/',
+                file_get_contents($commands)
+            );
+            $this->assertStringNotContainsString('ps --all', file_get_contents($commands));
+        } finally {
+            putenv('PATH=' . $path);
+            @unlink(UNRAID_UPDATE_STATUS_FILE);
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+            @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+        }
+    }
+
+    public function testCheckAllReturnsScopedConfigFailureAndHealthyResults(): void
+    {
+        $this->createTestStack('broken');
+        $this->createTestStack('healthy');
+        $bin = $this->createTempDir();
+        $row = json_encode(['Names' => 'broken-app', 'Image' => 'alpine',
+            'Labels' => 'com.docker.compose.project=broken,com.docker.compose.service=app']);
+        file_put_contents($bin . '/docker', "#!/bin/sh\ncase \"\$1\" in\n"
+            . "ps) printf '%s\\n' " . escapeshellarg($row) . ";;\n"
+            . "compose) echo broken-config >&2; exit 7;;\nesac\n");
+        chmod($bin . '/docker', 0755);
+        $path = getenv('PATH');
+        $saved = is_file(COMPOSE_UPDATE_STATUS_FILE) ? file_get_contents(COMPOSE_UPDATE_STATUS_FILE) : false;
+        $pending = is_file(PENDING_RECHECK_FILE) ? file_get_contents(PENDING_RECHECK_FILE) : false;
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        try {
+            file_put_contents(COMPOSE_UPDATE_STATUS_FILE, json_encode(['broken' => ['containers' => [], 'lastChecked' => 17]]));
+            $response = json_decode($this->executeAction('checkAllStacksUpdates'), true);
+            $this->assertSame('partial', $response['result']);
+            $this->assertSame(['healthy'], array_keys($response['stacks']));
+            $this->assertSame(['broken'], array_keys($response['failures']));
+            $this->assertStringContainsString('broken-config', $response['failures']['broken']);
+            $this->assertSame([], $response['superseded']);
+            $this->assertSame(17, \StackUpdateService::readSavedResults()['broken']['lastChecked']);
+            $single = json_decode($this->executeAction('checkStackUpdates', ['script' => 'broken']), true);
+            $this->assertSame('error', $single['result']);
+            $this->assertStringContainsString('broken-config', $single['message']);
+        } finally {
+            putenv('PATH=' . $path);
+            if ($saved === false) @unlink(COMPOSE_UPDATE_STATUS_FILE);
+            else file_put_contents(COMPOSE_UPDATE_STATUS_FILE, $saved);
+            if ($pending === false) @unlink(PENDING_RECHECK_FILE);
+            else file_put_contents(PENDING_RECHECK_FILE, $pending);
+        }
+    }
+
+    public function testDockerFilterNamesUseRuntimeProjectIdentityAndIncludeAllStates(): void
+    {
+        $this->createTestStack('renamed-folder', ['project_name' => 'saved-project']);
+        $directory = $this->createTempDir();
+        $rows = [];
+        foreach ([
+            ['running-app', 'saved-project', 'running'],
+            ['/stopped-app', 'saved-project', 'exited'],
+            ['one-off-job', 'saved-project', 'exited'],
+            ['unmanaged-app', 'another-project', 'running'],
+        ] as [$name, $project, $state]) {
+            $rows[] = json_encode([
+                'Names' => $name, 'Image' => 'app:latest', 'State' => $state,
+                'Labels' => 'com.docker.compose.project=' . $project,
+            ]);
+        }
+        file_put_contents($directory . '/docker', "#!/bin/sh\nif [ \"\$1\" = ps ]; then\ncat <<'ROWS'\n"
+            . implode("\n", $rows) . "\nROWS\nelse\nexit 9\nfi\n");
+        chmod($directory . '/docker', 0755);
+        $path = getenv('PATH');
+        putenv('PATH=' . $directory . PATH_SEPARATOR . $path);
+        try {
+            $response = json_decode($this->executeAction('getComposeContainerNames'), true);
+            $this->assertSame('success', $response['result']);
+            $this->assertSame(['running-app', 'stopped-app', 'one-off-job'], $response['names']);
+            file_put_contents($directory . '/docker', "#!/bin/sh\nexit 0\n");
+            $response = json_decode($this->executeAction('getComposeContainerNames'), true);
+            $this->assertSame(['result' => 'success', 'names' => []], $response);
+        } finally {
+            putenv('PATH=' . $path);
+        }
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('invalidUpdateSnapshots')]
+    public function testDockerFilterEnumerationReportsFailures(string $command, string $message): void
+    {
+        $directory = $this->createTempDir();
+        file_put_contents($directory . '/docker', "#!/bin/sh\n$command\n");
+        chmod($directory . '/docker', 0755);
+        $path = getenv('PATH');
+        putenv('PATH=' . $directory . PATH_SEPARATOR . $path);
+        try {
+            $response = json_decode($this->executeAction('getComposeContainerNames'), true);
+            $this->assertSame('error', $response['result']);
+            $this->assertStringContainsString($message, $response['message']);
+            $this->assertArrayNotHasKey('names', $response);
+        } finally {
+            putenv('PATH=' . $path);
+        }
+    }
+
+    public function testEmptyStackChecksKeepTheirPublicResponseShape(): void
+    {
+        $this->createTestStack('empty-stack');
+        $dockerDir = $this->createTempDir();
+        file_put_contents($dockerDir . '/docker', "#!/bin/sh\nexit 0\n");
+        chmod($dockerDir . '/docker', 0755);
+        $path = getenv('PATH');
+        putenv('PATH=' . $dockerDir . PATH_SEPARATOR . $path);
+        try {
+            foreach (['checkStackUpdates', 'checkAllStacksUpdates'] as $action) {
+                \StackInfo::clearCache();
+                file_put_contents(COMPOSE_UPDATE_STATUS_FILE, json_encode(['empty-stack' => [
+                    'hasUpdate' => true, 'containers' => [[
+                        'name' => 'removed', 'image' => 'app:latest',
+                        'hasUpdate' => true, 'updateStatus' => 'update-available',
+                    ]],
+                ]]));
+                $response = json_decode($this->executeAction($action, ['script' => 'empty-stack']), true);
+                $this->assertSame('success', $response['result']);
+                $updates = $action === 'checkStackUpdates'
+                    ? $response['updates'] : $response['stacks']['empty-stack']['containers'];
+                $this->assertSame([], $updates);
+                $saved = \StackUpdateService::readSavedResults();
+                $this->assertFalse($saved['empty-stack']['hasUpdate']);
+                $this->assertSame('empty-stack', $saved['empty-stack']['projectName']);
+            }
+
+        } finally {
+            putenv('PATH=' . $path);
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+        }
+    }
+
+    public static function invalidUpdateSnapshots(): array
+    {
+        return [
+            'command failure' => ["echo 'fixture daemon unavailable' >&2; exit 7", 'Unable to enumerate Compose containers'],
+            'truncated JSON' => ["printf '%s\\n' '{\"Names\":'", 'Syntax error'],
+            'invalid row' => ["echo '[]'", 'Invalid Docker container row'],
+            'partial valid then malformed' => [
+                "echo '{\"Names\":\"app\",\"Image\":\"app:latest\",\"Labels\":\"com.docker.compose.project=failed-stack\"}'; echo '{'",
+                'Syntax error',
+            ],
+            'missing project label' => [
+                "echo '{\"Names\":\"app\",\"Image\":\"app:latest\",\"Labels\":\"com.docker.compose.service=app\"}'",
+                'Missing Compose project label',
+            ],
+        ];
+    }
+
+    public function testCheckInvalidatedDuringDockerInspectionIsExplicitlySuperseded(): void
+    {
+        $this->createTestStack('superseded-stack');
+        require_once '/usr/local/emhttp/plugins/compose.manager/include/ContainerMetadataCache.php';
+        file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, json_encode(['superseded-stack' => ['app' => [
+            'name' => 'previous-app', 'service' => 'app', 'image' => 'previous:latest',
+            'icon' => '/previous.png', 'state' => 'running',
+        ]]]));
+        $previousMetadata = \ContainerMetadataCache::read();
+        $directory = $this->createTempDir();
+        $invalidate = $directory . '/invalidate.php';
+        file_put_contents($invalidate, '<?php require ' . var_export(dirname(__DIR__) . '/bootstrap.php', true)
+            . '; require "/usr/local/emhttp/plugins/compose.manager/include/StackUpdateService.php";'
+            . 'StackUpdateService::removeSavedResult("superseded-stack");');
+        $row = [
+            'Names' => 'superseded-app-new', 'Image' => 'new-app@sha256:pinned',
+            'Labels' => 'com.docker.compose.project=superseded-stack,com.docker.compose.service=app',
+        ];
+        \DockerClient::setMockResponse('/containers/superseded-app-new/json', ['Image' => 'sha256:pinned']);
+        file_put_contents($directory . '/docker', "#!/bin/sh\ncase \"\$1\" in\nps) "
+            . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($invalidate) . "\n"
+            . "printf '%s\\n' " . escapeshellarg(json_encode($row)) . " ;;\n"
+            . "compose) echo '{\"services\":{\"app\":{\"image\":\"new-app@sha256:pinned\"}}}' ;;\n"
+            . "*) exit 0 ;;\nesac\n");
+        chmod($directory . '/docker', 0755);
+        $path = getenv('PATH');
+        putenv('PATH=' . $directory . PATH_SEPARATOR . $path);
+        try {
+            foreach (['checkStackUpdates', 'checkAllStacksUpdates'] as $action) {
+                \StackInfo::clearCache();
+                $response = json_decode($this->executeAction($action, ['script' => 'superseded-stack']), true);
+                if ($action === 'checkStackUpdates') {
+                    $this->assertSame('superseded', $response['result'], json_encode($response));
+                    $this->assertArrayNotHasKey('recheckToken', $response);
+                    $this->assertArrayNotHasKey('updates', $response);
+                } else {
+                    $this->assertSame('success', $response['result']);
+                    $this->assertContains('superseded-stack', $response['superseded']);
+                    $this->assertArrayNotHasKey('superseded-stack', $response['stacks']);
+                }
+                $this->assertArrayNotHasKey('superseded-stack', \StackUpdateService::readSavedResults());
+                $this->assertSame($previousMetadata, \composeLoadPersistentContainerCache(), 'Superseded checks must not publish replacement container names, images, or icons.');
+            }
+        } finally {
+            putenv('PATH=' . $path);
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+            @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+        }
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('invalidUpdateSnapshots')]
+    public function testFailedUpdateEnumerationPreservesSavedEvidence(string $command, string $message): void
+    {
+        $this->createTestStack('failed-stack');
+        $directory = $this->createTempDir();
+        file_put_contents($directory . '/docker', "#!/bin/sh\ncase \"\$1\" in\nps) $command ;;\n*) exit 0 ;;\nesac\n");
+        chmod($directory . '/docker', 0755);
+        $path = getenv('PATH');
+        putenv('PATH=' . $directory . PATH_SEPARATOR . $path);
+        $saved = json_encode([
+            'failed-stack' => ['hasUpdate' => true, 'lastChecked' => 123, 'containers' => [[
+                'name' => 'app', 'image' => 'app:latest', 'hasUpdate' => true, 'updateStatus' => 'update-available',
+            ]]],
+            'other-stack' => ['hasUpdate' => true, 'containers' => []],
+        ]);
+        try {
+            foreach (['checkStackUpdates', 'checkAllStacksUpdates'] as $action) {
+                \StackInfo::clearCache();
+                file_put_contents(COMPOSE_UPDATE_STATUS_FILE, $saved);
+                $response = json_decode($this->executeAction($action, ['script' => 'failed-stack']), true);
+                $this->assertSame('error', $response['result']);
+                $this->assertStringContainsString($message, $response['message']);
+                $stored = json_decode(file_get_contents(COMPOSE_UPDATE_STATUS_FILE), true);
+                $this->assertSame(json_decode($saved, true), $stored['stacks']);
+                $this->assertSame(1, $stored['version']);
+            }
+        } finally {
+            putenv('PATH=' . $path);
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+        }
+    }
+
+    public function testOneOffRemainsVisibleButCannotRegainPendingEvidenceOnExpansion(): void
+    {
+        $this->createTestStack('jobs');
+        $directory = $this->createTempDir();
+        $job = [
+            'Name' => 'job', 'Names' => 'job', 'Service' => 'app',
+            'Image' => 'registry.example/app:latest', 'State' => 'exited',
+            'Labels' => 'com.docker.compose.project=jobs,com.docker.compose.service=app,com.docker.compose.oneoff=True',
+        ];
+        $inspect = [
+            'Id' => 'job-id', 'Image' => 'sha256:old',
+            'Config' => ['Image' => $job['Image'], 'Labels' => [
+                'com.docker.compose.project' => 'jobs', 'com.docker.compose.service' => 'app',
+                'com.docker.compose.oneoff' => 'True',
+            ]],
+            'State' => ['Status' => 'exited'],
+        ];
+        file_put_contents($directory . '/docker', "#!/bin/sh\ncase \"\$1\" in\n"
+            . "ps) echo " . escapeshellarg(json_encode($job)) . " ;;\n"
+            . "compose) echo " . escapeshellarg(json_encode(array_diff_key($job, ['Labels' => true]))) . " ;;\n"
+            . "inspect) echo " . escapeshellarg(json_encode($inspect)) . " ;;\nesac\n");
+        chmod($directory . '/docker', 0755);
+        $path = getenv('PATH');
+        putenv('PATH=' . $directory . PATH_SEPARATOR . $path);
+        try {
+            foreach (['checkStackUpdates', 'checkAllStacksUpdates'] as $action) {
+                \StackInfo::clearCache();
+                $response = json_decode($this->executeAction($action, ['script' => 'jobs']), true);
+                $this->assertSame('success', $response['result']);
+                $updates = $action === 'checkStackUpdates' ? $response['updates'] : $response['stacks']['jobs']['containers'];
+                $this->assertSame([], $updates);
+                $this->assertFalse(\StackUpdateService::readSavedResults()['jobs']['hasUpdate']);
+            }
+            file_put_contents(UNRAID_UPDATE_STATUS_FILE, json_encode([$job['Image'] => [
+                'local' => 'sha256:new', 'remote' => 'sha256:new', 'configDigest' => 'sha256:new', 'status' => 'true',
+            ]]));
+            file_put_contents(COMPOSE_UPDATE_STATUS_FILE, json_encode(['jobs' => [
+                'hasUpdate' => true, 'containers' => [[
+                    'name' => 'job', 'image' => $job['Image'], 'localSha' => 'old', 'remoteSha' => 'new',
+                    'hasUpdate' => true, 'updateStatus' => 'update-available', 'updateReadiness' => 'ready-to-apply',
+                ]],
+            ]]));
+            foreach ([1, 2] as $reload) {
+                \StackInfo::clearCache();
+                $response = json_decode($this->executeAction('getStackContainers', ['script' => 'jobs']), true);
+                $this->assertSame('success', $response['result']);
+                $this->assertCount(1, $response['containers'], 'Runtime jobs remain visible.');
+                $container = $response['containers'][0];
+                $this->assertSame('job', $container['name']);
+                $this->assertTrue($container['oneOff'], 'Inspection must recover labels omitted by older Compose ps.');
+                $this->assertFalse($container['hasUpdate']);
+                $this->assertSame('unknown', $container['updateStatus']);
+                $this->assertSame('', $container['remoteSha']);
+                $cache = \composeLoadPersistentContainerCache();
+                $this->assertArrayNotHasKey('app', $cache['jobs'] ?? [], 'A job must not replace service metadata.');
+            }
+        } finally {
+            putenv('PATH=' . $path);
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+            @unlink(UNRAID_UPDATE_STATUS_FILE);
+            @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+        }
+    }
+
+    public function testExpandedContainersUsePerReplicaSavedEvidenceInsteadOfServiceCache(): void
+    {
+        $this->createTestStack('replicas');
+        $bin = $this->createTempDir();
+        $rows = [];
+        $saved = [];
+        $script = "#!/bin/sh\ncase \"\$1\" in\ncompose) printf '%s\\n'";
+        foreach (['1', '2', '3'] as $replica) {
+            $name = 'app-' . $replica;
+            $rows[] = ['Name' => $name, 'Service' => 'app', 'Image' => 'old' . $replica, 'State' => 'running'];
+            $saved[] = \ContainerInfo::fromUpdateResponse([
+                'name' => $name, 'service' => 'app', 'image' => 'stack-app',
+                'hasUpdate' => true, 'updateStatus' => 'update-available',
+                'localSha' => 'old' . $replica, 'remoteSha' => 'base-new',
+                'updateKind' => 'build-base',
+                'updateReadiness' => $replica === '2' ? 'unknown' : 'rebuild-required',
+            ])->toUpdateArray();
+        }
+        foreach ($rows as $row) {
+            $script .= ' ' . escapeshellarg(json_encode($row));
+        }
+        $script .= ";;\ninspect) case \"\$2\" in\n";
+        foreach ($rows as $i => $row) {
+            $script .= $row['Name'] . ") printf '%s\\n' " . escapeshellarg(json_encode([
+                'Image' => 'sha256:' . ($i === 2 ? 'recreated' : 'old' . ($i + 1)),
+                'Config' => ['Image' => 'stack-app'], 'State' => [],
+            ])) . ";;\n";
+        }
+        $script .= "esac;;\nesac\n";
+        file_put_contents($bin . '/docker', $script);
+        chmod($bin . '/docker', 0755);
+        file_put_contents(COMPOSE_UPDATE_STATUS_FILE, json_encode(['replicas' => ['containers' => $saved]]));
+        $path = getenv('PATH');
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        try {
+            foreach ([1, 2] as $reload) {
+                $response = json_decode($this->executeAction('getStackContainers', ['script' => 'replicas']), true);
+                $this->assertSame('success', $response['result']);
+                $this->assertSame(['rebuild-required', 'unknown', 'unknown'], array_column($response['containers'], 'updateReadiness'));
+                $this->assertSame([true, true, false], array_column($response['containers'], 'hasUpdate'));
+                $cache = \composeLoadPersistentContainerCache();
+                $this->assertArrayNotHasKey('hasUpdate', $cache['replicas']['app']);
+                $this->assertArrayNotHasKey('updateReadiness', $cache['replicas']['app']);
+            }
+        } finally {
+            putenv('PATH=' . $path);
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+            @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+        }
+    }
+
+    public function testBuildOnlyImageIdRowsKeepEvidenceAcrossCheckReloadAndExpansion(): void
+    {
+        $this->createTestStack('build-only');
+        $context = $this->createTempDir();
+        file_put_contents($context . '/Dockerfile', "FROM alpine@sha256:pinned-base\n");
+        $bin = $this->createTempDir();
+        $imageId = 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+        $row = [
+            'Name' => 'built-app', 'Names' => 'built-app', 'Service' => 'app',
+            'Image' => '0123456789ab', 'State' => 'running',
+            'Labels' => 'com.docker.compose.project=build-only,com.docker.compose.service=app',
+        ];
+        $inspect = ['Image' => $imageId, 'Config' => ['Image' => 'build-only-app'], 'State' => []];
+        $config = ['services' => ['app' => ['build' => ['context' => $context]]]];
+        file_put_contents($bin . '/docker', "#!/bin/sh\ncase \"\$*\" in\n"
+            . "*'config --no-consistency --format json'*) printf '%s\\n' " . escapeshellarg(json_encode($config)) . " ;;\n"
+            . "inspect*) printf '%s\\n' " . escapeshellarg(json_encode($inspect)) . " ;;\n"
+            . "*) printf '%s\\n' " . escapeshellarg(json_encode($row)) . " ;;\nesac\n");
+        chmod($bin . '/docker', 0755);
+        \DockerClient::setMockResponse('/containers/built-app/json', $inspect);
+        $path = getenv('PATH');
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        try {
+            foreach (['checkStackUpdates', 'checkAllStacksUpdates'] as $action) {
+                \StackInfo::clearCache();
+                $response = json_decode($this->executeAction($action, ['script' => 'build-only']), true);
+                $this->assertSame('success', $response['result']);
+                $updates = $action === 'checkStackUpdates'
+                    ? $response['updates'] : $response['stacks']['build-only']['containers'];
+                $this->assertNotEmpty($updates, json_encode($response));
+                $this->assertSame('build-only-app', $updates[0]['image']);
+                $this->assertSame('current', $updates[0]['updateReadiness']);
+                $this->assertSame('build-base', $updates[0]['updateKind']);
+                for ($reload = 0; $reload < 2; $reload++) {
+                    \StackInfo::clearCache();
+                    $saved = json_decode($this->executeAction('getSavedUpdateStatus'), true);
+                    $this->assertSame('build-only-app', $saved['stacks']['build-only']['containers'][0]['image']);
+                    $details = json_decode($this->executeAction('getStackContainers', ['script' => 'build-only']), true);
+                    $this->assertSame('success', $details['result']);
+                    $this->assertSame('current', $details['containers'][0]['updateReadiness']);
+                    $this->assertSame('build-base', $details['containers'][0]['updateKind']);
+                }
+            }
+        } finally {
+            putenv('PATH=' . $path);
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+            @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+        }
+    }
+
+    public function testBuildOnlyRebuildSurvivesReloadAndExpansionWhenPsShowsImageId(): void
+    {
+        $this->createTestStack('build-only');
+        $context = $this->createTempDir();
+        file_put_contents($context . '/Dockerfile', "FROM fixture/base:latest\n");
+        $imageId = 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+        $reference = 'build-only-app';
+        $row = [
+            'Name' => 'built-app', 'Service' => 'app', 'Image' => '0123456789ab', 'State' => 'running',
+        ];
+        $inspect = ['Image' => $imageId, 'Config' => ['Image' => $reference], 'State' => []];
+        \DockerClient::setMockResponse('/containers/built-app/json', $inspect);
+        \DockerClient::setMockResponse('/images/' . rawurlencode($imageId) . '/json', [
+            'RootFS' => ['Layers' => ['sha256:old-base', 'sha256:application']],
+        ]);
+        \DockerClient::setMockResponse('/images/' . rawurlencode($reference) . '/json', ['Id' => $imageId]);
+        $checker = new class extends \ComposeUpdateCheck {
+            protected function fetchRemoteImageConfig(string $image, ?string $platform = null): ?array
+            {
+                return ['digest' => 'sha256:new-base', 'diffIds' => ['sha256:new-base-layer']];
+            }
+        };
+        $result = $checker->checkContainers([$row], [
+            'app' => ['image' => null, 'build' => ['context' => $context]],
+        ])['built-app'];
+        $this->assertSame('rebuild-required', $result['updateReadiness']);
+        $this->assertTrue($result['hasUpdate']);
+        $this->assertSame($reference, $result['image']);
+        $update = \ContainerInfo::fromUpdateResponse([
+            'name' => 'built-app', 'service' => 'app', 'image' => $result['image'],
+            'localSha' => substr($result['local'], 7, 12),
+            'remoteSha' => $result['remote'], 'hasUpdate' => $result['hasUpdate'],
+            'status' => $result['status'], 'updateKind' => $result['updateKind'],
+            'updateReadiness' => $result['updateReadiness'],
+        ])->toUpdateArray();
+        $save = new \ReflectionMethod(\StackUpdateService::class, 'saveResults');
+        $ownership = (new \ReflectionMethod(\StackUpdateService::class, 'reserveChecks'))->invoke(null, ['build-only'], false);
+        $save->invoke(new \StackUpdateService(), [
+            'build-only' => ['projectName' => 'build-only', 'containers' => [$update]],
+        ], false, $ownership);
+        $bin = $this->createTempDir();
+        file_put_contents($bin . '/docker', "#!/bin/sh\ncase \"\$1\" in\n"
+            . "inspect) printf '%s\\n' " . escapeshellarg(json_encode($inspect)) . " ;;\n"
+            . "compose) printf '%s\\n' " . escapeshellarg(json_encode($row)) . " ;;\nesac\n");
+        chmod($bin . '/docker', 0755);
+        $path = getenv('PATH');
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        try {
+            for ($refresh = 0; $refresh < 3; $refresh++) {
+                \StackInfo::clearCache();
+                $saved = json_decode($this->executeAction('getSavedUpdateStatus'), true);
+                $this->assertTrue($saved['stacks']['build-only']['hasUpdate']);
+                $this->assertSame('rebuild-required', $saved['stacks']['build-only']['containers'][0]['updateReadiness']);
+                $details = json_decode($this->executeAction('getStackContainers', ['script' => 'build-only']), true);
+                $this->assertSame('success', $details['result']);
+                $container = $details['containers'][0];
+                $this->assertSame($reference, $container['image']);
+                $this->assertTrue($container['hasUpdate']);
+                $this->assertSame('build-base', $container['updateKind']);
+                $this->assertSame('rebuild-required', $container['updateReadiness']);
+                $this->assertSame($update['localSha'], $container['localSha']);
+                $this->assertSame($update['remoteSha'], $container['remoteSha']);
+            }
+        } finally {
+            putenv('PATH=' . $path);
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+            @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+        }
+    }
+
+    public function testUpdateCheckReportsPersistenceFailureInsteadOfSuccess(): void
+    {
+        $this->createTestStack('empty-stack');
+        file_put_contents(COMPOSE_UPDATE_STATUS_FILE, 'not json');
+        try {
+            foreach (['checkStackUpdates', 'checkAllStacksUpdates'] as $action) {
+                $response = json_decode($this->executeAction($action, ['script' => 'empty-stack']), true);
+                $this->assertSame('error', $response['result']);
+                $this->assertNotEmpty($response['message']);
+                $this->assertSame('not json', file_get_contents(COMPOSE_UPDATE_STATUS_FILE));
+            }
+            \StackUpdateService::clearSavedResults();
+            $this->assertSame([], \StackUpdateService::readSavedResults());
+            $this->assertStringContainsString(
+                'Stack update check failed:',
+                implode("\n", $GLOBALS['composeLoggerMessages'])
+            );
+        } finally {
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+        }
+    }
+
+    public function testUiOperationEndpointDoesNotTreatMissingOrQueuedReceiptsAsCompleted(): void
+    {
+        require_once '/usr/local/emhttp/plugins/compose.manager/include/UiOperation.php';
+        $id = bin2hex(random_bytes(16));
+        $file = \composeUiOperationFile('operation-stack', $id);
+        if (!is_dir(dirname($file))) mkdir(dirname($file), 0700, true);
+        try {
+            $missing = json_decode($this->executeAction('getUiOperation', ['script' => 'operation-stack', 'operationId' => $id]), true);
+            $this->assertSame('error', $missing['result']);
+            foreach ([['state' => 'queued'], ['state' => 'running'], ['state' => 'completed', 'exitCode' => 7]] as $receipt) {
+                file_put_contents($file, json_encode($receipt));
+                $response = json_decode($this->executeAction('getUiOperation', ['script' => 'operation-stack', 'operationId' => $id]), true);
+                $this->assertSame('success', $response['result']);
+                $this->assertSame($receipt, $response['operation']);
+            }
+            $otherStack = json_decode($this->executeAction('getUiOperation', ['script' => 'other-stack', 'operationId' => $id]), true);
+            $this->assertSame('error', $otherStack['result']);
+            $invalid = json_decode($this->executeAction('getUiOperation', ['script' => 'operation-stack', 'operationId' => '../outside']), true);
+            $this->assertSame('error', $invalid['result']);
+        } finally {
+            @unlink($file);
+        }
+    }
+
+    public static function cachedImageStatusCases(): array
+    {
+        return [
+            'tag prefix' => ['ghcr.io/example/app:v3.3.5', 'ghcr.io/example/app:v3', 'ghcr.io/example/app:v3.3.5', null, 'unknown'],
+            'official full reference' => ['docker.io/library/postgres:18', 'postgres:16', 'library/postgres:18', null, 'unknown'],
+            'official short reference' => ['redis:8', 'other/redis:8', 'docker.io/library/redis:8', null, 'unknown'],
+            'old tag only' => ['ghcr.io/example/app:v3.3.5', 'ghcr.io/example/app:v3', null, null, 'unknown'],
+            'already pulled but not recreated' => ['postgres:18', 'postgres:16', 'library/postgres:18', 'oldimage', 'unknown', true],
+            'native manifest digest is not a config ID' => ['postgres:18', 'postgres:16', 'library/postgres:18', 'oldimage', 'unknown', false],
+            'native writer replaced the remote digest' => ['postgres:18', 'postgres:16', 'library/postgres:18', 'oldimage', 'unknown', false, 'previous-config'],
+            'config digest needs actual container ID' => ['postgres:18', 'postgres:16', 'library/postgres:18', null, 'unknown', true],
+            'recreated container matches config digest' => ['postgres:18', 'postgres:16', 'library/postgres:18', 'current', 'unknown', true],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('cachedImageStatusCases')]
+    public function testContainerDetailsIgnoreNativeImageEvidenceWithoutAcceptedPluginEvidence(
+        string $image,
+        string $oldImage,
+        ?string $currentImage,
+        ?string $containerImageId,
+        string $expectedStatus,
+        bool $configDigest = false,
+        ?string $previousConfigDigest = null
+    ): void
+    {
+        @unlink(COMPOSE_UPDATE_STATUS_FILE);
+        $this->createTestStack('status-stack');
+        $dockerDir = $this->createTempDir();
+        $docker = $dockerDir . '/docker';
+        $row = ['Name' => 'status-stack-app-1', 'Service' => 'app', 'Image' => $image, 'State' => 'running'];
+        $inspect = ['Config' => ['Image' => $row['Image']], 'State' => []];
+        if ($containerImageId !== null) {
+            $inspect['Image'] = $containerImageId;
+        }
+        file_put_contents($docker, "#!/bin/sh\ncase \"\$1\" in\n"
+            . "compose) printf '%s\\n' " . escapeshellarg(json_encode($row)) . " ;;\n"
+            . "inspect) printf '%s\\n' " . escapeshellarg(json_encode($inspect)) . " ;;\nesac\n");
+        chmod($docker, 0755);
+        $path = getenv('PATH');
+        putenv('PATH=' . $dockerDir . PATH_SEPARATOR . $path);
+        $statuses = [$oldImage => ['local' => 'old', 'remote' => 'new']];
+        if ($currentImage !== null) {
+            $statuses[$currentImage] = ['local' => 'current', 'remote' => 'current', 'status' => 'true'];
+            if ($configDigest) {
+                $statuses[$currentImage]['configDigest'] = 'current';
+            }
+            if ($previousConfigDigest !== null) {
+                $statuses[$currentImage]['configDigest'] = $previousConfigDigest;
+            }
+        }
+        $nativeBytes = json_encode($statuses, JSON_PRETTY_PRINT) . "\n";
+        file_put_contents(UNRAID_UPDATE_STATUS_FILE, $nativeBytes);
+        try {
+            $response = json_decode($this->executeAction('getStackContainers', ['script' => 'status-stack']), true);
+            $this->assertSame('success', $response['result']);
+            $this->assertCount(1, $response['containers']);
+            $this->assertSame($expectedStatus === 'update-available', $response['containers'][0]['hasUpdate']);
+            $this->assertSame($expectedStatus, $response['containers'][0]['updateStatus']);
+            $this->assertSame('unknown', $response['containers'][0]['updateReadiness']);
+            $this->assertSame('', $response['containers'][0]['localSha']);
+            $this->assertSame('', $response['containers'][0]['remoteSha']);
+            $this->assertSame($nativeBytes, file_get_contents(UNRAID_UPDATE_STATUS_FILE), 'Details must not rewrite native Docker evidence.');
+        } finally {
+            putenv('PATH=' . $path);
+            @unlink(UNRAID_UPDATE_STATUS_FILE);
+            @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+        }
+    }
+
+    public function testBusyCanonicalProjectDefersEndpointWithoutAcknowledgementToken(): void
+    {
+        $this->createTestStack('Display Folder', ['project_name' => 'canonical-project']);
+        $this->executeAction('getPersistentContainerCache');
+        \PendingRechecks::mark(['Display Folder']);
+        $token = \PendingRechecks::token('Display Folder');
+        $lockDirectory = getenv('COMPOSE_LOCK_DIR');
+        $directory = $this->createTempDir();
+        putenv('COMPOSE_LOCK_DIR=' . $directory);
+        $lock = fopen($directory . '/canonical-project.lock', 'c+');
+        $this->assertTrue(flock($lock, LOCK_EX | LOCK_NB));
+        try {
+            $response = json_decode($this->executeAction('checkStackUpdates', ['script' => 'Display Folder']), true);
+            $this->assertSame('superseded', $response['result'], json_encode($response));
+            $this->assertArrayNotHasKey('recheckToken', $response);
+            $response = json_decode($this->executeAction('clearStackRecheck', [
+                'stacks' => json_encode(['Display Folder']),
+                'tokens' => json_encode(['Display Folder' => $token]),
+            ]), true);
+            $this->assertSame('success', $response['result'], json_encode($response));
+            $this->assertArrayHasKey('Display Folder', \PendingRechecks::timestamps());
+        } finally {
+            fclose($lock);
+            putenv($lockDirectory === false ? 'COMPOSE_LOCK_DIR' : 'COMPOSE_LOCK_DIR=' . $lockDirectory);
+            \PendingRechecks::remove('Display Folder');
+        }
+    }
+
+    public function testDetailCollectionSpanningMutationDoesNotPublishMetadata(): void
+    {
+        $this->createTestStack('details-race');
+        $directory = $this->createTempDir();
+        $path = getenv('PATH');
+        $lockDirectory = getenv('COMPOSE_LOCK_DIR');
+        putenv('COMPOSE_LOCK_DIR=' . $directory);
+        $row = json_encode(['Name' => 'new-app', 'Service' => 'app', 'Image' => 'alpine:latest', 'State' => 'running']);
+        file_put_contents($directory . '/docker', "#!/bin/sh\ncase \"\$1\" in\n"
+            . "compose) printf '%s' " . escapeshellarg(str_repeat('b', 32)) . ' > '
+            . escapeshellarg($directory . '/details-race.epoch') . "\n echo " . escapeshellarg($row) . " ;;\n"
+            . "inspect) echo '{}';;\nesac\n");
+        chmod($directory . '/docker', 0755);
+        putenv('PATH=' . $directory . PATH_SEPARATOR . $path);
+        $original = is_file(COMPOSE_CONTAINER_CACHE_FILE) ? file_get_contents(COMPOSE_CONTAINER_CACHE_FILE) : false;
+        file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, '{"details-race":{"app":{"name":"kept","service":"app","image":"kept:latest"}}}');
+        try {
+            $response = json_decode($this->executeAction('getStackContainers', ['script' => 'details-race']), true);
+            $this->assertSame('success', $response['result'], json_encode($response));
+            $this->assertSame('new-app', $response['containers'][0]['name']);
+            $this->assertSame('kept', \ContainerMetadataCache::read()['details-race']['app']['name']);
+        } finally {
+            putenv('PATH=' . $path);
+            putenv($lockDirectory === false ? 'COMPOSE_LOCK_DIR' : 'COMPOSE_LOCK_DIR=' . $lockDirectory);
+            if ($original === false) @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+            else file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, $original);
+        }
+    }
+
+    public function testImportedInputFailureDoesNotHideStackSettings(): void
+    {
+        file_put_contents(COMPOSE_LEGACY_ORIGIN_FILE, \ProjectIdentity::LEGACY_REVISION);
+        $path = $this->createTestStack('repairable', [
+            'docker-compose.yml' => "services: {}\n",
+            'docker-compose.override.yml' => "services: {}\n",
+            'name' => 'repairable',
+        ]);
+        \StackInfo::fromProject($this->testComposeRoot, 'repairable');
+        unlink($path . '/docker-compose.override.yml');
+        \StackInfo::clearCache();
+
+        $response = json_decode($this->executeAction('getStackSettings', ['script' => 'repairable']), true);
+
+        $this->assertSame('success', $response['result']);
+        $this->assertStringContainsString('Migrated Compose input is unavailable', $response['migrationInputError']);
+        $this->assertContains($path . '/docker-compose.yml', $response['editableComposeFiles']);
+        $this->assertFalse(\StackInfo::fromProject($this->testComposeRoot, 'repairable')->hasResolvedIdentity());
+    }
+
+    public function testLegacyEnvSelectionIsVisibleAndClearingDoesNotReactivateIt(): void
+    {
+        file_put_contents(COMPOSE_LEGACY_ORIGIN_FILE, \ProjectIdentity::LEGACY_REVISION);
+        $path = $this->createTestStack('legacy-env', [
+            'docker-compose.yml' => "services: {}\n",
+            'name' => 'legacy-env',
+            'envToUse' => '/missing/legacy.env',
+        ]);
+        $settings = json_decode($this->executeAction('getStackSettings', ['script' => 'legacy-env']), true);
+        $this->assertSame('success', $settings['result']);
+        $this->assertSame('/missing/legacy.env', $settings['envPath']);
+
+        $saved = json_decode($this->executeAction('setStackSettings', ['script' => 'legacy-env', 'envPath' => '']), true);
+
+        $this->assertSame('success', $saved['result']);
+        $this->assertFileExists($path . '/envpath');
+        $this->assertSame('', file_get_contents($path . '/envpath'));
+        $this->assertSame('/missing/legacy.env', file_get_contents($path . '/envToUse'));
+        $settings = json_decode($this->executeAction('getStackSettings', ['script' => 'legacy-env']), true);
+        $this->assertSame('', $settings['envPath']);
+        $this->assertArrayNotHasKey('envFilePath', \StackInfo::fromProject($this->testComposeRoot, 'legacy-env')->buildComposeArgs());
+    }
+
+    public function testUnrelatedSettingsPreserveCompleteMigratedInputOrder(): void
+    {
+        file_put_contents(COMPOSE_LEGACY_ORIGIN_FILE, \ProjectIdentity::LEGACY_REVISION);
+        $fixture = $this->createAllowedSymlinkedPathFixture();
+        $source = $fixture['target'];
+        $files = [$source . '/docker-compose.extra.yml', $source . '/docker-compose.yml'];
+        foreach ($files as $file) {
+            file_put_contents($file, "services: {}\n");
+        }
+        $path = $this->createTestStack('ordered', ['indirect' => $source, 'name' => 'ordered']);
+        \ProjectIdentity::setProbe(static fn(): ?array => \ProjectIdentity::parseProbeOutput('containers ' . json_encode([
+            'project' => 'ordered', 'workingDir' => $source, 'configFiles' => implode(',', $files),
+        ]) . "\n__rc=0"));
+        $this->assertSame($files, \StackInfo::fromProject($this->testComposeRoot, 'ordered')->buildComposeArgs()['filePaths']);
+
+        $saved = json_decode($this->executeAction('setStackSettings', [
+            'script' => 'ordered', 'externalComposePath' => $source, 'externalComposeFilePath' => '',
+            'iconUrl' => 'https://example.com/icon.png', 'defaultProfile' => 'worker',
+            'extraComposeFiles' => '', 'useDefaultComposeFiles' => 'false',
+        ]), true);
+
+        $this->assertSame('success', $saved['result']);
+        $this->assertFileDoesNotExist($path . '/indirect_mode');
+        $this->assertFileDoesNotExist($path . '/compose_input_mode');
+        $this->assertSame($files, \StackInfo::fromProject($this->testComposeRoot, 'ordered')->buildComposeArgs()['filePaths']);
+        $this->assertFileExists($path . '/compose.yaml');
+        $saved = json_decode($this->executeAction('setStackSettings', ['script' => 'ordered', 'iconUrl' => 'https://example.com/other.png']), true);
+        $this->assertSame('success', $saved['result']);
+        $this->assertSame($source, file_get_contents($path . '/indirect'));
+        $this->assertSame($files, \StackInfo::fromProject($this->testComposeRoot, 'ordered')->buildComposeArgs()['filePaths']);
+
+        file_put_contents($source . '/compose.added.yaml', "services: {}\n");
+        $saved = json_decode($this->executeAction('setStackSettings', ['script' => 'ordered', 'extraComposeFiles' => 'compose.added.yaml']), true);
+        $this->assertSame('success', $saved['result']);
+        $this->assertSame([...$files, $source . '/compose.added.yaml'], \StackInfo::fromProject($this->testComposeRoot, 'ordered')->buildComposeArgs()['filePaths']);
+
+        $replacement = $this->createAllowedSymlinkedPathFixture(true)['target'];
+        $saved = json_decode($this->executeAction('setStackSettings', ['script' => 'ordered', 'externalComposePath' => $replacement, 'extraComposeFiles' => '']), true);
+        $this->assertSame('success', $saved['result']);
+        $this->assertSame('plus', file_get_contents($path . '/compose_input_mode'));
+        $this->assertSame([$replacement . '/compose.yaml'], \StackInfo::fromProject($this->testComposeRoot, 'ordered')->buildComposeArgs()['filePaths']);
+        \ProjectIdentity::setProbe(static fn(): array => []);
+    }
+
+    public function testExplicitProjectFolderSelectionClearsStaleInvalidMarkerWhenTargetWasAlreadyEmpty(): void
+    {
+        $path = $this->createTestStack('invalid-folder', [
+            'indirect.invalid' => '/mnt/missing/path',
+        ]);
+
+        $saved = json_decode($this->executeAction('setStackSettings', [
+            'script' => 'invalid-folder', 'externalComposePath' => '', 'externalComposeFilePath' => '',
+        ]), true);
+
+        $this->assertSame('success', $saved['result']);
+        $this->assertFileDoesNotExist($path . '/indirect.invalid');
+    }
+
+    public function testResubmittingUnchangedExternalPathClearsStaleInvalidMarkerWithoutDiscardingFileOrder(): void
+    {
+        $fixture = $this->createAllowedSymlinkedPathFixture();
+        $source = $fixture['target'];
+        $files = [$source . '/docker-compose.yml'];
+        file_put_contents($files[0], "services: {}\n");
+        $path = $this->createTestStack('restored-source', [
+            'indirect' => $source,
+            'indirect.invalid' => $source,
+        ]);
+        \ProjectIdentity::setProbe(static fn(): ?array => \ProjectIdentity::parseProbeOutput('containers ' . json_encode([
+            'project' => 'restored-source', 'workingDir' => $source, 'configFiles' => implode(',', $files),
+        ]) . "\n__rc=0"));
+        \StackInfo::fromProject($this->testComposeRoot, 'restored-source');
+
+        $saved = json_decode($this->executeAction('setStackSettings', [
+            'script' => 'restored-source', 'externalComposePath' => $source, 'externalComposeFilePath' => '',
+        ]), true);
+
+        $this->assertSame('success', $saved['result']);
+        $this->assertFileDoesNotExist($path . '/indirect.invalid');
+        $this->assertSame($source, file_get_contents($path . '/indirect'));
+        \StackInfo::clearCache();
+        $this->assertSame($files, \StackInfo::fromProject($this->testComposeRoot, 'restored-source')->buildComposeArgs()['filePaths']);
+        \ProjectIdentity::setProbe(static fn(): array => []);
     }
 
     /**
@@ -369,6 +1487,221 @@ class ExecActionsTest extends TestCase
         $this->assertStringContainsString('saved', $output);
     }
 
+    public function testSharedSaveRequiresFreshConfirmationAndDismissalIsPerStackAndReversible(): void
+    {
+        $a = $this->createTestStack('a');
+        $b = $this->createTestStack('b');
+        file_put_contents($b . '/indirect', $a . '/compose.yaml');
+        file_put_contents($b . '/indirect_mode', 'file');
+        \StackInfo::clearCache();
+        $original = file_get_contents($a . '/compose.yaml');
+        $payload = ['script' => 'a', 'scriptContents' => "services:\n  app:\n    image: busybox\n"];
+        $challenge = json_decode($this->executeAction('saveYml', $payload), true);
+        $this->assertSame('shared_source_confirmation', $challenge['errorCode']);
+        $this->assertSame(['b'], $challenge['shared'][0]['stacks']);
+        $this->assertSame($original, file_get_contents($a . '/compose.yaml'));
+        $this->assertStringContainsString('saved', $this->executeAction('saveYml', $payload + ['sharedConfirmation' => $challenge['confirmation']]));
+        $dismissed = json_decode($this->executeAction('setSharedSourceWarning', ['script' => 'a', 'dismissed' => '1']), true);
+        $this->assertTrue($dismissed['dismissed']);
+        $this->assertStringContainsString('saved', $this->executeAction('saveYml', $payload));
+        $other = json_decode($this->executeAction('getSharedStackSources', ['script' => 'b']), true);
+        $this->assertFalse($other['dismissed']);
+        $this->assertNotEmpty($other['shared']);
+        $this->executeAction('setSharedSourceWarning', ['script' => 'a', 'dismissed' => '0']);
+        $this->assertSame('shared_source_confirmation', json_decode($this->executeAction('saveYml', $payload), true)['errorCode']);
+    }
+
+    public function testLoadedRevisionsRejectStaleContentsForEveryEditorSaveAndAllowRepeatedOwnedSaves(): void
+    {
+        $path = $this->createTestStack('revision');
+        $cases = [
+            ['getYml', 'saveYml', $path . '/compose.yaml', "services:\n  app:\n    image: alpine\n"],
+            ['getEnv', 'saveEnv', $path . '/.env', "VALUE=first\r\n"],
+            ['getOverride', 'saveOverride', $path . '/compose.override.yaml', "services: {}\n"],
+        ];
+        foreach ($cases as [$get, $save, $file, $contents]) {
+            $loaded = json_decode($this->executeAction($get, ['script' => 'revision']), true);
+            $this->assertMatchesRegularExpression('/^[a-f0-9]{64}$/', $loaded['revision']);
+            $payload = ['script' => 'revision', 'scriptContents' => $contents, 'expectedPath' => $loaded['fileName'],
+                'expectedRevision' => $loaded['revision'], 'managed' => '0'];
+            $saved = json_decode($this->executeAction($save, $payload), true);
+            $this->assertSame('success', $saved['result']);
+            $this->assertSame(\StackSourceEditor::revision($contents, true), $saved['revision']);
+            $before = filemtime($file);
+            file_put_contents($file, 'external changes');
+            touch($file, $before);
+            $rejected = json_decode($this->executeAction($save, array_replace($payload, ['expectedRevision' => $saved['revision']])), true);
+            $this->assertSame('stale_content', $rejected['errorCode']);
+            $this->assertSame('external changes', file_get_contents($file));
+            $fresh = json_decode($this->executeAction($get, ['script' => 'revision']), true);
+            $second = json_decode($this->executeAction($save, array_replace($payload, ['expectedRevision' => $fresh['revision']])), true);
+            $this->assertSame('success', $second['result']);
+        }
+    }
+
+    public function testMissingFileRevisionDoesNotPermitOverwritingNewlyCreatedEmptyFile(): void
+    {
+        $path = $this->createTestStack('missing-revision');
+        $loaded = json_decode($this->executeAction('getEnv', ['script' => 'missing-revision']), true);
+        $this->assertFalse($loaded['exists']);
+        file_put_contents($path . '/.env', '');
+        $rejected = json_decode($this->executeAction('createEnvTemplate', [
+            'script' => 'missing-revision', 'expectedPath' => $loaded['fileName'], 'expectedRevision' => $loaded['revision'],
+        ]), true);
+        $this->assertSame('stale_content', $rejected['errorCode']);
+        $this->assertSame('', file_get_contents($path . '/.env'));
+    }
+
+    public function testDismissedSharingDoesNotBypassContentConflictProtection(): void
+    {
+        $a = $this->createTestStack('conflict-a');
+        $b = $this->createTestStack('conflict-b');
+        file_put_contents($b . '/indirect', $a . '/compose.yaml');
+        file_put_contents($b . '/indirect_mode', 'file');
+        \StackInfo::clearCache();
+        $this->executeAction('setSharedSourceWarning', ['script' => 'conflict-a', 'dismissed' => '1']);
+        $this->executeAction('setSharedSourceWarning', ['script' => 'conflict-b', 'dismissed' => '1']);
+        $first = json_decode($this->executeAction('getYml', ['script' => 'conflict-a']), true);
+        $second = json_decode($this->executeAction('getYml', ['script' => 'conflict-b']), true);
+        $saved = json_decode($this->executeAction('saveYml', [
+            'script' => 'conflict-a', 'expectedRevision' => $first['revision'], 'scriptContents' => "services:\n  new:\n    image: busybox\n",
+        ]), true);
+        $this->assertSame('success', $saved['result']);
+        $rejected = json_decode($this->executeAction('saveYml', [
+            'script' => 'conflict-b', 'expectedRevision' => $second['revision'], 'scriptContents' => "services: {}\n",
+        ]), true);
+        $this->assertSame('stale_content', $rejected['errorCode']);
+        $this->assertStringContainsString('new:', file_get_contents($a . '/compose.yaml'));
+    }
+
+    public function testLabelsSaveRejectsChangedMainComposeWithoutChangingOverride(): void
+    {
+        $path = $this->createTestStack('labels-revision');
+        $main = json_decode($this->executeAction('getYml', ['script' => 'labels-revision']), true);
+        $override = json_decode($this->executeAction('getOverride', ['script' => 'labels-revision']), true);
+        file_put_contents($path . '/compose.yaml', "services:\n  newer:\n    image: busybox\n");
+        $result = json_decode($this->executeAction('saveOverride', [
+            'script' => 'labels-revision', 'managed' => '1', 'scriptContents' => "services: {}\n",
+            'expectedRevision' => $override['revision'], 'expectedComposeRevision' => $main['revision'],
+        ]), true);
+        $this->assertSame('stale_content', $result['errorCode']);
+        $this->assertFileDoesNotExist($path . '/compose.override.yaml');
+    }
+
+    public function testCreatedOverrideRevisionSupportsImmediateLabelsSave(): void
+    {
+        $this->createTestStack('labels-template');
+        $main = json_decode($this->executeAction('getYml', ['script' => 'labels-template']), true);
+        $override = json_decode($this->executeAction('getOverride', ['script' => 'labels-template']), true);
+        $created = json_decode($this->executeAction('createOverrideTemplate', [
+            'script' => 'labels-template', 'expectedPath' => $override['fileName'],
+            'expectedRevision' => $override['revision'],
+        ]), true);
+        $this->assertSame('success', $created['result']);
+        $saved = json_decode($this->executeAction('saveOverride', [
+            'script' => 'labels-template', 'managed' => '1', 'expectedPath' => $created['fileName'],
+            'expectedRevision' => $created['revision'], 'expectedComposeRevision' => $main['revision'],
+            'scriptContents' => "services: {}\n",
+        ]), true);
+        $this->assertSame('success', $saved['result']);
+        $this->assertSame("services: {}\n", file_get_contents($created['fileName']));
+    }
+
+    public function testMainComposeSaveWarnsBeforeMigratingSharedOverride(): void
+    {
+        $a = $this->createTestStack('migration-a');
+        $b = $this->createTestStack('migration-b');
+        $override = $a . '/compose.override.yaml';
+        file_put_contents($override, "services:\n  app:\n    labels:\n      example: value\n");
+        file_put_contents($b . '/indirect', $override);
+        file_put_contents($b . '/indirect_mode', 'file');
+        \StackInfo::clearCache();
+        $original = file_get_contents($a . '/compose.yaml');
+        $challenge = json_decode($this->executeAction('saveYml', [
+            'script' => 'migration-a', 'scriptContents' => "services:\n  renamed:\n    image: alpine\n",
+        ]), true);
+        $this->assertSame('shared_source_confirmation', $challenge['errorCode']);
+        $this->assertSame($override, $challenge['shared'][0]['path']);
+        $this->assertSame(['migration-b'], $challenge['shared'][0]['stacks']);
+        $this->assertSame($original, file_get_contents($a . '/compose.yaml'));
+        $this->assertStringContainsString('app:', file_get_contents($override));
+    }
+
+    public function testSourceWritersRespectCanonicalLockAndInvalidateOldAcknowledgements(): void
+    {
+        $path = $this->createTestStack('source-owner');
+        $stack = \StackInfo::fromProject($this->testComposeRoot, 'source-owner');
+        $originalPending = is_file(PENDING_RECHECK_FILE) ? file_get_contents(PENDING_RECHECK_FILE) : false;
+        $oldLockDirectory = getenv('COMPOSE_LOCK_DIR');
+        $lockDirectory = $this->createTempDir();
+        putenv('COMPOSE_LOCK_DIR=' . $lockDirectory);
+        try {
+            file_put_contents(PENDING_RECHECK_FILE, '{}');
+            $actions = [
+                'saveYml' => ['scriptContents' => "services:\n  app:\n    image: alpine\n"],
+                'saveEnv' => ['scriptContents' => "A=1\n"],
+                'saveOverride' => ['managed' => '1', 'scriptContents' => "services: {}\n"],
+                'createEnvTemplate' => [],
+                'createOverrideTemplate' => [],
+                'setEnvPath' => ['envPath' => ''],
+                'setStackSettings' => ['extraComposeFiles' => ''],
+            ];
+            foreach ($actions as $action => $data) {
+                $lock = \StackMutationGuard::tryExclusive($stack->projectName);
+                $this->assertIsResource($lock);
+                try {
+                    $result = json_decode($this->executeAction($action, ['script' => 'source-owner'] + $data), true);
+                    $this->assertSame('error', $result['result'], $action);
+                    $this->assertStringContainsString('operation is in progress', $result['message'], $action);
+                } finally {
+                    fclose($lock);
+                }
+                \PendingRechecks::mark(['source-owner']);
+                $token = \PendingRechecks::token('source-owner');
+                $epoch = \StackMutationGuard::epoch($stack->projectName);
+                $output = $this->executeAction($action, ['script' => 'source-owner'] + $data);
+                $this->assertTrue(str_contains($output, 'saved') || (json_decode($output, true)['result'] ?? '') === 'success', $output);
+                $this->assertNotSame($epoch, \StackMutationGuard::epoch($stack->projectName), $action);
+                $this->assertSame(['source-owner'], \PendingRechecks::acknowledge(['source-owner'], ['source-owner' => $token]), $action);
+                \PendingRechecks::acknowledge(['source-owner'], ['source-owner' => \PendingRechecks::token('source-owner')]);
+                $this->executeAction($action, ['script' => 'source-owner'] + $data);
+                $this->assertSame([], \PendingRechecks::timestamps(), $action . ' must not create automatic checks.');
+            }
+            $this->assertFileExists($path . '/.env');
+        } finally {
+            putenv($oldLockDirectory === false ? 'COMPOSE_LOCK_DIR' : 'COMPOSE_LOCK_DIR=' . $oldLockDirectory);
+            if ($originalPending === false) @unlink(PENDING_RECHECK_FILE);
+            else file_put_contents(PENDING_RECHECK_FILE, $originalPending);
+        }
+    }
+
+    public function testFailedComposeSaveDoesNotMigrateOverrideAndReportsFailure(): void
+    {
+        $path = $this->createTestStack('save-failure');
+        $main = $path . '/' . COMPOSE_FILE_NAMES[0];
+        unlink($main);
+        mkdir($main);
+        $override = "services:\n  old:\n    labels:\n      example: keep\n";
+        file_put_contents($path . '/compose.override.yaml', $override);
+        $result = json_decode($this->executeAction('saveYml', [
+            'script' => 'save-failure', 'scriptContents' => "services:\n  renamed:\n    image: alpine\n",
+        ]), true);
+        $this->assertSame('error', $result['result']);
+        $this->assertSame($override, file_get_contents($path . '/compose.override.yaml'));
+    }
+
+    public function testSourceSettingsWriteFailureIsNotReportedAsSuccess(): void
+    {
+        $path = $this->createTestStack('settings-failure');
+        mkdir($path . '/extra_compose_files');
+        file_put_contents($path . '/other.yaml', "services: {}\n");
+        $result = json_decode($this->executeAction('setStackSettings', [
+            'script' => 'settings-failure', 'extraComposeFiles' => 'other.yaml',
+        ]), true);
+        $this->assertSame('error', $result['result']);
+        $this->assertStringContainsString('not a file', $result['message']);
+    }
+
     // ===========================================
     // getEnv Action Tests
     // ===========================================
@@ -476,6 +1809,11 @@ class ExecActionsTest extends TestCase
         ]);
 
         $result = json_decode($output, true);
+        $this->assertSame('shared_source_confirmation', $result['errorCode']);
+        $this->assertFileDoesNotExist($indirectDir . '/.env');
+        $result = json_decode($this->executeAction('createEnvTemplate', [
+            'script' => 'test-stack', 'sharedConfirmation' => $result['confirmation'],
+        ]), true);
         $this->assertEquals('success', $result['result']);
         $this->assertTrue($result['exists']);
         $this->assertSame($indirectDir . '/.env', $result['fileName']);
@@ -649,6 +1987,66 @@ class ExecActionsTest extends TestCase
         ]);
         
         $this->assertEquals($overrideContent, file_get_contents($stackPath . '/compose.override.yaml'));
+    }
+
+    public function testFailedOverrideRegistrationRestoresSourceAndRetainsRevision(): void
+    {
+        $path = $this->createTestStack('test-stack');
+        file_put_contents($path . '/project_name', 'test-stack');
+        $state = json_encode(['projectName' => 'test-stack', 'composeFiles' => [$path . '/compose.yaml']]);
+        file_put_contents($path . '/project_identity.json', $state);
+        $override = $path . '/compose.override.yaml';
+        file_put_contents($override, "services:\n  app: {}\n");
+        $before = file_get_contents($override);
+        mkdir($path . '/project_identity.lock');
+        $revision = \StackSourceEditor::revision($before, true);
+        $output = $this->executeAction('saveOverride', ['script' => 'test-stack',
+            'scriptContents' => "services: {}\n", 'expectedRevision' => $revision]);
+        $result = json_decode($output, true);
+        $this->assertSame('error', $result['result']);
+        $this->assertStringContainsString('registration', $result['message']);
+        $this->assertSame($before, file_get_contents($override));
+        $this->assertSame($revision, \StackSourceEditor::revision(file_get_contents($override), true));
+        $this->assertSame($state, file_get_contents($path . '/project_identity.json'));
+    }
+
+    public function testFailedTemplateRegistrationRemovesNewOverride(): void
+    {
+        $path = $this->createTestStack('test-stack');
+        file_put_contents($path . '/project_name', 'test-stack');
+        $state = json_encode(['projectName' => 'test-stack', 'composeFiles' => [$path . '/compose.yaml']]);
+        file_put_contents($path . '/project_identity.json', $state);
+        @unlink($path . '/compose.override.yaml');
+        mkdir($path . '/project_identity.lock');
+        $output = $this->executeAction('createOverrideTemplate', ['script' => 'test-stack']);
+        $this->assertSame('error', json_decode($output, true)['result']);
+        $this->assertFileDoesNotExist($path . '/compose.override.yaml');
+        $this->assertSame($state, file_get_contents($path . '/project_identity.json'));
+    }
+
+    public function testIdentityAuditUsesOneFreshSnapshotPerRequest(): void
+    {
+        foreach (['first', 'second'] as $project) {
+            $path = $this->createTestStack($project);
+            file_put_contents($path . '/project_name', $project);
+        }
+        $calls = 0;
+        \ProjectIdentity::setProbe(static function () use (&$calls): array {
+            $calls++;
+            return [];
+        });
+        try {
+            \ProjectIdentity::probe();
+            $this->assertSame(1, $calls);
+            foreach ([2, 3] as $expected) {
+                $result = json_decode($this->executeAction('getProjectIdentities', []), true);
+                $this->assertCount(2, $result['identities']);
+                $this->assertSame($expected, $calls);
+                $this->assertSame(['no-evidence', 'no-evidence'], array_column($result['identities'], 'auditStatus'));
+            }
+        } finally {
+            \ProjectIdentity::setProbe(null);
+        }
     }
 
     // ===========================================
@@ -1410,7 +2808,7 @@ class ExecActionsTest extends TestCase
 
 
     /**
-     * Falls back to empty stacks when the status file contains invalid JSON.
+     * Corruption is an explicit error, not a successful empty check.
      */
     public function testGetSavedUpdateStatusHandlesInvalidStatusFile(): void
     {
@@ -1420,10 +2818,75 @@ class ExecActionsTest extends TestCase
         $result = json_decode($output, true);
 
         $this->assertIsArray($result);
-        $this->assertEquals('success', $result['result']);
-        $this->assertSame([], $result['stacks']);
+        $this->assertEquals('error', $result['result']);
+        $this->assertNotEmpty($result['message']);
+        $this->assertSame('not-valid-json', file_get_contents(COMPOSE_UPDATE_STATUS_FILE));
 
         @unlink(COMPOSE_UPDATE_STATUS_FILE);
+    }
+
+    public function testSavedStatusReadersRemovalsAndClearsWaitForTheWriterLock(): void
+    {
+        require_once '/usr/local/emhttp/plugins/compose.manager/include/StackUpdateService.php';
+        foreach (['readSavedResults()', 'removeSavedResult("remove")', 'clearSavedResults()'] as $operation) {
+            file_put_contents(COMPOSE_UPDATE_STATUS_FILE, '{"old":[]}');
+            $handle = fopen(COMPOSE_UPDATE_STATUS_FILE, 'c+');
+            $this->assertNotFalse($handle);
+            $this->assertTrue(flock($handle, LOCK_EX));
+            $inode = fstat($handle)['ino'];
+            $code = 'require ' . var_export(dirname(__DIR__) . '/bootstrap.php', true) . ';'
+                . 'require "/usr/local/emhttp/plugins/compose.manager/include/StackUpdateService.php";'
+                . 'echo "waiting\n"; flush();'
+                . '$result = StackUpdateService::' . $operation . ';'
+                . 'echo json_encode($result);';
+            $process = proc_open([PHP_BINARY, '-r', $code], [
+                0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w'],
+            ], $pipes);
+            $this->assertIsResource($process);
+            fclose($pipes[0]);
+            try {
+                stream_set_timeout($pipes[1], 5);
+                $this->assertSame("waiting\n", fgets($pipes[1]));
+                stream_set_blocking($pipes[1], false);
+                usleep(100000);
+                $this->assertSame('', stream_get_contents($pipes[1]), $operation . ' bypassed the lock');
+                $new = ['keep' => ['hasUpdate' => true], 'remove' => []];
+                ftruncate($handle, 0);
+                rewind($handle);
+                fwrite($handle, json_encode($new));
+                fflush($handle);
+                flock($handle, LOCK_UN);
+                stream_set_blocking($pipes[1], true);
+                $output = stream_get_contents($pipes[1]);
+                $errors = stream_get_contents($pipes[2]);
+                fclose($pipes[1]);
+                fclose($pipes[2]);
+                $this->assertSame(0, proc_close($process), $errors);
+                $process = null;
+                $this->assertSame($inode, fileinode(COMPOSE_UPDATE_STATUS_FILE));
+                $saved = \StackUpdateService::readSavedResults();
+                if ($operation === 'readSavedResults()') {
+                    $this->assertSame($new, json_decode($output, true));
+                    $this->assertSame($new, $saved);
+                } elseif ($operation === 'removeSavedResult("remove")') {
+                    $this->assertSame('true', $output);
+                    $this->assertSame(['keep' => ['hasUpdate' => true]], $saved);
+                } else {
+                    $this->assertSame([], $saved);
+                }
+            } finally {
+                flock($handle, LOCK_UN);
+                fclose($handle);
+                if (is_resource($process)) {
+                    proc_terminate($process);
+                    foreach ($pipes as $pipe) {
+                        if (is_resource($pipe)) fclose($pipe);
+                    }
+                    proc_close($process);
+                }
+                @unlink(COMPOSE_UPDATE_STATUS_FILE);
+            }
+        }
     }
 
     // ===========================================
@@ -1444,5 +2907,37 @@ class ExecActionsTest extends TestCase
         $result = json_decode($output, true);
         $this->assertEquals('success', $result['result']);
         $this->assertFalse($result['locked']);
+    }
+
+    public function testCheckStackLockUsesExactMigratedProjectIdentity(): void
+    {
+        $path = $this->createTestStack('prod-api', [
+            'name' => 'prod__api',
+            'project_name' => 'prod__api',
+            'project_identity.json' => json_encode([
+                'version' => \ProjectIdentity::MIGRATION_VERSION,
+                'projectName' => 'prod__api',
+                'source' => 'owner',
+                'origin' => 'unknown',
+            ]),
+        ]);
+        $lockDir = $this->testComposeRoot . '/locks';
+        mkdir($lockDir);
+        $GLOBALS['compose_lock_dir'] = $lockDir;
+        $lock = fopen($lockDir . '/prod__api.lock', 'c');
+        $this->assertIsResource($lock);
+        $this->assertTrue(flock($lock, LOCK_EX | LOCK_NB));
+        fwrite($lock, json_encode(['pid' => getmypid(), 'stack' => 'prod__api']));
+        fflush($lock);
+        try {
+            $result = json_decode($this->executeAction('checkStackLock', ['script' => 'prod-api']), true);
+            $this->assertSame('success', $result['result']);
+            $this->assertTrue($result['locked']);
+            $this->assertSame('prod__api', $result['info']['stack']);
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+            unset($GLOBALS['compose_lock_dir']);
+        }
     }
 }

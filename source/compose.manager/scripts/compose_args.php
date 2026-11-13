@@ -4,13 +4,13 @@ declare(strict_types=1);
 
 require_once '/usr/local/emhttp/plugins/compose.manager/include/Defines.php';
 require_once '/usr/local/emhttp/plugins/compose.manager/include/Util.php';
-require_once '/usr/local/emhttp/plugins/compose.manager/include/ComposeCommandBuilder.php';
+require_once '/usr/local/emhttp/plugins/compose.manager/include/StackUpdateService.php';
 
 $options = getopt('', ['compose-root:', 'project:', 'action:', 'stack-path::', 'format:']);
 
 $composeRoot = isset($options['compose-root']) ? trim((string) $options['compose-root']) : '';
 $project = isset($options['project']) ? trim((string) $options['project']) : '';
-$action = isset($options['action']) ? trim((string) $options['action']) : '';
+$action = isset($options['action']) ? strtolower(trim((string) $options['action'])) : '';
 $stackPath = isset($options['stack-path']) ? trim((string) $options['stack-path']) : null;
 $format = isset($options['format']) ? strtolower(trim((string) $options['format'])) : 'json';
 
@@ -64,7 +64,9 @@ if ($composeRoot === '' || $project === '' || $action === '') {
 }
 
 try {
-    $data = ComposeCommandBuilder::fromProject($composeRoot, $project, $action, $stackPath);
+    $data = $action === 'update'
+        ? StackUpdateService::resolveUpdateSpec(StackInfo::fromProject($composeRoot, $project), $stackPath)
+        : ComposeCommandBuilder::fromProject($composeRoot, $project, $action, $stackPath);
     emitSuccess($data, $format);
     exit(0);
 } catch (\Throwable $e) {

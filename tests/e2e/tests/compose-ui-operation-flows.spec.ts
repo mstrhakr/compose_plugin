@@ -1,4 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   buildStackName,
   composeDownAndWait,
@@ -17,6 +19,43 @@ type OperationRequest = {
   action: string;
   background: string;
 };
+
+test.describe('Compose Manager migration identity chooser', () => {
+  test.use({ storageState: { cookies: [], origins: [] } });
+
+  test('renders every exact candidate and prevents offline choice bypass', async ({ page }) => {
+    const source = readFileSync(resolve(__dirname, '../../../source/compose.manager/javascript/composeManagerMain.js'), 'utf8');
+    const chooser = source.slice(source.indexOf('function composeShowIdentityChooser('), source.indexOf('function composeHandleIdentityError('));
+    await page.setContent('<main id="identity-dialog"></main>');
+
+    for (const canChoose of [true, false]) {
+      await page.evaluate(({ chooser, canChoose }) => {
+        const escapeHtml = (value: string) => {
+          const element = document.createElement('span');
+          element.textContent = value;
+          return element.innerHTML.replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+        };
+        const render = (options: { text: string }) => {
+          document.querySelector('#identity-dialog')!.innerHTML = options.text;
+        };
+        const invoke = new Function('swal', 'composeEscapeHtml', 'composeEscapeAttr', 'info', chooser + '\ncomposeShowIdentityChooser(info);');
+        invoke(render, escapeHtml, escapeHtml, {
+          project: 'a-b-c',
+          candidates: ['a-b-c', 'a___b_c', 'a_b-c'],
+          canChoose,
+          message: canChoose ? 'Multiple runtime identities found.' : 'Docker could not be queried.',
+        });
+      }, { chooser, canChoose });
+
+      const buttons = page.locator('.compose-identity-choice');
+      await expect(buttons).toHaveCount(canChoose ? 3 : 0);
+      if (canChoose) {
+        await expect(buttons.nth(1)).toHaveAttribute('data-choice', 'a___b_c');
+        await expect(buttons.nth(2)).toHaveAttribute('data-choice', 'a_b-c');
+      }
+    }
+  });
+});
 
 function parsePostField(postData: string | null, field: string): string {
   if (!postData) {

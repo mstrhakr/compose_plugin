@@ -9,9 +9,15 @@ load '../bats_setup.bash'
 
 COMPOSE_SCRIPT="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose.sh"
 
+@test "git source saves ignore switched editors and recover failures in the original editor" {
+    run node "$BATS_TEST_DIRNAME/../fixtures/git-source-ui.cjs"
+    [ "$status" -eq 0 ]
+}
+
 test_setup() {
     # The framework exports mock docker/php functions; these tests use scripts on PATH instead.
     unset -f docker php 2>/dev/null || true
+    setup_mutation_php
     export COMPOSE_LOCK_TIMEOUT=5
     # /var/run is not writable when the tests run without root (as in CI).
     export COMPOSE_LOCK_DIR="$TEST_TEMP_DIR/locks"

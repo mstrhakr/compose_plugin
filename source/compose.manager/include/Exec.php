@@ -6,6 +6,12 @@ require_once("/usr/local/emhttp/plugins/compose.manager/include/ColumnLayout.php
 require_once("/usr/local/emhttp/plugins/compose.manager/include/CredentialVault.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/GitHubDeviceAuth.php");
 require_once("/usr/local/emhttp/plugins/compose.manager/include/GitStackWebActions.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/StackUpdateService.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/PendingRechecks.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/ContainerMetadataCache.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/StackSourceEditor.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/ContainerActions.php");
+require_once("/usr/local/emhttp/plugins/compose.manager/include/SharedStackSources.php");
 require_once("/usr/local/emhttp/plugins/dynamix/include/Wrappers.php");
 require_once('/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php');
 
@@ -93,20 +99,7 @@ if (!function_exists('resolveRequestedComposeFile')) {
 if (!function_exists('composeLoadPersistentContainerCache')) {
     function composeLoadPersistentContainerCache(): array
     {
-        $cacheFile = '/boot/config/plugins/compose.manager/containers.cache.json';
-        if (!is_file($cacheFile)) {
-            return [];
-        }
-        $decoded = json_decode(file_get_contents($cacheFile), true);
-        return is_array($decoded) ? $decoded : [];
-    }
-}
-
-if (!function_exists('composeSavePersistentContainerCache')) {
-    function composeSavePersistentContainerCache(array $cache): void
-    {
-        $cacheFile = '/boot/config/plugins/compose.manager/containers.cache.json';
-        file_put_contents($cacheFile, json_encode($cache, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        return ContainerMetadataCache::read();
     }
 }
 
@@ -144,11 +137,10 @@ if (!function_exists('composePurgeDeletedStackCaches')) {
             'iconNormalizeOverride' => false,
         ];
 
-        $persistentContainerCache = composeLoadPersistentContainerCache();
-        if (isset($persistentContainerCache[$stackName])) {
-            unset($persistentContainerCache[$stackName]);
-            composeSavePersistentContainerCache($persistentContainerCache);
-            $purged['persistentContainerCache'] = true;
+        try {
+            $purged['persistentContainerCache'] = ContainerMetadataCache::remove($stackName);
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Unable to purge container metadata: ' . $e->getMessage(), ['stack' => $stackName], 'user', 'error', 'metadata');
         }
 
         if (defined('COMPOSE_ICON_NORMALIZE_DIR')) {
@@ -159,22 +151,20 @@ if (!function_exists('composePurgeDeletedStackCaches')) {
             }
         }
 
-        if (defined('COMPOSE_UPDATE_STATUS_FILE') && is_file(COMPOSE_UPDATE_STATUS_FILE)) {
-            $savedStatus = json_decode((string)file_get_contents(COMPOSE_UPDATE_STATUS_FILE), true);
-            if (is_array($savedStatus) && isset($savedStatus[$stackName])) {
-                unset($savedStatus[$stackName]);
-                file_put_contents(COMPOSE_UPDATE_STATUS_FILE, json_encode($savedStatus, JSON_PRETTY_PRINT));
-                $purged['savedUpdateStatus'] = true;
-            }
+        try {
+            $purged['savedUpdateStatus'] = StackUpdateService::removeSavedResult($stackName);
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Unable to purge saved stack update status: ' . $e->getMessage(), [
+                'stack' => $stackName,
+            ], 'user', 'error', 'update-check');
         }
 
-        if (defined('PENDING_RECHECK_FILE') && is_file(PENDING_RECHECK_FILE)) {
-            $pending = json_decode((string)file_get_contents(PENDING_RECHECK_FILE), true);
-            if (is_array($pending) && isset($pending[$stackName])) {
-                unset($pending[$stackName]);
-                file_put_contents(PENDING_RECHECK_FILE, json_encode($pending, JSON_PRETTY_PRINT));
-                $purged['pendingRecheck'] = true;
-            }
+        try {
+            $purged['pendingRecheck'] = PendingRechecks::remove($stackName);
+        } catch (RuntimeException | JsonException | InvalidArgumentException $e) {
+            composeLogger('Unable to purge pending stack recheck: ' . $e->getMessage(), [
+                'stack' => $stackName,
+            ], 'user', 'error', 'update-check');
         }
 
         return $purged;
@@ -281,6 +271,67 @@ if (!function_exists('composeResolveContainerIcon')) {
     }
 }
 
+if (!function_exists('composeCheckStackUpdatesForUi')) {
+    /**
+     * Add UI icons and update the presentation cache around the shared check workflow.
+     *
+     * @param StackInfo[] $stacks
+     * @param-out list<string> $superseded
+     * @param-out array<string|int, string|null> $recheckTokens
+     * @param-out array<string, string> $failures
+     */
+    function composeCheckStackUpdatesForUi(array $stacks, bool $replaceSavedStatus = false, ?array &$superseded = null, ?array &$recheckTokens = null, ?array &$failures = null): array
+    {
+        $metadataTokens = ContainerMetadataCache::begin(array_map(static fn(StackInfo $stack): string => $stack->projectFolder, $stacks));
+        $cache = composeLoadPersistentContainerCache();
+        $iconByService = [];
+        $iconByName = [];
+        foreach ($stacks as $stack) {
+            $stackName = $stack->projectFolder;
+            foreach ($cache[$stackName] ?? [] as $service => $container) {
+                if (!is_array($container)) {
+                    continue;
+                }
+                $icon = trim((string) ($container['icon'] ?? ''));
+                if ($icon !== '') {
+                    $iconByService[$stackName][$service] = $icon;
+                    $name = trim((string) ($container['name'] ?? ''));
+                    if ($name !== '') {
+                        $iconByName[$stackName][$name] = $icon;
+                    }
+                }
+            }
+        }
+        $inspectIconCache = [];
+        $patches = [];
+        $enrich = static function (string $stackName, ContainerInfo $update) use (
+            &$patches, &$inspectIconCache, $iconByService, $iconByName
+        ): void {
+            $update->icon = composeResolveContainerIcon(
+                $update->name, $update->service,
+                $iconByService[$stackName] ?? [], $iconByName[$stackName] ?? [], $inspectIconCache
+            );
+            if ($update->icon !== '') {
+                compose_seed_docker_manager_icon(compose_fetch_icon_to_cache($update->icon), $update->name);
+            }
+            if ($update->service !== '') {
+                $patch = ['name' => $update->name, 'service' => $update->service, 'image' => $update->image];
+                if ($update->icon !== '') $patch['icon'] = $update->icon;
+                $patches[$stackName][$update->service] = $patch;
+            }
+        };
+        $checker = new StackUpdateService();
+        $published = static function (array $accepted) use (&$patches, $metadataTokens): void {
+            ContainerMetadataCache::merge(array_intersect_key($patches, $accepted), $metadataTokens);
+        };
+        $results = $checker->checkStacks($stacks, $enrich, $replaceSavedStatus, $published);
+        $superseded = $checker->superseded;
+        $recheckTokens = $checker->recheckTokens;
+        $failures = $checker->failures;
+        return $results;
+    }
+}
+
 switch ($_POST['action']) {
     case 'composeLogger':
         $message = $_POST['msg'] ?? '';
@@ -352,9 +403,12 @@ switch ($_POST['action']) {
         echo json_encode(['result' => 'success', 'visibility' => $normalized]);
         break;
     case 'getPersistentContainerCache':
-        $cacheFile = '/boot/config/plugins/compose.manager/containers.cache.json';
-        $cache = is_file($cacheFile) ? json_decode(file_get_contents($cacheFile), true) : [];
-        echo json_encode(['result' => 'success', 'cache' => is_array($cache) ? $cache : []]);
+        try {
+            echo json_encode(['result' => 'success', 'cache' => composeLoadPersistentContainerCache()]);
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Unable to load container metadata: ' . $e->getMessage(), null, 'user', 'error', 'metadata');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
+        }
         break;
     case 'getComposeLoadSnapshot':
         $snapshotFile = '/tmp/compose_info_nchan.snapshot.json';
@@ -616,6 +670,32 @@ switch ($_POST['action']) {
         $fileContents = str_replace("\r", "", $fileContents);
         echo json_encode(['result' => 'success', 'content' => $fileContents]);
         break;
+    case 'getSharedStackSources':
+    case 'setSharedSourceWarning':
+        $script = getPostScript();
+        try {
+            if ($script === '') throw new InvalidArgumentException('Stack not specified.');
+            $stack = StackInfo::fromProject($compose_root, $script);
+            if ($_POST['action'] === 'setSharedSourceWarning') {
+                if (!in_array($_POST['dismissed'] ?? null, ['0', '1'], true)) throw new InvalidArgumentException('Invalid warning preference.');
+                $lock = StackMutationGuard::tryExclusive($stack->projectName);
+                if ($lock === null) throw new RuntimeException('Another operation is in progress. Try again when it has finished.');
+                try {
+                    $preference = $stack->path . '/shared_source_warning_dismissed';
+                    if ($_POST['dismissed'] === '1') StackSourceEditor::write($preference, 'true');
+                    else StackSourceEditor::remove($preference);
+                } finally {
+                    fclose($lock);
+                }
+                echo json_encode(['result' => 'success', 'dismissed' => $_POST['dismissed'] === '1']);
+            } else {
+                echo json_encode(['result' => 'success'] + SharedStackSources::inspect($compose_root, $stack));
+            }
+        } catch (RuntimeException | InvalidArgumentException | JsonException $error) {
+            composeLogger('Shared-source warning failed: ' . $error->getMessage(), ['stack' => $script], 'user', 'error', 'editor');
+            echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);
+        }
+        break;
     case 'getYml':
         $script = getPostScript();
         // Resolve compose file path via StackInfo
@@ -633,21 +713,19 @@ switch ($_POST['action']) {
         }
 
         // Check file existence consistently regardless of how path was resolved
-        if (is_file($composeFilePath)) {
-            $scriptContents = file_get_contents($composeFilePath);
-            if ($scriptContents === false) {
-                echo json_encode(['result' => 'error', 'message' => "Unable to read compose file: $composeFilePath"]);
-                break;
-            }
-        } else {
-            // File doesn't exist yet (new stack) - return empty content
-            $scriptContents = "";
+        try {
+            $loaded = StackSourceEditor::read($composeFilePath);
+        } catch (RuntimeException $error) {
+            composeLogger($error->getMessage(), ['stack' => $script], 'user', 'error', 'editor');
+            echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);
+            break;
         }
+        $scriptContents = $loaded['content'];
         $scriptContents = str_replace("\r", "", $scriptContents);
         if (!$scriptContents) {
             $scriptContents = "services:\n";
         }
-        echo json_encode(['result' => 'success', 'fileName' => $composeFilePath, 'content' => $scriptContents]);
+        echo json_encode(['result' => 'success', 'fileName' => $composeFilePath, 'content' => $scriptContents, 'revision' => $loaded['revision']]);
         break;
     case 'getEnv':
         $script = getPostScript();
@@ -655,58 +733,22 @@ switch ($_POST['action']) {
         $stackInfo = StackInfo::fromProject($compose_root, $script);
         $fileName = $stackInfo->getEnvFilePath() ?? ($stackInfo->composeSource . '/.env');
 
-        $envExists = is_file($fileName);
-        $scriptContents = $envExists ? file_get_contents($fileName) : "";
+        try {
+            $loaded = StackSourceEditor::read($fileName);
+        } catch (RuntimeException $error) {
+            composeLogger($error->getMessage(), ['stack' => $script], 'user', 'error', 'editor');
+            echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);
+            break;
+        }
+        $envExists = $loaded['exists'];
+        $scriptContents = $loaded['content'];
         $scriptContents = str_replace("\r", "", (string) $scriptContents);
         echo json_encode([
             'result' => 'success',
             'fileName' => $fileName,
             'content' => $scriptContents,
-            'exists' => $envExists
-        ]);
-        break;
-    case 'createEnvTemplate':
-        $script = getPostScript();
-
-        $stackInfo = StackInfo::fromProject($compose_root, $script);
-        $envPath = $stackInfo->getEnvFilePath() ?? ($stackInfo->composeSource . '/.env');
-
-        if (rejectStaleClientPath($envPath, '.env template')) {
-            break;
-        }
-
-        $envDir = dirname($envPath);
-        if (!is_dir($envDir)) {
-            echo json_encode(['result' => 'error', 'message' => 'Target directory does not exist.']);
-            break;
-        }
-
-        if (is_dir($envPath)) {
-            echo json_encode(['result' => 'error', 'message' => 'Target .env path is a directory.']);
-            break;
-        }
-
-        if (!is_file($envPath)) {
-            $written = @file_put_contents($envPath, OverrideInfo::buildEnvTemplateContent());
-            if ($written === false) {
-                echo json_encode(['result' => 'error', 'message' => 'Failed to create .env template.']);
-                break;
-            }
-        }
-
-        if (!is_file($envPath)) {
-            echo json_encode(['result' => 'error', 'message' => 'Failed to create .env template.']);
-            break;
-        }
-
-        $content = file_get_contents($envPath);
-        $content = str_replace("\r", "", (string) $content);
-
-        echo json_encode([
-            'result' => 'success',
-            'fileName' => $envPath,
-            'content' => $content,
-            'exists' => is_file($envPath)
+            'exists' => $envExists,
+            'revision' => $loaded['revision']
         ]);
         break;
     case 'getOverride':
@@ -716,7 +758,17 @@ switch ($_POST['action']) {
         $stackInfo = StackInfo::fromProject($compose_root, $script);
         $overridePath = $stackInfo->getPreferredOverridePath();
 
-        $scriptContents = is_file($overridePath) ? file_get_contents($overridePath) : "";
+        try {
+            if ($overridePath === null) throw new RuntimeException('Unable to resolve override path.');
+            $loaded = StackSourceEditor::read($overridePath);
+            $projectOverride = $stackInfo->overrideInfo->getProjectOverridePath();
+            $projectLoaded = $projectOverride === $overridePath ? $loaded : StackSourceEditor::read($projectOverride);
+        } catch (RuntimeException $error) {
+            composeLogger($error->getMessage(), ['stack' => $script], 'user', 'error', 'editor');
+            echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);
+            break;
+        }
+        $scriptContents = $loaded['content'];
         $scriptContents = str_replace("\r", "", $scriptContents);
         if (!$scriptContents) {
             $scriptContents = "";
@@ -725,127 +777,98 @@ switch ($_POST['action']) {
             'result' => 'success',
             'fileName' => $overridePath,
             'content' => $scriptContents,
-            'exists' => is_file($overridePath)
-        ]);
-        break;
-    case 'createOverrideTemplate':
-        $script = getPostScript();
-
-        $stackInfo = StackInfo::fromProject($compose_root, $script);
-        $overridePath = $stackInfo->getPreferredOverridePath();
-
-        if (rejectStaleClientPath($overridePath, 'override template')) {
-            break;
-        }
-
-        if ($overridePath === null) {
-            echo json_encode(['result' => 'error', 'message' => 'Unable to resolve override path']);
-            break;
-        }
-
-        $overrideDir = dirname($overridePath);
-        if (!is_dir($overrideDir)) {
-            echo json_encode(['result' => 'error', 'message' => 'Override target directory does not exist.']);
-            break;
-        }
-
-        if (is_dir($overridePath)) {
-            echo json_encode(['result' => 'error', 'message' => 'Override target path is a directory.']);
-            break;
-        }
-
-        if (!is_file($overridePath)) {
-            $written = @file_put_contents($overridePath, OverrideInfo::buildTemplateContent());
-            if ($written === false) {
-                echo json_encode(['result' => 'error', 'message' => 'Failed to create override template.']);
-                break;
-            }
-        }
-
-        if (!is_file($overridePath)) {
-            echo json_encode(['result' => 'error', 'message' => 'Failed to create override template.']);
-            break;
-        }
-
-        $content = file_get_contents($overridePath);
-        $content = str_replace("\r", "", (string) $content);
-
-        echo json_encode([
-            'result' => 'success',
-            'fileName' => $overridePath,
-            'content' => $content,
-            'exists' => is_file($overridePath)
+            'exists' => $loaded['exists'],
+            'revision' => $loaded['revision'],
+            'revisions' => [$overridePath => $loaded['revision'], $projectOverride => $projectLoaded['revision']]
         ]);
         break;
     case 'saveYml':
-        $script = getPostScript();
-        $scriptContents = isset($_POST['scriptContents']) ? $_POST['scriptContents'] : "";
-        // Resolve compose file path via StackInfo
-        $stackInfo = StackInfo::fromProject($compose_root, $script);
-        $composeFilePath = $stackInfo->composeFilePath ?? ($stackInfo->composeSource . '/' . COMPOSE_FILE_NAMES[0]);
-
-        // Optional explicit file selection (e.g. additional compose files)
-        $requestedFile = resolveRequestedComposeFile($stackInfo);
-        if ($requestedFile === false) {
-            echo json_encode(['result' => 'error', 'message' => 'Requested file is not part of this stack.']);
-            break;
-        }
-        $isMainComposeFile = $requestedFile === null || Path::refersToSamePath($requestedFile, $composeFilePath);
-        if ($requestedFile !== null) {
-            $composeFilePath = $requestedFile;
-        }
-
-        if (rejectStaleClientPath($composeFilePath, 'compose file')) {
-            break;
-        }
-
-        // Before saving, detect service renames and migrate override entries in the project override only.
-        // Rename migration only applies to the main compose file.
-        if ($isMainComposeFile && is_file($composeFilePath)) {
-            $oldContent = file_get_contents($composeFilePath);
-            $stackInfo->overrideInfo->migrateOnRename($oldContent, $scriptContents);
-        }
-
-        file_put_contents($composeFilePath, $scriptContents);
-        echo "$composeFilePath saved";
-        break;
     case 'saveEnv':
-        $script = getPostScript();
-        $scriptContents = isset($_POST['scriptContents']) ? $_POST['scriptContents'] : "";
-        // Resolve env file path via StackInfo
-        $stackInfo = StackInfo::fromProject($compose_root, $script);
-        $fileName = $stackInfo->getEnvFilePath() ?? ($stackInfo->composeSource . '/.env');
-
-        if (rejectStaleClientPath($fileName, '.env file')) {
-            break;
-        }
-
-        file_put_contents($fileName, $scriptContents);
-        echo "$fileName saved";
-        break;
     case 'saveOverride':
+    case 'createEnvTemplate':
+    case 'createOverrideTemplate':
         $script = getPostScript();
-        $scriptContents = isset($_POST['scriptContents']) ? $_POST['scriptContents'] : "";
-        $isManaged = isset($_POST['managed']) && $_POST['managed'] === '1';
-
-        $stackInfo = StackInfo::fromProject($compose_root, $script);
-        // managed=1 (Automatic): plugin controls override, write to project dir only
-        // managed=0 (Manual): user controls override, write to the preferred override target
-        $overridePath = $isManaged
-            ? $stackInfo->overrideInfo->getProjectOverridePath()
-            : $stackInfo->getPreferredOverridePath();
-
-        if (rejectStaleClientPath($overridePath, 'override file')) {
-            break;
+        try {
+            if ($script === '') throw new InvalidArgumentException('Stack not specified.');
+            $stack = StackInfo::fromProject($compose_root, $script);
+            $savedPath = StackMutationGuard::mutate($stack->projectName, $stack->projectFolder,
+                static function () use ($compose_root, $script, $stack): array|string|null {
+                    $project = $stack->projectName;
+                    StackInfo::clearCache();
+                    $stack = StackInfo::fromProject($compose_root, $script);
+                    if ($stack->projectName !== $project) throw new RuntimeException('Stack identity changed. Reload the editor.');
+                    $contents = (string) ($_POST['scriptContents'] ?? '');
+                    $action = $_POST['action'];
+                    $migrate = false;
+                    if ($action === 'saveYml') {
+                        $path = $stack->composeFilePath ?? ($stack->composeSource . '/' . COMPOSE_FILE_NAMES[0]);
+                        $requested = resolveRequestedComposeFile($stack);
+                        if ($requested === false) throw new InvalidArgumentException('Requested file is not part of this stack.');
+                        $migrate = $requested === null || Path::refersToSamePath($requested, $path);
+                        $path = $requested ?? $path;
+                        $label = 'compose file';
+                    } elseif ($action === 'saveEnv' || $action === 'createEnvTemplate') {
+                        $path = $stack->getEnvFilePath() ?? ($stack->composeSource . '/.env');
+                        $label = '.env file';
+                    } else {
+                        $path = ($_POST['managed'] ?? '') === '1'
+                            ? $stack->overrideInfo->getProjectOverridePath() : $stack->getPreferredOverridePath();
+                        $label = 'override file';
+                    }
+                    if (rejectStaleClientPath($path, $label)) return null;
+                    if ($path === null) throw new RuntimeException('Unable to resolve ' . $label . ' path.');
+                    if (is_dir($path)) throw new RuntimeException('Target path is a directory.');
+                    $lockPaths = [$path];
+                    if ($migrate) $lockPaths[] = $stack->overrideInfo->getProjectOverridePath();
+                    if (array_key_exists('expectedComposeRevision', $_POST) && $stack->composeFilePath !== null) $lockPaths[] = $stack->composeFilePath;
+                    return StackSourceEditor::withFileLocks($lockPaths, static function () use ($compose_root, $stack, $path, $contents, $action, $migrate): array|string|null {
+                        if (array_key_exists('expectedRevision', $_POST)) StackSourceEditor::assertRevision($path, $_POST['expectedRevision']);
+                        if (array_key_exists('expectedComposeRevision', $_POST)) {
+                            if ($stack->composeFilePath === null) throw new RuntimeException('Unable to resolve Labels Compose source.');
+                            StackSourceEditor::assertRevision($stack->composeFilePath, $_POST['expectedComposeRevision']);
+                        }
+                        $changedPaths = $migrate ? [$path, $stack->overrideInfo->getProjectOverridePath()] : $path;
+                        $sharing = SharedStackSources::inspect($compose_root, $stack, $changedPaths);
+                        if (!$sharing['dismissed'] && $sharing['shared'] !== []
+                            && ($_POST['sharedConfirmation'] ?? '') !== $sharing['confirmation']) {
+                            echo json_encode(['result' => 'error', 'errorCode' => 'shared_source_confirmation',
+                                'message' => 'Review shared source files before saving.'] + $sharing);
+                            return null;
+                        }
+                        $template = $action === 'createEnvTemplate' || $action === 'createOverrideTemplate';
+                        if ($action === 'saveYml') {
+                            StackSourceEditor::saveCompose($stack, $path, $contents, $migrate);
+                        } else {
+                            $original = StackSourceEditor::snapshot([$path]);
+                            try {
+                                if ($template) {
+                                    if (!is_dir(dirname($path))) throw new RuntimeException('Target directory does not exist.');
+                                    if (!is_file($path)) StackSourceEditor::write($path, $action === 'createEnvTemplate'
+                                        ? OverrideInfo::buildEnvTemplateContent() : OverrideInfo::buildTemplateContent());
+                                } else StackSourceEditor::write($path, $contents);
+                                if ($action === 'saveOverride' || $action === 'createOverrideTemplate') $stack->identity->registerComposeFile($stack->path, $path);
+                            } catch (RuntimeException $error) {
+                                StackSourceEditor::restore($original, $error);
+                            }
+                        }
+                        StackInfo::clearCache();
+                        if ($template) {
+                            $content = file_get_contents($path);
+                            if ($content === false) throw new RuntimeException('Unable to read the created template.');
+                            return ['result' => 'success', 'fileName' => $path, 'content' => str_replace("\r", '', $content), 'exists' => true,
+                                'revision' => StackSourceEditor::revision($content, true)];
+                        }
+                        if (array_key_exists('expectedRevision', $_POST)) return ['result' => 'success', 'fileName' => $path, 'revision' => StackSourceEditor::revision($contents, true)];
+                        return $path;
+                    });
+                });
+            if (is_array($savedPath)) echo json_encode($savedPath);
+            elseif ($savedPath !== null) echo "$savedPath saved";
+        } catch (RuntimeException | InvalidArgumentException | JsonException $e) {
+            composeLogger('Unable to save stack source: ' . $e->getMessage(), ['stack' => $script], 'user', 'error', 'editor');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage(),
+                'errorCode' => $e instanceof StaleSourceRevision ? 'stale_content' : 'source_save_failed']);
         }
-
-        if ($overridePath === null) {
-            echo json_encode(['result' => 'error', 'message' => 'Unable to resolve override path']);
-            break;
-        }
-
-        file_put_contents($overridePath, $scriptContents);
-        echo "$overridePath saved";
         break;
     case 'clearIconCache':
         $script = getPostScript();
@@ -953,31 +976,19 @@ switch ($_POST['action']) {
 
     case 'clearUpdateCache':
         // Clear the compose manager update status cache
-        $composeUpdateStatusFile = COMPOSE_UPDATE_STATUS_FILE;
-        if (is_file($composeUpdateStatusFile)) {
-            unlink($composeUpdateStatusFile);
+        try {
+            StackUpdateService::clearSavedResults();
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Unable to clear saved stack update status: ' . $e->getMessage(), null, 'user', 'error', 'update-check');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
+            break;
         }
-        // Also clear entries from Unraid's update status that were created by compose manager
-        // by removing entries that don't correspond to running Docker containers
-        $unraidUpdateStatusFile = UNRAID_UPDATE_STATUS_FILE;
-        if (is_file($unraidUpdateStatusFile)) {
-            require_once("/usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php");
-            $DockerClient = new DockerClient();
-            $runningImages = [];
-            foreach ($DockerClient->getDockerContainers() as $ct) {
-                $img = $ct['Image'] ?? '';
-                if ($img) {
-                    $runningImages[DockerUtil::ensureImageTag($img)] = true;
-                }
-            }
-            $updateStatus = DockerUtil::loadJSON($unraidUpdateStatusFile);
-            $cleaned = [];
-            foreach ($updateStatus as $key => $value) {
-                if (isset($runningImages[$key])) {
-                    $cleaned[$key] = $value;
-                }
-            }
-            DockerUtil::saveJSON($unraidUpdateStatusFile, $cleaned);
+        try {
+            ContainerMetadataCache::clearEvidence();
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Unable to clear container metadata: ' . $e->getMessage(), null, 'user', 'error', 'metadata');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
+            break;
         }
         echo json_encode(['result' => 'success', 'message' => 'Update cache cleared']);
         break;
@@ -1016,13 +1027,18 @@ switch ($_POST['action']) {
                 break;
             }
         }
-        if (is_file($fileName)) {
-            @unlink($fileName);
+        try {
+            $stack = StackInfo::fromProject($compose_root, $script);
+            StackMutationGuard::mutate($stack->projectName, $script, static function () use ($fileName, $fileContent): void {
+                if ($fileContent === '') StackSourceEditor::remove($fileName);
+                else StackSourceEditor::write($fileName, $fileContent);
+                StackInfo::clearCache();
+            });
+            echo json_encode(['result' => 'success', 'message' => '']);
+        } catch (RuntimeException | InvalidArgumentException | JsonException $e) {
+            composeLogger('Unable to save environment source: ' . $e->getMessage(), ['stack' => $script], 'user', 'error', 'editor');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
         }
-        if (!empty($fileContent)) {
-            file_put_contents($fileName, $fileContent);
-        }
-        echo json_encode(['result' => 'success', 'message' => '']);
         break;
     case 'getEnvPath':
         $script = getPostScript();
@@ -1201,8 +1217,7 @@ switch ($_POST['action']) {
             break;
         }
         // Get env path
-        $envPathFile = "$compose_root/$script/envpath";
-        $envPath = is_file($envPathFile) ? trim(file_get_contents($envPathFile)) : "";
+        $envPath = $stackInfo->getConfiguredEnvPath() ?? '';
 
         // Get icon URL
         $iconUrlFile = "$compose_root/$script/icon_url";
@@ -1323,6 +1338,7 @@ switch ($_POST['action']) {
             'credentialId' => $credentialId,
             'composeFileCandidates' => $composeFileCandidates,
             'editableComposeFiles' => $stackInfo->getEditableComposeFiles(),
+            'migrationInputError' => $stackInfo->inputMigrationError,
             'labelsViewMode' => $labelsViewMode,
             'useDefaultComposeFiles' => $useDefaultComposeFiles,
             'indirectMode' => $stackInfo->indirectMode,
@@ -1365,6 +1381,14 @@ switch ($_POST['action']) {
             break;
         }
         echo json_encode((new GitStackWebActions($compose_root))->setAutoDeploy($script, trim((string) ($_POST['autoDeploy'] ?? ''))));
+        break;
+    case 'setGitRecreateOnFolderChange':
+        $script = getPostScript();
+        if (!$script) {
+            echo json_encode(['result' => 'error', 'message' => 'Stack not specified.']);
+            break;
+        }
+        echo json_encode((new GitStackWebActions($compose_root))->setRecreateOnFolderChange($script, trim((string) ($_POST['recreateOnFolderChange'] ?? ''))));
         break;
     case 'resumeGitStack':
         $script = getPostScript();
@@ -1448,6 +1472,16 @@ switch ($_POST['action']) {
             echo json_encode(['result' => 'error', 'message' => 'Stack not specified.']);
             break;
         }
+        try {
+            $settingsStack = StackInfo::fromProject($compose_root, $script);
+            $settingsLock = StackMutationGuard::tryExclusive($settingsStack->projectName);
+            if ($settingsLock === null) throw new RuntimeException('Another operation is in progress. Try again when it has finished.');
+            $settingsMutation = false;
+            try {
+                StackInfo::clearCache();
+                if (StackInfo::fromProject($compose_root, $script)->projectName !== $settingsStack->projectName) {
+                    throw new RuntimeException('Stack identity changed. Reload settings.');
+                }
 
         // --- Validate all inputs first, before writing anything ---
 
@@ -1583,6 +1617,36 @@ switch ($_POST['action']) {
 
         // --- All validation passed, now write everything ---
 
+        $settingsFiles = array_map(static fn(string $name): string => "$compose_root/$script/$name", [
+            'credential_id', 'envpath', 'icon_url', 'webui_url', 'default_profile',
+            'wait_for_healthy', 'wait_timeout', 'build_on_update', 'extra_compose_files',
+            'use_default_compose_files', 'indirect', 'indirect.invalid', 'indirect_mode', 'compose_input_mode',
+        ]);
+        $localCompose = findComposeFile("$compose_root/$script");
+        if ($localCompose) $settingsFiles[] = $localCompose;
+        if (!$localCompose && is_file("$compose_root/$script/indirect")) {
+            $oldTarget = trim(file_get_contents("$compose_root/$script/indirect"));
+            $oldExternalCompose = is_dir($oldTarget) ? findComposeFile($oldTarget) : (is_file($oldTarget) ? $oldTarget : false);
+            if ($oldExternalCompose) $settingsFiles[] = "$compose_root/$script/" . basename($oldExternalCompose);
+        }
+        $settingsOriginal = StackSourceEditor::snapshot($settingsFiles);
+        try {
+        $settingsMutation = (bool) array_intersect(
+            ['envPath', 'extraComposeFiles', 'useDefaultComposeFiles', 'externalComposePath', 'externalComposeFilePath', 'credentialId'],
+            array_keys($_POST)
+        );
+        if ($settingsMutation) StackMutationGuard::mutationBoundary($settingsStack->projectName, $script, false);
+
+        $sourceSelectionProvided = array_key_exists('externalComposePath', $_POST) || array_key_exists('externalComposeFilePath', $_POST);
+        $indirectMetadataFile = "$compose_root/$script/indirect";
+        $previousTarget = is_file($indirectMetadataFile) ? trim((string) file_get_contents($indirectMetadataFile)) : '';
+        $requestedTarget = $externalComposeFilePath !== '' ? $externalComposeFilePath : $externalComposePath;
+        $sourceSelectionChanged = $sourceSelectionProvided && $previousTarget !== $requestedTarget
+            && !Path::refersToSamePath($previousTarget, $requestedTarget);
+        $discoveryFile = "$compose_root/$script/use_default_compose_files";
+        $previousDiscovery = is_file($discoveryFile) && trim((string) file_get_contents($discoveryFile)) === 'true';
+        $discoveryChanged = array_key_exists('useDefaultComposeFiles', $_POST) && $previousDiscovery !== $useDefaultComposeFiles;
+
         // Assign or clear credentials before persisting any other settings. A
         // stale credential ID must reject the request without partial updates.
         if ($credentialIdProvided) {
@@ -1597,62 +1661,62 @@ switch ($_POST['action']) {
                     }
                     if ($credentialId === '') {
                         if (is_file($credentialIdFile)) {
-                            @unlink($credentialIdFile);
+                            StackSourceEditor::remove($credentialIdFile);
                         }
                     } else {
-                        file_put_contents($credentialIdFile, $credentialId);
+                        StackSourceEditor::write($credentialIdFile, $credentialId);
                     }
                 });
-            } catch (\Throwable $error) {
-                composeLogger('Unable to update stack credential', ['error' => $error->getMessage()], 'user', 'error', 'credentials');
-                echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);
-                break;
+            } catch (RuntimeException $error) {
+                throw new RuntimeException('Unable to update stack credential: ' . $error->getMessage(), 0, $error);
             }
         }
 
         // Set env path
         $envPathFile = "$compose_root/$script/envpath";
-        if (empty($envPath)) {
-            if (is_file($envPathFile))
-                @unlink($envPathFile);
-        } else {
-            file_put_contents($envPathFile, $envPath);
+        if (array_key_exists('envPath', $_POST)) {
+            $hasLegacyEnv = is_file("$compose_root/$script/envPath") || is_file("$compose_root/$script/envToUse");
+            if ($envPath !== '' || $hasLegacyEnv) {
+                StackSourceEditor::write($envPathFile, $envPath);
+            } elseif (is_file($envPathFile)) {
+                StackSourceEditor::remove($envPathFile);
+            }
         }
 
         // Set icon URL
         $iconUrlFile = "$compose_root/$script/icon_url";
         if (empty($iconUrl)) {
             if (is_file($iconUrlFile))
-                @unlink($iconUrlFile);
+                StackSourceEditor::remove($iconUrlFile);
         } else {
-            file_put_contents($iconUrlFile, $iconUrl);
+            StackSourceEditor::write($iconUrlFile, $iconUrl);
         }
 
         // Set WebUI URL
         $webuiUrlFile = "$compose_root/$script/webui_url";
         if (empty($webuiUrl)) {
             if (is_file($webuiUrlFile))
-                @unlink($webuiUrlFile);
+                StackSourceEditor::remove($webuiUrlFile);
         } else {
-            file_put_contents($webuiUrlFile, $webuiUrl);
+            StackSourceEditor::write($webuiUrlFile, $webuiUrl);
         }
 
         // Set default profile
         $defaultProfileFile = "$compose_root/$script/default_profile";
         if (empty($defaultProfile)) {
             if (is_file($defaultProfileFile))
-                @unlink($defaultProfileFile);
+                StackSourceEditor::remove($defaultProfileFile);
         } else {
-            file_put_contents($defaultProfileFile, $defaultProfile);
+            StackSourceEditor::write($defaultProfileFile, $defaultProfile);
         }
 
         // Set stack wait-for-healthy override
         $waitForHealthyFile = "$compose_root/$script/wait_for_healthy";
         if ($waitForHealthy === 'true' || $waitForHealthy === '1') {
-            file_put_contents($waitForHealthyFile, 'true');
+            StackSourceEditor::write($waitForHealthyFile, 'true');
         } elseif ($waitForHealthy === 'false' || $waitForHealthy === '0' || $waitForHealthy === '') {
             if (is_file($waitForHealthyFile)) {
-                @unlink($waitForHealthyFile);
+                StackSourceEditor::remove($waitForHealthyFile);
             }
         }
 
@@ -1660,7 +1724,7 @@ switch ($_POST['action']) {
         $waitTimeoutFile = "$compose_root/$script/wait_timeout";
         if (trim((string) $waitTimeout) === '') {
             if (is_file($waitTimeoutFile)) {
-                @unlink($waitTimeoutFile);
+                StackSourceEditor::remove($waitTimeoutFile);
             }
         } else {
             $waitTimeoutValue = (string) $waitTimeout;
@@ -1669,20 +1733,20 @@ switch ($_POST['action']) {
             }
             if ($waitTimeoutValue === '') {
                 if (is_file($waitTimeoutFile)) {
-                    @unlink($waitTimeoutFile);
+                    StackSourceEditor::remove($waitTimeoutFile);
                 }
             } else {
-                file_put_contents($waitTimeoutFile, $waitTimeoutValue);
+                StackSourceEditor::write($waitTimeoutFile, $waitTimeoutValue);
             }
         }
 
         // Set stack rebuild-on-update override
         $buildOnUpdateFile = "$compose_root/$script/build_on_update";
         if ($buildOnUpdate === 'true' || $buildOnUpdate === '1') {
-            file_put_contents($buildOnUpdateFile, 'true');
+            StackSourceEditor::write($buildOnUpdateFile, 'true');
         } elseif ($buildOnUpdate === 'false' || $buildOnUpdate === '0' || $buildOnUpdate === '') {
             if (is_file($buildOnUpdateFile)) {
-                @unlink($buildOnUpdateFile);
+                StackSourceEditor::remove($buildOnUpdateFile);
             }
         }
 
@@ -1691,19 +1755,19 @@ switch ($_POST['action']) {
             $extraComposeFilesFile = "$compose_root/$script/extra_compose_files";
             if (empty($extraComposeFilesNormalized)) {
                 if (is_file($extraComposeFilesFile))
-                    @unlink($extraComposeFilesFile);
+                    StackSourceEditor::remove($extraComposeFilesFile);
             } else {
-                file_put_contents($extraComposeFilesFile, implode("\n", $extraComposeFilesNormalized) . "\n");
+                StackSourceEditor::write($extraComposeFilesFile, implode("\n", $extraComposeFilesNormalized) . "\n");
             }
         }
 
         // Set compose file discovery mode
         $useDefaultComposeFilesFile = "$compose_root/$script/use_default_compose_files";
-        if ($useDefaultComposeFiles) {
-            file_put_contents($useDefaultComposeFilesFile, 'true');
-        } else {
-            if (is_file($useDefaultComposeFilesFile)) {
-                @unlink($useDefaultComposeFilesFile);
+        if (array_key_exists('useDefaultComposeFiles', $_POST)) {
+            if ($useDefaultComposeFiles) {
+                StackSourceEditor::write($useDefaultComposeFilesFile, 'true');
+            } elseif (is_file($useDefaultComposeFilesFile)) {
+                StackSourceEditor::remove($useDefaultComposeFilesFile);
             }
         }
 
@@ -1718,8 +1782,17 @@ switch ($_POST['action']) {
             $indirectTarget = $externalComposePath;
         }
 
-        if ($isGitStack) {
-            // Left as they are (see above).
+        if ($isGitStack || !$sourceSelectionChanged) {
+            // Left as they are (see above), but an explicitly (re-)submitted
+            // source already passed the validation above, so a stale
+            // `indirect.invalid` marker must not survive just because the
+            // target text itself is unchanged (e.g. the project folder was
+            // already implicit, or the same restored external path was
+            // resubmitted). Do not otherwise treat this as a new selection:
+            // the pinned Compose file order must stay untouched.
+            if (!$isGitStack && $sourceSelectionProvided && is_file($invalidIndirectFile)) {
+                StackSourceEditor::remove($invalidIndirectFile);
+            }
         } elseif ($indirectTarget === '') {
             // Removing indirect: move compose file back to project folder if it only exists externally
             if (is_file($indirectFile)) {
@@ -1732,23 +1805,25 @@ switch ($_POST['action']) {
                     $externalCompose = $oldIndirectPath;
                 }
                 if (!$localCompose && $externalCompose) {
-                    copy($externalCompose, "$compose_root/$script/" . basename($externalCompose));
+                    if (!copy($externalCompose, "$compose_root/$script/" . basename($externalCompose))) {
+                        throw new RuntimeException('Unable to copy the external Compose file into the project.');
+                    }
                 }
-                @unlink($indirectFile);
+                StackSourceEditor::remove($indirectFile);
             }
             if (is_file($indirectModeFile)) {
-                @unlink($indirectModeFile);
+                StackSourceEditor::remove($indirectModeFile);
             }
             // Also clean up any invalid indirect file when clearing the path
             if (is_file($invalidIndirectFile)) {
-                @unlink($invalidIndirectFile);
+                StackSourceEditor::remove($invalidIndirectFile);
             }
         } else {
-            file_put_contents($indirectFile, $indirectTarget);
-            file_put_contents($indirectModeFile, is_file($indirectTarget) ? 'file' : 'folder');
+            StackSourceEditor::write($indirectFile, $indirectTarget);
+            StackSourceEditor::write($indirectModeFile, is_file($indirectTarget) ? 'file' : 'folder');
             // Clean up the invalid file now that we have a corrected path
             if (is_file($invalidIndirectFile)) {
-                @unlink($invalidIndirectFile);
+                StackSourceEditor::remove($invalidIndirectFile);
             }
             // Remove local compose file if it exists since we're now using external
             $localCompose = findComposeFile("$compose_root/$script");
@@ -1758,12 +1833,35 @@ switch ($_POST['action']) {
                     ? (realpath($indirectTarget) ?: rtrim($indirectTarget, '/'))
                     : dirname($indirectTarget);
                 if ($resolvedExternalPath !== $projectPath) {
-                    @unlink($localCompose);
+                    StackSourceEditor::remove($localCompose);
                 }
             }
         }
 
+        if ($sourceSelectionChanged || $discoveryChanged) {
+            StackSourceEditor::write("$compose_root/$script/compose_input_mode", 'plus');
+        }
+        StackInfo::clearCache();
+        if ($settingsMutation) {
+            StackMutationGuard::mutationBoundary($settingsStack->projectName, $script, false);
+            $settingsMutation = false;
+        }
+        } catch (RuntimeException $error) {
+            StackSourceEditor::restore($settingsOriginal, $error);
+        }
         echo json_encode(['result' => 'success', 'message' => 'Settings saved']);
+            } finally {
+                try {
+                    if ($settingsMutation) StackMutationGuard::mutationBoundary($settingsStack->projectName, $script, false);
+                } finally {
+                    flock($settingsLock, LOCK_UN);
+                    fclose($settingsLock);
+                }
+            }
+        } catch (RuntimeException | InvalidArgumentException | JsonException $e) {
+            composeLogger('Unable to save stack settings: ' . $e->getMessage(), ['stack' => $script], 'user', 'error', 'editor');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
+        }
         break;
     case 'saveProfiles':
         $script = getPostScript();
@@ -1782,6 +1880,21 @@ switch ($_POST['action']) {
         file_put_contents("$fileName", $scriptContents);
         echo json_encode(['result' => 'success', 'message' => "$fileName saved"]);
         break;
+    case 'getComposeContainerNames':
+        try {
+            $runtime = StackInfo::containersByProject(null, true);
+            $names = [];
+            foreach (StackInfo::allFromRoot($compose_root, true) as $stack) {
+                foreach ($runtime[$stack->projectName] ?? [] as $container) {
+                    $names[] = ltrim($container['Names'], '/');
+                }
+            }
+            echo json_encode(['result' => 'success', 'names' => array_values(array_unique($names))]);
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Unable to enumerate Compose containers for Docker filtering: ' . $e->getMessage(), null, 'user', 'error', 'docker-filter');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
+        }
+        break;
     case 'getStackContainers':
         $script = getPostScript();
         composeLogger('getStackContainers start', [
@@ -1796,6 +1909,14 @@ switch ($_POST['action']) {
 
         // Resolve stack identity and compose CLI arguments via StackInfo
         $stackInfo = StackInfo::fromProject($compose_root, $script);
+        try {
+            $metadataSnapshot = StackMutationGuard::inspect($stackInfo->projectName,
+                static fn(string $epoch): array => [$epoch, ContainerMetadataCache::begin([$stackInfo->projectFolder])]);
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Unable to reserve container metadata: ' . $e->getMessage(), null, 'user', 'error', 'metadata');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
+            break;
+        }
         // Get container details in JSON format (all states)
         $rows = $stackInfo->getContainerList();
         // Hard dependency on Docker manager: use shared helpers directly.
@@ -1803,17 +1924,22 @@ switch ($_POST['action']) {
         $hostIP = composeResolveDockerHostIp();
 
         $containers = [];
-        // Load update status once before the loop (static data, doesn't change per-container)
-        $updateStatusFile = UNRAID_UPDATE_STATUS_FILE;
-        $updateStatusData = [];
-        if (is_file($updateStatusFile)) {
-            $updateStatusData = json_decode(file_get_contents($updateStatusFile), true) ?: [];
+        try {
+            $savedUpdates = StackUpdateService::readSavedResults()[$stackInfo->projectFolder]['containers'] ?? [];
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Unable to read saved container updates: ' . $e->getMessage(), null, 'user', 'error', 'update-check');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
+            break;
         }
-
+        $updatesByName = [];
+        foreach ($savedUpdates as $update) {
+            $updatesByName[$update['name']] = ContainerInfo::fromUpdateResponse($update);
+        }
         // Get stack state via centralized StackInfo method
         $stackState = $stackInfo->getStackState();
 
         foreach ($rows as $rawContainer) {
+            $containerImageId = '';
             composeLogger('getStackContainers found container row', [
                 'rawContainer' => $rawContainer
             ], 'user', 'debug', 'getStackContainers');
@@ -1825,6 +1951,8 @@ switch ($_POST['action']) {
                 if ($inspectOutput) {
                     $inspect = json_decode($inspectOutput, true);
                     if ($inspect) {
+                        $containerImageId = str_replace('sha256:', '', $inspect['Image'] ?? '');
+                        $rawContainer['Labels'] = $inspect['Config']['Labels'] ?? ($rawContainer['Labels'] ?? []);
                         // Extract useful info from inspect
                         $rawContainer['ID'] = $inspect['Id'] ?? '';
                         $rawContainer['Image'] = $inspect['Config']['Image'] ?? '';
@@ -1936,51 +2064,54 @@ switch ($_POST['action']) {
                             $rawContainer['WebUI'] = $resolvedURL;
                         }
 
-                        // Get update status from saved status file (read once before loop)
-                        $imageName = $rawContainer['Image'];
-                        if (strpos($imageName, ':') === false) {
-                            $imageName .= ':latest';
-                        }
-                        $imageNameShort = preg_replace('/^[^\/]+\//', '', $imageName);
-
                         $rawContainer['updateStatus'] = 'unknown';
                         $rawContainer['localSha'] = '';
                         $rawContainer['remoteSha'] = '';
-
-                        $checkNames = [$imageName, $imageNameShort];
-                        foreach ($updateStatusData as $key => $status) {
-                            foreach ($checkNames as $checkName) {
-                                if ($key === $checkName || strpos($key, $checkName) !== false || strpos($checkName, $key) !== false) {
-                                    $localRaw = $status['local'] ?? '';
-                                    $remoteRaw = $status['remote'] ?? '';
-                                    $rawContainer['localSha'] = substr(str_replace('sha256:', '', $localRaw), 0, 8);
-                                    $rawContainer['remoteSha'] = substr(str_replace('sha256:', '', $remoteRaw), 0, 8);
-                                    if (!empty($status['local']) && !empty($status['remote'])) {
-                                        $rawContainer['updateStatus'] = ($status['local'] === $status['remote']) ? 'up-to-date' : 'update-available';
-                                    }
-                                    break 2;
-                                }
-                            }
-                        }
                     }
                 }
             }
             // Normalize through ContainerInfo for consistent camelCase output
-            $containers[] = ContainerInfo::fromDockerInspect($rawContainer)->toArray();
+            $container = ContainerInfo::fromDockerInspect($rawContainer);
+            $savedUpdate = $updatesByName[$container->name] ?? null;
+            if ($savedUpdate !== null && ($savedUpdate->localSha === '' || $containerImageId === ''
+                || str_starts_with($containerImageId, $savedUpdate->localSha))) {
+                if ($savedUpdate->updateStatus === 'unknown'
+                    && $container->image !== '' && $container->pinnedDigest === $savedUpdate->pinnedDigest
+                    && ContainerInfo::normalizeImageForUpdateCheck($container->image)
+                        === ContainerInfo::normalizeImageForUpdateCheck($savedUpdate->image)) {
+                    $container = ContainerInfo::fromDockerInspect($container->toMetadataArray());
+                }
+                $container->mergeUpdateStatus($savedUpdate);
+            }
+            $containers[] = $container->toArray();
         }
 
         // --- Persistent container metadata cache ---
-        $cacheFile = '/boot/config/plugins/compose.manager/containers.cache.json';
-        $cache = is_file($cacheFile) ? json_decode(file_get_contents($cacheFile), true) : [];
         $stackKey = $stackInfo->projectFolder;
-        if (!isset($cache[$stackKey])) $cache[$stackKey] = [];
-        foreach ($containers as $ct) {
+        $metadata = [];
+        foreach ($containers as &$ct) {
+            if (ContainerInfo::isOneOff($ct)) {
+                continue;
+            }
             $service = $ct['service'] ?? $ct['Name'] ?? '';
             if ($service) {
-                $cache[$stackKey][$service] = $ct;
+                $metadata[$service] = ContainerInfo::fromDockerInspect($ct)->toMetadataArray();
             }
         }
-        file_put_contents($cacheFile, json_encode($cache, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        unset($ct);
+        try {
+            if ($metadataSnapshot !== null) {
+                StackMutationGuard::inspect($stackInfo->projectName, static function (string $epoch) use ($metadataSnapshot, $stackKey, $metadata): void {
+                    if ($epoch === $metadataSnapshot[0]) {
+                        ContainerMetadataCache::merge([$stackKey => $metadata], $metadataSnapshot[1]);
+                    }
+                });
+            }
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Unable to save container metadata: ' . $e->getMessage(), null, 'user', 'error', 'metadata');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
+            break;
+        }
 
         echo json_encode(['result' => 'success', 'containers' => $containers, 'stackState' => $stackState, 'projectName' => $stackInfo->projectFolder, 'startedAt' => $stackInfo->getStartedAt()]);
         composeLogger('getStackContainers done', [
@@ -2038,10 +2169,13 @@ switch ($_POST['action']) {
             break;
         }
 
-        $cmd = "docker " . escapeshellarg($containerAction) . " " . escapeshellarg($containerName) . " 2>&1";
-        $output = shell_exec($cmd);
-
-        echo json_encode(['result' => 'success', 'message' => trim($output)]);
+        try {
+            $output = ContainerActions::run($containerName, $containerAction);
+            echo json_encode(['result' => 'success', 'message' => $output]);
+        } catch (RuntimeException | InvalidArgumentException | JsonException $e) {
+            composeLogger('Container action failed: ' . $e->getMessage(), ['container' => $containerName, 'action' => $containerAction], 'user', 'error', 'container');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
+        }
         break;
     case 'checkStackUpdates':
         // Check for updates for all containers in a compose stack
@@ -2051,304 +2185,44 @@ switch ($_POST['action']) {
             break;
         }
 
-        // Plugin-local update check: compares platform-specific image config
-        // digests (Docker .Id + resolved manifest.config.digest) rather than
-        // top-level index/manifest-list digests. This eliminates false
-        // "update-available" verdicts caused by registry index-only rewrites,
-        // and is scoped strictly to the images owned by this stack.
-        require_once("/usr/local/emhttp/plugins/compose.manager/include/UpdateCheck.php");
-
-        // Resolve stack identity and compose CLI arguments via StackInfo
-        $stackInfo = StackInfo::fromProject($compose_root, $script);
-        $projectName = $stackInfo->projectFolder;
-
-        // Get containers (all states) for update checking
-        $rows = $stackInfo->getContainerList();
-
-        $updateResults = [];
-        $persistentContainerCache = composeLoadPersistentContainerCache();
-        $stackContainerCache = $persistentContainerCache[$script] ?? [];
-        $iconByService = [];
-        $iconByName = [];
-        foreach ($stackContainerCache as $cachedService => $cachedContainer) {
-            if (!is_array($cachedContainer)) {
-                continue;
+        try {
+            $stackInfo = StackInfo::fromProject($compose_root, $script);
+            $results = composeCheckStackUpdatesForUi([$stackInfo], false, $superseded, $recheckTokens);
+            if (!isset($results[$stackInfo->projectFolder])) {
+                echo json_encode(['result' => 'superseded', 'projectName' => $stackInfo->projectFolder]);
+                break;
             }
-            $cachedIcon = trim((string) ($cachedContainer['icon'] ?? ''));
-            if ($cachedIcon !== '') {
-                $iconByService[(string) $cachedService] = $cachedIcon;
-            }
-            $cachedName = trim((string) ($cachedContainer['name'] ?? ''));
-            if ($cachedName !== '' && $cachedIcon !== '') {
-                $iconByName[$cachedName] = $cachedIcon;
-            }
+            $result = $results[$stackInfo->projectFolder];
+            echo json_encode(['result' => 'success', 'updates' => $result['containers'], 'projectName' => $result['projectName'],
+                'recheckToken' => $recheckTokens[$stackInfo->projectFolder]]);
+        } catch (RuntimeException | JsonException | InvalidArgumentException $e) {
+            composeLogger('Stack update check failed: ' . $e->getMessage(), null, 'user', 'error', 'update-check');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
         }
-        $inspectIconCache = [];
-        $stackCacheDirty = false;
-
-        if ($rows) {
-            // Collect the compose-owned image set and batch-check in one call.
-            // ComposeUpdateCheck always re-inspects local and never touches
-            // status-file entries for non-compose images.
-            $imagesToCheck = [];
-            foreach ($rows as $container) {
-                $img = trim((string) ($container['Image'] ?? ''));
-                if ($img !== '') {
-                    $imagesToCheck[] = $img;
-                }
-            }
-            $updater = new ComposeUpdateCheck();
-            $checkResults = $updater->checkMany($imagesToCheck);
-
-            foreach ($rows as $container) {
-                $containerLower = array_change_key_case($container, CASE_LOWER);
-                $containerName = trim((string) ($containerLower['name'] ?? $containerLower['names'] ?? ''));
-                $service = trim((string) ($containerLower['service'] ?? ''));
-                $image = trim((string) ($containerLower['image'] ?? ''));
-
-                if ($containerName && $image) {
-                    $icon = composeResolveContainerIcon($containerName, $service, $iconByService, $iconByName, $inspectIconCache);
-
-                    if ($icon !== '') {
-                        compose_seed_docker_manager_icon(compose_fetch_icon_to_cache($icon), $containerName);
-                    }
-
-                    if ($service !== '' && $icon !== '') {
-                        if (!isset($stackContainerCache[$service]) || !is_array($stackContainerCache[$service])) {
-                            $stackContainerCache[$service] = [];
-                        }
-                        if (($stackContainerCache[$service]['icon'] ?? '') !== $icon) {
-                            $stackContainerCache[$service]['icon'] = $icon;
-                            $stackCacheDirty = true;
-                        }
-                        if (($stackContainerCache[$service]['name'] ?? '') === '') {
-                            $stackContainerCache[$service]['name'] = $containerName;
-                            $stackCacheDirty = true;
-                        }
-                        if (($stackContainerCache[$service]['service'] ?? '') === '') {
-                            $stackContainerCache[$service]['service'] = $service;
-                            $stackCacheDirty = true;
-                        }
-                    }
-
-                    // Normalize image name (strip docker.io/ prefix, @sha256: digest, add library/ for official images)
-                    $image = ContainerInfo::normalizeImageForUpdateCheck($image);
-
-                    $result = $checkResults[$image] ?? [
-                        'local' => '', 'remote' => '', 'status' => 'unknown', 'hasUpdate' => false,
-                    ];
-
-                    // Shorten SHAs for display (first 12 chars after sha256:)
-                    $localSha  = (string) $result['local'];
-                    $remoteSha = (string) $result['remote'];
-                    if ($localSha && strpos($localSha, 'sha256:') === 0) {
-                        $localSha = substr($localSha, 7, 12);
-                    }
-                    if ($remoteSha && strpos($remoteSha, 'sha256:') === 0) {
-                        $remoteSha = substr($remoteSha, 7, 12);
-                    }
-
-                    $updateResults[] = ContainerInfo::fromUpdateResponse([
-                        'container' => $containerName,
-                        'service' => $service,
-                        'image' => $image,
-                        'icon' => $icon,
-                        'hasUpdate' => $result['hasUpdate'],
-                        'status' => $result['status'],
-                        'localSha' => $localSha,
-                        'remoteSha' => $remoteSha
-                    ])->toUpdateArray();
-                }
-            }
-
-            if ($stackCacheDirty) {
-                $persistentContainerCache[$script] = $stackContainerCache;
-                composeSavePersistentContainerCache($persistentContainerCache);
-            }
-        }
-
-        echo json_encode(['result' => 'success', 'updates' => $updateResults, 'projectName' => $projectName]);
-
-        // Save the update status for this stack
-        $composeUpdateStatusFile = COMPOSE_UPDATE_STATUS_FILE;
-        $savedStatus = [];
-        if (is_file($composeUpdateStatusFile)) {
-            $savedStatus = json_decode(file_get_contents($composeUpdateStatusFile), true) ?: [];
-        }
-        $savedStatus[$script] = [
-            'projectName' => $projectName,
-            'hasUpdate' => count(array_filter($updateResults, function ($r) {
-                return $r['hasUpdate'];
-            })) > 0,
-            'containers' => $updateResults,
-            'lastChecked' => time()
-        ];
-        file_put_contents($composeUpdateStatusFile, json_encode($savedStatus, JSON_PRETTY_PRINT));
         break;
     case 'checkAllStacksUpdates':
-        // Check for updates for all compose stacks. Uses the plugin-local
-        // ComposeUpdateCheck (see checkStackUpdates rationale).
-        require_once("/usr/local/emhttp/plugins/compose.manager/include/UpdateCheck.php");
-
         composeLogger('Starting update check for all stacks', null, 'user', 'debug', 'update-check');
-
-        $allUpdates = [];
-        $updater = new ComposeUpdateCheck();
-        $persistentContainerCache = composeLoadPersistentContainerCache();
-        $persistentCacheDirty = false;
-        $inspectIconCache = [];
-
-        foreach (StackInfo::allFromRoot($compose_root) as $stackInfoItem) {
-            $stackName = $stackInfoItem->projectFolder;
-            $projectName = $stackInfoItem->projectFolder;
-            $stackContainerCache = $persistentContainerCache[$stackName] ?? [];
-            $iconByService = [];
-            $iconByName = [];
-            foreach ($stackContainerCache as $cachedService => $cachedContainer) {
-                if (!is_array($cachedContainer)) {
-                    continue;
-                }
-                $cachedIcon = trim((string) ($cachedContainer['icon'] ?? ''));
-                if ($cachedIcon !== '') {
-                    $iconByService[(string) $cachedService] = $cachedIcon;
-                }
-                $cachedName = trim((string) ($cachedContainer['name'] ?? ''));
-                if ($cachedName !== '' && $cachedIcon !== '') {
-                    $iconByName[$cachedName] = $cachedIcon;
-                }
-            }
-            $stackCacheDirty = false;
-
-            $rows = $stackInfoItem->getContainerList();
-
-            $stackUpdates = [];
-            $hasStackUpdate = false;
-
-            if ($rows) {
-                // Collect images from running containers only (matches prior
-                // behavior of this handler) and batch-check via the plugin-
-                // local update checker.
-                $imagesToCheck = [];
-                foreach ($rows as $container) {
-                    $state = strtolower((string) ($container['State'] ?? ''));
-                    if ($state !== 'running') continue;
-                    $img = trim((string) ($container['Image'] ?? ''));
-                    if ($img !== '') $imagesToCheck[] = $img;
-                }
-                $checkResults = $imagesToCheck ? $updater->checkMany($imagesToCheck) : [];
-
-                foreach ($rows as $container) {
-                    $containerLower = array_change_key_case($container, CASE_LOWER);
-                    $containerName = trim($containerLower['name'] ?? $containerLower['names'] ?? '');
-                    $service = trim((string) ($containerLower['service'] ?? ''));
-                    $image = trim($containerLower['image'] ?? '');
-                    $state = strtolower(trim($containerLower['state'] ?? ''));
-
-                    // Only check updates for running containers
-                    if ($containerName && $image && $state === 'running') {
-                        $icon = composeResolveContainerIcon($containerName, $service, $iconByService, $iconByName, $inspectIconCache);
-
-                        if ($icon !== '') {
-                            compose_seed_docker_manager_icon(compose_fetch_icon_to_cache($icon), $containerName);
-                        }
-
-                        if ($service !== '' && $icon !== '') {
-                            if (!isset($stackContainerCache[$service]) || !is_array($stackContainerCache[$service])) {
-                                $stackContainerCache[$service] = [];
-                            }
-                            if (($stackContainerCache[$service]['icon'] ?? '') !== $icon) {
-                                $stackContainerCache[$service]['icon'] = $icon;
-                                $stackCacheDirty = true;
-                            }
-                            if (($stackContainerCache[$service]['name'] ?? '') === '') {
-                                $stackContainerCache[$service]['name'] = $containerName;
-                                $stackCacheDirty = true;
-                            }
-                            if (($stackContainerCache[$service]['service'] ?? '') === '') {
-                                $stackContainerCache[$service]['service'] = $service;
-                                $stackCacheDirty = true;
-                            }
-                        }
-
-                        $image = ContainerInfo::normalizeImageForUpdateCheck($image);
-
-                        $result = $checkResults[$image] ?? [
-                            'local' => '', 'remote' => '', 'status' => 'unknown', 'hasUpdate' => false,
-                        ];
-
-                        // Shorten SHAs for display (first 12 chars after sha256:)
-                        $localSha  = (string) $result['local'];
-                        $remoteSha = (string) $result['remote'];
-                        if ($localSha && strpos($localSha, 'sha256:') === 0) {
-                            $localSha = substr($localSha, 7, 12);
-                        }
-                        if ($remoteSha && strpos($remoteSha, 'sha256:') === 0) {
-                            $remoteSha = substr($remoteSha, 7, 12);
-                        }
-
-                        if ($result['hasUpdate']) $hasStackUpdate = true;
-
-                        $stackUpdates[] = ContainerInfo::fromUpdateResponse([
-                            'container' => $containerName,
-                            'service' => $service,
-                            'image' => $image,
-                            'icon' => $icon,
-                            'hasUpdate' => $result['hasUpdate'],
-                            'status' => $result['status'],
-                            'localSha' => $localSha,
-                            'remoteSha' => $remoteSha
-                        ])->toUpdateArray();
-                    }
-                }
-
-                if ($stackCacheDirty) {
-                    $persistentContainerCache[$stackName] = $stackContainerCache;
-                    $persistentCacheDirty = true;
-                }
-            }
-
-            $allUpdates[$stackName] = [
-                'projectName' => $projectName,
-                'hasUpdate' => $hasStackUpdate,
-                'containers' => $stackUpdates
-            ];
+        try {
+            $allUpdates = composeCheckStackUpdatesForUi(StackInfo::allFromRoot($compose_root, true), true, $superseded, $recheckTokens, $failures);
+            $totalStacks = count($allUpdates);
+            $updatesFound = count(array_filter($allUpdates, static fn(array $stack): bool => $stack['hasUpdate']));
+            $failedStacks = count($failures);
+            composeLogger("Completed: $totalStacks stacks checked, $updatesFound with updates, $failedStacks failed", null, 'user', 'debug', 'update-check');
+            echo json_encode(['result' => $failures ? 'partial' : 'success', 'stacks' => $allUpdates,
+                'superseded' => $superseded, 'failures' => (object) $failures]);
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Stack update check failed: ' . $e->getMessage(), null, 'user', 'error', 'update-check');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
         }
-
-        if ($persistentCacheDirty) {
-            composeSavePersistentContainerCache($persistentContainerCache);
-        }
-
-        // Save the update status for all stacks
-        $savedStatus = $allUpdates;
-        foreach ($savedStatus as $stackKey => &$stackData) {
-            $stackData['lastChecked'] = time();
-        }
-        file_put_contents(COMPOSE_UPDATE_STATUS_FILE, json_encode($savedStatus, JSON_PRETTY_PRINT));
-
-        $totalStacks = count($allUpdates);
-        $updatesFound = 0;
-        foreach ($allUpdates as $sn => $si) {
-            if ($si['hasUpdate'])
-                $updatesFound++;
-        }
-        composeLogger("Completed: $totalStacks stacks checked, $updatesFound with updates", null, 'user', 'debug', 'update-check');
-
-        echo json_encode(['result' => 'success', 'stacks' => $allUpdates]);
         break;
     case 'getSavedUpdateStatus':
-        // Load saved update status from file
-        $composeUpdateStatusFile = COMPOSE_UPDATE_STATUS_FILE;
         // Check if docker.versions plugin directory exists (where changelog assets are expected)
         $dockerVersionsInstalled = is_dir('/usr/local/emhttp/plugins/docker.versions');
-        if (is_file($composeUpdateStatusFile)) {
-            $savedStatus = json_decode(file_get_contents($composeUpdateStatusFile), true);
-            if ($savedStatus) {
-                echo json_encode(['result' => 'success', 'stacks' => $savedStatus, 'dockerVersionsInstalled' => $dockerVersionsInstalled]);
-            } else {
-                echo json_encode(['result' => 'success', 'stacks' => [], 'dockerVersionsInstalled' => $dockerVersionsInstalled]);
-            }
-        } else {
-            echo json_encode(['result' => 'success', 'stacks' => [], 'dockerVersionsInstalled' => $dockerVersionsInstalled]);
+        try {
+            echo json_encode(['result' => 'success', 'stacks' => StackUpdateService::readSavedResults(), 'dockerVersionsInstalled' => $dockerVersionsInstalled]);
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Unable to read saved stack update status: ' . $e->getMessage(), null, 'user', 'error', 'update-check');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
         }
         break;
     case 'getLogs':
@@ -2440,6 +2314,57 @@ switch ($_POST['action']) {
         echo json_encode(['result' => 'success', 'log' => $logContent]);
         break;
 
+    case 'getTerminalSession':
+    case 'stopTerminalSession':
+    case 'detachTerminalSession':
+    case 'connectTerminalViewer':
+    case 'getTerminalOutput':
+        require_once __DIR__ . '/TerminalSession.php';
+        try {
+            $id = (string) ($_POST['session'] ?? '');
+            if ($_POST['action'] === 'stopTerminalSession') {
+                composeStopTerminalSession($id);
+            }
+            if ($_POST['action'] === 'detachTerminalSession') {
+                composeDetachTerminalSession($id);
+            }
+            $response = ['result' => 'success', 'session' => composeReadTerminalSession($id)];
+            $response['session']['viewerConnected'] = is_file(composeUiOperationFile('terminal-session', $id) . '.log.connected');
+            $response['session']['viewerViewed'] = is_file(composeUiOperationFile('terminal-session', $id) . '.log.viewed');
+            if ($_POST['action'] === 'connectTerminalViewer') {
+                $response['viewer'] = composeConnectTerminalViewer($id, ($_POST['retry'] ?? '') === '1');
+            }
+            if ($_POST['action'] === 'getTerminalOutput') {
+                $offset = filter_var($_POST['offset'] ?? '0', FILTER_VALIDATE_INT);
+                $generation = filter_var($_POST['generation'] ?? '0', FILTER_VALIDATE_INT);
+                if ($offset === false || $generation === false) throw new InvalidArgumentException('Invalid terminal output cursor.');
+                $response['output'] = composeReadTerminalOutput($id, $offset, $generation);
+            }
+            echo json_encode($response);
+        } catch (RuntimeException | InvalidArgumentException $error) {
+            composeLogger('Unable to control terminal session', ['message' => $error->getMessage()], 'user', 'error', 'operation');
+            echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);
+        }
+        break;
+
+    case 'getUiOperation':
+        require_once __DIR__ . '/UiOperation.php';
+        $script = getPostScript();
+        try {
+            if (!$script) throw new InvalidArgumentException('Stack not specified.');
+            $file = composeUiOperationFile($script, (string) ($_POST['operationId'] ?? ''));
+            if (!is_file($file)) throw new RuntimeException('Operation receipt is unavailable.');
+            $receipt = json_decode((string) file_get_contents($file), true);
+            if (!is_array($receipt) || !in_array($receipt['state'] ?? '', ['queued', 'running', 'completed'], true)) {
+                throw new RuntimeException('Operation receipt is invalid.');
+            }
+            echo json_encode(['result' => 'success', 'operation' => $receipt]);
+        } catch (RuntimeException | InvalidArgumentException $error) {
+            composeLogger('Unable to read UI operation receipt', ['message' => $error->getMessage()], 'user', 'error', 'operation');
+            echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);
+        }
+        break;
+
     case 'checkStackLock':
         // Check if a stack is currently locked (operation in progress)
         $script = getPostScript();
@@ -2448,7 +2373,14 @@ switch ($_POST['action']) {
             break;
         }
 
-        $lockInfo = isStackLocked($script);
+        try {
+            $stackInfo = StackInfo::fromProject($compose_root, $script);
+        } catch (\Throwable $error) {
+            echo json_encode(['result' => 'error', 'message' => $error->getMessage()]);
+            break;
+        }
+        $lockName = $stackInfo !== null ? $stackInfo->projectName : $script;
+        $lockInfo = isStackLocked($lockName, $stackInfo !== null);
         if ($lockInfo) {
             echo json_encode([
                 'result' => 'success',
@@ -2481,66 +2413,29 @@ switch ($_POST['action']) {
         break;
 
     case 'markStackForRecheck':
-        // Mark one or more stacks for recheck after update
-        // This persists across page reloads so the recheck happens even if page refreshes
-        $stacks = isset($_POST['stacks']) ? $_POST['stacks'] : "";
-        if (is_string($stacks)) {
-            $stacks = json_decode($stacks, true);
-        }
-        if (!is_array($stacks) || empty($stacks)) {
-            echo json_encode(['result' => 'error', 'message' => 'No stacks specified.']);
-            break;
-        }
-
-        $pendingRecheckFile = PENDING_RECHECK_FILE;
-        $pending = [];
-        if (is_file($pendingRecheckFile)) {
-            $pending = json_decode(file_get_contents($pendingRecheckFile), true) ?: [];
-        }
-
-        // Add stacks to pending list with timestamp
-        foreach ($stacks as $stackName) {
-            $pending[$stackName] = time();
-        }
-
-        file_put_contents($pendingRecheckFile, json_encode($pending, JSON_PRETTY_PRINT));
-        echo json_encode(['result' => 'success', 'pending' => array_keys($pending)]);
-        break;
-
     case 'getPendingRecheckStacks':
-        // Get list of stacks that need recheck
-        $pendingRecheckFile = PENDING_RECHECK_FILE;
-        $pending = [];
-        if (is_file($pendingRecheckFile)) {
-            $pending = json_decode(file_get_contents($pendingRecheckFile), true) ?: [];
-        }
-        echo json_encode(['result' => 'success', 'pending' => $pending]);
-        break;
-
     case 'clearStackRecheck':
-        // Clear recheck flag for one or more stacks
-        $stacks = isset($_POST['stacks']) ? $_POST['stacks'] : "";
-        if (is_string($stacks)) {
-            $stacks = json_decode($stacks, true);
+        try {
+            if ($_POST['action'] === 'getPendingRecheckStacks') {
+                echo json_encode(['result' => 'success', 'pending' => PendingRechecks::timestamps()]);
+                break;
+            }
+            $stacks = $_POST['stacks'] ?? null;
+            if (is_string($stacks)) $stacks = json_decode($stacks, true, 512, JSON_THROW_ON_ERROR);
+            $stacks = PendingRechecks::validateStacks($stacks);
+            if ($_POST['action'] === 'markStackForRecheck') {
+                echo json_encode(['result' => 'success', 'pending' => PendingRechecks::mark($stacks)]);
+            } else {
+                $tokens = $_POST['tokens'] ?? null;
+                if (is_string($tokens)) $tokens = json_decode($tokens, true, 512, JSON_THROW_ON_ERROR);
+                echo json_encode(['result' => 'success', 'remaining' => PendingRechecks::acknowledge($stacks, $tokens)]);
+            }
+        } catch (RuntimeException | JsonException | InvalidArgumentException $e) {
+            composeLogger('Pending recheck request failed: ' . $e->getMessage(), [
+                'action' => $_POST['action'],
+            ], 'user', 'error', 'update-check');
+            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
         }
-        if (!is_array($stacks) || empty($stacks)) {
-            echo json_encode(['result' => 'error', 'message' => 'No stacks specified.']);
-            break;
-        }
-
-        $pendingRecheckFile = PENDING_RECHECK_FILE;
-        $pending = [];
-        if (is_file($pendingRecheckFile)) {
-            $pending = json_decode(file_get_contents($pendingRecheckFile), true) ?: [];
-        }
-
-        // Remove stacks from pending list
-        foreach ($stacks as $stackName) {
-            unset($pending[$stackName]);
-        }
-
-        file_put_contents($pendingRecheckFile, json_encode($pending, JSON_PRETTY_PRINT));
-        echo json_encode(['result' => 'success', 'remaining' => array_keys($pending)]);
         break;
 
     case 'createBackup':
@@ -2784,20 +2679,24 @@ switch ($_POST['action']) {
         break;
 
     case 'getProjectIdentities':
-        // Read-only migration preview: folder, display name, effective runtime
-        // project, live-container match, and whether owner input is required.
+        // Owner-triggered migration audit: folder, display name, effective
+        // runtime project, and whether owner input is required. Unlike normal
+        // action dispatch, this explicitly probes Docker for already-pinned
+        // identities, so an old bad pin from #183 can still be recovered.
+        ProjectIdentity::clearProbeCache();
         $identities = [];
         foreach (StackInfo::allFromRoot($compose_root, true) as $stackInfo) {
-            $identity = $stackInfo->identity->toArray();
+            $identity = $stackInfo->identity->auditAgainstRuntime($stackInfo->path);
             $identity['displayName'] = $stackInfo->getName();
             $identities[] = $identity;
         }
         echo json_encode([
             'result' => 'success',
             'identities' => $identities,
-            'blocked' => count(array_filter($identities, static fn(array $i): bool => !$i['resolved'])),
+            'blocked' => count(array_filter($identities, static fn(array $i): bool => !$i['resolved'] || !empty($i['conflictReason']))),
         ]);
         break;
+
 
     case 'setProjectIdentity':
         // Owner decision for a stack whose runtime identity could not be proven.

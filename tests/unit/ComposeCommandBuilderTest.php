@@ -7,10 +7,87 @@ namespace ComposeManager\Tests;
 use PluginTests\TestCase;
 
 require_once '/usr/local/emhttp/plugins/compose.manager/include/ComposeCommandBuilder.php';
+require_once '/usr/local/emhttp/plugins/compose.manager/include/StackUpdateService.php';
 
 class ComposeCommandBuilderTest extends TestCase
 {
     private string $tempRoot;
+
+    public function testUpdateVariantsShareAllResolvedArguments(): void
+    {
+        $dir = $this->tempRoot . '/shared-update';
+        mkdir($dir);
+        file_put_contents($dir . '/compose.yaml', "services:\n  web:\n    image: nginx\n");
+        file_put_contents($dir . '/running_profiles', 'dev');
+        file_put_contents($dir . '/default_profile', 'default');
+        file_put_contents($dir . '/credential_id', 'registry-login');
+        file_put_contents($dir . '/.env', "TEST=1\n");
+        $stack = \StackInfo::fromProject($this->tempRoot, 'shared-update');
+        $cfg = ['BUILD_ON_UPDATE_DEFAULT' => 'true'];
+
+        $normal = \StackUpdateService::buildUpdateCommand($stack, $cfg);
+        $force = \StackUpdateService::buildUpdateCommand($stack, $cfg, ['recreate' => true]);
+        $automatic = \StackUpdateService::buildUpdateCommand($stack, $cfg, ['automatic' => true]);
+
+        $this->assertSame([...$normal, '--recreate'], $force);
+        $this->assertSame([...$normal, '--automatic-update'], $automatic);
+        $this->assertContains('--build', $normal);
+        $this->assertNotContains('-gdev', $normal);
+        $this->assertNotContains('-gdefault', $normal);
+        $this->assertContains('registry-login', $normal);
+        $this->assertContains('-e' . $dir . '/.env', $normal);
+        $this->assertContains('-s' . $dir, $normal);
+
+        file_put_contents($dir . '/build_on_update', 'false');
+        $disabled = \StackUpdateService::buildUpdateCommand($stack, $cfg, ['automatic' => true]);
+        $this->assertNotContains('--build', $disabled);
+        $this->assertSame([], array_values(array_filter($normal, static fn(string $arg): bool => str_starts_with($arg, '-g'))));
+    }
+
+    public function testCliUpdateSpecLeavesRuntimeScopeToTheEngine(): void
+    {
+        $dir = $this->tempRoot . '/cli-update';
+        mkdir($dir);
+        file_put_contents($dir . '/compose.yaml', "services:\n  web:\n    image: nginx\n");
+        file_put_contents($dir . '/running_profiles', 'active');
+        file_put_contents($dir . '/default_profile', 'backup');
+        $command = [
+            PHP_BINARY, '-d', 'auto_prepend_file=' . dirname(__DIR__) . '/bootstrap.php',
+            dirname(__DIR__, 2) . '/source/compose.manager/scripts/compose_args.php',
+            '--compose-root', $this->tempRoot, '--project', 'cli-update', '--action', 'UPDATE', '--format', 'json',
+        ];
+        exec(implode(' ', array_map('escapeshellarg', $command)), $output, $exit);
+        $this->assertSame(0, $exit, implode("\n", $output));
+        $response = json_decode(implode("\n", $output), true);
+        $this->assertSame('success', $response['result']);
+        $this->assertSame([], $response['data']['profiles']);
+        $this->assertSame(
+            \StackUpdateService::resolveUpdateSpec(\StackInfo::fromProject($this->tempRoot, 'cli-update')),
+            $response['data']
+        );
+    }
+
+    public function testManualStoppedDefaultCanBeOverriddenButNeverEnablesAutomaticInclusion(): void
+    {
+        $dir = $this->tempRoot . '/scope-options';
+        mkdir($dir);
+        file_put_contents($dir . '/compose.yaml', "services:\n  web:\n    image: nginx\n");
+        $stack = \StackInfo::fromProject($this->tempRoot, 'scope-options');
+        foreach ([false, true] as $default) {
+            $cfg = ['UPDATE_INCLUDE_STOPPED_DEFAULT' => $default ? 'true' : 'false'];
+            $command = \StackUpdateService::buildUpdateCommand($stack, $cfg);
+            $this->assertSame($default, in_array('--include-stopped', $command, true));
+            foreach ([false, true] as $include) {
+                foreach ([false, true] as $automatic) {
+                    $command = \StackUpdateService::buildUpdateCommand($stack, $cfg, [
+                        'includeStopped' => $include, 'automatic' => $automatic,
+                    ]);
+                    $this->assertSame($include && !$automatic, in_array('--include-stopped', $command, true));
+                }
+            }
+        }
+        $this->assertSame('false', parse_ini_file(dirname(__DIR__, 2) . '/source/compose.manager/default.cfg')['UPDATE_INCLUDE_STOPPED_DEFAULT']);
+    }
 
     protected function setUp(): void
     {
@@ -91,7 +168,7 @@ class ComposeCommandBuilderTest extends TestCase
         $this->assertSame($overridePath, $info->getOverridePath(), 'The preferred write target must remain available.');
     }
 
-    public function testBuildForActionUsesRunningProfilesForUpdate(): void
+    public function testUpdateSpecDoesNotUseHistoricalRunningProfiles(): void
     {
         $stack = 'profiles-update-running';
         $stackDir = $this->tempRoot . '/' . $stack;
@@ -101,9 +178,9 @@ class ComposeCommandBuilderTest extends TestCase
         file_put_contents($stackDir . '/running_profiles', 'hotfix,metrics');
 
         $info = \StackInfo::fromProject($this->tempRoot, $stack);
-        $spec = \ComposeCommandBuilder::buildForAction($info, 'update');
+        $spec = \StackUpdateService::resolveUpdateSpec($info);
 
-        $this->assertSame(['hotfix', 'metrics'], $spec['profiles']);
+        $this->assertSame([], $spec['profiles']);
     }
 
     public function testBuildIncludesCredentialOnlyForRegistryActions(): void
@@ -121,7 +198,7 @@ class ComposeCommandBuilderTest extends TestCase
         $this->assertSame('', \ComposeCommandBuilder::buildForAction($info, 'logs')['credentialId']);
     }
 
-    public function testBuildForActionFallsBackToDefaultProfilesForUpdate(): void
+    public function testUpdateSpecDoesNotFallBackToDefaultProfiles(): void
     {
         $stack = 'profiles-update-default';
         $stackDir = $this->tempRoot . '/' . $stack;
@@ -130,9 +207,9 @@ class ComposeCommandBuilderTest extends TestCase
         file_put_contents($stackDir . '/default_profile', 'dev,prod');
 
         $info = \StackInfo::fromProject($this->tempRoot, $stack);
-        $spec = \ComposeCommandBuilder::buildForAction($info, 'update');
+        $spec = \StackUpdateService::resolveUpdateSpec($info);
 
-        $this->assertSame(['dev', 'prod'], $spec['profiles']);
+        $this->assertSame([], $spec['profiles']);
     }
 
     public function testBuildForActionUsesWildcardForDown(): void

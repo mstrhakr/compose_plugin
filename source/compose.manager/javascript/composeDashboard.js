@@ -1,7 +1,12 @@
 (function() {
     var caURL = '/plugins/compose.manager/include/Exec.php';
-    var expandedStacks = {};
-    var stackContainerCache = {};
+    var expandedStacks = Object.create(null);
+    var stackContainerCache = Object.create(null);
+    var stackOperations = Object.create(null);
+    var stackPaths = Object.create(null);
+    var stackActionErrors = Object.create(null);
+    var stackListGeneration = 0;
+    var stackDetailGeneration = Object.create(null);
 
     // Debug logging function - respects plugin debug setting
     function debugLog() {
@@ -124,7 +129,32 @@
         debugLog('Context menu attached to #' + elementId);
     }
 
+    function composeDashboardActionBoxClosed() {
+        stackContainerCache = Object.create(null);
+        loadComposeStacks();
+    }
+
+    window.composeDashboardActionBoxClosed = composeDashboardActionBoxClosed;
+
+    function dashboardActionError(stackName, message) {
+        stackActionErrors[stackName] = message;
+        console.error('[ComposeDash] ' + stackName + ': ' + message);
+        $('#compose_stacks_status').text(stackName + ': ' + message);
+    }
+
+    function dashboardStackPath(stackName) {
+        var path = stackPaths[stackName];
+        if (typeof path !== 'string' || path.charAt(0) !== '/') {
+            dashboardActionError(stackName, 'Stack path is unavailable. Refresh the Dashboard before retrying.');
+            return null;
+        }
+        return path;
+    }
+
     function stackAction(stackName, action) {
+        if (stackOperations[stackName]) return;
+        var projectPath = dashboardStackPath(stackName);
+        if (!projectPath) return;
         var actionMap = {
             'start': 'composeUp',
             'stop': 'composeStop',
@@ -134,24 +164,84 @@
         var actionTitle = action.charAt(0).toUpperCase() + action.slice(1);
         var $status = $('#compose_stacks_status');
         $status.text(actionTitle + 'ing ' + stackName + '...');
+        var operation = {};
+        stackOperations[stackName] = operation;
+        delete stackActionErrors[stackName];
 
-        $.post('/plugins/compose.manager/include/ComposeUtil.php', {
-            action: apiAction,
-            path: '/boot/config/plugins/compose.manager/projects/' + stackName
-        }, function(data) {
-            if (data) {
+        $.ajax({
+            url: '/plugins/compose.manager/include/ComposeUtil.php',
+            method: 'POST',
+            timeout: 30000,
+            data: {
+                action: apiAction,
+                path: projectPath,
+                trackOperation: '1'
+            }
+        }).done(function(data) {
+            if (stackOperations[stackName] !== operation) return;
+            var response;
+            try {
+                response = typeof data === 'string' ? JSON.parse(data) : data;
+            } catch (error) {
+                delete stackOperations[stackName];
+                dashboardActionError(stackName, 'Invalid action response. Refresh to check whether the operation started.');
+                return;
+            }
+            if (!response || response.error || !response.operations || !response.operations[stackName] ||
+                !(response.background === true || typeof response.url === 'string' &&
+                /^\/plugins\/compose\.manager\/include\/ShowTtyd\.php(?:\?|$)/.test(response.url))) {
+                delete stackOperations[stackName];
+                dashboardActionError(stackName, response && response.message || 'The server did not confirm operation tracking. Refresh to check its status.');
+                return;
+            }
+            composePollOperation({
+                endpoint: caURL,
+                project: stackName,
+                operationId: response.operations[stackName],
+                isCurrent: function() { return stackOperations[stackName] === operation; },
+                onComplete: function(exitCode) {
+                    delete stackOperations[stackName];
+                    if (exitCode !== 0) {
+                        dashboardActionError(stackName, 'Action exited with code ' + exitCode + '. Check its command log.');
+                    }
+                    composeDashboardActionBoxClosed();
+                },
+                onError: function(message, details) {
+                    console.error('[ComposeDash] ' + message, details);
+                },
+                onTimeout: function() {
+                    delete stackOperations[stackName];
+                    dashboardActionError(stackName, 'Unable to confirm completion. The operation may still be running.');
+                    composeDashboardActionBoxClosed();
+                }
+            });
+            if (response.warning) {
+                dashboardActionError(stackName, response.message || 'The command is being tracked without a terminal viewer.');
+            }
+            if (response.background !== true) {
                 if (typeof openBox === 'function') {
-                    openBox(data, actionTitle + ' Stack ' + stackName, 800, 1200, true);
+                    openBox(response.url, actionTitle + ' Stack ' + stackName, 800, 1200, true,
+                        'composeDashboardActionBoxClosed', encodeURIComponent(stackName));
                 } else {
-                    Shadowbox.open({content: data, player: 'iframe', title: actionTitle + ' Stack ' + stackName, height: 800, width: 1200});
+                    Shadowbox.open({
+                        content: response.url, player: 'iframe', title: actionTitle + ' Stack ' + stackName,
+                        height: 800, width: 1200,
+                        options: { onClose: function() {
+                            composeDashboardActionBoxClosed(encodeURIComponent(stackName));
+                        } }
+                    });
                 }
             }
-            setTimeout(function() { stackContainerCache = {}; loadComposeStacks(); }, 3000);
+        }).fail(function(xhr, status, error) {
+            if (stackOperations[stackName] !== operation) return;
+            delete stackOperations[stackName];
+            dashboardActionError(stackName, 'Action request failed. Refresh to check whether it started.');
         });
     }
 
     function openStackLogs(stackName) {
-        var projectPath = '/boot/config/plugins/compose.manager/projects/' + stackName;
+        var projectPath = dashboardStackPath(stackName);
+        if (!projectPath) return;
         $.post('/plugins/compose.manager/include/ComposeUtil.php', {
             action: 'composeLogs',
             path: projectPath
@@ -216,18 +306,42 @@
     }
     window.addContainerContext = addContainerContext;
 
+    var containerActionsPending = Object.create(null);
     function dockerAction(ctName, action) {
+        if (containerActionsPending[ctName]) return;
+        containerActionsPending[ctName] = true;
         debugLog('dockerAction:', ctName, action);
-        $.post(caURL, {
-            action: 'containerAction',
-            container: ctName,
-            containerAction: action
-        }, function() {
+        function showError(message) {
+            swal({ title: 'Container Action Failed', text: message, type: 'error' });
+        }
+        $.ajax({
+            url: caURL,
+            method: 'POST',
+            timeout: 30000,
+            data: { action: 'containerAction', container: ctName, containerAction: action }
+        }).done(function(data) {
+            var response;
+            try {
+                response = typeof data === 'string' ? JSON.parse(data) : data;
+            } catch (_error) {
+                showError('Invalid server response. Refresh before retrying.');
+                return;
+            }
+            if (!response || response.result !== 'success') {
+                showError(response && response.message || 'Container action failed.');
+                return;
+            }
             if (!window.hideDockerComposeContainers && typeof window.loadlist === 'function') {
                 window.loadlist();
             } else {
                 loadComposeStacks();
             }
+        }).fail(function(_xhr, status) {
+            showError(status === 'timeout'
+                ? 'The request timed out. Refresh to check the container state before retrying.'
+                : 'Unable to complete the container action. Refresh before retrying.');
+        }).always(function() {
+            delete containerActionsPending[ctName];
         });
     }
 
@@ -280,12 +394,24 @@
     }
 
     function loadStackContainers(stackId, stackName) {
+        var listGeneration = stackListGeneration;
+        var generation = (stackDetailGeneration[stackId] || 0) + 1;
+        stackDetailGeneration[stackId] = generation;
         var $container = $('#compose-dash-ct-' + stackId);
         $container.html('<div class="compose-dash-loading"><i class="fa fa-spinner fa-spin"></i> Loading...</div>');
 
-        $.post(caURL, {action: 'getStackContainers', script: stackName}, function(data) {
+        function isCurrent() {
+            return listGeneration === stackListGeneration && generation === stackDetailGeneration[stackId];
+        }
+        $.ajax({ url: caURL, method: 'POST', timeout: 30000,
+            data: {action: 'getStackContainers', script: stackName}
+        }).done(function(data) {
+            if (!isCurrent()) return;
             try {
-                var response = JSON.parse(data);
+                var response = typeof data === 'string' ? JSON.parse(data) : data;
+                if (!response || response.result !== 'success' || !Array.isArray(response.containers)) {
+                    throw new Error('Invalid container snapshot');
+                }
                 if (response.containers && response.containers.length > 0) {
                     var html = '';
                     response.containers.forEach(function(ct) {
@@ -299,8 +425,6 @@
                         var ctWebUI = ct.WebUI || ct.webUI || ct.webui || '';
                         var ctImage = ct.Image || ct.image || '';
                         var ctUpdateStatus = ct.UpdateStatus || ct.updateStatus || 'unknown';
-                        var ctLocalSha = ct.LocalSha || ct.localSha || '';
-                        var ctRemoteSha = ct.RemoteSha || ct.remoteSha || '';
                         var ctStartedAt = ct.StartedAt || ct.startedAt || '';
 
                         var isRunning = ctState === 'running';
@@ -315,17 +439,10 @@
                         var image = ctImage;
                         var imageDisplay = image.replace(/^.*\//, '');
 
-                        var updateStatus = ctUpdateStatus;
-                        var localSha = ctLocalSha;
-                        var remoteSha = ctRemoteSha;
-                        var updateHtml = '';
-                        if (updateStatus === 'up-to-date') {
-                            updateHtml = '<span class="green-text"><i class="fa fa-check"></i> current</span>';
-                        } else if (updateStatus === 'update-available' && localSha && remoteSha) {
-                            updateHtml = '<span class="orange-text"><span class="sha">' + localSha + '</span> <i class="fa fa-arrow-right"></i> <span class="sha">' + remoteSha + '</span></span>';
-                        } else {
-                            updateHtml = '<span class="grey-text">--</span>';
-                        }
+                        var updateHtml = composeUpdateBadge(Object.assign({}, ct, {
+                            updateStatus: ctUpdateStatus,
+                            hasUpdate: ct.hasUpdate || ctUpdateStatus === 'update-available'
+                        }));
 
                         var ctUptime = formatUptime(ctStartedAt, isRunning);
 
@@ -354,26 +471,45 @@
                 console.error('Error parsing containers:', e);
                 $container.html('<div class="compose-dash-loading">Error loading containers</div>');
             }
+        }).fail(function() {
+            if (!isCurrent()) return;
+            console.error('[ComposeDash] Failed to load containers for ' + stackName);
+            $container.html('<div class="compose-dash-loading red-text">Failed to load containers. Collapse and expand to retry.</div>');
         });
     }
 
     function loadComposeStacks() {
-        $.post('/plugins/compose.manager/include/DashboardStacks.php', function(data) {
+        var generation = ++stackListGeneration;
+        stackDetailGeneration = Object.create(null);
+        $.ajax({ url: '/plugins/compose.manager/include/DashboardStacks.php',
+            method: 'POST', dataType: 'json', timeout: 30000
+        }).done(function(data) {
+            if (generation !== stackListGeneration) return;
+            if (!data || !Array.isArray(data.stacks)) {
+                console.error('[ComposeDash] Invalid stack snapshot', data);
+                $('#compose_stacks_status').text('Stacks -- Invalid response; refresh to retry');
+                return;
+            }
             var statusText = 'Stacks -- Started: ' + data.started + ', Stopped: ' + data.stopped;
             if (data.partial > 0) statusText += ', Partial: ' + data.partial;
+            Object.keys(stackActionErrors).forEach(function(project) {
+                statusText += ' | ' + project + ': ' + stackActionErrors[project];
+            });
             $('#compose_stacks_status').text(statusText);
 
-            if (window.hideDockerComposeContainers && data.composeContainerNames && data.composeContainerNames.length > 0) {
+            if (window.hideDockerComposeContainers && Array.isArray(data.composeContainerNames)) {
                 scheduleComposeContainerHiding(data.composeContainerNames);
             }
 
-            stackContainerCache = {};
+            stackContainerCache = Object.create(null);
+            stackPaths = Object.create(null);
 
             var html = '';
             if (data.stacks.length === 0) {
                 html = '<div class="compose-dash-loading">No compose stacks defined</div>';
             } else {
                 data.stacks.forEach(function(stack, idx) {
+                    stackPaths[stack.folder] = stack.path;
                     var stackId = 'stack-' + stack.folder.replace(/[^a-zA-Z0-9_-]/g, '_');
                     var state = stack.state;
                     var stateIcon = state === 'started' ? 'fa-play' :
@@ -384,14 +520,7 @@
                     var imgSrc = composeIconSrc(stack.icon);
                     var isRunning = state === 'started' || state === 'partial';
 
-                    var updateIcon, updateText, updateColor;
-                    if (stack.update === 'up-to-date') {
-                        updateIcon = 'fa-check'; updateText = 'current'; updateColor = 'green-text';
-                    } else if (stack.update === 'update-available') {
-                        updateIcon = 'fa-arrow-up'; updateText = 'update'; updateColor = 'orange-text';
-                    } else {
-                        updateIcon = 'fa-question-circle'; updateText = ''; updateColor = 'grey-text';
-                    }
+                    var updatePresentation = composeStackUpdatePresentation(stack.updateContainers);
 
                     var containerText = stack.running + '/' + stack.total;
                     var uptimeText = formatUptime(stack.startedAt, isRunning);
@@ -405,7 +534,7 @@
                     html += '<div class="compose-dash-state ' + stateColor + '"><i class="fa ' + stateIcon + '"></i> ' + stateText + '</div>';
                     html += '</span>';
                     html += '<span class="compose-dash-cols">';
-                    html += '<span class="compose-dash-col update ' + updateColor + '" title="Update status"><i class="fa ' + updateIcon + '"></i> ' + updateText + '</span>';
+                    html += '<span class="compose-dash-col update">' + composeUpdatePresentationBadge(updatePresentation) + '</span>';
                     html += '<span class="compose-dash-col containers" title="Running/Total containers">' + containerText + '</span>';
                     html += '<span class="compose-dash-col runtime" title="Uptime">' + uptimeText + '</span>';
                     html += '</span>';
@@ -455,7 +584,8 @@
             noStacks();
 
             debugLog('Loaded', data.stacks.length, 'stacks, context menus attached via onclick');
-        }, 'json').fail(function() {
+        }).fail(function() {
+            if (generation !== stackListGeneration) return;
             $('#compose_stacks_status').text('Stacks -- Error loading');
             $('#compose_dash_content').html('<div class="compose-dash-loading red-text">Failed to load stacks</div>');
         });
@@ -520,6 +650,7 @@
 
     var composeContainerNameSet = null;
     var hideContainersSetup = false;
+    var composeHidingTimer = null;
 
     function setDockerViewVisibility(visible) {
         var $dockerView = $('#docker_view');
@@ -533,35 +664,27 @@
     }
 
     function scheduleComposeContainerHiding(containerNames) {
-        if (!containerNames || containerNames.length === 0) return;
-
-        var names = containerNames.slice();
+        clearTimeout(composeHidingTimer);
+        setupComposeContainerHiding(containerNames);
         var attempts = 0;
-        var maxAttempts = 120;
-
         function tryHide() {
+            composeHidingTimer = null;
             if (!window.hideDockerComposeContainers) return;
-            if ($('#docker_view').length) {
-                setupComposeContainerHiding(names);
+            doHideContainers();
+            attempts++;
+            if (attempts < 120) {
+                composeHidingTimer = setTimeout(tryHide, 1000);
             }
         }
-
-        tryHide();
-        var poller = setInterval(function() {
-            attempts += 1;
-            tryHide();
-            if (attempts >= maxAttempts) {
-                clearInterval(poller);
-            }
-        }, 1000);
+        composeHidingTimer = setTimeout(tryHide, 1000);
     }
 
     function setupComposeContainerHiding(containerNames) {
-        if (!containerNames || containerNames.length === 0) return;
+        if (!Array.isArray(containerNames)) return;
 
         debugLog('Setting up compose container hiding for:', containerNames);
 
-        composeContainerNameSet = {};
+        composeContainerNameSet = Object.create(null);
         containerNames.forEach(function(n) { composeContainerNameSet[n.toLowerCase()] = true; });
 
         if (!$('#compose-hide-style').length) {
@@ -585,10 +708,6 @@
         setTimeout(function() {
             setDockerViewVisibility(true);
         }, 250);
-        setTimeout(doHideContainers, 500);
-        setTimeout(doHideContainers, 1500);
-        setTimeout(doHideContainers, 3000);
-        setTimeout(doHideContainers, 5000);
     }
 
     function doHideContainers() {
@@ -600,12 +719,11 @@
         var hiddenCount = 0;
         $dockerView.find('span.outer.apps').each(function() {
             var $el = $(this);
-            if ($el.hasClass('compose-hidden-container')) return;
-
             var name = extractContainerName($el);
-            if (name && composeContainerNameSet[name.toLowerCase()]) {
+            var hide = !!(name && composeContainerNameSet[name.toLowerCase()]);
+            if ($el.hasClass('compose-hidden-container') !== hide) {
                 debugLog('Hiding Docker tile container:', name);
-                $el.addClass('compose-hidden-container');
+                $el.toggleClass('compose-hidden-container', hide);
                 hiddenCount++;
             }
         });
@@ -682,7 +800,7 @@
                     originalLoadlist.apply(this, arguments);
                     clearTimeout(composeRefreshTimer);
                     composeRefreshTimer = setTimeout(function() {
-                        stackContainerCache = {};
+                        stackContainerCache = Object.create(null);
                         loadComposeStacks();
                     }, 2000);
                 };

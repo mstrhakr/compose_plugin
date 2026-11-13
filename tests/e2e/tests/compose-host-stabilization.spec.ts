@@ -1,0 +1,809 @@
+import { expect, test as base, type Page, type Route } from '@playwright/test';
+import { execFileSync } from 'node:child_process';
+import {
+  buildStackName, composeDownAndWait, deleteStackWithRetries, postForm,
+  type PostFormResult, waitForOperation, waitForStackUnlock,
+} from './helpers/composeE2eHelpers';
+
+const exec = '/plugins/compose.manager/include/Exec.php';
+const util = '/plugins/compose.manager/include/ComposeUtil.php';
+const composePath = process.env.E2E_COMPOSE_PATH || '/Docker/Compose';
+const enabled = !!process.env.E2E_BASE_URL
+  && ['1', 'true', 'yes'].includes((process.env.E2E_ENABLE_MUTATION_TESTS || '').toLowerCase())
+  && process.env.E2E_HOST_TEST_ACK === new URL(process.env.E2E_BASE_URL!).origin;
+
+function hostCommand(command: string, input?: string): string {
+  const target = process.env.E2E_HOST_SSH;
+  if (!target) throw new Error('E2E_HOST_SSH is required for scoped metadata and wrapper host tests.');
+  return execFileSync('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', target, command], {
+    input, encoding: 'utf8', timeout: 30_000,
+  });
+}
+
+type Metadata = Record<string, string | null>;
+function fixtureMetadata(stack: Pick<HostStack, 'project' | 'path'>, writes: Metadata = {}, lock = false): Metadata {
+  expect(stack.project).toMatch(/^pw-host-[a-f0-9]{12}$/);
+  expect(stack.path.endsWith('/' + stack.project)).toBe(true);
+  const encoded = Buffer.from(JSON.stringify({ ...stack, writes, lock })).toString('base64');
+  return JSON.parse(hostCommand('php', `<?php
+    $data = json_decode(base64_decode('${encoded}'), true, 512, JSON_THROW_ON_ERROR);
+    $path = $data['path'];
+    if (basename($path) !== $data['project'] || is_link($path) || realpath($path) !== $path
+        || trim(file_get_contents($path . '/project_name')) !== $data['project']) {
+        throw new RuntimeException('Refusing metadata edits outside the exact generated stack.');
+    }
+    $allowed = ['project_identity.json', 'envpath', 'compose.override.yaml'];
+    $original = [];
+    foreach ($allowed as $name) {
+        $file = $path . '/' . $name;
+        if (is_link($file) || (file_exists($file) && !is_file($file))) {
+            throw new RuntimeException('Unexpected fixture metadata type.');
+        }
+        $original[$name] = is_file($file) ? file_get_contents($file) : null;
+    }
+    foreach ($data['writes'] as $name => $contents) {
+        if (!in_array($name, $allowed, true)) throw new RuntimeException('Unapproved metadata file.');
+        $file = $path . '/' . $name;
+        if ($contents === null) {
+            if (is_file($file) && !unlink($file)) throw new RuntimeException('Fixture removal failed.');
+        } elseif (file_put_contents($file, $contents) !== strlen($contents)) {
+            throw new RuntimeException('Fixture write failed.');
+        }
+    }
+    $lock = $path . '/project_identity.lock';
+    if ($data['lock']) {
+        if (is_file($lock) && !is_link($lock) && file_get_contents($lock) === '') {
+            if (!unlink($lock)) throw new RuntimeException('Cannot replace the inactive fixture identity lock.');
+        }
+        if (file_exists($lock) && !is_dir($lock)) throw new RuntimeException('Unexpected existing identity lock.');
+        if (!is_dir($lock) && !mkdir($lock)) throw new RuntimeException('Cannot induce fixture lock failure.');
+    } elseif (is_dir($lock) && !rmdir($lock)) {
+        throw new RuntimeException('Cannot remove induced fixture lock failure.');
+    }
+    echo json_encode($original, JSON_THROW_ON_ERROR);
+  `)) as Metadata;
+}
+
+type Snapshot = { service?: string; name?: string; id?: string; state?: string; health?: string };
+interface UpdateCheckWindow extends Window {
+  loadSavedUpdateStatus(): void;
+  checkStackUpdates(project: string): void;
+  composeUpdateCheckState: Record<string, string | undefined>;
+  stackUpdateStatus: Record<string, unknown>;
+}
+type HostStack = {
+  project: string;
+  path: string;
+  save(yaml: string): Promise<void>;
+  action(action: string, extra?: Record<string, string>): Promise<PostFormResult>;
+  containers(): Promise<Snapshot[]>;
+  refresh(): Promise<void>;
+};
+
+const yaml = [
+  'services:',
+  '  app:',
+  '    image: alpine:3.20',
+  '    mem_limit: 32m',
+  '    cpus: 0.10',
+  '    pids_limit: 32',
+  '    command: ["sh", "-c", "sleep 600"]',
+  '    healthcheck:',
+  '      test: ["CMD", "true"]',
+  '      interval: 2s',
+  '      timeout: 1s',
+  '      retries: 2',
+  '      start_period: 30s',
+  '  selected:',
+  '    image: alpine:3.20',
+  '    mem_limit: 32m',
+  '    cpus: 0.10',
+  '    pids_limit: 32',
+  '    command: ["sh", "-c", "sleep 600"]',
+  '    profiles: [selected]',
+  '  excluded:',
+  '    image: alpine:3.20',
+  '    mem_limit: 32m',
+  '    cpus: 0.10',
+  '    pids_limit: 32',
+  '    command: ["sh", "-c", "exit 97"]',
+  '    profiles: [excluded]',
+  '',
+].join('\n');
+
+const test = base.extend<{ stack: HostStack }>({
+  stack: async ({ page }, use) => {
+    test.skip(!enabled, 'Explicit host URL, mutation opt-in and matching E2E_HOST_TEST_ACK are required.');
+    test.setTimeout(300_000);
+    const name = buildStackName('pw-host');
+    let project = '';
+    let path = '';
+    const containerNames = new Set<string>();
+    const terminalSessions = new Set<string>();
+    const blocked: string[] = [];
+    // Browser-originated mutations are restricted to this test's exact project.
+    // APIRequestContext calls below have their own fixed, scoped payloads.
+    await page.route(/\/(?:Exec|ComposeUtil)\.php(?:\?|$)/, async route => {
+      const request = route.request();
+      const params = new URLSearchParams(request.postData() || '');
+      const action = params.get('action') || '';
+      const readOnly = new Set([
+        'getComposeProjects', 'getComposeStackRow', 'getStackContainers', 'getConfig',
+        'getUpdateStatus', 'getSavedUpdateStatus', 'getProfileServices', 'getUiOperation',
+        'getStackSettings', 'checkStackLock', 'getPendingRechecks',
+        'getPendingRecheckStacks', 'getPersistentContainerCache', 'getComposeLoadSnapshot',
+        'getDescription', 'getGitStackStatus', 'getYml', 'getEnvPath', 'getEnv', 'getOverride',
+        'getProjectIdentities',
+      ]);
+      if (request.method() === 'GET' || readOnly.has(action)) {
+        await route.continue();
+        return;
+      }
+      if (action === 'checkStackUpdates' && project && params.get('script') === project) {
+        await route.continue();
+        return;
+      }
+      if (['markStackForRecheck', 'clearStackRecheck'].includes(action) && project
+        && params.get('stacks') === JSON.stringify([project])) {
+        await route.continue();
+        return;
+      }
+      if (['getTerminalSession', 'stopTerminalSession', 'detachTerminalSession', 'getTerminalOutput', 'connectTerminalViewer'].includes(action)
+        && terminalSessions.has(params.get('session') || '')) {
+        await route.continue();
+        return;
+      }
+      if (['composeUp', 'composeStop', 'composeDown', 'composeUpRecreate'].includes(action)
+        && project && params.get('path') === path && params.get('trackOperation') === '1') {
+        // Only the terminal cases explicitly wait, bounded to this disposable stack.
+        if (params.get('waitForHealthy') !== '1' || params.get('waitTimeout') !== '30') {
+          params.set('waitForHealthy', '0');
+        }
+        const response = await route.fetch({ postData: params.toString() });
+        const result = await response.json();
+        if (typeof result.url === 'string') {
+          const url = new URL(result.url, page.url());
+          const session = url.searchParams.get('session') || '';
+          if (url.origin === new URL(page.url()).origin
+            && url.pathname === '/plugins/compose.manager/include/ShowTtyd.php'
+            && /^[a-f0-9]{32}$/.test(session)
+            && url.searchParams.get('socket') === 'compose_action_' + session) {
+            terminalSessions.add(session);
+          }
+        }
+        await route.fulfill({ response });
+        return;
+      }
+      if (action === 'containerAction' && containerNames.has(params.get('container') || '')
+        && params.get('containerAction') === 'restart') {
+        await route.continue();
+        return;
+      }
+      await route.abort('blockedbyclient');
+      blocked.push(action);
+    });
+    await page.goto(composePath, { waitUntil: 'domcontentloaded' });
+    expect(page.url()).not.toContain('/login');
+    try {
+      const created = await postForm(page, exec, { action: 'addStack', stackName: name });
+      expect(created.response.ok(), created.body).toBeTruthy();
+      expect(created.json?.result, created.body).toBe('success');
+      project = String(created.json?.project || '');
+      expect(project, 'Refuse cleanup or mutations unless creation returns this exact generated identity.').toBe(name);
+      const settings = await postForm(page, exec, { action: 'getStackSettings', script: project });
+      expect(settings.json?.result, settings.body).toBe('success');
+      path = String(settings.json?.projectPath || '');
+      expect(path.endsWith('/' + project)).toBe(true);
+      const stack: HostStack = {
+        project, path,
+        async save(content) {
+          await waitForStackUnlock(page, project);
+          const result = await postForm(page, exec, { action: 'saveYml', script: project, scriptContents: content });
+          expect(result.response.ok(), result.body).toBeTruthy();
+          expect(result.body.toLowerCase()).toContain('saved');
+        },
+        action(action, extra = {}) {
+          if (!['composeUp', 'composeStop', 'composeDown', 'composeUpRecreate'].includes(action)) {
+            throw new Error('Unapproved host-test action');
+          }
+          return postForm(page, util, { ...extra, action, path, background: '1', trackOperation: '1', waitForHealthy: '0' });
+        },
+        async containers() {
+          const result = await postForm(page, exec, { action: 'getStackContainers', script: project });
+          expect(result.response.ok(), result.body).toBeTruthy();
+          expect(result.json?.result, result.body).toBe('success');
+          expect(Array.isArray(result.json?.containers), result.body).toBe(true);
+          const containers = result.json!.containers as Snapshot[];
+          containers.forEach(ct => {
+            expect(ct.name?.startsWith(project + '-') || ct.name?.startsWith(project + '_'),
+              'Refuse container actions outside the generated project namespace.').toBe(true);
+            containerNames.add(ct.name!);
+          });
+          return containers;
+        },
+        async refresh() {
+          await page.reload({ waitUntil: 'domcontentloaded' });
+          await expect(page.locator(`[data-project="${project}"].compose-sortable`)).toBeVisible();
+        },
+      };
+      await stack.save(yaml);
+      const profiles = await postForm(page, exec, {
+        action: 'saveProfiles', script: project, scriptContents: JSON.stringify(['selected', 'excluded']),
+      });
+      expect(profiles.response.ok(), profiles.body).toBeTruthy();
+      await use(stack);
+    } finally {
+      // Never use a guessed project/path after an incomplete create response.
+      if (project === name && path.endsWith('/' + project)) {
+        const error = await composeDownAndWait(page, project, path);
+        expect(error, 'Cleanup Down failed; leave metadata intact for investigation.').toBeNull();
+        const deleteError = await deleteStackWithRetries(page, project);
+        expect(deleteError, 'Generated host-test stack was not deleted.').toBeNull();
+      } else if (project) {
+        throw new Error('Creation was incomplete; refusing cleanup with an unverified path. Inspect the pw-host stack.');
+      }
+      if (blocked.length) {
+        await test.info().attach('blocked-browser-actions', {
+          body: JSON.stringify(blocked), contentType: 'application/json',
+        });
+      }
+    }
+  },
+});
+
+async function start(page: Page, stack: HostStack, extra: Record<string, string> = {}) {
+  const response = await stack.action('composeUp', extra);
+  await waitForOperation(page, stack.project, response);
+}
+
+test('global wrapper list and ps succeed without a project name', async ({ stack }) => {
+  expect(stack.project).toMatch(/^pw-host-/);
+  for (const command of ['list', 'ps']) {
+    const output = hostCommand(`bash /usr/local/emhttp/plugins/compose.manager/scripts/compose.sh -c ${command}`);
+    expect(output).not.toContain('Invalid resolved project name');
+    if (command === 'list') expect(Array.isArray(JSON.parse(output))).toBe(true);
+    else output.trim().split('\n').filter(Boolean).forEach(line => expect(JSON.parse(line)).toHaveProperty('ID'));
+    await test.info().attach('global-' + command, { body: output, contentType: 'text/plain' });
+  }
+});
+
+test('Maintenance reports live identities without changing pins or showing settings apply controls', async ({ page, stack }) => {
+  const before = fixtureMetadata(stack);
+  await page.goto('/Settings/compose.manager.settings', { waitUntil: 'domcontentloaded' });
+  await page.locator('.compose-tab[data-tab="maintenance"]').click();
+  await expect(page.locator('#global-settings-actions')).toBeHidden();
+  await expect(page.locator('#compose-tab-maintenance input[onclick="clearAllIconCache()"]')).toBeVisible();
+  await expect(page.locator('#compose-tab-maintenance input[onclick="clearUpdateCache()"]')).toBeVisible();
+  await page.locator('#compose-identity-check').click();
+  const row = page.locator('#compose-identity-report tbody tr').filter({ has: page.getByText(stack.project, { exact: true }) });
+  await expect(row).toHaveCount(1);
+  await expect(row).toContainText('No runtime evidence');
+  await expect(page.locator('#compose-identity-check')).toBeEnabled();
+  expect(fixtureMetadata(stack)).toEqual(before);
+});
+
+test('override saves register frozen inputs and registration failures restore file and revision', async ({ page, stack }) => {
+  const original = fixtureMetadata(stack);
+  const receipt = JSON.stringify({
+    version: 1, projectName: stack.project, source: 'new', origin: 'plus',
+    composeFiles: [stack.path + '/compose.yaml'], composeFilesSource: 'runtime-labels',
+  });
+  try {
+    fixtureMetadata(stack, { 'project_identity.json': receipt, 'compose.override.yaml': null });
+    const content = 'services:\n  app:\n    labels:\n      compose.host-test: "registered"\n';
+    const save = await postForm(page, exec, { action: 'saveOverride', script: stack.project, scriptContents: content });
+    expect(save.response.ok(), save.body).toBeTruthy();
+    expect(save.body).toContain('saved');
+    const loaded = await postForm(page, exec, { action: 'getOverride', script: stack.project });
+    expect(loaded.json?.content).toBe(content);
+    const registered = fixtureMetadata(stack);
+    expect(JSON.parse(registered['project_identity.json']!).composeFiles).toContain(stack.path + '/compose.override.yaml');
+    const config = hostCommand('php', `<?php
+      require '/usr/local/emhttp/plugins/compose.manager/include/Util.php';
+      $stack = StackInfo::fromProject(${JSON.stringify(stack.path.slice(0, -stack.project.length - 1))}, '${stack.project}');
+      $args = $stack->buildComposeArgs();
+      if (!chdir($args['projectDirectory'])) throw new RuntimeException('Fixture working directory unavailable.');
+      $command = 'docker compose -p ' . escapeshellarg($args['projectName']);
+      foreach ($args['filePaths'] as $file) $command .= ' -f ' . escapeshellarg($file);
+      exec($command . ' config --format json', $output, $status);
+      if ($status !== 0) throw new RuntimeException('Fixture effective config failed.');
+      echo implode("\\n", $output);
+    `);
+    expect(JSON.parse(config).services.app.labels['compose.host-test']).toBe('registered');
+    const revision = String(loaded.json?.revision);
+    expect(revision).toMatch(/^[a-f0-9]{64}$/);
+    fixtureMetadata(stack, {}, true);
+    const failed = await postForm(page, exec, { action: 'saveOverride', script: stack.project,
+      scriptContents: content.replace('registered', 'must-not-save'), expectedRevision: revision });
+    expect(failed.json?.result, failed.body).toBe('error');
+    expect(failed.json?.message).toContain('registration');
+    const unchanged = await postForm(page, exec, { action: 'getOverride', script: stack.project });
+    expect(unchanged.json?.content).toBe(content);
+    expect(unchanged.json?.revision).toBe(revision);
+    expect(fixtureMetadata(stack, {}, true)).toEqual(registered);
+  } finally {
+    fixtureMetadata(stack, original);
+  }
+});
+
+test('missing imported env refuses single dispatch and isolates mixed bulk dispatch', async ({ page, stack }) => {
+  const original = fixtureMetadata(stack);
+  const name = buildStackName('pw-host');
+  let healthy: Pick<HostStack, 'project' | 'path'> | undefined;
+  try {
+    const created = await postForm(page, exec, { action: 'addStack', stackName: name });
+    expect(created.json?.result, created.body).toBe('success');
+    expect(created.json?.project).toBe(name);
+    const settings = await postForm(page, exec, { action: 'getStackSettings', script: name });
+    healthy = { project: name, path: String(settings.json?.projectPath) };
+    expect(healthy.path.endsWith('/' + name)).toBe(true);
+    const saved = await postForm(page, exec, { action: 'saveYml', script: name, scriptContents: yaml });
+    expect(saved.body).toContain('saved');
+    fixtureMetadata(stack, {
+      'envpath': stack.path + '/deliberately-missing.env',
+      'project_identity.json': JSON.stringify({ version: 1, projectName: stack.project,
+        source: 'owner', origin: 'dcflachs', composeFiles: [stack.path + '/compose.yaml'],
+        composeFilesSource: 'runtime-labels' }),
+    });
+    const single = await stack.action('composeUp');
+    expect(single.json?.error, single.body).toBe('configuration');
+    expect(single.json?.message).toContain('env file is unavailable');
+    expect(single.json).not.toHaveProperty('operations');
+    const dispatch = await postForm(page, util, { action: 'composeUpMultiple',
+      paths: JSON.stringify([stack.path, healthy.path]), background: '1', trackOperation: '1' });
+    expect(dispatch.json?.failures).toHaveProperty(stack.project);
+    expect(dispatch.json?.operations).not.toHaveProperty(stack.project);
+    await waitForOperation(page, healthy.project, dispatch);
+    expect(hostCommand(`docker ps -aq --filter label=com.docker.compose.project=${stack.project}`).trim()).toBe('');
+  } finally {
+    fixtureMetadata(stack, original);
+    if (healthy) {
+      expect(await composeDownAndWait(page, healthy.project, healthy.path)).toBeNull();
+      expect(await deleteStackWithRetries(page, healthy.project)).toBeNull();
+    }
+  }
+});
+
+test('scoped image checks acknowledge only the captured pending generation', async ({ page, stack }) => {
+  const mark = async () => {
+    const result = await postForm(page, exec, { action: 'markStackForRecheck', stacks: JSON.stringify([stack.project]) });
+    expect(result.json?.result, result.body).toBe('success');
+  };
+  const check = async () => {
+    const result = await postForm(page, exec, { action: 'checkStackUpdates', script: stack.project });
+    expect(result.json?.result, result.body).toBe('success');
+    expect(result.json?.recheckToken).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.json?.updates).toEqual([]);
+    return String(result.json!.recheckToken);
+  };
+  const acknowledge = async (token: string) => {
+    const result = await postForm(page, exec, {
+      action: 'clearStackRecheck', stacks: JSON.stringify([stack.project]),
+      tokens: JSON.stringify({ [stack.project]: token }),
+    });
+    expect(result.json?.result, result.body).toBe('success');
+    return result.json!.remaining;
+  };
+  await mark();
+  const old = await check();
+  await mark();
+  expect(await acknowledge(old)).toContain(stack.project);
+  const fresh = await check();
+  expect(fresh).not.toBe(old);
+  expect(await acknowledge(fresh)).not.toContain(stack.project);
+});
+
+test('active scoped deployment defers image checks and invalidates earlier acknowledgements', async ({ page, stack }) => {
+  await stack.save(yaml
+    .replace('test: ["CMD", "true"]', 'test: ["CMD-SHELL", "sleep 10; true"]')
+    .replace('timeout: 1s', 'timeout: 15s'));
+  const mark = await postForm(page, exec, { action: 'markStackForRecheck', stacks: JSON.stringify([stack.project]) });
+  expect(mark.json?.result, mark.body).toBe('success');
+  const before = await postForm(page, exec, { action: 'checkStackUpdates', script: stack.project });
+  expect(before.json?.result, before.body).toBe('success');
+  const old = String(before.json!.recheckToken);
+  expect(old).toMatch(/^[a-f0-9]{64}$/);
+  const deployment = await postForm(page, util, {
+    action: 'composeUp', path: stack.path, background: '1', trackOperation: '1',
+    waitForHealthy: '1', waitTimeout: '30',
+  });
+  const acknowledge = async (token: string) => {
+    const result = await postForm(page, exec, {
+      action: 'clearStackRecheck', stacks: JSON.stringify([stack.project]),
+      tokens: JSON.stringify({ [stack.project]: token }),
+    });
+    expect(result.json?.result, result.body).toBe('success');
+    return result.json!.remaining;
+  };
+  await expect.poll(async () => {
+    const result = await postForm(page, exec, { action: 'checkStackUpdates', script: stack.project });
+    if (result.json?.result === 'superseded') {
+      expect(result.json).not.toHaveProperty('recheckToken');
+    }
+    return result.json?.result;
+  }, { timeout: 20_000 }).toBe('superseded');
+  const busySave = await postForm(page, exec, {
+    action: 'saveYml', script: stack.project, scriptContents: yaml,
+  });
+  expect(busySave.json?.result, busySave.body).toBe('error');
+  expect(String(busySave.json?.message)).toContain('operation is in progress');
+  expect(await acknowledge(old)).toContain(stack.project);
+  try {
+    await waitForOperation(page, stack.project, deployment);
+  } finally {
+    const log = await postForm(page, exec, { action: 'getLastCmdLog', script: stack.project });
+    expect(log.json?.result, log.body).toBe('success');
+    await test.info().attach('scoped-deployment-command', {
+      body: String(log.json?.log || ''), contentType: 'text/plain',
+    });
+  }
+  expect(await acknowledge(old)).toContain(stack.project);
+  const fresh = await postForm(page, exec, { action: 'checkStackUpdates', script: stack.project });
+  expect(fresh.json?.result, fresh.body).toBe('success');
+  const token = String(fresh.json!.recheckToken);
+  expect(token).toMatch(/^[a-f0-9]{64}$/);
+  expect(token).not.toBe(old);
+  expect(await acknowledge(token)).not.toContain(stack.project);
+});
+
+test('required health deadline produces a failed Up receipt and saved command result', async ({ page, stack }) => {
+  await stack.save(yaml.replace('test: ["CMD", "true"]', 'test: ["CMD", "false"]')
+    .replace('start_period: 30s', 'start_period: 120s'));
+  const started = Date.now();
+  const deployment = await postForm(page, util, {
+    action: 'composeUp', path: stack.path, background: '1', trackOperation: '1',
+    waitForHealthy: '1', waitTimeout: '5',
+  });
+  await waitForOperation(page, stack.project, deployment, 'nonzero');
+  expect(Date.now() - started).toBeLessThan(60_000);
+  const result = await postForm(page, exec, { action: 'getStackResult', script: stack.project });
+  expect(result.json?.result, result.body).toBe('success');
+  expect(result.json?.lastResult, result.body).toMatchObject({ result: 'failed', operation: 'up' });
+  const log = await postForm(page, exec, { action: 'getLastCmdLog', script: stack.project });
+  expect(log.json?.result, log.body).toBe('success');
+  expect(String(log.json?.log)).toContain('--wait-timeout 5');
+  await test.info().attach('required-health-deadline', {
+    body: String(log.json?.log || ''), contentType: 'text/plain',
+  });
+});
+
+test('scoped source edit preserves a newer pending mark and does not introduce automatic checks', async ({ page, stack }) => {
+  await postForm(page, exec, { action: 'markStackForRecheck', stacks: JSON.stringify([stack.project]) });
+  const before = await postForm(page, exec, { action: 'checkStackUpdates', script: stack.project });
+  expect(before.json?.result, before.body).toBe('success');
+  const old = String(before.json?.recheckToken);
+  expect(old).toMatch(/^[a-f0-9]{64}$/);
+  await stack.save(yaml + '\n# scoped ownership edit\n');
+  const staleAck = await postForm(page, exec, {
+    action: 'clearStackRecheck', stacks: JSON.stringify([stack.project]),
+    tokens: JSON.stringify({ [stack.project]: old }),
+  });
+  expect(staleAck.json?.result, staleAck.body).toBe('success');
+  expect(staleAck.json?.remaining).toContain(stack.project);
+  const fresh = await postForm(page, exec, { action: 'checkStackUpdates', script: stack.project });
+  expect(fresh.json?.result, fresh.body).toBe('success');
+  const token = String(fresh.json?.recheckToken);
+  expect(token).not.toBe(old);
+  expect(token).toMatch(/^[a-f0-9]{64}$/);
+  const accepted = await postForm(page, exec, {
+    action: 'clearStackRecheck', stacks: JSON.stringify([stack.project]),
+    tokens: JSON.stringify({ [stack.project]: token }),
+  });
+  expect(accepted.json?.remaining).not.toContain(stack.project);
+  await stack.save(yaml + '\n# ordinary edit without a pending mark\n');
+  const pending = await postForm(page, exec, { action: 'getPendingRecheckStacks' });
+  expect(pending.json?.result, pending.body).toBe('success');
+  expect(pending.json?.pending).not.toHaveProperty(stack.project);
+});
+
+test('late saved evidence cannot replace a fresh scoped image check', async ({ page, stack }) => {
+  await stack.refresh();
+  let release!: () => void;
+  let intercepted!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const seen = new Promise<void>(resolve => { intercepted = resolve; });
+  const stale = JSON.stringify({
+    result: 'success', stacks: {
+      [stack.project]: { projectName: stack.project, lastChecked: 1, hasUpdate: false, containers: [] },
+    },
+  });
+  const delaySaved = async (route: Route) => {
+    const params = new URLSearchParams(route.request().postData() || '');
+    if (params.get('action') !== 'getSavedUpdateStatus') {
+      await route.fallback();
+      return;
+    }
+    intercepted();
+    await blocked;
+    await route.fulfill({ contentType: 'application/json', body: stale });
+  };
+  await page.route(/\/Exec\.php(?:\?|$)/, delaySaved);
+  try {
+    await page.evaluate(() => (window as typeof window & UpdateCheckWindow).loadSavedUpdateStatus());
+    await seen;
+    await page.evaluate(project => (window as typeof window & UpdateCheckWindow).checkStackUpdates(project), stack.project);
+    await expect.poll(() => page.evaluate(project => {
+      const state = window as typeof window & UpdateCheckWindow;
+      return !state.composeUpdateCheckState[project] && !!state.stackUpdateStatus[project];
+    }, stack.project)).toBe(true);
+    const before = await page.evaluate(project => JSON.stringify((window as typeof window & UpdateCheckWindow).stackUpdateStatus[project]), stack.project);
+    const response = page.waitForResponse(response => {
+      const params = new URLSearchParams(response.request().postData() || '');
+      return response.url().includes('/Exec.php') && params.get('action') === 'getSavedUpdateStatus';
+    });
+    release();
+    await response;
+    await expect.poll(() => page.evaluate(project => JSON.stringify((window as typeof window & UpdateCheckWindow).stackUpdateStatus[project]), stack.project)).toBe(before);
+  } finally {
+    release();
+    await page.unroute(/\/Exec\.php(?:\?|$)/, delaySaved);
+  }
+});
+
+test('Pull/Build & Up creates only default and selected-profile services, then redeploys stopped services', async ({ page, stack }) => {
+  await stack.refresh();
+  const icon = page.locator(`[data-project="${stack.project}"].compose-sortable .hand[data-stackid]`);
+  const iconId = await icon.getAttribute('id');
+  await icon.click();
+  await page.locator(`#dropdown-${iconId}`).getByText('Pull/Build & Up', { exact: true }).click();
+  await expect(page.locator('.sweet-alert:visible h2')).toHaveText('Select Profiles');
+  await page.locator('#profile_all_profiles').uncheck();
+  await page.locator('.profile_checkbox[value="selected"]').check();
+  await page.locator('.profile_checkbox[value="excluded"]').uncheck();
+  let dispatchSeen = false;
+  const dispatchPromise = page.waitForResponse(response => {
+    const params = new URLSearchParams(response.request().postData() || '');
+    return response.url().endsWith('/ComposeUtil.php')
+      && params.get('action') === 'composeUp' && params.get('path') === stack.path;
+  }, { timeout: 30_000 }).then(response => { dispatchSeen = true; return response; });
+  // Keep the rejection owned while the SweetAlert transition is in flight.
+  void dispatchPromise.catch(() => {});
+  await page.waitForTimeout(800);
+  await page.locator('.sweet-alert:visible button.confirm').click();
+  const confirmation = page.locator('.sweet-alert:visible h2').filter({ hasText: 'Pull/Build & Up:' });
+  await expect.poll(async () => dispatchSeen || await confirmation.isVisible()).toBe(true);
+  if (await confirmation.isVisible()) {
+    await page.waitForTimeout(800);
+    await page.locator('#swal-run-bg-checkbox').check({ force: true });
+    await page.locator('.sweet-alert:visible button.confirm').click();
+  }
+  const response = await dispatchPromise;
+  const params = new URLSearchParams(response.request().postData() || '');
+  expect(params.get('prepareImages')).toBe('1');
+  expect(params.get('profile')).toBe('selected');
+  const body = await response.text();
+  await waitForOperation(page, stack.project, { response, body, json: JSON.parse(body) });
+  expect((await stack.containers()).map(ct => ct.service).sort()).toEqual(['app', 'selected']);
+  await waitForOperation(page, stack.project, await stack.action('composeStop', { profile: 'selected' }));
+  expect((await stack.containers()).every(ct => ct.state === 'exited')).toBe(true);
+  await start(page, stack, { prepareImages: '1', profile: 'selected' });
+  expect((await stack.containers()).filter(ct => ct.state === 'running').map(ct => ct.service).sort()).toEqual(['app', 'selected']);
+});
+
+test('failed image preparation records failure and never creates containers', async ({ page, stack }) => {
+  await stack.save('services:\n  app:\n    image: INVALID IMAGE REFERENCE\n');
+  const dispatch = await stack.action('composeUp', { prepareImages: '1' });
+  // Configuration failure may refuse dispatch or produce a failed receipt.
+  if (dispatch.json?.operations) {
+    await waitForOperation(page, stack.project, dispatch, 'nonzero');
+  } else {
+    expect(dispatch.json?.error, dispatch.body).toBeTruthy();
+  }
+  expect(await stack.containers()).toEqual([]);
+  // Restore valid configuration before cleanup.
+  await stack.save(yaml);
+});
+
+test('build-only deployment builds successfully and a later build failure prevents startup', async ({ page, stack }) => {
+  const buildYaml = (instruction: string) => [
+    'services:', '  app:', '    mem_limit: 32m', '    cpus: 0.10', '    pids_limit: 32',
+    '    build:', '      context: .', '      dockerfile_inline: |',
+    '        FROM alpine:3.20', `        ${instruction}`, '        CMD ["sleep", "600"]', '',
+  ].join('\n');
+  try {
+    await stack.save(buildYaml('LABEL purpose=compose-isolated-host-test'));
+    await start(page, stack, { prepareImages: '1' });
+    expect((await stack.containers()).map(ct => ct.state)).toEqual(['running']);
+    await waitForOperation(page, stack.project, await stack.action('composeDown'));
+    await stack.save(buildYaml('RUN exit 23'));
+    await waitForOperation(page, stack.project, await stack.action('composeUp', { prepareImages: '1' }), 'nonzero');
+    expect(await stack.containers()).toEqual([]);
+  } finally {
+    await stack.save(yaml);
+  }
+});
+
+for (const control of ['background', 'stop', 'done'] as const) {
+test(`foreground terminal ${control} preserves explicit command lifecycle`, async ({ page, stack }) => {
+  await stack.save(yaml
+    .replace('sleep 600', 'sleep 10; touch /tmp/ready; sleep 600')
+    .replace('["CMD", "true"]', '["CMD", "test", "-f", "/tmp/ready"]'));
+  await stack.refresh();
+  const responsePromise = page.waitForResponse(response => {
+    if (!response.url().endsWith('/ComposeUtil.php')) return false;
+    const data = new URLSearchParams(response.request().postData() || '');
+    return data.get('path') === stack.path && data.get('action') === 'composeUp';
+  });
+  const originalURL = page.url();
+  await page.evaluate(({ path, project }) => {
+    (window as unknown as { performComposeAction(options: Record<string, unknown>): void })
+      .performComposeAction({
+        stackName: project, actionName: 'up', background: false,
+        payload: { action: 'composeUp', path, waitForHealthy: '1', waitTimeout: '30' },
+      });
+  }, { path: stack.path, project: stack.project });
+  const response = await responsePromise;
+  const body = await response.text();
+  const dispatch = { response, body, json: JSON.parse(body) };
+  await test.info().attach('scoped-terminal-dispatch', { body, contentType: 'application/json' });
+  await expect(page.locator('#sb-container iframe')).toBeVisible();
+  const terminal = page.frameLocator('#sb-container iframe');
+  if (control === 'done') {
+    await waitForOperation(page, stack.project, dispatch);
+    await expect(terminal.getByRole('button', { name: 'Stop command' })).toBeHidden();
+    await terminal.getByRole('button', { name: 'Done', exact: true }).click();
+  } else {
+    await expect(terminal.getByRole('button', { name: 'Stop command' })).toBeEnabled();
+    await expect(terminal.getByRole('button', { name: 'Done', exact: true })).toBeHidden();
+    if (control === 'stop') {
+      page.once('dialog', dialog => dialog.accept());
+      await terminal.getByRole('button', { name: 'Stop command' }).click();
+      await waitForOperation(page, stack.project, dispatch, 'nonzero');
+      await expect(terminal.getByRole('status')).toContainText('exit code 143');
+      const failureNotice = page.locator('.sweet-alert:visible');
+      await expect(failureNotice.locator('h2')).toHaveText('Compose Action Failed');
+      await expect(failureNotice.locator('p').first()).toContainText(`The operation for ${stack.project} exited with code 143.`);
+      await failureNotice.locator('button.confirm').click();
+      await terminal.getByRole('button', { name: 'Done', exact: true }).click();
+    } else {
+      await terminal.getByRole('button', { name: 'Continue in background' }).click();
+      await waitForOperation(page, stack.project, dispatch);
+    }
+  }
+  await expect(page.locator('#sb-container iframe')).toBeHidden();
+  await expect(page).toHaveURL(originalURL);
+  if (control !== 'stop') {
+    const row = page.locator(`[data-project="${stack.project}"].compose-sortable`);
+    await expect(row.locator('.state').first()).toHaveText(/started/);
+  }
+});
+}
+
+test('actual container restart clears unchanged detail indicators and restores menu actions', async ({ page, stack }) => {
+  await stack.save(yaml.replace(/    healthcheck:[\s\S]*?  selected:/, '  selected:'));
+  await start(page, stack);
+  await stack.refresh();
+  await page.evaluate(project => {
+    const row = document.querySelector(`[data-project="${project}"].compose-sortable`);
+    const id = row?.id.replace('stack-row-', '');
+    if (!id) throw new Error('Generated row missing');
+    (window as unknown as { toggleStackDetails(id: string): void }).toggleStackDetails(id);
+  }, stack.project);
+  // Resolve the exact generated container name from the authoritative snapshot.
+  const container = (await stack.containers()).find(ct => ct.service === 'app');
+  expect(container?.name).toBeTruthy();
+  const row = page.locator(`tr[data-container="${container!.name}"]`);
+  await expect(row).toBeVisible();
+  await expect(row.locator('.state')).toHaveText('started');
+  const iconId = await row.locator('.hand[data-name]').getAttribute('id');
+  expect(iconId).toBeTruthy();
+  await page.evaluate(({ project, name }) => {
+    const id = document.querySelector(`[data-project="${project}"].compose-sortable`)!.id.replace('stack-row-', '');
+    (window as unknown as { containerAction(name: string, action: string, id: string): void })
+      .containerAction(name!, 'restart', id);
+  }, { project: stack.project, name: container!.name });
+  await expect(row.locator('.state')).toHaveText('restarting');
+  await page.evaluate(id => {
+    (window as unknown as { addComposeContainerContext(id: string): void }).addComposeContainerContext(id!);
+  }, iconId);
+  await expect(page.locator(`#dropdown-${iconId}`).getByText('Stop', { exact: true }))
+    .toHaveAttribute('aria-disabled', 'true');
+  await expect(row.locator('.compose-status-spinner')).toHaveCount(0, { timeout: 60_000 });
+  await expect(row.locator('.state')).toHaveText('started');
+  await expect(page.locator(`#dropdown-${iconId}`).getByText('Stop', { exact: true }))
+    .not.toHaveAttribute('aria-disabled', 'true');
+});
+
+test('starting-health polling recovers after a real browser snapshot is aborted', async ({ page, stack }) => {
+  await stack.save(yaml.replace('sleep 600', 'sleep 14; touch /tmp/ready; sleep 600')
+    .replace('test: ["CMD", "true"]', 'test: ["CMD", "test", "-f", "/tmp/ready"]'));
+  await start(page, stack);
+  await stack.refresh();
+  await expect(page.locator(`[data-project="${stack.project}"].compose-sortable td.col-health`))
+    .toContainText('starting');
+  let aborted = false;
+  await page.route('**/Exec.php', async route => {
+    const params = new URLSearchParams(route.request().postData() || '');
+    if (!aborted && params.get('action') === 'getStackContainers' && params.get('script') === stack.project) {
+      aborted = true;
+      await route.abort('failed');
+    } else {
+      await route.fallback();
+    }
+  });
+  // Seed the accepted starting snapshot using the normal targeted refresh.
+  await page.evaluate(project => {
+    (window as unknown as { refreshStackByProject(project: string): void }).refreshStackByProject(project);
+  }, stack.project);
+  await expect.poll(() => aborted).toBe(true);
+  await expect(page.locator(`[data-project="${stack.project}"].compose-sortable td.col-health`))
+    .toContainText('healthy', { timeout: 60_000 });
+});
+
+test('recreated container identities reach the live row without a page reload', async ({ page, stack }) => {
+  await start(page, stack);
+  await stack.refresh();
+  const before = (await stack.containers()).find(ct => ct.service === 'app')?.id;
+  expect(before).toBeTruthy();
+  await waitForOperation(page, stack.project, await stack.action('composeUpRecreate'));
+  const after = (await stack.containers()).find(ct => ct.service === 'app')?.id;
+  expect(after).toBeTruthy();
+  expect(after).not.toBe(before);
+  const originalURL = page.url();
+  await page.evaluate(project => {
+    (window as unknown as { refreshStackByProject(project: string): void }).refreshStackByProject(project);
+  }, stack.project);
+  const row = page.locator(`[data-project="${stack.project}"].compose-sortable`);
+  await expect(row).toHaveAttribute('data-ctids', after!.replace(/^sha256:/, '').slice(0, 12));
+  await expect(page).toHaveURL(originalURL);
+});
+
+test('Dashboard action completion rejects an older real host snapshot', async ({ page, stack }) => {
+  await page.goto(process.env.E2E_DASHBOARD_PATH || '/Dashboard', { waitUntil: 'domcontentloaded' });
+  const icon = page.locator(`.compose-dash-icon[data-stack-folder="${stack.project}"]`);
+  await expect(icon).toBeVisible();
+  await expect(icon).toHaveAttribute('data-stack-running', '0');
+  let release!: () => void;
+  let fetched!: () => void;
+  let delivered!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const snapshotFetched = new Promise<void>(resolve => { fetched = resolve; });
+  const snapshotDelivered = new Promise<void>(resolve => { delivered = resolve; });
+  let holdNext = true;
+  await page.route('**/DashboardStacks.php', async route => {
+    if (!holdNext) {
+      await route.continue();
+      return;
+    }
+    holdNext = false;
+    const snapshot = await route.fetch();
+    expect(snapshot.ok()).toBe(true);
+    fetched();
+    await held;
+    await route.fulfill({ response: snapshot });
+    delivered();
+  });
+  try {
+    await page.evaluate(() => {
+      (window as unknown as { composeDashboardActionBoxClosed(): void }).composeDashboardActionBoxClosed();
+    });
+    await snapshotFetched;
+    const dispatchPromise = page.waitForResponse(response => {
+      const params = new URLSearchParams(response.request().postData() || '');
+      return response.url().endsWith('/ComposeUtil.php')
+        && params.get('action') === 'composeUp' && params.get('path') === stack.path;
+    }, { timeout: 30_000 });
+    void dispatchPromise.catch(() => {});
+    await icon.click();
+    const iconId = await icon.getAttribute('id');
+    const menu = page.locator(`#dropdown-${iconId}`);
+    // Dashboard attaches its menu on the first click; the host delegated
+    // opener can require a second click once that binding exists.
+    if (!await menu.isVisible()) await icon.click();
+    await menu.getByText('Start', { exact: true }).click({ timeout: 10_000 });
+    const dispatchResponse = await dispatchPromise;
+    const body = await dispatchResponse.text();
+    await waitForOperation(page, stack.project, {
+      response: dispatchResponse, body, json: JSON.parse(body),
+    });
+    await expect(icon).toHaveAttribute('data-stack-running', '1', { timeout: 60_000 });
+    release();
+    await snapshotDelivered;
+    await expect(icon).toHaveAttribute('data-stack-running', '1');
+    // Let the browser process the old response before asserting retained state.
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expect(icon).toHaveAttribute('data-stack-running', '1');
+  } finally {
+    release();
+  }
+});

@@ -27,3 +27,8 @@ if (!function_exists('compose_manager_sanitize_project_name')) {
         return $sanitizedProjectString;
     }
 }
+
+function compose_manager_is_valid_project_name(string $projectName): bool
+{
+    return preg_match('/^[a-z0-9][a-z0-9_-]*$/D', $projectName) === 1;
+}

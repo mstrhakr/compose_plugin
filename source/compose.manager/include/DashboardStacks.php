@@ -9,6 +9,7 @@ $plugin_root = "/usr/local/emhttp/plugins/compose.manager";
 
 require_once("$plugin_root/include/Defines.php");
 require_once("$plugin_root/include/Util.php");
+require_once("$plugin_root/include/StackUpdateService.php");
 
 $summary = [
     'total' => 0,
@@ -26,10 +27,14 @@ if (!is_dir($compose_root)) {
 }
 
 // Load saved update status from central JSON file
-$composeUpdateStatusFile = COMPOSE_UPDATE_STATUS_FILE;
-$savedUpdateStatus = [];
-if (is_file($composeUpdateStatusFile)) {
-    $savedUpdateStatus = json_decode(file_get_contents($composeUpdateStatusFile), true) ?: [];
+try {
+    $savedUpdateStatus = StackUpdateService::readSavedResults();
+} catch (RuntimeException | JsonException $e) {
+    composeLogger('Unable to read dashboard update status: ' . $e->getMessage(), null, 'user', 'error', 'update-check');
+    http_response_code(500);
+    header('Content-Type: application/json');
+    echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
+    return;
 }
 
 foreach (StackInfo::allFromRoot($compose_root) as $stackInfo) {
@@ -64,25 +69,27 @@ foreach (StackInfo::allFromRoot($compose_root) as $stackInfo) {
     $icon = $stackInfo->getIconUrl();
     $webui = $stackInfo->getWebUIUrl();
 
-    // Check update status from central update-status.json file (set by "Check for Updates" button)
+    $updateContainers = $savedUpdateStatus[$stackInfo->projectFolder]['containers'] ?? [];
     $updateStatus = 'unknown';
-    if (isset($savedUpdateStatus[$stackInfo->projectFolder])) {
-        $stackUpdateInfo = $savedUpdateStatus[$stackInfo->projectFolder];
-        if (isset($stackUpdateInfo['hasUpdate'])) {
-            $updateStatus = $stackUpdateInfo['hasUpdate'] ? 'update-available' : 'up-to-date';
-        }
+    if (array_filter($updateContainers, static fn(array $ct): bool => !empty($ct['hasUpdate']) && empty($ct['isPinned']))) {
+        $updateStatus = 'update-available';
+    } elseif ($updateContainers && !array_filter($updateContainers, static fn(array $ct): bool =>
+        empty($ct['isPinned']) && ($ct['updateReadiness'] ?? 'unknown') !== 'current')) {
+        $updateStatus = 'up-to-date';
     }
 
     $summary['stacks'][] = [
         'name' => $stackInfo->getName(),
         'folder' => $stackInfo->projectFolder,
+        'path' => $stackInfo->path,
         'state' => $state,
         'running' => $runningCount,
         'total' => $totalContainers,
         'icon' => $icon,
         'webui' => $webui,
         'startedAt' => $startedAt,
-        'update' => $updateStatus
+        'update' => $updateStatus,
+        'updateContainers' => $updateContainers,
     ];
 }
 

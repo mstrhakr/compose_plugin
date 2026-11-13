@@ -113,6 +113,31 @@ EOF
     assert_output_contains "compose.manager-2026.01.02.0202-noarch-0202.txz"
 }
 
+@test "deploy.sh forwards skip-tests only when explicitly selected" {
+    local workspace
+    workspace=$(setup_script_workspace)
+    cat > "$workspace/build.sh" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$@" > "$(dirname "$0")/build-args"
+touch "$(dirname "$0")/archive/compose.manager-2026.01.01-noarch-0101.txz"
+EOF
+
+    run "$workspace/deploy.sh" -Dev -Version 2026.01.01
+    assert_success
+    ! grep -Fx -- '-SkipTests' "$workspace/build-args"
+    grep -Fx -- '-Dev' "$workspace/build-args"
+    grep -Fx -- '2026.01.01' "$workspace/build-args"
+
+    local option
+    for option in -SkipTests --SkipTests --skip-tests; do
+        run "$workspace/deploy.sh" "$option" -Dev
+        assert_success
+        grep -Fx -- '-SkipTests' "$workspace/build-args"
+        grep -Fx -- '-Dev' "$workspace/build-args"
+        assert_output_contains "No RemoteHost specified"
+    done
+}
+
 @test "install.sh shows usage when required args missing" {
     local workspace
     workspace=$(setup_script_workspace)

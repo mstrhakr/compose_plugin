@@ -156,8 +156,10 @@ final class GitStackManagerTest extends TestCase
         file_put_contents($stackDir . '/.env', "TZ=Europe/London\n");
         file_put_contents($stackDir . '/compose.override.yaml', "services:\n  whoami:\n    labels:\n      net.unraid.docker.icon: x\n");
         $oldCompose = (string) file_get_contents($stackDir . '/compose.yaml');
+        $oldEpoch = \StackMutationGuard::epoch($stack->projectName);
 
         $backup = $this->manager->convert($stack->projectFolder, $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $this->assertNotSame($oldEpoch, \StackMutationGuard::epoch($stack->projectName));
 
         $this->assertSame($oldCompose, file_get_contents($backup . '/compose.yaml'));
         $this->assertFileDoesNotExist($stackDir . '/compose.yaml');
@@ -376,7 +378,10 @@ final class GitStackManagerTest extends TestCase
             $first = $this->upstreamHead();
             $this->writeAndPush(['whoami/compose.yaml' => "services:\n  whoami:\n    image: traefik/whoami:v2\n"], 'bump');
 
+            $project = \StackInfo::fromProject($this->composeRoot, $folder)->projectName;
+            $before = \StackMutationGuard::epoch($project);
             [$exit, $output] = $this->runCliCapturingOutput(['compose-git', 'deploy', $folder, '--dry-run']);
+            $this->assertNotSame($before, \StackMutationGuard::epoch($project));
 
             $this->assertSame(0, $exit);
             $short = substr($first, 0, 12);
@@ -867,7 +872,10 @@ final class GitStackManagerTest extends TestCase
         file_put_contents($settings->cloneDir . '/whoami/data.db', "keep me\n");
         $this->writeAndPush(['whoami/compose.yaml' => "services: {}\n"], 'newer');
 
+        $project = \StackInfo::fromProject($this->composeRoot, $folder)->projectName;
+        $before = \StackMutationGuard::epoch($project);
         $movedTo = $this->manager->reclone($folder);
+        $this->assertNotSame($before, \StackMutationGuard::epoch($project));
 
         $this->assertNotNull($movedTo);
         $this->assertSame("keep me\n", file_get_contents($movedTo . '/whoami/data.db'));
@@ -1164,6 +1172,34 @@ final class GitStackManagerTest extends TestCase
         $this->assertSame(GitStackSettings::AUTO_DEPLOY_DEPLOY, GitStackSettings::load($stackDir)->autoDeploy);
     }
 
+    public function testCommandLineRecreateOnFolderChangeTurnsTheSettingOffAndOn(): void
+    {
+        $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
+        $stackDir = $this->composeRoot . '/' . $folder;
+        GitStackSettings::load($stackDir)->withAutoDeploy(GitStackSettings::AUTO_DEPLOY_NOTIFY)->save($stackDir);
+        $this->assertTrue(GitStackSettings::load($stackDir)->recreateOnFolderChange);
+
+        $this->assertSame(0, $this->runCli(['compose-git', 'recreate-on-folder-change', $folder, 'off']));
+        $this->assertFalse(GitStackSettings::load($stackDir)->recreateOnFolderChange);
+        $this->assertFalse($this->manager->status($folder)['recreateOnFolderChange']);
+        [, $output] = $this->runCliCapturingOutput(['compose-git', 'status', $folder]);
+        $this->assertStringContainsString('recreate:     off', $output);
+        // The stack's other settings are kept.
+        $this->assertSame(GitStackSettings::AUTO_DEPLOY_NOTIFY, GitStackSettings::load($stackDir)->autoDeploy);
+
+        $this->assertSame(0, $this->runCli(['compose-git', 'recreate-on-folder-change', $folder, 'on']));
+        $this->assertTrue(GitStackSettings::load($stackDir)->recreateOnFolderChange);
+        [, $output] = $this->runCliCapturingOutput(['compose-git', 'status', $folder]);
+        $this->assertStringContainsString('recreate:     on', $output);
+
+        // Anything but on or off is a usage error, and changes nothing.
+        $this->assertSame(2, $this->runCli(['compose-git', 'recreate-on-folder-change', $folder, 'false']));
+        $this->assertSame(2, $this->runCli(['compose-git', 'recreate-on-folder-change', $folder]));
+        $this->assertTrue(GitStackSettings::load($stackDir)->recreateOnFolderChange);
+        // A folder that is not a git stack is refused.
+        $this->assertSame(1, $this->runCli(['compose-git', 'recreate-on-folder-change', 'no-such-stack', 'off']));
+    }
+
     public function testResumeClearsAFailedDeployAndKeepsTheDeployedCommit(): void
     {
         $folder = $this->manager->add('whoami', $this->upstream, 'main', 'whoami/compose.yaml', $this->clonesRoot);
@@ -1248,6 +1284,7 @@ final class GitStackManagerTest extends TestCase
             'reclone' => ['reclone', []],
             'status' => ['status', ['--all', '--json']],
             'auto-deploy' => ['auto-deploy', ['off', 'notify', 'deploy']],
+            'recreate-on-folder-change' => ['recreate-on-folder-change', ['on', 'off']],
             'resume' => ['resume', []],
             'scheduled-check' => ['scheduled-check', []],
         ];

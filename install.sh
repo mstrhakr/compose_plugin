@@ -15,6 +15,21 @@ set -u
 
 # This script is expected to run on the remote unRAID host.
 mkdir -p /boot/config/plugins
+if [[ ! -f /usr/local/emhttp/plugins/compose.manager/include/ProjectIdentity.php ]] && php -r '
+libxml_use_internal_errors(true);
+foreach (array_slice($argv, 1, 2) as $manifest) {
+    if (!is_file($manifest)) continue;
+    $plugin = simplexml_load_file($manifest, SimpleXMLElement::class, LIBXML_NONET);
+    if ($plugin === false) exit(1);
+    exit((string) $plugin["name"] === "compose.manager" && (string) $plugin["author"] === "dcflachs" ? 0 : 1);
+}
+exit(is_file($argv[3]) ? 0 : 1);
+' /boot/config/plugins/compose.manager.plg /boot/config/plugins-removed/compose.manager.plg /usr/local/emhttp/plugins/compose.manager/php/util.php; then
+  mkdir -p /boot/config/plugins/compose.manager
+  origin_tmp=$(mktemp /boot/config/plugins/compose.manager/.legacy-origin.XXXXXX)
+  printf '%s\n' 'dcflachs' > "$origin_tmp"
+  mv -f "$origin_tmp" /boot/config/plugins/compose.manager/legacy-origin
+fi
 echo "=== Uninstalling plugin via 'plugin remove compose.manager.plg' ==="
 if plugin remove compose.manager.plg; then
   echo "=== 'plugin remove' succeeded ==="

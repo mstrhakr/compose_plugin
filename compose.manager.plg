@@ -2,15 +2,15 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "compose.manager">
 <!ENTITY author "mstrhakr">
-<!ENTITY version     "2026.10.27">
+<!ENTITY version     "2026.11.09.1050">
 <!ENTITY launch "Settings/&name;.settings">
 <!ENTITY packageVER "&version;">
-<!ENTITY packageMD5  "2a65a6fedf455d82e94627fd99f4f2aa">
-<!ENTITY pkgBUILD    "1108">
+<!ENTITY packageMD5  "97d209581d781588701b024d7f2e8f94">
+<!ENTITY pkgBUILD    "1050">
 <!ENTITY packageName "&name;-&packageVER;-noarch-&pkgBUILD;">
 <!ENTITY packagefile "&packageName;.txz">
 <!ENTITY github "mstrhakr/compose_plugin">
-<!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/main/&name;.plg">
+<!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/dev/&name;.plg">
 <!ENTITY packageURL "https://github.com/&github;/releases/download/v&version;/&packagefile;">
 <!ENTITY pluginsPATH "/boot/config/plugins">
 <!ENTITY pluginLOC "&pluginsPATH;/&name;">
@@ -36,127 +36,35 @@
 >
 
 <CHANGES>
-###2026.10.27
-- Features: enhance README with Git-backed stacks and stack editor updates
-- Features (git): read a git.json as plain JSON, byte order mark and all
-- Features (git): compose-git deploy --dry-run
-- Features (git): try a deploy of a git stack without deploying it
-- Features (git): choose automatic deploys in the web UI, and see when a stack is behind
-- Features (cron): run the scheduled git check every 15 minutes while a stack asks for it
-- Features (git): check git stacks for new commits, and deploy them, on request
-- Features (git): resume a git stack after a failed deploy
-- Features (git): store whether a git stack is checked and deployed on a schedule
-- Features (git): move an ssh stack onto another deploy key of its repository
-- Features (git): one deploy key for every ssh stack of a repository
-- Features (git): show changes made in the clone in an orange box, also above the compose file
-- Features (git): say what deleting a git stack leaves behind
-- Features (git): move an existing stack into git from the Sources tab
-- Features (git): check a git stack for a newer commit from its stack menu
-- Features (git): show a git stack's branch and deployed commit in the stack list
-- Features (git): say in the editor where a git stack's compose file lives
-- Features (git): deploy a git stack from its stack menu
-- Features (git): add a git stack from the Add Stack dialog
-- Features (git): show a git stack's repository on the editor's Sources tab
-- Features (credentials): show git stacks' deploy keys on the Credentials tab
-- Features (git): set up an ssh stack's deploy key and host keys from compose-git
-- Features (git): reach a repository over ssh with the stack's deploy key
-- Features (credentials): keep git stacks' ssh deploy keys in the vault
-- Features (git): accept ssh repository addresses and pin their host keys
-- Features (credentials): add and test git repository tokens on the Credentials tab
-- Features (git): choose a git stack's credential from compose-git
-- Features (credentials): count a git stack's repository credential as in use
-- Features (git): reach a private repository with an HTTPS token
-- Features (credentials): add a git repository kind of credential
-- Features (git): store which credential a git stack uses
-- Features (git): let a git run take settings of its own
-- Features (git): prune the override's orphan services before a git deploy's checks
-- Features (git): create missing external networks in a git deploy when the setting is on
-- Features (git): add the compose-git command
-- Features (git): recreate a git stack's containers when its folder changes
-- Features (git): deploy a git stack with compose.sh gitdeploy
-- Features (git): record which commit a git stack has deployed
-- Features (git): check a git stack before a deploy touches any container
-- Features (git): keep a git stack's managed override and .env out of its clone
-- Features (git): save a git stack's local changes as a patch before discarding them
-- Features (git): clone, fetch and check out a git stack's repository safely
-- Features (git): store and validate a git stack's settings
-- Features (git): add a locked-down git runner for git stacks
-- Features (git): add a guard that keeps git stacks from writing to RAM or the flash
-- Bug Fixes: avoid Docker tab panel conflicts on Unraid 7.3.2
-- Bug Fixes (credentials): do not delete a credential while the projects folder is missing
-- Bug Fixes (credentials): keep a git credential that a broken git.json may name
-- Bug Fixes (git): see a stack's deploy key when its git.json has a byte order mark
-- Bug Fixes (credentials): count a git stack's credential when its git.json has a byte order mark
-- Bug Fixes (cron): keep the git check for a git.json with a byte order mark
-- Bug Fixes (git): check again under the stack's lock that an automatic deploy applies
-- Bug Fixes (git): a dry run puts back only what its prune changed in the override
-- Bug Fixes (git): deploy the commit the scheduled check compared
-- Bug Fixes (git): give the scheduled check a lock no stack's lock can share
-- Bug Fixes (git): forget cached file paths after checking out a commit
-- Bug Fixes (git): read a clone's local changes without taking git's index lock
-- Bug Fixes (git): say a full commit id can also be 64 characters
-- Bug Fixes (git): name the deploy key boxes for screen readers
-- Bug Fixes (git): read the deployed commit under the lock when checking for changes
-- Bug Fixes (git): deploy in the checks' folder and environment, whatever starts it
-- Bug Fixes (git): say why ssh-keyscan got no host keys
-- Bug Fixes (git): say what to do when a reused deploy key is another repository's
-- Bug Fixes (git): let the Credentials tab's git Test wait 15 seconds, not 60
-- Bug Fixes (credentials): stop calling every credential a registry credential
-- Bug Fixes: list a stack row's containers with docker ps, as the full list does
-- Bug Fixes: cache that a stack has no compose profiles
-- Bug Fixes: omit missing optional compose overrides
-- Bug Fixes (git): refuse a credential folder someone else made first
-- Bug Fixes (git): save a stack's git credential under the credential assignment lock
-- Bug Fixes (credentials): keep a credential's kind between registry and git
-- Bug Fixes (git): never let a stack pick another stack's deploy key
-- Bug Fixes (git): refuse a git home folder someone else made first
-- Bug Fixes (git): tell a missing network or volume from one Docker could not be asked about
-- Bug Fixes (git): deploy with the same environment the checks used
-- Bug Fixes (git): recreate containers after discarding local changes in the stack folder
-- Bug Fixes (git): keep the .env in use when converting with a stale env path
-- Bug Fixes (git): check the projects folder before compose-git add clones
-- Bug Fixes (git): never build or pull again during a git deploy's up
-- Bug Fixes (git): stop a git deploy when a missing network cannot be created
-- Bug Fixes (git): refuse a RAM mount inside a disk or pool
-- Bug Fixes (update): rebuild local-only images when pull is denied
-- Bug Fixes (compatibility): require Unraid 6.12 and remove legacy WebUI patches
-- Bug Fixes (git): notice a repository override that a checkout removed
-- Bug Fixes (git): keep the deployed commit when reclone finds the branch rewritten
-- Bug Fixes (git): catch two services of the stack publishing the same port
-- Bug Fixes (git): stop the deploy when Docker cannot say which names and ports are taken
-- Refactoring (git): let the deploy's checks return their problems
-- Refactoring (git): take a stack's lock without waiting, for callers that do not throw
-- Refactoring (git): share a git deploy's --wait arguments
-- Refactoring (git): build a git deploy's compose.sh command in one place
-- Documentation (git): say a dry run's check messages show values, as a deploy's do
-- Documentation: automatic deploys of git stacks
-- Documentation: say plainly what containersByProject returns for one project
-- Documentation: add scoped MIT license and fork provenance audit
-- Documentation: git stacks in the web UI
-- Documentation (git): say that mounted files from the clone change before up
-- Documentation: private repositories for git stacks
-- Documentation (git): say what reclone leaves running on the old clone
-- Documentation: add a guide to git stacks
-- Tests: cover how containersByProject groups and filters docker ps rows
-- Tests (e2e): add, deploy and delete a git stack through the web UI
-- Tests (credentials): name the useCredential test after what it checks
-- Tests: address override review feedback
-- Tests (git): run the gitdeploy Bats tests without root, as CI does
-- Chores: update changelog for v2026.10.20.1619 [skip ci]
-- Chores: update changelog for v2026.10.20.0925 [skip ci]
-- Chores: update changelog for v2026.10.12.1026 [skip ci]
-- Chores: update changelog for v2026.10.09.1841 [skip ci]
-- Chores: update changelog for v2026.10.09.1036 [skip ci]
-- Chores: update changelog for v2026.10.08.1156 [skip ci]
-- Chores: sync pluginURL+README for dev branch [skip ci]
-- Chores: update changelog for v2026.10.08.0952 [skip ci]
-- fix packaged licensing document links
-- [View all changes](https://github.com/mstrhakr/compose_plugin/compare/v2026.10.07...v2026.10.27)
+###2026.11.13.0929
+- Documentation: add optional sponsorship link
+- Chores: add GitHub Sponsors funding
+- Chores: update changelog for v2026.10.27 [skip ci]
+- [PR #187](https://github.com/mstrhakr/compose_plugin/pull/187)
+- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.10.27...v2026.11.13.0929)
 </CHANGES>
 
 <!-- The 'pre-install' script. -->
 <FILE Run="/bin/bash">
 <INLINE>
+if [ ! -f &emhttpLOC;/include/ProjectIdentity.php ] &amp;&amp; php -r '
+libxml_use_internal_errors(true);
+foreach (array_slice($argv, 1, 2) as $manifest) {
+    if (!is_file($manifest)) continue;
+    $plugin = simplexml_load_file($manifest, SimpleXMLElement::class, LIBXML_NONET);
+    if ($plugin === false) exit(1);
+    exit((string) $plugin["name"] === "compose.manager" &amp;&amp; (string) $plugin["author"] === "dcflachs" ? 0 : 1);
+}
+exit(is_file($argv[3]) ? 0 : 1);
+' /boot/config/plugins/compose.manager.plg /boot/config/plugins-removed/compose.manager.plg &emhttpLOC;/php/util.php; then
+    mkdir -p &pluginLOC; || exit 1
+    origin_tmp=$(mktemp &pluginLOC;/.legacy-origin.XXXXXX) || exit 1
+    if ! printf '%s\n' 'dcflachs' &gt; "$origin_tmp" || ! mv -f "$origin_tmp" &pluginLOC;/legacy-origin; then
+        rm -f "$origin_tmp"
+        exit 1
+    fi
+fi
+
 # Remove all but current package file and ace zip from plugin root
 rm -f $(ls &pluginLOC;/&name;*.txz 2>/dev/null|grep -v '&packageVER;')
 rm -f $(ls &pluginLOC;/ace-v*.zip 2>/dev/null|grep -v '&aceZIP;')

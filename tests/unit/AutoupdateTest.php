@@ -6,6 +6,9 @@ declare(strict_types=1);
 namespace ComposeManager\Tests;
 
 use PluginTests\TestCase;
+use PHPUnit\Framework\Attributes\DataProvider;
+
+require_once '/usr/local/emhttp/plugins/compose.manager/include/Util.php';
 
 class AutoupdateTest extends TestCase
 {
@@ -33,7 +36,6 @@ class AutoupdateTest extends TestCase
         file_put_contents($marker, json_encode([
             'argv' => $argv,
             'parallelLimit' => getenv('COMPOSE_PARALLEL_LIMIT'),
-            'credentialId' => getenv('COMPOSE_CREDENTIAL_ID'),
         ]));
     }
     exit(0);
@@ -89,6 +91,52 @@ class AutoupdateTest extends TestCase
         $_POST = [];
     }
 
+    public static function blockedImportedUpdates(): array
+    {
+        return [['invalid-pin'], ['missing-input'], ['missing-env']];
+    }
+
+    #[DataProvider('blockedImportedUpdates')]
+    public function testRunNowCannotFallbackAroundBrokenImportedMetadata(string $mode): void
+    {
+        global $compose_root, $plugin_root;
+        $compose_root = $this->createTempDir();
+        $this->mockPluginConfig('compose.manager', ['PROJECTS_FOLDER' => $compose_root]);
+        file_put_contents(COMPOSE_LEGACY_ORIGIN_FILE, \ProjectIdentity::LEGACY_REVISION);
+        $path = $compose_root . '/legacy-stack';
+        mkdir($path);
+        file_put_contents($path . '/docker-compose.yml', "services: {}\n");
+        file_put_contents($path . '/docker-compose.override.yml', "services: {}\n");
+        file_put_contents($path . '/name', 'legacy___stack');
+        \StackInfo::clearCache();
+        \StackInfo::fromProject($compose_root, 'legacy-stack');
+        if ($mode === 'invalid-pin') {
+            file_put_contents($path . '/project_name', '../invalid');
+        } elseif ($mode === 'missing-input') {
+            unlink($path . '/docker-compose.override.yml');
+        } else {
+            file_put_contents($path . '/envpath', '/missing/original.env');
+        }
+        \StackInfo::clearCache();
+        $marker = $this->createTempDir() . '/must-not-run';
+        putenv('AUTOTEST_MARKER=' . $marker);
+        putenv('COMPOSE_MANAGER_SH=' . PHP_BINARY . ' ' . escapeshellarg((string) $this->wrapperPath));
+        $_POST = ['action' => 'runNow', 'path' => $path];
+        http_response_code(200);
+        try {
+            ob_start();
+            include '/usr/local/emhttp/plugins/compose.manager/include/AutoUpdate.php';
+            $response = json_decode(ob_get_clean(), true);
+            $this->assertSame(409, http_response_code());
+            $this->assertArrayHasKey('error', $response);
+            $this->assertFileDoesNotExist($marker);
+        } finally {
+            @unlink(COMPOSE_LEGACY_ORIGIN_FILE);
+            http_response_code(200);
+            \StackInfo::clearCache();
+        }
+    }
+
     public function testRunNowExecutesScript(): void
     {
         // Create a fake stack under compose_root so path validation passes
@@ -97,6 +145,7 @@ class AutoupdateTest extends TestCase
         if (!is_dir($tmp)) mkdir($tmp, 0755, true);
         file_put_contents($tmp . '/docker-compose.yml', "services:\n  a:\n    image: busybox\n");
         file_put_contents($tmp . '/credential_id', 'run-now-credential');
+        file_put_contents($tmp . '/build_on_update', 'true');
         file_put_contents((string) $this->autoUpdateConfigFile, json_encode([
             'defaults' => ['parallel_limit' => 3],
         ]));
@@ -125,13 +174,23 @@ class AutoupdateTest extends TestCase
         $this->assertIsArray($payload['argv'] ?? null);
         $this->assertGreaterThanOrEqual(3, count($payload['argv']));
         $expectedProjectName = \StackInfo::sanitizeProjectString(basename($tmp));
-        $this->assertSame($expectedProjectName, $payload['argv'][2]);
+        $this->assertContains('-p' . $expectedProjectName, $payload['argv']);
         $this->assertSame('3', $payload['parallelLimit']);
-        $this->assertSame('run-now-credential', $payload['credentialId']);
+        $this->assertContains('--credential-id', $payload['argv']);
+        $this->assertContains('run-now-credential', $payload['argv']);
+        $this->assertContains('--automatic-update', $payload['argv']);
+        $this->assertContains('--build', $payload['argv']);
+        $expected = \StackUpdateService::buildUpdateCommand(
+            \StackInfo::fromProject($compose_root, basename($tmp)),
+            \parse_plugin_cfg('compose.manager'),
+            ['automatic' => true]
+        );
+        $this->assertSame(array_slice($expected, 1), array_slice($payload['argv'], 2));
 
         // cleanup
         unlink($marker);
         unlink($scriptPath);
+        unlink($tmp . '/build_on_update');
         // remove tmp
         unlink($tmp . '/docker-compose.yml');
         unlink($tmp . '/credential_id');

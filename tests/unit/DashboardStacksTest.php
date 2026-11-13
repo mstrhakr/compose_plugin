@@ -329,6 +329,42 @@ class DashboardStacksTest extends TestCase
     // Update Status Loading Tests
     // ===========================================
 
+    public function testRealEndpointPreservesConfiguredPathAndReadinessEvidence(): void
+    {
+        $this->createTestStack('readiness');
+        $saved = ['readiness' => ['hasUpdate' => false, 'containers' => [
+            ['name' => 'app', 'updateStatus' => 'unknown', 'updateReadiness' => 'unknown'],
+        ]]];
+        file_put_contents(COMPOSE_UPDATE_STATUS_FILE, json_encode($saved));
+        $dockerDir = $this->createTempDir();
+        file_put_contents($dockerDir . '/docker', "#!/bin/sh\nexit 0\n");
+        chmod($dockerDir . '/docker', 0755);
+        $path = getenv('PATH');
+        putenv('PATH=' . $dockerDir . PATH_SEPARATOR . $path);
+        try {
+            global $compose_root;
+            foreach (['unknown', 'ready-to-apply', 'rebuild-required', 'current'] as $readiness) {
+                \StackInfo::clearCache();
+                $container = ['name' => 'app', 'updateReadiness' => $readiness,
+                    'hasUpdate' => in_array($readiness, ['ready-to-apply', 'rebuild-required'], true)];
+                file_put_contents(COMPOSE_UPDATE_STATUS_FILE, json_encode([
+                    'readiness' => ['hasUpdate' => $container['hasUpdate'], 'containers' => [$container]],
+                ]));
+                ob_start();
+                include '/usr/local/emhttp/plugins/compose.manager/include/DashboardStacks.php';
+                $result = json_decode(ob_get_clean(), true);
+                $this->assertSame($this->testComposeRoot . '/readiness', $result['stacks'][0]['path']);
+                $this->assertSame('readiness', $result['stacks'][0]['folder']);
+                $this->assertSame([$container], $result['stacks'][0]['updateContainers']);
+                $this->assertSame($readiness === 'unknown' ? 'unknown' :
+                    ($container['hasUpdate'] ? 'update-available' : 'up-to-date'), $result['stacks'][0]['update']);
+            }
+        } finally {
+            putenv('PATH=' . $path);
+            @unlink(COMPOSE_UPDATE_STATUS_FILE);
+        }
+    }
+
     /**
      * Test loading update status from JSON file
      */

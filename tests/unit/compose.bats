@@ -8,12 +8,14 @@ load '../bats_setup.bash'
 
 # Path to the script we're testing
 COMPOSE_SCRIPT="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose.sh"
+UPDATE_ENGINE="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_update.sh"
 
 # ============================================================
 # Setup
 # ============================================================
 
 test_setup() {
+    setup_mutation_php
     # Skip sleep commands for faster tests
     export MOCK_SKIP_SLEEP=true
     
@@ -95,6 +97,42 @@ test_setup() {
     assert_output_contains ".env doesn't exist"
 }
 
+@test "compose.sh preserves exact migrated project identity" {
+    export -f _mock_docker_compose
+    export MOCK_DOCKER_COMPOSE_EXIT
+    export COMPOSE_LOCK_DIR="$TEST_TEMP_DIR/compose-locks"
+    mkdir -p "$COMPOSE_LOCK_DIR"
+    run bash "$COMPOSE_SCRIPT" -c stop -p legacy___stack--
+
+    assert_success
+    assert_mock_called "docker" "compose -p legacy___stack-- stop"
+}
+
+@test "compose.sh refuses invalid identity instead of silently renaming it" {
+    run bash "$COMPOSE_SCRIPT" -c stop -p "Legacy Stack"
+
+    assert_failure
+    assert_logged "Invalid resolved project name"
+}
+
+@test "global list and ps commands do not require a project identity" {
+    export -f _mock_docker_compose
+    export MOCK_DOCKER_COMPOSE_EXIT
+    run bash "$COMPOSE_SCRIPT" -c list
+    assert_success
+    assert_mock_called "docker" "compose ls -a --format json"
+
+    run bash "$COMPOSE_SCRIPT" -c ps
+    assert_success
+    assert_mock_called "docker" "ps -a --filter label=com.docker.compose.project --format json"
+}
+
+@test "stack scoped commands still require a project identity" {
+    run bash "$COMPOSE_SCRIPT" -c stop
+    assert_failure
+    assert_logged "Invalid resolved project name"
+}
+
 # ============================================================
 # --ignore-buildable Flag Tests
 # ============================================================
@@ -119,8 +157,13 @@ test_setup() {
 }
 
 @test "compose.sh combines exit cleanup handlers into one trap" {
-    run grep -F "trap 'release_lock; clear_follow_pid; cleanup_docker_config' EXIT" "$COMPOSE_SCRIPT"
+    run grep -F 'trap cleanup EXIT' "$COMPOSE_SCRIPT"
     assert_success
+    run sed -n '/^cleanup()/,/^}/p' "$COMPOSE_SCRIPT"
+    assert_output_contains 'finish_mutation'
+    assert_output_contains 'release_lock'
+    assert_output_contains 'clear_follow_pid'
+    assert_output_contains 'cleanup_docker_config'
 }
 
 @test "compose.sh follow mode keeps the compose command in foreground" {
@@ -147,6 +190,37 @@ test_setup() {
 @test "compose.sh rejects combining follow logs and wait-for-healthy" {
     run grep -F 'Follow logs and wait-for-healthy cannot be used together' "$COMPOSE_SCRIPT"
     assert_success
+}
+
+@test "compose.sh forwards detached wait and timeout while follow mode stays attached" {
+    export -f _mock_docker_compose
+    export MOCK_DOCKER_COMPOSE_EXIT
+    export COMPOSE_LOCK_DIR="$TEST_TEMP_DIR/compose-locks"
+    mkdir -p "$COMPOSE_LOCK_DIR"
+    run bash "$COMPOSE_SCRIPT" -c up -p wait-test --wait --wait-timeout 17
+    assert_success
+    assert_mock_called "docker" "compose -p wait-test up --wait --wait-timeout 17 -d"
+    run bash "$COMPOSE_SCRIPT" -c up -p follow-test --follow-logs
+    assert_success
+    assert_mock_called "docker" "compose -p follow-test up"
+}
+
+@test "managed follow enables the native menu without publishing a legacy suspend PID" {
+    export COMPOSE_LOCK_DIR="$TEST_TEMP_DIR/compose-locks"
+    export COMPOSE_TERMINAL_FOLLOW_RECEIPT="$TEST_TEMP_DIR/owned-receipt"
+    export FOLLOW_STACK="$TEST_TEMP_DIR/follow-stack"
+    export MENU_CAPTURE="$TEST_TEMP_DIR/menu-setting"
+    mkdir -p "$COMPOSE_LOCK_DIR" "$FOLLOW_STACK"
+    docker() {
+        [[ "$1" == compose ]] || return 1
+        printf '%s\n' "${COMPOSE_MENU:-unset}" > "$MENU_CAPTURE"
+        [[ ! -e "$FOLLOW_STACK/.compose_follow.pid" ]]
+    }
+    export -f docker
+    run bash "$COMPOSE_SCRIPT" -c up -p follow-test --stack-path "$FOLLOW_STACK" --follow-logs
+    assert_success
+    [[ "$(cat "$MENU_CAPTURE")" == true ]]
+    [[ ! -e "$FOLLOW_STACK/.compose_follow.pid" ]]
 }
 
 @test "autostart script honors wait-for-healthy defaults and stack overrides" {
@@ -182,19 +256,33 @@ test_setup() {
 
 @test "compose.sh update action pairs --ignore-buildable with the rebuild flag" {
     # --ignore-buildable is only correct when we rebuild those services ourselves.
-    run grep -F 'pull_args+=("--ignore-buildable")' "$COMPOSE_SCRIPT"
+    run grep -F 'pull_args+=(--ignore-buildable)' "$UPDATE_ENGINE"
     assert_success
 
-    run grep -F 'up_args+=("--build")' "$COMPOSE_SCRIPT"
+    run grep -F 'rebuild=true' "$UPDATE_ENGINE"
     assert_success
+}
+
+@test "compose.sh update rebuilds with --pull so newer base images are used" {
+    run cat "$UPDATE_ENGINE"
+    assert_success
+    [[ "$output" == *'update_compose build --pull'* ]]
+    [[ "$output" != *'up_args+=("--build")'* ]]
+}
+
+@test "compose.sh update falls back to local base images when build --pull fails" {
+    # Bases that only exist locally can't be pulled; the update must still rebuild them.
+    run cat "$UPDATE_ENGINE"
+    assert_success
+    [[ "$output" == *'update_compose build --pull "${scope[@]}"'*'update_compose build "${scope[@]}"'$'\n'* ]]
 }
 
 @test "compose.sh update falls back to rebuilding when buildable images can't be pulled" {
     # Local-only images (build: + image:) fail a plain pull; retry skipping them and rebuild.
-    run sed -n '/^  update)/,/^    ;;/ p' "$COMPOSE_SCRIPT"
+    run cat "$UPDATE_ENGINE"
     assert_success
-    [[ "$output" == *'"${compose_base[@]}" -p "$name" pull --ignore-buildable'* ]]
-    [[ "$output" == *'if [ $pull_exit -ne 0 ] && [ "$build_on_update" != true ]; then'* ]]
+    [[ "$output" == *'pull_stack_images --ignore-buildable'* ]]
+    [[ "$output" == *'[ "$automatic_update" != true ]; then'* ]]
 }
 
 @test "compose.sh mutating commands have explicit final exit propagation" {
@@ -214,10 +302,12 @@ test_setup() {
     [ "$count" -ge 4 ]
 }
 
-@test "compose_autoupdate.sh uses --ignore-buildable" {
+@test "compose_autoupdate.sh delegates all update execution to compose.sh" {
     local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
-    run grep -E 'pull --ignore-buildable' "$autoupdate_script"
+    run grep -F 'bash "$(dirname "$0")/compose.sh" "$@" --automatic-update' "$autoupdate_script"
     assert_success
+    run grep -E '^[[:space:]]*(timeout .* )?docker ' "$autoupdate_script"
+    assert_failure
 }
 
 @test "compose_autoupdate.sh exports a bounded pull concurrency limit" {
@@ -226,56 +316,6 @@ test_setup() {
     assert_success
 
     run grep -F 'export COMPOSE_PARALLEL_LIMIT' "$autoupdate_script"
-    assert_success
-}
-
-@test "compose_autoupdate.sh uses compose config --images for digest detection" {
-    local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
-    run grep -E 'config --images' "$autoupdate_script"
-    assert_success
-}
-
-@test "compose_autoupdate.sh checks running containers before up -d" {
-    local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
-    run grep -E 'ps -q' "$autoupdate_script"
-    assert_success
-
-    run grep -E 'not running; skipping up -d' "$autoupdate_script"
-    assert_success
-}
-
-@test "compose_autoupdate.sh removes only superseded image IDs after successful up" {
-    local autoupdate_script="$BATS_TEST_DIRNAME/../../source/compose.manager/scripts/compose_autoupdate.sh"
-    local old_image_id="sha256:$(printf '%064d' 1)"
-    local current_image_id="sha256:$(printf '%064d' 2)"
-    local removed_images_file="$TEST_TEMP_DIR/removed-images"
-
-    # Isolate the cleanup helper so docker rmi can be observed without Docker.
-    source <(sed -n '/^remove_superseded_images()/,/^}/p' "$autoupdate_script")
-    docker() { printf '%s\n' "$*" >> "$removed_images_file"; }
-
-    OLD_DIGESTS="$old_image_id
-$current_image_id
-registry.example/service:latest"
-    NEW_DIGESTS="$current_image_id
-registry.example/service:latest"
-
-    run remove_superseded_images
-    assert_success
-    run cat "$removed_images_file"
-    [ "$output" = "rmi $old_image_id" ]
-
-    # Cleanup must follow the up-failure exit path and precede success reporting.
-    run awk '
-        /# Images changed - run recreate\/up/ { in_update = 1 }
-        in_update && /exit 1$/ { failure_exit = NR }
-        in_update && failure_exit && /fi$/ && !failure_end { failure_end = NR }
-        in_update && /remove_superseded_images$/ { cleanup = NR }
-        in_update && /MSG="Stack.*updated successfully/ { success = NR }
-        END {
-            exit !(failure_exit < failure_end && failure_end < cleanup && cleanup < success)
-        }
-    ' "$autoupdate_script"
     assert_success
 }
 

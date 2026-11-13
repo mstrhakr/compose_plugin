@@ -1,18 +1,20 @@
 #!/bin/bash
+# shellcheck source-path=SCRIPTDIR
 export HOME=/root
 
 # Compose Manager - Docker Compose wrapper script
 # Provides error handling, result tracking, and operation locking
 
+script_directory=$(cd -- "$(dirname -- "$0")" && pwd) || exit 1
 # shellcheck disable=SC1091
-. "$(dirname "$0")/common.sh"
+. "$script_directory/common.sh"
 
 # Configuration - can be overridden via environment
 LOCK_TIMEOUT=${COMPOSE_LOCK_TIMEOUT:-30}
 LOCK_DIR=${COMPOSE_LOCK_DIR:-/var/run/compose.manager}
 
 SHORT=e:,c:,f:,p:,d:,o:,g:,s:,w:
-LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:,follow-logs,wait,wait-timeout:,build,credential-id:,git-commit:,save-local-changes,automatic-deploy-from:
+LONG=env,command:,file:,project_name:,project_dir:,override:,profile:,debug,recreate,remove-orphans,stack-path:,workdir:,follow-logs,wait,wait-timeout:,build,credential-id:,git-commit:,save-local-changes,automatic-deploy-from:,automatic-update,update-outcome-file:,include-stopped,prepare-images
 OPTS=$(getopt -a -n compose --options $SHORT --longoptions $LONG -- "$@")
 
 eval set -- "$OPTS"
@@ -30,20 +32,31 @@ follow_logs=false
 wait_for_healthy=false
 wait_timeout=""
 build_on_update=false
+prepare_images=false
 lock_fd=""
+mutation_started=false
+mutation_folder=""
+mutation_pending_policy=renew
 operation_exit_code=0
 credential_id=""
 docker_config_dir=""
 git_commit=""
 save_local_changes=false
 automatic_deploy_from=""
+automatic_update=false
+include_stopped=false
+update_outcome_file=""
 
 
 # Logging helper — delegates to shared composeLogger, adds console echo in debug mode
 log_msg() {
     local level="$1"
     local msg="$2"
-    composeLogger "$msg" "${level,,}" compose
+    if [ "$automatic_update" = true ]; then
+        composeLogger "$msg" "${level,,}" autoupdate daemon
+    else
+        composeLogger "$msg" "${level,,}" compose
+    fi
     if [ "$debug" = true ]; then
         echo "[$level] $msg"
     fi
@@ -93,15 +106,44 @@ release_lock() {
     fi
 }
 
+record_mutation_boundary() {
+    COMPOSE_LOCK_DIR="$LOCK_DIR" php "$script_directory/mutation_boundary.php" "$name" "$mutation_folder" "$mutation_pending_policy"
+}
+
+finish_mutation() {
+    if [ "$mutation_started" = true ]; then
+        mutation_started=false
+        if ! record_mutation_boundary; then
+            log_msg ERROR "Unable to renew pending recheck after operation for $name"
+            return 1
+        fi
+    fi
+}
+
 # Ensure lock is released and follow state is cleared on exit.
 cleanup_docker_config() {
   if [ -n "$docker_config_dir" ]; then
-    php "$(dirname "$0")/credential_config.php" --remove "$docker_config_dir" >/dev/null 2>&1 || true
+    php "$script_directory/credential_config.php" --remove "$docker_config_dir" >/dev/null 2>&1 || true
     docker_config_dir=""
   fi
 }
 
-trap 'release_lock; clear_follow_pid; cleanup_docker_config' EXIT
+cleanup() {
+    local status=$?
+    if [ -n "${update_pull_output:-}" ] && ! rm -f -- "$update_pull_output"; then
+        log_msg ERROR "Unable to remove registry pull diagnostics"
+        status=1
+    fi
+    if ! finish_mutation; then
+        status=1
+        save_result failed "$status" "$command"
+    fi
+    release_lock
+    clear_follow_pid
+    cleanup_docker_config
+    exit "$status"
+}
+trap cleanup EXIT
 
 # Save operation result to stack directory
 save_result() {
@@ -127,7 +169,7 @@ clear_follow_pid() {
     fi
 }
 
-# Persist selected profile names for later operations (e.g. update target scope).
+# Persist deployment profile selection for lifecycle UI and Git deployments.
 persist_running_profiles() {
   if [ -z "$stack_path" ] || [ ! -d "$stack_path" ]; then
     return
@@ -221,6 +263,22 @@ do
       build_on_update=true
       shift;
       ;;
+    --prepare-images )
+      prepare_images=true
+      shift;
+      ;;
+    --automatic-update )
+      automatic_update=true
+      shift;
+      ;;
+    --include-stopped )
+      include_stopped=true
+      shift;
+      ;;
+    --update-outcome-file )
+      update_outcome_file="$2"
+      shift 2
+      ;;
     --credential-id )
       credential_id="$2"
       shift 2
@@ -250,7 +308,7 @@ do
 done
 
 if [ -n "$credential_id" ]; then
-  if ! credential_output=$(php "$(dirname "$0")/credential_config.php" --credential-id "$credential_id"); then
+  if ! credential_output=$(php "$script_directory/credential_config.php" --credential-id "$credential_id"); then
     log_msg "ERROR" "Selected registry credential could not be loaded"
     exit 1
   fi
@@ -272,6 +330,7 @@ if [ -n "$project_directory" ]; then
     log_msg "ERROR" "Failed to cd into project directory: $project_directory"
     exit 1
   fi
+  project_directory="$PWD"
 fi
 
 # Build the compose base command as an array (no eval needed).
@@ -279,10 +338,12 @@ fi
 # project directory itself so it matches plain `cd <dir> && docker compose ...`,
 # which is the behavior the project was validated against.
 compose_base=(docker compose "${env_args[@]}" "${file_args[@]}" "${profile_args[@]}")
+if [ -n "$project_directory" ]; then
+  compose_base+=(--project-directory "$project_directory")
+fi
 
-# Canonicalize project name through shared PHP sanitizer.
-if ! name=$(canonicalize_project_name "$name"); then
-  log_msg "ERROR" "Could not canonicalize project name"
+if [[ "$command" != list && "$command" != ps ]] && ! validate_project_name "$name"; then
+  log_msg "ERROR" "Invalid resolved project name"
   exit 1
 fi
 
@@ -294,13 +355,24 @@ case $command in
     if ! acquire_lock "$lock_name"; then
       exit 1
     fi
+    mutation_folder="${stack_path%/}"
+    mutation_folder="${mutation_folder##*/}"
+    case "$command" in
+      pull|update|gitdeploy) mutation_pending_policy=create ;;
+      up) if [ "$prepare_images" = true ]; then mutation_pending_policy=create; fi ;;
+    esac
+    if ! record_mutation_boundary; then
+      log_msg ERROR "Unable to record mutation for $name; refusing operation"
+      exit 1
+    fi
+    mutation_started=true
     ;;
 esac
 
 # Optionally create missing `external: true` networks before starting the stack
 # (Settings > Compose > Create Missing External Networks).
 case $command in
-  up|update)
+  up)
     if plugin_setting_enabled CREATE_MISSING_EXTERNAL_NETWORKS; then
       create_missing_external_networks "${compose_base[@]}" -p "$name"
     fi
@@ -316,6 +388,24 @@ case $command in
       exit 1
     fi
 
+    if [ "$prepare_images" = true ]; then
+      # Use deployment profiles from compose_base, not Update's runtime scope.
+      update_profile_args=()
+      rebuild=false
+      build_on_update=true
+      # shellcheck source=source/compose.manager/scripts/compose_update.sh
+      . "$script_directory/compose_update.sh"
+      prepare_stack_images
+      preparation_exit=$?
+      if [ "$preparation_exit" -ne 0 ]; then
+        save_result failed "$preparation_exit" up
+        log_msg ERROR "Image preparation failed for $name; containers were not started"
+        echo "Image preparation failed; containers were not started."
+        exit "$preparation_exit"
+      fi
+      cmd_args+=(--pull never --no-build)
+    fi
+
     if [ "$wait_for_healthy" = true ]; then
       cmd_args+=("--wait")
       if [ -n "$wait_timeout" ]; then
@@ -324,11 +414,11 @@ case $command in
     fi
 
     if [ "$follow_logs" = true ]; then
-      save_follow_pid "$$"
+      if [ -z "${COMPOSE_TERMINAL_FOLLOW_RECEIPT:-}" ]; then save_follow_pid "$$"; fi
       if [ "$debug" = true ]; then
         log_msg "DEBUG" "${compose_base[*]} -p $name up ${cmd_args[*]}"
       fi
-      "${compose_base[@]}" -p "$name" up "${cmd_args[@]}"
+      COMPOSE_MENU=true "${compose_base[@]}" -p "$name" up "${cmd_args[@]}"
     else
       if [ "$debug" = true ]; then
         log_msg "DEBUG" "${compose_base[*]} -p $name up ${cmd_args[*]} -d"
@@ -402,118 +492,17 @@ case $command in
     ;;
     
   update)
-    up_args=("-d")
-    pull_args=()
-    if [ "$build_on_update" = true ]; then
-      # --ignore-buildable only makes sense when we rebuild those services ourselves.
-      pull_args+=("--ignore-buildable")
-      up_args+=("--build")
-    fi
-
-    if [ "$debug" = true ]; then
-      log_msg "DEBUG" "${compose_base[*]} -p $name images -q"
-      log_msg "DEBUG" "${compose_base[*]} -p $name pull ${pull_args[*]}"
-      log_msg "DEBUG" "${compose_base[*]} -p $name up ${up_args[*]}"
-    fi
-
-    # Capture current images for cleanup later
-    images=()
-    mapfile -t images < <("${compose_base[@]}" -p "$name" images -q 2>/dev/null)
-
-    if [ "${#images[@]}" -eq 0 ]; then
-      # Fallback: extract image names from compose files directly
-      local_files=()
-      for (( i=0; i<${#file_args[@]}; i++ )); do
-        if [ "${file_args[$i]}" = "-f" ] && [ -f "${file_args[$((i+1))]}" ]; then
-          local_files+=("${file_args[$((i+1))]}")
-        fi
-      done
-      if (( ${#local_files[@]} )); then
-        mapfile -t services < <(sed -n 's/image:\(.*\)/\1/p' "${local_files[@]}")
-        for image in "${services[@]}"; do
-          mapfile -t temp_images < <(docker images -q --no-trunc "${image}" 2>/dev/null)
-          images+=( "${temp_images[@]}" )
-        done
-      fi
-
-      images=( "${images[@]##sha256:}" )
-    fi
-    
-    # Pull latest images. Buildable services are only skipped when we rebuild them below.
-    echo "Pulling latest images..."
-    "${compose_base[@]}" -p "$name" pull "${pull_args[@]}"
-    pull_exit=$?
-
-    # Local-only images (build: + image:) can't be pulled; rebuild those from source instead.
-    if [ $pull_exit -ne 0 ] && [ "$build_on_update" != true ]; then
-      echo ""
-      echo "Pull failed; retrying without buildable services and rebuilding them from source..."
-      log_msg "WARNING" "Pull failed for $name, retrying with --ignore-buildable and --build"
-      "${compose_base[@]}" -p "$name" pull --ignore-buildable
-      pull_exit=$?
-      if [ $pull_exit -eq 0 ]; then
-        up_args+=("--build")
-      fi
-    fi
-    
-    if [ $pull_exit -ne 0 ]; then
-      operation_exit_code=$pull_exit
-      save_result "failed" $pull_exit "update"
-      log_msg "ERROR" "Failed to pull images for $name, aborting update"
-      echo ""
-      echo "✗ Failed to pull images for $name, update aborted"
-      exit $operation_exit_code
-    fi
-    
-    # Recreate containers with new images
-    echo ""
-    echo "Recreating containers..."
-    "${compose_base[@]}" -p "$name" up "${up_args[@]}"
-    up_exit=$?
-
-    if [ $up_exit -eq 0 ]; then
-      operation_exit_code=0
-      # Clean up old images
-      mapfile -t new_images < <("${compose_base[@]}" -p "$name" images -q 2>/dev/null)
-      for target in "${new_images[@]}"; do
-        for i in "${!images[@]}"; do
-          if [[ ${images[i]} = "$target" ]]; then
-            unset 'images[i]'
-          fi
-        done
-      done
-
-      if (( ${#images[@]} )); then
-        if [ "$debug" = true ]; then
-          log_msg "DEBUG" "docker rmi ${images[*]}"
-        fi
-        echo ""
-        echo "Cleaning up old images..."
-        docker rmi "${images[@]}" 2>/dev/null || true
-      fi
-      
-      # Save stack started timestamp and running profiles after update
-      if [ -n "$stack_path" ] && [ -d "$stack_path" ]; then
-        date -Iseconds > "$stack_path/started_at"
-        persist_running_profiles
-      fi
-      save_result "success" 0 "update"
-      echo ""
-      echo "✓ Stack $name updated successfully"
-    else
-      operation_exit_code=$up_exit
-      save_result "failed" $up_exit "update"
-      log_msg "ERROR" "Failed to update stack $name (exit code: $up_exit)"
-      echo ""
-      echo "✗ Stack $name failed to update (exit code: $up_exit)"
-    fi
+    # shellcheck source=compose_update.sh
+    . "$script_directory/compose_update.sh"
+    run_stack_update
+    operation_exit_code=$?
     ;;
 
   gitdeploy)
     # Deploy a git stack. Fetching, checking out, checking, pulling and
     # starting all happen under this one lock. Until "up" starts, any failure
     # leaves the containers untouched and the clone at its previous commit.
-    git_helper="$(dirname "$0")/git_stack.php"
+    git_helper="$script_directory/git_stack.php"
     # Run the git helper. PHP notices go to stderr, so stdout carries only its answer.
     git_stack() {
       php -d display_errors=stderr "$git_helper" "$@"

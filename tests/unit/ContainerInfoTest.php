@@ -231,6 +231,57 @@ class ContainerInfoTest extends TestCase
         $this->assertSame('existing-sha', $base->localSha);
     }
 
+    public function testMergeUpdateStatusClearsAnOutdatedBadgeAndDigests(): void
+    {
+        $base = \ContainerInfo::fromDockerInspect([
+            'Name' => 'test',
+            'Image' => 'postgres:18',
+            'updateStatus' => 'update-available',
+            'localSha' => 'old-local',
+            'remoteSha' => 'old-remote',
+        ]);
+        $base->mergeUpdateStatus(\ContainerInfo::fromUpdateResponse([
+            'container' => 'test',
+            'image' => 'docker.io/library/postgres:18',
+            'hasUpdate' => false,
+            'status' => 'up-to-date',
+        ]));
+
+        $this->assertFalse($base->hasUpdate);
+        $this->assertSame('up-to-date', $base->updateStatus);
+        $this->assertSame('', $base->localSha);
+        $this->assertSame('', $base->remoteSha);
+    }
+
+    public function testMergeUpdateStatusDoesNotReuseAnotherTagsResult(): void
+    {
+        $base = \ContainerInfo::fromDockerInspect(['Name' => 'test', 'Image' => 'postgres:18']);
+        $base->mergeUpdateStatus(\ContainerInfo::fromUpdateResponse([
+            'container' => 'test',
+            'image' => 'postgres:16',
+            'hasUpdate' => true,
+            'status' => 'update-available',
+            'localSha' => 'old-local',
+            'remoteSha' => 'old-remote',
+        ]));
+
+        $this->assertFalse($base->hasUpdate);
+        $this->assertSame('unknown', $base->updateStatus);
+        $this->assertSame('', $base->localSha);
+    }
+
+    public function testMergeUpdateStatusDoesNotReuseAnotherReplicasResult(): void
+    {
+        $base = \ContainerInfo::fromDockerInspect(['Name' => 'stack-web-1', 'Image' => 'nginx:latest']);
+        $base->mergeUpdateStatus(\ContainerInfo::fromUpdateResponse([
+            'container' => 'stack-web-2',
+            'image' => 'nginx:latest',
+            'status' => 'up-to-date',
+        ]));
+
+        $this->assertSame('unknown', $base->updateStatus);
+    }
+
     // ===========================================
     // toArray Tests
     // ===========================================
@@ -311,7 +362,8 @@ class ContainerInfoTest extends TestCase
 
         $arr = $info->toUpdateArray();
 
-        $expected = ['name', 'service', 'image', 'icon', 'hasUpdate', 'updateStatus', 'localSha', 'remoteSha', 'isPinned', 'pinnedDigest'];
+        $expected = ['name', 'oneOff', 'service', 'image', 'icon', 'hasUpdate', 'updateStatus', 'localSha', 'remoteSha',
+            'localImageSha', 'updateKind', 'updateReadiness', 'isPinned', 'pinnedDigest'];
         $this->assertSame($expected, array_keys($arr));
         $this->assertSame('abcdef1234567890abcdef1234567890', $arr['pinnedDigest']);
         $this->assertSame('icon.png', $arr['icon']);
@@ -319,6 +371,63 @@ class ContainerInfoTest extends TestCase
         // Should NOT contain non-update fields
         $this->assertArrayNotHasKey('state', $arr);
         $this->assertArrayNotHasKey('ports', $arr);
+    }
+
+    public function testOneOffIdentitySurvivesNormalizationAndBlocksSharedOrSavedUpdates(): void
+    {
+        $pending = [
+            'name' => 'job', 'service' => 'app', 'image' => 'app:latest', 'state' => 'exited',
+            'hasUpdate' => true, 'updateStatus' => 'update-available', 'updateReadiness' => 'ready-to-apply',
+            'localSha' => 'old', 'remoteSha' => 'new', 'localImageSha' => 'new',
+        ];
+        foreach ([
+            ['Labels' => 'com.docker.compose.oneoff=True'],
+            ['Labels' => ['com.docker.compose.oneoff' => 'True']],
+            ['oneOff' => true],
+        ] as $identity) {
+            $job = \ContainerInfo::fromDockerInspect($pending + $identity);
+            $this->assertTrue($job->oneOff);
+            $this->assertSame('exited', $job->state);
+            $this->assertFalse($job->hasUpdate);
+            $this->assertSame('unknown', $job->updateStatus);
+            $this->assertSame('', $job->remoteSha);
+            $job->mergeUpdateStatus(\ContainerInfo::fromUpdateResponse($pending));
+            $this->assertFalse($job->hasUpdate);
+            $this->assertSame('unknown', $job->updateReadiness);
+            $this->assertTrue(\ContainerInfo::fromDockerInspect($job->toMetadataArray())->oneOff);
+            $this->assertTrue(\ContainerInfo::fromUpdateResponse($job->toUpdateArray())->oneOff);
+            $this->assertTrue(\ContainerInfo::fromDockerPs($pending + $identity)->oneOff);
+        }
+        $regular = \ContainerInfo::fromDockerInspect($pending + ['Labels' => 'com.docker.compose.oneoff=False']);
+        $this->assertFalse($regular->oneOff);
+        $this->assertTrue($regular->hasUpdate);
+    }
+
+    public function testReadinessSurvivesFactoriesSerializationAndStatusMerging(): void
+    {
+        $raw = [
+            'name' => 'app', 'service' => 'app', 'image' => 'app:latest',
+            'status' => 'update-available', 'hasUpdate' => true,
+            'localSha' => 'old', 'remoteSha' => 'base', 'localImageSha' => 'built',
+            'updateKind' => 'build-base', 'updateReadiness' => 'ready-to-apply',
+        ];
+        $update = \ContainerInfo::fromUpdateResponse($raw);
+        $roundtrip = \ContainerInfo::fromDockerInspect($update->toArray());
+        $this->assertSame($update->toUpdateArray(), $roundtrip->toUpdateArray());
+        $container = \ContainerInfo::fromDockerInspect(['name' => 'app', 'image' => 'app:latest']);
+        $container->mergeUpdateStatus($update);
+        $this->assertSame('ready-to-apply', $container->updateReadiness);
+        $this->assertSame('build-base', $container->updateKind);
+        $this->assertSame('built', $container->localImageSha);
+        $other = \ContainerInfo::fromDockerInspect(['name' => 'other', 'image' => 'app:latest']);
+        $other->mergeUpdateStatus($update);
+        $this->assertSame('unknown', $other->updateReadiness);
+        $container->mergeUpdateStatus(\ContainerInfo::fromUpdateResponse([
+            'name' => 'app', 'image' => 'app:latest', 'status' => 'unknown',
+        ]));
+        $this->assertSame('unknown', $container->updateReadiness);
+        $this->assertSame('', $container->localImageSha);
+        $this->assertSame('update-available', $container->updateStatus, 'Legacy pending-update history remains preserved.');
     }
 
     // ===========================================
