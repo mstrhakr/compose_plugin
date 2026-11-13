@@ -282,8 +282,15 @@ if (!function_exists('composeCheckStackUpdatesForUi')) {
      */
     function composeCheckStackUpdatesForUi(array $stacks, bool $replaceSavedStatus = false, ?array &$superseded = null, ?array &$recheckTokens = null, ?array &$failures = null): array
     {
-        $metadataTokens = ContainerMetadataCache::begin(array_map(static fn(StackInfo $stack): string => $stack->projectFolder, $stacks));
-        $cache = composeLoadPersistentContainerCache();
+        // Presentation metadata is optional enrichment; its failures must not block checks (STATE-META-06/14).
+        try {
+            $metadataTokens = ContainerMetadataCache::begin(array_map(static fn(StackInfo $stack): string => $stack->projectFolder, $stacks));
+            $cache = composeLoadPersistentContainerCache();
+        } catch (RuntimeException | JsonException $e) {
+            composeLogger('Container metadata unavailable for update check: ' . $e->getMessage(), null, 'user', 'error', 'metadata');
+            $metadataTokens = [];
+            $cache = [];
+        }
         $iconByService = [];
         $iconByName = [];
         foreach ($stacks as $stack) {
@@ -322,7 +329,12 @@ if (!function_exists('composeCheckStackUpdatesForUi')) {
         };
         $checker = new StackUpdateService();
         $published = static function (array $accepted) use (&$patches, $metadataTokens): void {
-            ContainerMetadataCache::merge(array_intersect_key($patches, $accepted), $metadataTokens);
+            if (!$metadataTokens) return;
+            try {
+                ContainerMetadataCache::merge(array_intersect_key($patches, $accepted), $metadataTokens);
+            } catch (RuntimeException | JsonException $e) {
+                composeLogger('Unable to save container metadata after update check: ' . $e->getMessage(), null, 'user', 'error', 'metadata');
+            }
         };
         $results = $checker->checkStacks($stacks, $enrich, $replaceSavedStatus, $published);
         $superseded = $checker->superseded;
@@ -1913,9 +1925,9 @@ switch ($_POST['action']) {
             $metadataSnapshot = StackMutationGuard::inspect($stackInfo->projectName,
                 static fn(string $epoch): array => [$epoch, ContainerMetadataCache::begin([$stackInfo->projectFolder])]);
         } catch (RuntimeException | JsonException $e) {
+            // Metadata is optional; still return authoritative Docker details (STATE-META-06/14).
             composeLogger('Unable to reserve container metadata: ' . $e->getMessage(), null, 'user', 'error', 'metadata');
-            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
-            break;
+            $metadataSnapshot = null;
         }
         // Get container details in JSON format (all states)
         $rows = $stackInfo->getContainerList();
@@ -2109,8 +2121,6 @@ switch ($_POST['action']) {
             }
         } catch (RuntimeException | JsonException $e) {
             composeLogger('Unable to save container metadata: ' . $e->getMessage(), null, 'user', 'error', 'metadata');
-            echo json_encode(['result' => 'error', 'message' => $e->getMessage()]);
-            break;
         }
 
         echo json_encode(['result' => 'success', 'containers' => $containers, 'stackState' => $stackState, 'projectName' => $stackInfo->projectFolder, 'startedAt' => $stackInfo->getStartedAt()]);

@@ -120,8 +120,12 @@ and clearing, including legacy native entries.
 Presentation metadata has its own transactional project/service store. Tests
 interleave unrelated publications, newer collectors, deletion/recreation, and
 explicit clearing; stale collectors cannot resurrect removed metadata. Readers
-and all writers wait on the same inode lock. Corrupt storage is preserved and
-reported until explicit clearing. Both metadata endpoints expose the existing
+and all writers wait on the same inode lock. Unparseable storage is reset as a
+whole, in place, on any access with a log warning, invalidating earlier
+collectors (STATE-META-14 in `docs/contracts/state-metadata.md`). Metadata
+corruption or store failures do not block container details, update checks, or
+the browser (no dialog). Saved update evidence and pending rechecks keep their
+strict corruption policies. Both metadata endpoints expose the existing
 project/service map, not the internal ownership envelope.
 
 Mutation regressions use real canonical-project locks and deterministic epoch

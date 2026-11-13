@@ -66,27 +66,41 @@ class ContainerMetadataCacheTest extends TestCase
         $this->assertSame('kept', \ContainerMetadataCache::read()['app']['web']['image']);
     }
 
-    public function testCorruptionIsPreservedUntilExplicitClear(): void
+    public function testCorruptionIsResetAutomaticallyOnEveryAccess(): void
     {
-        foreach (['', 'broken', 'null', '{"app":42}', '{"version":1,"projects":{},"owners":{"app":"bad"}}'] as $raw) {
-            file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, $raw);
-            foreach (['read', 'begin', 'remove', 'merge'] as $operation) {
-                try {
-                    match ($operation) {
-                        'read' => \ContainerMetadataCache::read(),
-                        'begin' => \ContainerMetadataCache::begin(['app']),
-                        'remove' => \ContainerMetadataCache::remove('app'),
-                        'merge' => \ContainerMetadataCache::merge([], []),
-                    };
-                    $this->fail('Corrupt metadata accepted.');
-                } catch (\RuntimeException | \JsonException $error) {
-                    $this->assertNotEmpty($error->getMessage());
-                }
-                $this->assertSame($raw, file_get_contents(COMPOSE_CONTAINER_CACHE_FILE));
+        $corrupt = ['', 'broken', 'null', '{"app":42}', '{"version":1,"projects":{},"owners":{"app":"bad"}}',
+            '{"b":{}}roject":{"service":{}}}'];
+        foreach ($corrupt as $raw) {
+            foreach (['read', 'begin', 'remove', 'merge', 'clearEvidence'] as $operation) {
+                file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, $raw);
+                $inode = fileinode(COMPOSE_CONTAINER_CACHE_FILE);
+                $result = match ($operation) {
+                    'read' => \ContainerMetadataCache::read(),
+                    'begin' => \ContainerMetadataCache::begin(['app']),
+                    'remove' => \ContainerMetadataCache::remove('app'),
+                    'merge' => \ContainerMetadataCache::merge([], []),
+                    'clearEvidence' => \ContainerMetadataCache::clearEvidence(),
+                };
+                if ($operation === 'read') $this->assertSame([], $result);
+                if ($operation === 'remove') $this->assertFalse($result);
+                $this->assertSame($inode, fileinode(COMPOSE_CONTAINER_CACHE_FILE), "$operation must reset in place");
+                $stored = json_decode((string) file_get_contents(COMPOSE_CONTAINER_CACHE_FILE), true, 512, JSON_THROW_ON_ERROR);
+                $this->assertSame([], $stored['projects'], "$operation must reset all entries");
+                if ($operation !== 'begin') $this->assertSame([], $stored['owners']);
             }
-            \ContainerMetadataCache::clearEvidence();
-            $this->assertSame([], \ContainerMetadataCache::read());
         }
+    }
+
+    public function testCorruptionResetInvalidatesEarlierPublishers(): void
+    {
+        $token = \ContainerMetadataCache::begin(['app']);
+        file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, 'broken');
+        $this->assertSame([], \ContainerMetadataCache::read());
+        \ContainerMetadataCache::merge(['app' => ['web' => ['service' => 'web', 'image' => 'stale']]], $token);
+        $this->assertSame([], \ContainerMetadataCache::read());
+        $fresh = \ContainerMetadataCache::begin(['app']);
+        \ContainerMetadataCache::merge(['app' => ['web' => ['service' => 'web', 'image' => 'fresh']]], $fresh);
+        $this->assertSame('fresh', \ContainerMetadataCache::read()['app']['web']['image']);
     }
 
     public function testEveryReaderAndWriterUsesTheTransactionLock(): void

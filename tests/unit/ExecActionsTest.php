@@ -1118,6 +1118,41 @@ class ExecActionsTest extends TestCase
         }
     }
 
+    public function testPresentationMetadataFailuresDoNotBlockAuthoritativeResponses(): void
+    {
+        $this->createTestStack('meta-fallback');
+        $directory = $this->createTempDir();
+        $path = getenv('PATH');
+        $row = json_encode(['Name' => 'meta-app', 'Service' => 'app', 'Image' => 'alpine:latest', 'State' => 'running']);
+        file_put_contents($directory . '/docker', "#!/bin/sh\ncase \"\$1\" in\n"
+            . "compose) echo " . escapeshellarg($row) . " ;;\ninspect) echo '{}';;\nesac\n");
+        chmod($directory . '/docker', 0755);
+        putenv('PATH=' . $directory . PATH_SEPARATOR . $path);
+        $original = is_file(COMPOSE_CONTAINER_CACHE_FILE) ? file_get_contents(COMPOSE_CONTAINER_CACHE_FILE) : false;
+        try {
+            file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, '{"b":{}}roject":{"service":{}}}');
+            $cache = json_decode($this->executeAction('getPersistentContainerCache'), true);
+            $this->assertSame(['result' => 'success', 'cache' => []], $cache);
+
+            file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, 'broken');
+            $response = json_decode($this->executeAction('getStackContainers', ['script' => 'meta-fallback']), true);
+            $this->assertSame('success', $response['result'], json_encode($response));
+            $this->assertSame('meta-app', $response['containers'][0]['name']);
+            $this->assertSame('meta-app', \ContainerMetadataCache::read()['meta-fallback']['app']['name']);
+
+            unlink(COMPOSE_CONTAINER_CACHE_FILE);
+            mkdir(COMPOSE_CONTAINER_CACHE_FILE);
+            $response = json_decode($this->executeAction('getStackContainers', ['script' => 'meta-fallback']), true);
+            $this->assertSame('success', $response['result'], json_encode($response));
+            $this->assertSame('meta-app', $response['containers'][0]['name']);
+        } finally {
+            putenv('PATH=' . $path);
+            if (is_dir(COMPOSE_CONTAINER_CACHE_FILE)) rmdir(COMPOSE_CONTAINER_CACHE_FILE);
+            if ($original === false) @unlink(COMPOSE_CONTAINER_CACHE_FILE);
+            else file_put_contents(COMPOSE_CONTAINER_CACHE_FILE, $original);
+        }
+    }
+
     public function testImportedInputFailureDoesNotHideStackSettings(): void
     {
         file_put_contents(COMPOSE_LEGACY_ORIGIN_FILE, \ProjectIdentity::LEGACY_REVISION);

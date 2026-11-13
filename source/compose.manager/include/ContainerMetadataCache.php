@@ -6,9 +6,15 @@ require_once __DIR__ . '/Util.php';
 
 class ContainerMetadataCache
 {
+    /** Corrupt storage is disposable: reset it (STATE-META-14) and report no cached metadata. */
     public static function read(): array
     {
-        return self::access();
+        try {
+            return self::access();
+        } catch (ContainerMetadataCorruption) {
+            // Re-validate under the exclusive lock so a concurrent valid rewrite is not discarded.
+            return self::access(static fn(array $cache): array => $cache);
+        }
     }
 
     /** @param list<string> $projects
@@ -58,11 +64,11 @@ class ContainerMetadataCache
         self::access(static function (array $cache, array &$owners): array {
             $owners = [];
             return $cache;
-        }, true);
+        });
     }
 
     /** @param callable(array, array&):array|null $change */
-    private static function access(?callable $change = null, bool $recover = false): array
+    private static function access(?callable $change = null): array
     {
         $lock = @fopen(COMPOSE_CONTAINER_CACHE_FILE . '.lock', 'c+');
         if ($lock === false) throw new RuntimeException('Unable to open container metadata initialization lock.');
@@ -71,14 +77,14 @@ class ContainerMetadataCache
                 throw new RuntimeException('Unable to lock container metadata initialization.');
             }
             clearstatcache(true, COMPOSE_CONTAINER_CACHE_FILE);
-            return self::accessLocked($change, $recover);
+            return self::accessLocked($change);
         } finally {
             fclose($lock);
         }
     }
 
     /** @param callable(array, array&):array|null $change */
-    private static function accessLocked(?callable $change, bool $recover): array
+    private static function accessLocked(?callable $change): array
     {
         if ($change === null && !is_file(COMPOSE_CONTAINER_CACHE_FILE)) return [];
         $created = false;
@@ -86,7 +92,7 @@ class ContainerMetadataCache
             $handle = @fopen(COMPOSE_CONTAINER_CACHE_FILE, 'x+');
             $created = $handle !== false;
         }
-        if (!$created) $handle = fopen(COMPOSE_CONTAINER_CACHE_FILE, $change === null ? 'r' : 'c+');
+        if (!$created) $handle = @fopen(COMPOSE_CONTAINER_CACHE_FILE, $change === null ? 'r' : 'c+');
         if ($handle === false) throw new RuntimeException('Unable to open container metadata.');
         try {
             if (!flock($handle, $change === null ? LOCK_SH : LOCK_EX)) throw new RuntimeException('Unable to lock container metadata.');
@@ -118,8 +124,9 @@ class ContainerMetadataCache
                 }
                 unset($services);
             } catch (JsonException | RuntimeException $e) {
-                if (!$recover) throw $e;
-                composeLogger('Explicitly clearing corrupt container metadata: ' . $e->getMessage(), null, 'user', 'warning', 'metadata');
+                if ($change === null) throw new ContainerMetadataCorruption($e->getMessage(), 0, $e);
+                // Reset in place: unlinking would split lock coordination across inodes.
+                composeLogger('Resetting corrupt container metadata cache: ' . $e->getMessage(), null, 'user', 'warning', 'metadata');
                 $cache = $owners = [];
             }
             if ($change === null) return $cache;
@@ -135,4 +142,8 @@ class ContainerMetadataCache
             fclose($handle);
         }
     }
+}
+
+final class ContainerMetadataCorruption extends RuntimeException
+{
 }
