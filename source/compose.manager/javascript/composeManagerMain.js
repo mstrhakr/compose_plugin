@@ -2534,8 +2534,8 @@ function sanitizeIconPreviewSrc(raw) {
 function loadPersistentContainerCache() {
     return new Promise(function(resolve) {
         function failed(message) {
-            composeLogger('Failed to load persistent container cache', { message: message }, 'user', 'error', 'load-cache');
-            swal({ title: 'Container metadata unavailable', text: message + ' Existing metadata has been retained; refresh to retry or clear the update cache to recover damaged storage.', type: 'warning' });
+            // Optional presentation cache: log and keep existing metadata, never block with a dialog (STATE-META-14).
+            composeLogger('Failed to load persistent container cache; existing metadata retained', { message: message }, 'user', 'warning', 'load-cache');
             resolve(persistentContainerCache);
         }
         $.ajax({

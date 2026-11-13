@@ -91,13 +91,13 @@ for (const outcome of ['error', 'network', 'success', 'empty']) {
             ? "{result:'success', cache:[]}"
             : "{result:'success', cache:{fresh:{app:{icon:'new.png'}}}}"});
         await pending;
-        return {cache:persistentContainerCache, warnings};
+        return {cache:persistentContainerCache, warnings, notices};
       })();
     `);
     if (outcome === 'error' || outcome === 'network') {
       expect(result.cache.existing.app.icon).toBe('kept.png');
-      expect(result.warnings).toHaveLength(1);
-      expect(result.warnings[0].title).toBe('Container metadata unavailable');
+      expect(result.warnings).toEqual([]);
+      expect(result.notices).toContain('Failed to load persistent container cache; existing metadata retained');
     } else {
       expect(result.warnings).toEqual([]);
       expect(result.cache).toEqual(outcome === 'empty' ? {} : { fresh: { app: { icon: 'new.png' } } });
