@@ -36,24 +36,12 @@
 >
 
 <CHANGES>
-###2026.11.09.1050
-- Features (terminal): detach attached Up through owned native PTY input
-- Features (terminal): recover live connections with bounded saved-output fallback
-- Bug Fixes (updates): retry registry rate limits with bounded server-aware delays
-- Bug Fixes (up): let explicit log following override saved wait policy
-- Bug Fixes (terminal): load native font faces and dispose with pagehide
-- Bug Fixes (terminal): load socket readiness with standalone viewer endpoint
-- Bug Fixes (updates): let mobile dialog cells grow with their content
-- Bug Fixes (terminal): restore PTY progress while preserving owned cancellation
-- Bug Fixes (compose): allow global read-only commands without a project name
-- Bug Fixes (dispatch): isolate invalid Compose inputs during stack actions
-- Bug Fixes (identities): propagate registration failures and share audit evidence
-- Documentation: align contract tables with Markdown lint
-- Documentation: remove contract header trailing whitespace
-- Documentation: recover rebuild-on-update preference contract
-- Tests (host): cover identity review fixes in guarded stabilization suite
+###2026.11.13.0929
+- Documentation: add optional sponsorship link
+- Chores: add GitHub Sponsors funding
+- Chores: update changelog for v2026.10.27 [skip ci]
 - [PR #187](https://github.com/mstrhakr/compose_plugin/pull/187)
-- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.10.27...v2026.11.09.1050)
+- [beta release diff](https://github.com/mstrhakr/compose_plugin/compare/v2026.10.27...v2026.11.13.0929)
 </CHANGES>
 
 <!-- The 'pre-install' script. -->
