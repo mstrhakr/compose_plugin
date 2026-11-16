@@ -42,23 +42,34 @@ function composeExpireUiOperations(string $directory): void
         $files = glob($directory . '/*.json');
         if ($files === false) throw new RuntimeException('Unable to enumerate operation receipts.');
         foreach ($files as $file) {
-            $contents = file_get_contents($file);
-            $modified = filemtime($file);
-            if ($contents === false || $modified === false) {
+            if (preg_match('/^[a-f0-9]{64}-[a-f0-9]{32}\.json$/D', basename($file)) !== 1) continue;
+            $stream = @fopen($file, 'rb');
+            if ($stream === false) {
+                clearstatcache(true, $file);
+                if (!file_exists($file) && !is_link($file)) continue;
                 throw new RuntimeException('Unable to inspect operation receipt.');
             }
+            try {
+                // Read bytes and age from the same inode while publishers atomically replace receipts.
+                $contents = stream_get_contents($stream);
+                $stat = fstat($stream);
+                if ($contents === false || $stat === false) {
+                    throw new RuntimeException('Unable to inspect operation receipt.');
+                }
+                $modified = $stat['mtime'];
+            } finally {
+                fclose($stream);
+            }
             $receipt = json_decode($contents, true);
-            if (($receipt['state'] ?? '') === 'running') continue;
+            if (in_array($receipt['state'] ?? '', ['queued', 'running'], true)) continue;
             if ($modified < time() - 3600) {
-                foreach (['.log', '.stderr', '.log.generation', '.log.viewed', '.viewer.json', '.viewer.lock',
+                foreach (['.log', '.stderr', '.log.generation', '.log.viewed', '.log.connected', '.viewer.json', '.viewer.lock',
                     '.detach-requested', '.detach-ready', '.detach.lock', '.input'] as $suffix) {
-                    if (file_exists($file . $suffix) && !unlink($file . $suffix)) {
-                        throw new RuntimeException('Unable to expire terminal output.');
-                    }
+                    composeExpireUiOperationFile($file . $suffix, 'Unable to expire terminal output.');
                 }
             }
-            if ($modified < time() - 86400 && !unlink($file)) {
-                throw new RuntimeException('Unable to expire operation receipt.');
+            if ($modified < time() - 86400) {
+                composeExpireUiOperationFile($file, 'Unable to expire operation receipt.');
             }
         }
         if (!ftruncate($lock, 0) || fseek($lock, 0) !== 0 || fwrite($lock, (string) time()) === false) {
@@ -67,6 +78,15 @@ function composeExpireUiOperations(string $directory): void
     } finally {
         fclose($lock);
     }
+}
+
+function composeExpireUiOperationFile(string $file, string $message): void
+{
+    clearstatcache(true, $file);
+    if (!file_exists($file) && !is_link($file)) return;
+    if (@unlink($file)) return;
+    clearstatcache(true, $file);
+    if (file_exists($file) || is_link($file)) throw new RuntimeException($message);
 }
 
 function composeFailQueuedUiOperation(string $file): void

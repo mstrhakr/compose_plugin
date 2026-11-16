@@ -86,20 +86,26 @@ class UiOperationTest extends TestCase
     public function testHousekeepingIsThrottledAndKeepsActiveOutput(): void
     {
         $directory = $this->createTempDir();
-        $completed = $directory . '/completed.json';
-        $active = $directory . '/active.json';
-        $old = $directory . '/old.json';
-        foreach ([$completed, $active, $old] as $file) {
-            file_put_contents($file, $file === $active ? '{"state":"running"}' : '{"state":"completed","exitCode":0}');
+        $completed = $directory . '/' . basename(\composeUiOperationFile('completed', str_repeat('1', 32)));
+        $active = $directory . '/' . basename(\composeUiOperationFile('active', str_repeat('2', 32)));
+        $old = $directory . '/' . basename(\composeUiOperationFile('old', str_repeat('3', 32)));
+        $queued = $directory . '/' . basename(\composeUiOperationFile('queued', str_repeat('4', 32)));
+        foreach ([$completed, $active, $old, $queued] as $file) {
+            $state = $file === $active ? 'running' : ($file === $queued ? 'queued' : 'completed');
+            file_put_contents($file, json_encode(['state' => $state, 'exitCode' => 0]));
             file_put_contents($file . '.log', 'log');
+            file_put_contents($file . '.viewer.json', '{"pid":123}');
+            file_put_contents($file . '.log.connected', 'connected');
             file_put_contents($file . '.detach-requested', 'requested');
             file_put_contents($file . '.detach.lock', '');
             $this->assertTrue(posix_mkfifo($file . '.input', 0600));
-            touch($file, time() - ($file === $old || $file === $active ? 90000 : 4000));
+            touch($file, time() - ($file === $completed ? 4000 : 90000));
         }
         \composeExpireUiOperations($directory);
         $this->assertFileExists($completed);
         $this->assertFileDoesNotExist($completed . '.log');
+        $this->assertFileDoesNotExist($completed . '.viewer.json');
+        $this->assertFileDoesNotExist($completed . '.log.connected');
         $this->assertFileDoesNotExist($completed . '.input');
         $this->assertFileDoesNotExist($completed . '.detach-requested');
         $this->assertFileDoesNotExist($completed . '.detach.lock');
@@ -108,9 +114,58 @@ class UiOperationTest extends TestCase
         $this->assertFileExists($active);
         $this->assertFileExists($active . '.log');
         $this->assertFileExists($active . '.input');
+        $this->assertFileExists($active . '.viewer.json');
+        $this->assertFileExists($queued);
+        $this->assertFileExists($queued . '.log');
         file_put_contents($old, '{"state":"completed","exitCode":0}');
         touch($old, time() - 90000);
         \composeExpireUiOperations($directory);
         $this->assertFileExists($old, 'Repeated receipt creation must not rescan the directory within the housekeeping interval.');
+    }
+
+    public function testHousekeepingIgnoresAuxiliaryAndUnrelatedJsonFiles(): void
+    {
+        $directory = $this->createTempDir();
+        $receipt = basename(\composeUiOperationFile('viewer', str_repeat('a', 32)));
+        foreach ([$receipt . '.viewer.json', 'unrelated.json', str_repeat('b', 64) . '-invalid.json'] as $name) {
+            file_put_contents($directory . '/' . $name, '{"pid":123}');
+            touch($directory . '/' . $name, time() - 90000);
+        }
+        \composeExpireUiOperations($directory);
+        foreach ([$receipt . '.viewer.json', 'unrelated.json', str_repeat('b', 64) . '-invalid.json'] as $name) {
+            $this->assertSame('{"pid":123}', file_get_contents($directory . '/' . $name));
+        }
+    }
+
+    public function testHousekeepingToleratesReceiptDisappearanceAfterEnumeration(): void
+    {
+        $directory = $this->createTempDir();
+        $file = $directory . '/' . basename(\composeUiOperationFile('disappeared', str_repeat('5', 32)));
+        file_put_contents($file, '{"state":"completed","exitCode":0}');
+        // glob sees the real file; subsequent opens/stat resolve to its removed location.
+        \PluginTests\StreamWrapper\UnraidStreamWrapper::addMapping($file, $file . '.missing');
+        try {
+            \composeExpireUiOperations($directory);
+            $this->assertNotSame('', file_get_contents($directory . '/.housekeeping'));
+        } finally {
+            \PluginTests\StreamWrapper\UnraidStreamWrapper::addMapping($file, $file);
+        }
+    }
+
+    public function testCleanupDoesNotHidePersistentRemovalFailure(): void
+    {
+        $directory = $this->createTempDir();
+        $target = $directory . '/output';
+        mkdir($target);
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Unable to expire terminal output.');
+        \composeExpireUiOperationFile($target, 'Unable to expire terminal output.');
+    }
+
+    public function testCleanupAcceptsAlreadyMissingFiles(): void
+    {
+        $target = $this->createTempDir() . '/removed';
+        \composeExpireUiOperationFile($target, 'Unable to expire terminal output.');
+        $this->assertFileDoesNotExist($target);
     }
 }
