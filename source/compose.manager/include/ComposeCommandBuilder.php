@@ -73,6 +73,12 @@ class ComposeCommandBuilder
         self::assertSupportedAction($action);
         self::assertResolvedIdentity($stackInfo, $action);
 
+        if ($action === 'up' || $action === 'update') {
+            // Names are written into the managed override before Compose reads it.
+            // A failure is logged there and does not stop the stack from starting.
+            $stackInfo->syncAutoContainerNames();
+        }
+
         $args = $stackInfo->buildComposeArgs();
         $credentialId = in_array($action, ['up', 'update', 'pull'], true)
             ? trim((string) ($stackInfo->getCredentialId() ?? ''))

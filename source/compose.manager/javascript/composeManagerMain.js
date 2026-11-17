@@ -1538,7 +1538,7 @@ function initEditorModal() {
     editorModal.editors['override'] = overrideEditor;
 
     // Initialize settings field change tracking
-    $('#settings-name, #settings-description, #settings-icon-url, #settings-webui-url, #settings-env-path, #settings-default-profile, #settings-credential-id, #settings-wait-for-healthy, #settings-wait-timeout, #settings-build-on-update, #settings-external-compose-path, #settings-external-compose-file, #settings-use-default-compose-files').on('input change', function() {
+    $('#settings-name, #settings-description, #settings-icon-url, #settings-webui-url, #settings-env-path, #settings-default-profile, #settings-credential-id, #settings-wait-for-healthy, #settings-wait-timeout, #settings-build-on-update, #settings-auto-container-name, #settings-external-compose-path, #settings-external-compose-file, #settings-use-default-compose-files').on('input change', function() {
         var fieldId = this.id.replace('settings-', '');
         var isCheckbox = this.type === 'checkbox';
         var currentValue = isCheckbox ? ($(this).is(':checked') ? 'true' : 'false') : $(this).val();
@@ -1580,6 +1580,7 @@ function initEditorModal() {
         // Defer labels tab mode switch until save; only stage pending setting locally.
         editorModal.pendingLabelsViewMode = mode;
         $('#settings-override-management-label').text(mode === 'advanced' ? 'Manual' : 'Automatic');
+        updateAutoContainerNameState();
 
         if (mode !== originalMode) {
             editorModal.modifiedSettings.add('labels-view-mode');
@@ -7140,6 +7141,14 @@ function loadSettingsData(project, projectName) {
                 $('#settings-build-on-update').prop('checked', buildOnUpdate);
                 editorModal.originalSettings['build-on-update'] = buildOnUpdate ? 'true' : 'false';
 
+                // Automatic container names (written into the managed override at Compose Up)
+                var autoContainerName = response.autoContainerName === true;
+                $('#settings-auto-container-name').prop('checked', autoContainerName);
+                editorModal.originalSettings['auto-container-name'] = autoContainerName ? 'true' : 'false';
+                editorModal.autoContainerName = autoContainerName;
+                editorModal.projectName = response.projectName || '';
+                editorModal.managedOverrideBlocker = response.managedOverrideBlocker || '';
+
                 // Compose file discovery mode
                 var useDefaultComposeFiles = response.useDefaultComposeFiles === true;
                 $('#settings-use-default-compose-files').prop('checked', useDefaultComposeFiles);
@@ -7164,6 +7173,7 @@ function loadSettingsData(project, projectName) {
                 // Always sync settings control state, even when Labels tab is not active.
                 $('#settings-override-management').prop('checked', labelsViewMode !== 'advanced');
                 $('#settings-override-management-label').text(labelsViewMode === 'advanced' ? 'Manual' : 'Automatic');
+                updateAutoContainerNameState();
 
                 if (editorModal.currentProject === project && editorModal.currentTab === 'labels') {
                     toggleLabelsViewMode(labelsViewMode === 'advanced', true);
@@ -7188,6 +7198,11 @@ function loadSettingsData(project, projectName) {
         $('#settings-wait-for-healthy').prop('checked', false);
         $('#settings-wait-timeout').val('');
         $('#settings-build-on-update').prop('checked', false);
+        $('#settings-auto-container-name').prop('checked', false);
+        editorModal.originalSettings['auto-container-name'] = 'false';
+        editorModal.autoContainerName = false;
+        editorModal.projectName = '';
+        editorModal.managedOverrideBlocker = '';
         $('#settings-external-compose-path').val('');
         $('#settings-external-compose-file').val('');
         $('#settings-use-default-compose-files').prop('checked', false);
@@ -7224,6 +7239,53 @@ function loadSettingsData(project, projectName) {
 }
 
 // Toggle labels tab between basic (form) and advanced (override editor) modes
+// Automatic container names are written into the plugin-managed override, so
+// they need Override File Management set to Automatic and an override Compose
+// actually reads. When they are unavailable, the reason is shown under the option.
+function updateAutoContainerNameState() {
+    var $box = $('#settings-auto-container-name');
+    var $note = $('#settings-auto-container-name-blocked');
+    var reason = '';
+    if (editorModal.pendingLabelsViewMode === 'advanced') {
+        reason = 'Override File Management is Manual: you own compose.override.yaml, so the plugin does not write to it. Ex. switch it to Automatic, or set container_name on each service yourself.';
+    } else if (editorModal.managedOverrideBlocker) {
+        reason = editorModal.managedOverrideBlocker;
+    }
+    if (reason) {
+        $note.empty()
+            .append($('<strong>').text('Not available: '))
+            .append(document.createTextNode(reason))
+            .show();
+        // Leave a stored "on" switchable to off; only block switching it on.
+        $box.prop('disabled', !$box.is(':checked'));
+    } else {
+        $note.hide().empty();
+        $box.prop('disabled', false);
+    }
+}
+
+// A container_name the compose file sets wins over the override (Compose
+// merges later files over earlier ones), so the Labels field only shows it.
+function composeServiceContainerName(service) {
+    var name = service && service.container_name;
+    return (typeof name === 'string' || typeof name === 'number') ? String(name) : '';
+}
+
+// Compose refuses container_name for a service that runs more than one container.
+function composeServiceRunsReplicas(service) {
+    if (!service) return false;
+    var replicas = service.scale !== undefined ? service.scale
+        : (service.deploy && service.deploy.replicas !== undefined ? service.deploy.replicas : 1);
+    return parseInt(replicas, 10) > 1;
+}
+
+// The name automatic container names would write for a service.
+function autoContainerNameFor(serviceKey) {
+    var project = editorModal.projectName || '';
+    if (!project) return '';
+    return serviceKey === project ? project : project + '-' + serviceKey;
+}
+
 function toggleLabelsViewMode(isAdvanced, skipPersist) {
     editorModal.labelsViewMode = isAdvanced ? 'advanced' : 'basic';
     updateEditorFileInfo();
@@ -7522,12 +7584,15 @@ function renderLabelsUI(mainDoc, overrideDoc) {
             overrideService = overrideDoc.services[serviceKey];
         }
 
-        var containerName = service.container_name || serviceKey;
+        var composeName = composeServiceContainerName(service);
+        var overrideName = composeServiceContainerName(overrideService);
+        var containerName = composeName || overrideName || serviceKey;
         var iconValue = stripLocalIconScheme(findLabelValue(overrideService, service, icon_label));
         var webuiValue = findLabelValue(overrideService, service, webui_label);
         var shellValue = findLabelValue(overrideService, service, shell_label);
 
         // Store original values
+        editorModal.originalLabels[serviceKey + '_name'] = composeName ? '' : overrideName;
         editorModal.originalLabels[serviceKey + '_icon'] = iconValue;
         editorModal.originalLabels[serviceKey + '_webui'] = webuiValue;
         editorModal.originalLabels[serviceKey + '_shell'] = shellValue;
@@ -7546,6 +7611,35 @@ function renderLabelsUI(mainDoc, overrideDoc) {
             }).attr('onerror', 'composeIconFallback(this)')
         );
         $header.append($('<span>', { 'class': 'labels-service-name' }).text(containerName));
+
+        // Container name: written as container_name in the override.
+        var nameAttrs = {
+            type: 'text',
+            id: 'label-' + serviceKey + '-name'
+        };
+        var nameNote = '';
+        if (composeName) {
+            nameAttrs.value = composeName;
+            nameAttrs.readonly = 'readonly';
+            nameNote = 'Set in the compose file, which wins over the override. Change it there.';
+        } else if (composeServiceRunsReplicas(service)) {
+            nameAttrs.value = '';
+            nameAttrs.disabled = 'disabled';
+            nameAttrs.placeholder = serviceKey + ' runs more than one replica';
+            nameNote = 'Compose refuses a fixed name for a service with more than one replica, because every copy needs its own name.';
+        } else {
+            nameAttrs.value = overrideName;
+            nameAttrs['data-service'] = serviceKey;
+            nameAttrs['data-field'] = 'name';
+            nameAttrs.placeholder = editorModal.autoContainerName && autoContainerNameFor(serviceKey)
+                ? autoContainerNameFor(serviceKey) + ' (written at the next Compose Up)'
+                : (editorModal.projectName || 'project') + '-' + serviceKey + '-1 (Compose default)';
+        }
+        var $nameField = buildLabeledInput('fa fa-tag', 'Container Name', nameAttrs);
+        if (nameNote) {
+            $nameField.append($('<div>', { 'class': 'settings-field-help' }).text(nameNote));
+        }
+        $fields.append($nameField);
 
         $fields.append(buildLabeledInput('fa fa-picture-o', 'Icon URL / Path', {
             type: 'text',
@@ -8156,7 +8250,7 @@ function saveSettings(saveErrors) {
     }
 
     // Save icon URL, webui URL, env path, default profile, and external compose settings if any are modified
-    if (editorModal.modifiedSettings.has('icon-url') || editorModal.modifiedSettings.has('webui-url') || editorModal.modifiedSettings.has('env-path') || editorModal.modifiedSettings.has('extra-compose-files') || editorModal.modifiedSettings.has('default-profile') || editorModal.modifiedSettings.has('credential-id') || editorModal.modifiedSettings.has('wait-for-healthy') || editorModal.modifiedSettings.has('wait-timeout') || editorModal.modifiedSettings.has('build-on-update') || editorModal.modifiedSettings.has('external-compose-path') || editorModal.modifiedSettings.has('external-compose-file') || editorModal.modifiedSettings.has('use-default-compose-files')) {
+    if (editorModal.modifiedSettings.has('icon-url') || editorModal.modifiedSettings.has('webui-url') || editorModal.modifiedSettings.has('env-path') || editorModal.modifiedSettings.has('extra-compose-files') || editorModal.modifiedSettings.has('default-profile') || editorModal.modifiedSettings.has('credential-id') || editorModal.modifiedSettings.has('wait-for-healthy') || editorModal.modifiedSettings.has('wait-timeout') || editorModal.modifiedSettings.has('build-on-update') || editorModal.modifiedSettings.has('auto-container-name') || editorModal.modifiedSettings.has('external-compose-path') || editorModal.modifiedSettings.has('external-compose-file') || editorModal.modifiedSettings.has('use-default-compose-files')) {
 
         // Inline validation blocks Apply when errors are present, so by the
         // time we reach saveSettings the visible form state is valid.
@@ -8169,6 +8263,7 @@ function saveSettings(saveErrors) {
         var waitForHealthy = $('#settings-wait-for-healthy').is(':checked') ? 'true' : 'false';
         var waitTimeout = $('#settings-wait-timeout').val();
         var buildOnUpdate = $('#settings-build-on-update').is(':checked') ? 'true' : 'false';
+        var autoContainerName = $('#settings-auto-container-name').is(':checked') ? 'true' : 'false';
         var externalComposePath = $('#settings-external-compose-path').val();
         var externalComposeFilePath = $('#settings-external-compose-file').val();
         var useDefaultComposeFiles = $('#settings-use-default-compose-files').is(':checked') ? 'true' : 'false';
@@ -8185,6 +8280,7 @@ function saveSettings(saveErrors) {
                 waitForHealthy: waitForHealthy,
                 waitTimeout: waitTimeout,
                 buildOnUpdate: buildOnUpdate,
+                autoContainerName: autoContainerName,
                 externalComposePath: externalComposePath,
                 externalComposeFilePath: externalComposeFilePath,
                 useDefaultComposeFiles: useDefaultComposeFiles
@@ -8206,6 +8302,8 @@ function saveSettings(saveErrors) {
                         editorModal.originalSettings['wait-for-healthy'] = waitForHealthy;
                         editorModal.originalSettings['wait-timeout'] = waitTimeout;
                         editorModal.originalSettings['build-on-update'] = buildOnUpdate;
+                        editorModal.originalSettings['auto-container-name'] = autoContainerName;
+                        editorModal.autoContainerName = autoContainerName === 'true';
                         editorModal.originalSettings['external-compose-path'] = externalComposePath;
                         editorModal.originalSettings['external-compose-file'] = externalComposeFilePath;
                         editorModal.originalSettings['use-default-compose-files'] = useDefaultComposeFiles;
@@ -8218,6 +8316,7 @@ function saveSettings(saveErrors) {
                         editorModal.modifiedSettings.delete('wait-for-healthy');
                         editorModal.modifiedSettings.delete('wait-timeout');
                         editorModal.modifiedSettings.delete('build-on-update');
+                        editorModal.modifiedSettings.delete('auto-container-name');
                         editorModal.modifiedSettings.delete('external-compose-path');
                         editorModal.modifiedSettings.delete('external-compose-file');
                         editorModal.modifiedSettings.delete('use-default-compose-files');
@@ -8447,6 +8546,23 @@ function saveLabels(saveErrors) {
     var mainDoc = editorModal.labelsData.mainDoc;
     var overrideDoc = editorModal.labelsData.overrideDoc;
 
+    // Container names: valid for Docker and not used twice in this stack.
+    var usedNames = {};
+    for (var nameService in mainDoc.services) {
+        var typedName = composeServiceContainerName(mainDoc.services[nameService])
+            || ($('#label-' + nameService + '-name').attr('data-field') === 'name' ? ($('#label-' + nameService + '-name').val() || '').trim() : '');
+        if (!typedName) continue;
+        if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(typedName)) {
+            if (saveErrors) saveErrors.push('Container name "' + typedName + '" for ' + nameService + ' is not valid: Docker accepts letters, digits, and _ . - after a letter or digit (ex. immich-redis).');
+            return $.Deferred().resolve(false).promise();
+        }
+        if (usedNames[typedName]) {
+            if (saveErrors) saveErrors.push('Container name "' + typedName + '" is used by both ' + usedNames[typedName] + ' and ' + nameService + '. Docker needs each name once.');
+            return $.Deferred().resolve(false).promise();
+        }
+        usedNames[typedName] = nameService;
+    }
+
     // Update override doc with values from the form
     for (var serviceKey in mainDoc.services) {
         if (!(serviceKey in overrideDoc.services)) {
@@ -8467,6 +8583,16 @@ function saveLabels(saveErrors) {
         overrideDoc.services[serviceKey].labels[icon_label] = iconValue;
         overrideDoc.services[serviceKey].labels[webui_label] = webuiValue;
         overrideDoc.services[serviceKey].labels[shell_label] = shellValue;
+
+        // The compose file's own name wins, and replicas cannot have one, so
+        // the override keeps a name only for the other services.
+        var $nameInput = $('#label-' + serviceKey + '-name');
+        var nameValue = $nameInput.attr('data-field') === 'name' ? ($nameInput.val() || '').trim() : '';
+        if (nameValue) {
+            overrideDoc.services[serviceKey].container_name = nameValue;
+        } else {
+            delete overrideDoc.services[serviceKey].container_name;
+        }
     }
 
     // Remove services from override that are no longer in main.
@@ -8519,6 +8645,8 @@ function saveLabels(saveErrors) {
 
         // Update original labels to match current values
         for (var serviceKey in mainDoc.services) {
+            var $savedName = $('#label-' + serviceKey + '-name');
+            editorModal.originalLabels[serviceKey + '_name'] = $savedName.attr('data-field') === 'name' ? ($savedName.val() || '').trim() : '';
             editorModal.originalLabels[serviceKey + '_icon'] = $('#label-' + serviceKey + '-icon').val() || '';
             editorModal.originalLabels[serviceKey + '_webui'] = $('#label-' + serviceKey + '-webui').val() || '';
             editorModal.originalLabels[serviceKey + '_shell'] = $('#label-' + serviceKey + '-shell').val() || '';
