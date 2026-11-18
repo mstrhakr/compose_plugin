@@ -1423,6 +1423,196 @@ function pruneOverrideContentServices(string $overrideContent, array $validServi
 }
 
 /**
+ * Set or remove `container_name` on services in override content, keeping
+ * every other line as it is (comments, quoting, labels).
+ *
+ * Only a top-level `container_name:` of a service is touched. A name that is
+ * already there is never replaced, so a name the user typed in the Labels
+ * tab survives. A service that is not in the file yet gets a new block at the
+ * end of `services:`. `services: {}` (the template) is opened up first.
+ *
+ * A service written in flow style (`web: {image: x}`), or a file indented
+ * other than the plugin writes it, is left alone and reported in `skipped`,
+ * because inserted lines would not fit it.
+ *
+ * @param string                $overrideContent Current override file content ('' if none)
+ * @param array<string, string> $set             Service => container name, added only where none is set
+ * @param string[]              $remove          Services whose container_name entry is removed
+ * @return array{content: string, changed: bool, set: string[], removed: string[], skipped: string[]}
+ */
+function applyOverrideContainerNames(string $overrideContent, array $set, array $remove): array
+{
+    $result = ['content' => $overrideContent, 'changed' => false, 'set' => [], 'removed' => [], 'skipped' => []];
+    if (empty($set) && empty($remove)) {
+        return $result;
+    }
+
+    $lineEnding = (strpos($overrideContent, "\r\n") !== false) ? "\r\n" : "\n";
+    $normalized = str_replace(["\r\n", "\r"], "\n", $overrideContent);
+    $lines = $normalized === '' ? [] : explode("\n", rtrim($normalized, "\n"));
+
+    // Find `services:` (or the template's `services: {}`).
+    $servicesStart = null;
+    foreach ($lines as $i => $line) {
+        if (preg_match('/^services\s*:\s*(\{\s*\})?\s*(?:#.*)?$/', $line, $m)) {
+            $servicesStart = $i;
+            if (!empty($m[1])) {
+                $lines[$i] = 'services:';
+            }
+            break;
+        }
+    }
+    if ($servicesStart === null) {
+        if (empty($set)) {
+            return $result;
+        }
+        $lines[] = 'services:';
+        $servicesStart = count($lines) - 1;
+    }
+
+    $servicesEnd = count($lines);
+    for ($i = $servicesStart + 1; $i < count($lines); $i++) {
+        if (preg_match('/^[^\s#]/', $lines[$i])) {
+            $servicesEnd = $i;
+            break;
+        }
+    }
+
+    // The plugin writes services two spaces in. A file indented another way was
+    // edited by hand: leave it alone rather than add lines that would not line up.
+    for ($i = $servicesStart + 1; $i < $servicesEnd; $i++) {
+        if (trim($lines[$i]) === '' || preg_match('/^\s*#/', $lines[$i])) {
+            continue;
+        }
+        if (!preg_match('/^ {2}[^\s]/', $lines[$i])) {
+            $result['skipped'] = array_values(array_unique(array_merge(array_map('strval', array_keys($set)), array_map('strval', $remove))));
+            return $result;
+        }
+        break;
+    }
+
+    // Service blocks: two-space key lines under services:, as the plugin writes them.
+    $blocks = [];
+    for ($i = $servicesStart + 1; $i < $servicesEnd; $i++) {
+        if (preg_match('/^ {2}(["\']?)([^"\':#\s][^"\':#]*)\1\s*:\s*(.*)$/', $lines[$i], $m)) {
+            $name = trim($m[2]);
+            $inline = trim(preg_replace('/\s+#.*$/', '', $m[3]));
+            $blocks[$name] = ['start' => $i, 'inline' => $inline];
+        }
+    }
+    $starts = array_column($blocks, 'start');
+    sort($starts);
+    foreach ($blocks as $name => $block) {
+        $end = $servicesEnd - 1;
+        foreach ($starts as $s) {
+            if ($s > $block['start']) {
+                $end = $s - 1;
+                break;
+            }
+        }
+        $blocks[$name]['end'] = $end;
+    }
+
+    $edits = []; // line index => replacement lines (null = delete), applied bottom-up
+    $append = [];
+    $removeMap = array_fill_keys(array_map('strval', $remove), true);
+
+    foreach ($blocks as $name => $block) {
+        $wantsSet = array_key_exists($name, $set) && !isset($removeMap[$name]);
+        $wantsRemove = isset($removeMap[$name]);
+        if (!$wantsSet && !$wantsRemove) {
+            continue;
+        }
+        if ($block['inline'] !== '' && $block['inline'] !== '{}') {
+            $result['skipped'][] = $name;
+            continue;
+        }
+
+        // The child indentation is that of the first content line, else four spaces.
+        $indent = null;
+        $nameLine = null;
+        for ($i = $block['start'] + 1; $i <= $block['end']; $i++) {
+            if (trim($lines[$i]) === '' || preg_match('/^\s*#/', $lines[$i])) {
+                continue;
+            }
+            preg_match('/^(\s*)/', $lines[$i], $im);
+            $indent ??= $im[1];
+            if ($im[1] === $indent && preg_match('/^\s*(["\']?)container_name\1\s*:/', $lines[$i])) {
+                $nameLine = $i;
+                break;
+            }
+        }
+        $indent ??= '    ';
+
+        if ($wantsRemove) {
+            if ($nameLine !== null) {
+                $edits[$nameLine] = null;
+                $result['removed'][] = $name;
+                // Keep a service with nothing left a mapping (`web: {}`), not a null entry.
+                $rest = false;
+                for ($i = $block['start'] + 1; $i <= $block['end']; $i++) {
+                    if ($i !== $nameLine && trim($lines[$i]) !== '' && !preg_match('/^\s*#/', $lines[$i])) {
+                        $rest = true;
+                        break;
+                    }
+                }
+                if (!$rest) {
+                    $edits[$block['start']] = [rtrim($lines[$block['start']]) . ' {}'];
+                }
+            }
+            continue;
+        }
+        if ($nameLine !== null) {
+            continue; // never replace a name that is already there
+        }
+        $insert = [];
+        if ($block['inline'] === '{}') {
+            $insert[] = preg_replace('/\s*\{\s*\}\s*(#.*)?$/', '', $lines[$block['start']]);
+        } else {
+            $insert[] = $lines[$block['start']];
+        }
+        $insert[] = $indent . 'container_name: ' . json_encode($set[$name], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $edits[$block['start']] = $insert;
+        $result['set'][] = $name;
+    }
+
+    foreach ($set as $name => $containerName) {
+        $name = (string) $name;
+        if (isset($blocks[$name]) || isset($removeMap[$name])) {
+            continue;
+        }
+        $append[] = '  ' . json_encode($name, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . ':';
+        $append[] = '    container_name: ' . json_encode($containerName, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $result['set'][] = $name;
+    }
+
+    if (empty($edits) && empty($append)) {
+        return $result; // nothing to write (opening up `services: {}` alone is not a change)
+    }
+
+    // Append new blocks after the last non-blank line of the services section.
+    $insertAt = $servicesEnd;
+    while ($insertAt - 1 > $servicesStart && trim($lines[$insertAt - 1]) === '') {
+        $insertAt--;
+    }
+    if (!empty($append)) {
+        array_splice($lines, $insertAt, 0, $append);
+    }
+    krsort($edits);
+    foreach ($edits as $index => $replacement) {
+        array_splice($lines, $index, 1, $replacement === null ? [] : $replacement);
+    }
+
+    $content = implode("\n", $lines) . "\n";
+    if ($lineEnding === "\r\n") {
+        $content = str_replace("\n", "\r\n", $content);
+    }
+    $result['content'] = $content;
+    $result['changed'] = $content !== $overrideContent;
+    return $result;
+}
+
+/**
  * Data class representing the override file information for a stack, including paths and usage flags.
  * This class encapsulates the logic for determining which override file to use (project vs indirect),
  * handles legacy override migration, and provides utility methods for pruning and migrating override content.
@@ -3093,6 +3283,220 @@ class StackInfo
         return $targetPath;
     }
 
+    /**
+     * Container names Docker accepts.
+     */
+    public const CONTAINER_NAME_PATTERN = '/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/';
+
+    /**
+     * Whether this stack opted in to automatic container names (`auto_container_name` file).
+     */
+    public function usesAutoContainerNames(): bool
+    {
+        return strtolower((string) $this->readMetadata('auto_container_name')) === 'true';
+    }
+
+    /**
+     * Whether the plugin owns the override file Compose applies to this stack.
+     *
+     * True when Override File Management is Automatic and the managed override
+     * is the one Compose actually reads: with default file discovery only an
+     * override next to the compose file is found, and an indirect stack that
+     * already has its own override uses that one instead.
+     *
+     * This is the single test for "the plugin may write Compose settings for
+     * this stack". A fully plugin-managed ("basic") stack mode could adopt it
+     * as its own definition.
+     */
+    public function hasPluginManagedOverride(): bool
+    {
+        return $this->pluginManagedOverrideBlocker() === null;
+    }
+
+    /**
+     * Why the plugin does not manage the override, in words for the UI, or null if it does.
+     *
+     * @param bool $ignoreMode Leave out the Manual/Automatic check (the page checks the unsaved choice itself)
+     */
+    public function pluginManagedOverrideBlocker(bool $ignoreMode = false): ?string
+    {
+        if (!$ignoreMode && strtolower((string) $this->readMetadata('labels_view_mode')) === 'advanced') {
+            return 'Override File Management is Manual: you own compose.override.yaml, so the plugin does not write to it. Ex. switch it to Automatic, or set container_name on each service yourself.';
+        }
+        $managed = $this->overrideInfo->getProjectOverridePath();
+        if ($managed === null || $managed === '') {
+            return 'The stack has no override file location.';
+        }
+        if ($this->useDefaultComposeFileDiscovery()) {
+            if (!Path::refersToSamePath(dirname($managed), $this->composeSource)) {
+                return 'With default compose file discovery, Compose only reads an override next to the compose file, and the plugin\'s override is in the stack folder. Ex. turn off default compose file discovery.';
+            }
+            return null;
+        }
+        if ($this->isGitStack()) {
+            return null; // git stacks always apply the managed override (see getComposeFilePaths)
+        }
+        $effective = $this->overrideInfo->getOverridePath();
+        if ($effective === null || !Path::refersToSamePath($effective, $managed)) {
+            return 'Compose reads the override file next to the compose file (' . basename((string) $effective) . '), not the plugin\'s. Ex. set container_name in that file yourself.';
+        }
+        return null;
+    }
+
+    /**
+     * Container names for services that have none: the service named like the
+     * project gets the project name, every other service gets
+     * `<project>-<service>`. The project name is the sanitized one the plugin
+     * passes as `-p`, so it is always a valid start of a container name.
+     *
+     * Services that set `container_name` in the compose file are left out (that
+     * name wins), and so are services with more than one replica, because
+     * Compose refuses `container_name` there.
+     *
+     * @param array<string, mixed> $services Service definitions from the compose files, without the managed override
+     * @return array<string, string> Service name => container name
+     */
+    public static function buildAutoContainerNames(string $projectName, array $services): array
+    {
+        $names = [];
+        foreach ($services as $service => $definition) {
+            $service = (string) $service;
+            $definition = is_array($definition) ? $definition : [];
+            if (self::composeSetsContainerName($definition) || self::runsReplicas($definition)) {
+                continue;
+            }
+            $name = ($service === $projectName) ? $projectName : $projectName . '-' . $service;
+            if (preg_match(self::CONTAINER_NAME_PATTERN, $name) === 1) {
+                $names[$service] = $name;
+            }
+        }
+        return $names;
+    }
+
+    /**
+     * Services whose override `container_name` must go: the compose file sets
+     * its own (an override would win over it, see Docker's merge rules), or the
+     * service runs more than one replica (Compose refuses the name).
+     *
+     * @param array<string, mixed> $services Service definitions from the compose files, without the managed override
+     * @return string[]
+     */
+    public static function containerNamesToDrop(array $services): array
+    {
+        $drop = [];
+        foreach ($services as $service => $definition) {
+            $definition = is_array($definition) ? $definition : [];
+            if (self::composeSetsContainerName($definition) || self::runsReplicas($definition)) {
+                $drop[] = (string) $service;
+            }
+        }
+        return $drop;
+    }
+
+    /** @param array<string, mixed> $definition */
+    private static function composeSetsContainerName(array $definition): bool
+    {
+        return isset($definition['container_name']) && (string) $definition['container_name'] !== '';
+    }
+
+    /** @param array<string, mixed> $definition */
+    private static function runsReplicas(array $definition): bool
+    {
+        $deploy = is_array($definition['deploy'] ?? null) ? $definition['deploy'] : [];
+        return (int) ($definition['scale'] ?? ($deploy['replicas'] ?? 1)) > 1;
+    }
+
+    /**
+     * Write automatic container names into the plugin-managed override.
+     *
+     * Runs before `up` and `update`. A name is written
+     * once, for a service that has none, and is then a normal override value
+     * the user sees and can edit in the Labels tab. It is never rewritten, so
+     * renaming the stack or its folder does not rename containers on the next
+     * `up` (see #112 and #183 for what a silent rename can cost).
+     *
+     * @return array{changed: bool, set: string[], removed: string[], skipped: string[], error?: string}
+     */
+    public function syncAutoContainerNames(): array
+    {
+        $result = ['changed' => false, 'set' => [], 'removed' => [], 'skipped' => []];
+        if (!$this->usesAutoContainerNames() || !$this->hasPluginManagedOverride()) {
+            return $result;
+        }
+        $path = (string) $this->overrideInfo->getProjectOverridePath();
+        try {
+            $services = $this->getServiceDefinitionsWithoutManagedOverride();
+            $set = self::buildAutoContainerNames($this->projectName, $services);
+            $drop = self::containerNamesToDrop($services);
+            if ($set === [] && $drop === []) {
+                return $result;
+            }
+            require_once __DIR__ . '/StackSourceEditor.php';
+            $written = StackSourceEditor::withFileLocks([$path], function () use ($path, $set, $drop): array {
+                $current = StackSourceEditor::read($path);
+                $edit = applyOverrideContainerNames($current['content'], $set, $drop);
+                if ($edit['changed']) {
+                    StackSourceEditor::write($path, $edit['content']);
+                    if (!$current['exists']) {
+                        $this->identity->registerComposeFile($this->path, $path);
+                    }
+                }
+                return $edit;
+            });
+        } catch (\Throwable $e) {
+            composeLogger("Automatic container names not written for stack $this->projectFolder: " . $e->getMessage(), null, 'user', 'warning', 'stack');
+            return $result + ['error' => $e->getMessage()];
+        }
+        if ($written['changed']) {
+            composeLogger(
+                "Automatic container names for stack $this->projectFolder written to " . basename($path),
+                ['set' => $written['set'], 'removed' => $written['removed']],
+                'user',
+                'info',
+                'override'
+            );
+        }
+        if ($written['skipped'] !== []) {
+            composeLogger("Automatic container names skipped for " . implode(', ', $written['skipped']) . ": the override is not laid out the way the plugin writes it (flow style or other indentation)", null, 'user', 'warning', 'override');
+        }
+        return [
+            'changed' => $written['changed'],
+            'set' => $written['set'],
+            'removed' => $written['removed'],
+            'skipped' => $written['skipped'],
+        ];
+    }
+
+    /**
+     * Service definitions from the compose files, leaving out the managed
+     * override and the icon layer, with every profile, as `docker compose
+     * config` resolves them (variables from the env file included).
+     *
+     * @return array<string, mixed>
+     */
+    private function getServiceDefinitionsWithoutManagedOverride(): array
+    {
+        $args = $this->buildComposeArgs();
+        require_once __DIR__ . '/ProcessRunner.php';
+        $command = ['docker', 'compose'];
+        foreach ($this->getComposeFilePathsWithoutManagedOverride() as $file) {
+            array_push($command, '-f', $file);
+        }
+        if (isset($args['envFilePath'])) {
+            array_push($command, '--env-file', $args['envFilePath']);
+        }
+        array_push($command, '-p', $args['projectName'], '--profile', '*', 'config', '--no-consistency', '--format', 'json');
+        $run = ProcessRunner::run($command, $args['projectDirectory'], getenv(), 60);
+        if (!$run->succeeded()) {
+            throw new RuntimeException('Unable to read the compose services: ' . $run->errorSummary());
+        }
+        $config = json_decode($run->stdout, true);
+        if (!is_array($config) || !is_array($config['services'] ?? null)) {
+            throw new RuntimeException('Compose returned no services.');
+        }
+        return $config['services'];
+    }
+
     private function getExtraComposeFiles(): array
     {
         $raw = $this->readMetadata('extra_compose_files');
@@ -3889,6 +4293,24 @@ class StackInfo
      */
     private function buildComposeFileFlagsWithoutManagedOverride(): string
     {
+        $flags = [];
+        if ($this->useDefaultComposeFileDiscovery()) {
+            $flags[] = '--project-directory ' . escapeshellarg($this->composeSource);
+        }
+        foreach ($this->getComposeFilePathsWithoutManagedOverride() as $filePath) {
+            $flags[] = '-f ' . escapeshellarg($filePath);
+        }
+        return implode(' ', $flags);
+    }
+
+    /**
+     * The existing compose files of this stack, leaving out the plugin-managed
+     * override and the icon override generated from it.
+     *
+     * @return string[]
+     */
+    private function getComposeFilePathsWithoutManagedOverride(): array
+    {
         $leftOut = [];
         foreach ([$this->overrideInfo->getProjectOverridePath(), $this->getIconNormalizationOverridePath()] as $path) {
             if ($path !== null) {
@@ -3896,19 +4318,16 @@ class StackInfo
             }
         }
 
-        $flags = [];
-        if ($this->useDefaultComposeFileDiscovery()) {
-            $flags[] = '--project-directory ' . escapeshellarg($this->composeSource);
-        }
+        $paths = [];
         foreach ($this->getComposeFilePaths() as $filePath) {
             if (isset($leftOut[$this->normalizeComposeFilePath($filePath)])) {
                 continue;
             }
             if (is_file($filePath)) {
-                $flags[] = '-f ' . escapeshellarg($filePath);
+                $paths[] = $filePath;
             }
         }
-        return implode(' ', $flags);
+        return $paths;
     }
 
     /**

@@ -2558,6 +2558,44 @@ class ExecActionsTest extends TestCase
         $this->assertEquals('success', $result['result']);
     }
 
+    public function testSetStackSettingsSavesAutoContainerNames(): void
+    {
+        $stackPath = $this->createTestStack('test-stack');
+
+        $saved = json_decode($this->executeAction('setStackSettings', [
+            'script' => 'test-stack',
+            'autoContainerName' => 'true',
+        ]), true);
+        $this->assertSame('success', $saved['result']);
+        $this->assertSame('true', trim((string) file_get_contents($stackPath . '/auto_container_name')));
+
+        $read = json_decode($this->executeAction('getStackSettings', ['script' => 'test-stack']), true);
+        $this->assertTrue($read['autoContainerName']);
+        $this->assertSame('test-stack', $read['projectName']);
+        $this->assertNull($read['managedOverrideBlocker']);
+
+        // A save that does not send the field keeps the stored value.
+        $this->executeAction('setStackSettings', ['script' => 'test-stack', 'iconUrl' => '']);
+        $this->assertFileExists($stackPath . '/auto_container_name');
+
+        $this->executeAction('setStackSettings', ['script' => 'test-stack', 'autoContainerName' => 'false']);
+        $this->assertFileDoesNotExist($stackPath . '/auto_container_name');
+    }
+
+    public function testSetStackSettingsAcceptsAutoContainerNamesWithDefaultComposeFileDiscovery(): void
+    {
+        $stackPath = $this->createTestStack('test-stack');
+
+        $result = json_decode($this->executeAction('setStackSettings', [
+            'script' => 'test-stack',
+            'autoContainerName' => 'true',
+            'useDefaultComposeFiles' => 'true',
+        ]), true);
+
+        $this->assertSame('success', $result['result']);
+        $this->assertFileExists($stackPath . '/auto_container_name');
+    }
+
     public function testSetStackSettingsRejectsMissingCredentialBeforePersistingOtherSettings(): void
     {
         $stackPath = $this->createTestStack('test-stack');

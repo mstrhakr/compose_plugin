@@ -277,6 +277,10 @@ function echoComposeCommand($action, array $options = [])
                 }
                 $composeCommand = StackUpdateService::buildUpdateCommand($stackInfo, $cfg, $updateOptions);
             } else {
+                if ($action === 'up') {
+                    // Before the file list is built, so a newly written override is passed too.
+                    $stackInfo->syncAutoContainerNames();
+                }
                 $args = $stackInfo->buildComposeArgs();
             }
         } catch (\RuntimeException $error) {
@@ -645,6 +649,9 @@ function echoComposeCommandMultiple($action, array $options = [])
                 }
                 $composeCommand = StackUpdateService::buildUpdateCommand($stackInfo, $cfg, $updateOptions);
             } else {
+                if ($action === 'up') {
+                    $stackInfo->syncAutoContainerNames();
+                }
                 $args = $stackInfo->buildComposeArgs();
             }
         } catch (\RuntimeException $error) {

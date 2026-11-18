@@ -1094,6 +1094,16 @@ $acePath = file_exists('/usr/local/emhttp/plugins/dynamix/javascript/ace/ace.js'
                                 <code id="settings-effective-override-path-value" style="font-size:0.9em;user-select:all;"></code>
                             </div>
                         </div>
+
+                        <div class="settings-field">
+                            <label for="settings-auto-container-name">Automatic Container Names</label>
+                            <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+                                <input type="checkbox" id="settings-auto-container-name">
+                                <span>Name containers after the stack</span>
+                            </label>
+                            <div class="settings-field-help">Compose names a container <code>&lt;project&gt;-&lt;service&gt;-1</code> unless the service sets <code>container_name</code>. With this on, the next Compose Up writes a name into the override file for each service that has none: the service named like the project gets the project name (ex. <code>immich</code>), every other service gets <code>&lt;project&gt;-&lt;service&gt;</code> (ex. <code>immich-redis</code>). A name is written once and then shows in the Labels tab, where you can change it, so renaming the stack later does not rename its containers. A <code>container_name</code> in the compose file always wins, and services with more than one replica are skipped, because Compose refuses a fixed name for them.</div>
+                            <div class="settings-field-help" id="settings-auto-container-name-blocked" style="display:none;"></div>
+                        </div>
                     </div>
                 </div>
             </div>

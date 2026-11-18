@@ -1352,6 +1352,9 @@ switch ($_POST['action']) {
             'editableComposeFiles' => $stackInfo->getEditableComposeFiles(),
             'migrationInputError' => $stackInfo->inputMigrationError,
             'labelsViewMode' => $labelsViewMode,
+            'autoContainerName' => $stackInfo->usesAutoContainerNames(),
+            'projectName' => $stackInfo->projectName,
+            'managedOverrideBlocker' => $stackInfo->pluginManagedOverrideBlocker(true),
             'useDefaultComposeFiles' => $useDefaultComposeFiles,
             'indirectMode' => $stackInfo->indirectMode,
             'externalComposePath' => $externalComposePath,
@@ -1531,6 +1534,10 @@ switch ($_POST['action']) {
         $credentialId = $credentialIdProvided ? trim((string) $_POST['credentialId']) : '';
         $useDefaultComposeFiles = isset($_POST['useDefaultComposeFiles'])
             && strtolower(trim((string) $_POST['useDefaultComposeFiles'])) === 'true';
+        // Only changed when the form sends it, so other callers keep the stored value.
+        $autoContainerNameProvided = array_key_exists('autoContainerName', $_POST);
+        $autoContainerName = $autoContainerNameProvided
+            && strtolower(trim((string) $_POST['autoContainerName'])) === 'true';
 
         $externalComposePath = isset($_POST['externalComposePath']) ? trim($_POST['externalComposePath']) : "";
         $externalComposePath = rtrim($externalComposePath, '/');
@@ -1633,6 +1640,7 @@ switch ($_POST['action']) {
             'credential_id', 'envpath', 'icon_url', 'webui_url', 'default_profile',
             'wait_for_healthy', 'wait_timeout', 'build_on_update', 'extra_compose_files',
             'use_default_compose_files', 'indirect', 'indirect.invalid', 'indirect_mode', 'compose_input_mode',
+            'auto_container_name',
         ]);
         $localCompose = findComposeFile("$compose_root/$script");
         if ($localCompose) $settingsFiles[] = $localCompose;
@@ -1759,6 +1767,16 @@ switch ($_POST['action']) {
         } elseif ($buildOnUpdate === 'false' || $buildOnUpdate === '0' || $buildOnUpdate === '') {
             if (is_file($buildOnUpdateFile)) {
                 StackSourceEditor::remove($buildOnUpdateFile);
+            }
+        }
+
+        // Set automatic container names (opt-in, per stack)
+        if ($autoContainerNameProvided) {
+            $autoContainerNameFile = "$compose_root/$script/auto_container_name";
+            if ($autoContainerName) {
+                StackSourceEditor::write($autoContainerNameFile, 'true');
+            } elseif (is_file($autoContainerNameFile)) {
+                StackSourceEditor::remove($autoContainerNameFile);
             }
         }
 
