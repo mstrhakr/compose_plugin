@@ -188,6 +188,8 @@ registry batching, because Docker's container list may show an image ID after a
 tag moves. Only services without `image:` use Dockerfile-base checks. A failed
 registry lookup for an explicitly named application image remains unknown,
 preserving matching pending evidence rather than replacing it with base evidence.
+Registry requests use a versioned cURL user agent in the update checker, rather
+than Unraid's helper default, for compatibility with LinuxServer's registry.
 Legacy automatic invocations retain `COMPOSE_PROJECT_DIR` alongside explicit
 files as an actual Compose `--project-directory` argument.
 The wrapper canonicalizes that directory after changing into it, so relative
