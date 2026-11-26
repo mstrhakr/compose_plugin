@@ -576,7 +576,7 @@ class ComposeUpdateCheck
         );
 
         // Step 1: probe for the auth challenge (HEAD is sufficient and cheap).
-        $probe = getCurlHandle($manifestURL, 'HEAD');
+        $probe = self::registryCurlHandle($manifestURL, 'HEAD');
         $probeReply = curl_exec($probe);
         if (curl_errno($probe) !== 0) return null;
 
@@ -606,7 +606,7 @@ class ComposeUpdateCheck
             $tokenUrl = $args['realm']
                 . '?service=' . urlencode($args['service'])
                 . '&scope='   . urlencode($args['scope']);
-            $tokenCh = getCurlHandle($tokenUrl);
+            $tokenCh = self::registryCurlHandle($tokenUrl);
             curl_setopt($tokenCh, CURLOPT_HEADER, false);
             if (!empty($auth['password'])) {
                 curl_setopt($tokenCh, CURLOPT_USERPWD, $auth['username'] . ':' . $auth['password']);
@@ -699,9 +699,18 @@ class ComposeUpdateCheck
         });
     }
 
+    private static function registryCurlHandle(string $url, string $method = 'GET'): \CurlHandle|false
+    {
+        $ch = getCurlHandle($url, $method);
+        if ($ch !== false) {
+            curl_setopt($ch, CURLOPT_USERAGENT, 'curl/' . curl_version()['version']);
+        }
+        return $ch;
+    }
+
     private function httpGetJson(string $url, array $header, ?string $basicUserPwd): ?array
     {
-        $ch = getCurlHandle($url, 'GET');
+        $ch = self::registryCurlHandle($url, 'GET');
         curl_setopt($ch, CURLOPT_HEADER, false);
         curl_setopt($ch, CURLOPT_HTTPHEADER, $header);
         // Registries redirect blob downloads to storage hosts; curl drops credentials on cross-host redirects.

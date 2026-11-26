@@ -94,6 +94,12 @@ class UpdateCheckTest extends TestCase
         $hostPlatform = explode('/', (new \ReflectionMethod(\ComposeUpdateCheck::class, 'hostPlatform'))->invoke(null));
         file_put_contents($router, '<?php
             file_put_contents(' . var_export($directory . '/requests', true) . ', "request\n", FILE_APPEND);
+            $userAgent = $_SERVER["HTTP_USER_AGENT"] ?? "";
+            file_put_contents(' . var_export($directory . '/user-agents', true) . ', $userAgent . "\n", FILE_APPEND);
+            if ($userAgent !== ' . var_export('curl/' . curl_version()['version'], true) . ') {
+                http_response_code(403);
+                exit;
+            }
             $authorization = $_SERVER["HTTP_AUTHORIZATION"] ?? "";
             $basic = "Basic " . base64_encode("registry-user:fixture-token");
             $mode = ' . var_export($mode, true) . ';
@@ -156,6 +162,10 @@ class UpdateCheckTest extends TestCase
             $this->assertSame($reject ? '' : 'sha256:new', $results['private-app']['remote']);
             $this->assertSame($this->nativeCacheBytes, file_get_contents(UNRAID_UPDATE_STATUS_FILE));
             $requestCount = count(file($directory . '/requests'));
+            $this->assertSame(
+                array_fill(0, $requestCount, 'curl/' . curl_version()['version']),
+                file($directory . '/user-agents', FILE_IGNORE_NEW_LINES)
+            );
             \DockerClient::setMockResponse('/containers/private-app/json', ['Image' => 'sha256:new']);
             for ($stack = 0; $stack < 10; $stack++) {
                 $recheck = $checker->checkContainers([['Name' => 'private-app', 'Image' => 'ghcr.io/org/private:latest']]);
